@@ -3,12 +3,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.compute_jobs import jobs
 from rcp.compute_jobs.probe import _result
 from rcp.config import load_manifest
 
 from .helpers import create_named_app
-from .test_compute_jobs_storage import job_record
 
 
 @pytest.fixture
@@ -61,11 +59,8 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     probe = _result("laptop", "launchd", "ready", "Passed.")
     store.record_compute_backend_probe(project_id, probe)
     compute = {
-        "backend": "slurm",
+        "job_manager": "slurm",
         "jobs_root": "/shared/jobs",
-        "slurm_account": "research",
-        "slurm_partition": "batch",
-        "slurm_submit_args": ["--qos=normal"],
     }
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
     assert response.status_code == 200, response.text
@@ -94,9 +89,9 @@ def test_settings_publish_agent_and_machine_compute_in_one_write(
         stream.write('\n[[machines]]\nalias = "cluster"\nhost = "cluster.example"\n')
     body = settings_body(client.get(url).json())
     body["default_run_truth_scope"] = ["repo-a", "repo-b"]
-    updates = {"laptop": {"backend": "launchd"}, "cluster": {"backend": "slurm"}}
+    updates = {"laptop": {"jobs_root": "/local/jobs"}, "cluster": {"job_manager": "slurm"}}
     if unknown_alias:
-        updates["missing"] = {"backend": "slurm"}
+        updates["missing"] = {"job_manager": "slurm"}
     before = manifest.path.read_bytes()
     writes = []
     atomic_write = config._atomic_write
@@ -117,12 +112,13 @@ def test_settings_publish_agent_and_machine_compute_in_one_write(
         assert writes == [manifest.path]
         updated = load_manifest(manifest.path)
         assert updated.agent.default_run_truth_scope == ["repo-a", "repo-b"]
-        assert updated.machine_map["laptop"].compute.backend == "launchd"
-        assert updated.machine_map["cluster"].compute.backend == "slurm"
+        assert updated.machine_map["laptop"].compute.jobs_root == "/local/jobs"
+        assert updated.machine_map["cluster"].compute.job_manager == "slurm"
 
 
 @pytest.mark.parametrize(
-    "compute", [{"backend": "subprocess"}, {"jobs_root": "relative"}, {"slurm_account": "account"}]
+    "compute",
+    [{"job_manager": "subprocess"}, {"jobs_root": "relative"}, {"slurm_account": "account"}],
 )
 def test_invalid_machine_compute_settings_do_not_write(compute_api, manifest, compute):
     _, client, url = compute_api
@@ -131,76 +127,3 @@ def test_invalid_machine_compute_settings_do_not_write(compute_api, manifest, co
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
     assert response.status_code == 422
     assert manifest.path.read_text() == before
-
-
-def test_compute_job_list_refreshes_running_project_rows_and_orders(compute_api, monkeypatch):
-    app, client, url = compute_api
-    store = app.state.services.store
-    project_id = app.state.default_project_id
-    store.create_compute_job(job_record("older", project_id=project_id, label="Training"))
-    store.create_compute_job(
-        job_record(
-            "newer", project_id=project_id, status="exited", created_at="2026-09-06T00:00:01Z"
-        )
-    )
-    store.create_compute_job(job_record("other", project_id="another-project"))
-    store.create_compute_job(
-        job_record("live", project_id=project_id, created_at="2026-09-06T00:00:02Z")
-    )
-    calls = []
-
-    def refresh(store, manifest, job_id, *, data_dir, **_reconcile_kwargs):
-        calls.append(job_id)
-        if job_id == "live":
-            return store.compute_job(job_id)
-        return store.record_compute_job_refresh(
-            job_id, status="exited", exit_status=0, ended_at=store.now()
-        )
-
-    monkeypatch.setattr("rcp.compute_jobs.reconcile.refresh_compute_job", refresh)
-    response = client.get(f"{url}/compute-jobs")
-    assert response.status_code == 200
-    assert sorted(calls) == ["live", "older"]
-    assert [row["job_id"] for row in response.json()] == ["live", "newer", "older"]
-    # The control decision is backend-owned: only the running row may be cancelled.
-    assert [row["can_cancel"] for row in response.json()] == [True, False, False]
-    assert response.json()[2]["status"] == "exited"
-    assert response.json()[2]["exit_status"] == 0
-    assert response.json()[2]["label"] == "Training"
-
-
-def test_human_compute_cancel_is_attributed_idempotent_and_project_scoped(compute_api, monkeypatch):
-    app, client, url = compute_api
-    store = app.state.services.store
-    store.create_compute_job(
-        job_record(project_id=app.state.default_project_id, execution_machine="laptop")
-    )
-    store.create_compute_job(job_record("other", project_id="another-project"))
-    cancellations = []
-
-    class Backend:
-        def cancel(self, handle, context):
-            cancellations.append(handle)
-
-        def alive(self, handle, context):
-            return False
-
-    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", Backend())
-    monkeypatch.setattr(jobs, "read_job_file", lambda *args: None)
-    first = client.post(f"{url}/compute-jobs/job-1/cancel")
-    assert first.status_code == 200, first.text
-    assert first.json()["status"] == "cancelled"
-    assert first.json()["can_cancel"] is False
-    assert first.json()["cancel_requested_by"] == store.local_owner.user_id
-    assert first.json()["cancel_requested_at"]
-    assert client.post(f"{url}/compute-jobs/job-1/cancel").json() == first.json()
-    assert cancellations == ["rcp-job-job-1"]
-    for job_id in ("other", "missing"):
-        assert client.post(f"{url}/compute-jobs/{job_id}/cancel").status_code == 404
-
-    def refuse(project_id):
-        raise ValueError("Project is being removed.")
-
-    monkeypatch.setattr(store, "require_project_accepts_new_work", refuse)
-    assert client.post(f"{url}/compute-jobs/job-1/cancel").status_code == 409
-    assert cancellations == ["rcp-job-job-1"]

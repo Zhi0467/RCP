@@ -37,8 +37,6 @@ class ComputeJobRecord(BaseModel):
     created_at: str
     started_at: str | None = None
     ended_at: str | None = None
-    cancel_requested_by: str | None = None
-    cancel_requested_at: str | None = None
     diagnostic: str | None = None
 
     @field_validator("diagnostic")

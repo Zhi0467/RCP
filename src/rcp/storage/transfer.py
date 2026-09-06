@@ -650,6 +650,10 @@ class ProjectTransferStoreMixin:
                 chat_id=row["chat_id"],
                 node_id=row["node_id"],
                 episode_id=row["episode_id"],
+                worker_id=row["worker_id"],
+                cancel_requested_by=row["cancel_requested_by"],
+                cancel_requested_at=row["cancel_requested_at"],
+                cancel_error=row["cancel_error"],
                 graph_target=TransferGraphTarget.model_validate_json(row["graph_target_json"]),
                 status=row["status"],
                 graph_condition=_optional_json_document(row["graph_condition_json"]),
@@ -1903,9 +1907,10 @@ class ProjectTransferStoreMixin:
                     last_exit_code, last_error, completed_at, next_check_at,
                     consecutive_error_count, group_id, group_label, notified,
                     notification_operation_id, stopped_by, stop_reason, stopped_at,
-                    stop_operation_id
+                    stop_operation_id, worker_id, cancel_requested_by,
+                    cancel_requested_at, cancel_error
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', ?, NULL, ?, ?, ?, ?, ?, ?, ?,
-                          NULL, ?, ?, ?, 1, NULL, ?, ?, ?, ?)
+                          NULL, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watcher.watcher_id,
@@ -1931,6 +1936,10 @@ class ProjectTransferStoreMixin:
                     watcher.stop_reason,
                     watcher.stopped_at,
                     watcher.stop_operation_id,
+                    watcher.worker_id,
+                    watcher.cancel_requested_by,
+                    watcher.cancel_requested_at,
+                    watcher.cancel_error,
                 ),
             )
 

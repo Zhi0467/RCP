@@ -211,7 +211,7 @@ def auto_research_command_effects(
         result = project_auto_research_episode(store, episode.episode_id).status_result()
         if arguments.worker_id is not None:
             route, leaf = _worker_leaf(store, context, arguments.worker_id)
-            result["worker"] = _worker_status(route, leaf)
+            result["worker"] = _worker_status(store, route, leaf)
         if arguments.episode_id is not None:
             route = store.auto_research_child_experiment(arguments.episode_id)
             child = store.episode(arguments.episode_id)
@@ -1006,15 +1006,17 @@ def _worker_leaf(
 
 
 def _worker_status(
+    store: AppStore,
     route: AutoResearchChildWorkRecord,
     leaf: AgentTaskRecord,
 ) -> dict[str, object]:
+    waiting = route.worker_id in store.auto_research_waiting_child_work_ids(route.episode_id)
     return {
         "worker_id": route.worker_id,
         "current_operation_id": leaf.operation_id,
         "control_node_id": route.control_node_id,
-        "status": leaf.status,
-        "status_message": leaf.status_message[:2_000],
+        "status": "waiting" if waiting else leaf.status,
+        "status_message": "Waiting for watched work." if waiting else leaf.status_message[:2_000],
         "stop_requested": route.stop_requested_at is not None,
         "can_pause": leaf.can_pause,
         "can_resume": leaf.can_resume,

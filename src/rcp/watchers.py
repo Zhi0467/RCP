@@ -10,15 +10,12 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from rcp.compute_jobs.jobs import refresh_compute_job
-from rcp.compute_jobs.models import ComputeJobRecord
-from rcp.config import Manifest
 from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState, Patch
 from rcp.core.transition_models import (
     GraphHeadRef,
@@ -64,40 +61,24 @@ _LOGIN_SHELL_NOISE = (
 class WatchSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    check_command: str | None = Field(default=None, min_length=1)
-    log_path: str | None = Field(default=None, min_length=1)
-    cwd: str | None = Field(default=None, min_length=1)
-    job_id: str | None = Field(default=None, min_length=1)
+    check_command: str = Field(min_length=1)
+    log_path: str = Field(min_length=1)
+    cwd: str = Field(min_length=1)
+    cancel_command: str | None = Field(default=None, min_length=1)
 
-    @model_validator(mode="before")
+    @field_validator("check_command", "cancel_command")
     @classmethod
-    def closed_observer_form(cls, value: object) -> object:
-        if isinstance(value, dict):
-            shell_fields = {"check_command", "log_path", "cwd"}
-            if "job_id" in value:
-                if value["job_id"] is None or shell_fields.intersection(value):
-                    raise ValueError("a job observer cannot contain shell fields")
-                if not str(value["job_id"]).strip():
-                    raise ValueError("job_id must not be blank")
-            elif any(value.get(field) is None for field in shell_fields):
-                raise ValueError("a shell observer requires check_command, log_path, and cwd")
-        return value
-
-    @field_validator("check_command")
-    @classmethod
-    def check_command_is_not_blank(cls, value: str | None) -> str | None:
+    def command_is_not_blank(cls, value: str | None) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
         if not stripped:
-            raise ValueError("check_command must not be blank")
+            raise ValueError("watcher commands must not be blank")
         return stripped
 
     @field_validator("log_path", "cwd")
     @classmethod
-    def paths_are_absolute(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def paths_are_absolute(cls, value: str) -> str:
         if not PurePosixPath(value).is_absolute():
             raise ValueError("watcher paths must be absolute")
         return value
@@ -264,7 +245,7 @@ class WatcherInitialCheckError(ValueError):
         self.failures = failures
         self.results = results
         detail = "; ".join(
-            f"watcher {index + 1} ({spec.job_id or spec.log_path}): {result.error or 'check failed'}"
+            f"watcher {index + 1} ({spec.log_path}): {result.error or 'check failed'}"
             for index, spec, result in failures
         )
         super().__init__(detail)
@@ -1150,16 +1131,11 @@ def _retryable_sqlite_error(exc: Exception) -> bool:
     return "locked" in message or "busy" in message
 
 
-def run_watcher_check(
-    spec: WatchSpec,
-    execution_host: str = "",
-    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-) -> WatcherCheckResult:
-    """Ask a watcher from a fresh login shell without interpreting its command."""
+def _run_watcher_command(
+    shell_command: str, cwd: str, execution_host: str, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Use the same bounded shell and remote watchdog for checks and human actions."""
 
-    if spec.job_id is not None:
-        raise ValueError("a job observer requires the compute job refresh path")
-    assert spec.check_command is not None and spec.cwd is not None
     if execution_host:
         command = ssh_arguments(
             execution_host,
@@ -1168,18 +1144,28 @@ def run_watcher_check(
                     "python3",
                     "-c",
                     _remote_script("watcher_process.py"),
-                    spec.cwd,
+                    cwd,
                     str(timeout),
-                    spec.check_command,
+                    shell_command,
                 ]
             ),
         )
-        cwd = None
+        process_cwd = None
     else:
-        command = watcher_shell_command(spec.check_command, spec.cwd)
-        cwd = spec.cwd
+        command = watcher_shell_command(shell_command, cwd)
+        process_cwd = cwd
+    return run_check_process(command, cwd=process_cwd, timeout=timeout)
+
+
+def run_watcher_check(
+    spec: WatchSpec,
+    execution_host: str = "",
+    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+) -> WatcherCheckResult:
+    """Ask a watcher from a fresh login shell without interpreting its command."""
+
     try:
-        result = run_check_process(command, cwd=cwd, timeout=timeout)
+        result = _run_watcher_command(spec.check_command, spec.cwd, execution_host, timeout)
     except subprocess.TimeoutExpired as exc:
         detail = _process_error_output(exc.stderr, exc.stdout)
         message = f"check timed out after {timeout:g} seconds"
@@ -1217,40 +1203,30 @@ def run_watcher_check(
     )
 
 
-def job_watcher_payload(store: AppStore, job_id: str) -> dict[str, object]:
-    """Expose durable compute evidence in both attributed wake forms."""
+def run_watcher_cancel(
+    spec: WatchSpec,
+    execution_host: str = "",
+    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+) -> str | None:
+    """Run only a human-requested saved action; exit zero is command acceptance."""
 
-    job = store.compute_job(job_id)
-    if job is None:
-        raise ValueError(f"compute job does not exist: {job_id}")
-    duration = None
-    if job.started_at is not None and job.ended_at is not None:
-        duration = (
-            datetime.fromisoformat(job.ended_at) - datetime.fromisoformat(job.started_at)
-        ).total_seconds()
-    return {
-        "job_id": job.job_id,
-        "exit_status": job.exit_status,
-        "started_at": job.started_at,
-        "ended_at": job.ended_at,
-        "duration_seconds": duration,
-        "log_path": job.log_path,
-        "backend_id": job.backend_id,
-    }
-
-
-def _job_check_result(job: ComputeJobRecord) -> WatcherCheckResult:
-    return WatcherCheckResult(
-        state=(
-            "error"
-            if job.status == "lost"
-            else "complete"
-            if job.status in {"exited", "cancelled"}
-            else "active"
-        ),
-        checked_at=_now(),
-        exit_code=job.exit_status,
-        error=job.diagnostic if job.status == "lost" else None,
+    if spec.cancel_command is None:
+        raise ValueError("This watcher has no cancel command.")
+    try:
+        result = _run_watcher_command(spec.cancel_command, spec.cwd, execution_host, timeout)
+    except subprocess.TimeoutExpired as exc:
+        detail = _process_error_output(exc.stderr, exc.stdout)
+        return _bounded_error(
+            f"Cancel command timed out after {timeout:g} seconds; its outcome is unknown."
+            + (f" {detail}" if detail else "")
+        )
+    except OSError as exc:
+        return _bounded_error(f"Could not execute Cancel command: {exc}")
+    if result.returncode == 0:
+        return None
+    detail = _process_error_output(result.stderr, result.stdout)
+    return _bounded_error(
+        f"Cancel command exited with status {result.returncode}." + (f" {detail}" if detail else "")
     )
 
 
@@ -1260,36 +1236,12 @@ def validate_watch_specs(
     *,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-    store: AppStore | None = None,
-    binding: WatcherBinding | None = None,
-    manifest: Manifest | None = None,
-    data_dir: Path | None = None,
 ) -> list[WatcherCheckResult]:
     """Run every initial check; any error rejects the entire list."""
 
     if not specs:
         raise ValueError("a watch list must contain at least one watcher")
-    results = []
-    for spec in specs:
-        if spec.job_id is None:
-            results.append(check_runner(spec, execution_host, timeout))
-            continue
-        if store is None or binding is None or manifest is None:
-            raise ValueError("a job observer requires its bound task and compute context")
-        job = store.compute_job(spec.job_id)
-        if job is None or job.project_id != binding.project_id:
-            raise ValueError(f"compute job does not exist in this project: {spec.job_id}")
-        same_episode = (
-            binding.continuation.patch_kind == "experiment_loop"
-            and job.episode_id is not None
-            and job.episode_id == binding.continuation.control_episode_id
-        )
-        if job.origin_operation_id != binding.origin_operation_id and not same_episode:
-            raise ValueError(f"compute job is outside this task lineage: {spec.job_id}")
-        job = refresh_compute_job(
-            store, manifest, spec.job_id, data_dir=data_dir or store.path.parent
-        )
-        results.append(_job_check_result(job))
+    results = [check_runner(spec, execution_host, timeout) for spec in specs]
     failures = [
         (index, specs[index], result)
         for index, result in enumerate(results)
@@ -1310,8 +1262,6 @@ def arm_watchers(
     watcher_ids: list[str] | None = None,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-    manifest: Manifest | None = None,
-    data_dir: Path | None = None,
 ) -> list[StoredWatcherRecord]:
     """Validate one mixed handoff and persist all of it, or persist none of it."""
 
@@ -1341,10 +1291,6 @@ def arm_watchers(
             binding.execution_host,
             check_runner=check_runner,
             timeout=timeout,
-            store=store,
-            binding=binding,
-            manifest=manifest,
-            data_dir=data_dir,
         )
         if specs
         else []
@@ -1370,7 +1316,7 @@ def arm_watchers(
                 worker_id=binding.worker_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
-                job_id=spec.job_id,
+                cancel_command=spec.cancel_command,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
@@ -1434,12 +1380,10 @@ class WatcherPoller:
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
-        manifest_for_project: Callable[[str], Manifest] | None = None,
-        data_dir: Path | None = None,
+        cancel_runner: Callable[[WatchSpec, str, float], str | None] = run_watcher_cancel,
     ) -> None:
         self.store = store
-        self.manifest_for_project = manifest_for_project
-        self.data_dir = data_dir or store.path.parent
+        self.cancel_runner = cancel_runner
         self.on_completed = on_completed
         self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
@@ -1494,22 +1438,61 @@ class WatcherPoller:
                 raise RuntimeError("External watcher changed type during its check.")
             return updated
 
-    def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
-        if record.job_id is None:
-            return self.check_runner(_spec_from_record(record), record.execution_host, self.timeout)
-        if self.manifest_for_project is None:
-            raise ValueError("compute job observer has no project manifest resolver")
-        job = self.store.compute_job(record.job_id)
-        if job is None or job.project_id != record.project_id:
-            raise ValueError("compute job observer has no job in its project")
-        return _job_check_result(
-            refresh_compute_job(
-                self.store,
-                self.manifest_for_project(record.project_id),
-                record.job_id,
-                data_dir=self.data_dir,
+    def cancel(self, project_id: str, watcher_id: str, requested_by: str) -> WatcherRecord:
+        """Execute the saved action only after a human request and a fresh active check."""
+
+        # The API holds the project's write-admission lock. Do not acquire the
+        # poll lock here: poll delivery takes those locks in the opposite order.
+        # SQLite claims serialize cancellation; ordinary polling owns delivery.
+        record = self.store.watcher(watcher_id)
+        if record is None or record.project_id != project_id:
+            raise KeyError(watcher_id)
+        if not isinstance(record, WatcherRecord) or not record.cancel_command:
+            raise ValueError("This watcher has no cancel command.")
+        if not record.can_cancel:
+            return record
+        try:
+            result = self._check_record(record)
+        except Exception as exc:
+            result = WatcherCheckResult(
+                state="error", checked_at=_now(), error=_bounded_error(str(exc))
             )
+        checked = self.store.record_watcher_check(
+            watcher_id,
+            status={"active": "active", "complete": "completed", "error": "degraded"}[result.state],
+            exit_code=result.exit_code,
+            error=result.error,
+            checked_at=result.checked_at,
+            include_stopped=True,
         )
+        if result.state == "error":
+            return self.store.record_watcher_cancel_result(
+                watcher_id,
+                requested_at=record.cancel_requested_at,
+                error=_bounded_error(
+                    "Could not check whether the external work is still active; "
+                    f"Cancel was not run. {result.error or ''}"
+                ),
+            )
+        if result.state == "complete":
+            return checked
+        claimed = self.store.claim_watcher_cancel(project_id, watcher_id, requested_by)
+        if claimed is None:
+            current = self.store.watcher(watcher_id)
+            assert isinstance(current, WatcherRecord)
+            return current
+        try:
+            error = self.cancel_runner(
+                _spec_from_record(claimed), claimed.execution_host, self.timeout
+            )
+        except Exception as exc:
+            error = _bounded_error(f"Cancel command failed: {exc}")
+        return self.store.record_watcher_cancel_result(
+            watcher_id, requested_at=claimed.cancel_requested_at, error=error
+        )
+
+    def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
+        return self.check_runner(_spec_from_record(record), record.execution_host, self.timeout)
 
     def _check_records(self, records: list[WatcherRecord]) -> None:
         if records:
@@ -1676,6 +1659,7 @@ def _spec_from_record(record: WatcherRecord) -> WatchSpec:
         check_command=record.check_command,
         log_path=record.log_path,
         cwd=record.cwd,
+        cancel_command=record.cancel_command,
     )
 
 

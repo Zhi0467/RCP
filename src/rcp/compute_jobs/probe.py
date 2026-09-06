@@ -162,6 +162,11 @@ def probe_compute_backend(
     """Exercise the actual owner, wrapper, liveness, exit file, and job log."""
     backend_id = ""
     try:
+        machine = manifest.machine_map[machine_alias]
+        if machine.compute is not None and machine.compute.job_manager == "slurm":
+            from rcp.compute_jobs.scheduler_readiness import probe_slurm_access
+
+            return probe_slurm_access(machine_alias, machine.host)
         context, profile = resolve_context(manifest, machine_alias, runner)
         if profile is None:
             result = _result(machine_alias, "", "unavailable", "No compute backend is available.")

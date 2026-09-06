@@ -46,7 +46,6 @@ from rcp.watchers import (
     WatcherBinding,
     WatcherCheckResult,
     graph_condition_result,
-    job_watcher_payload,
     validate_graph_conditions,
 )
 
@@ -832,7 +831,7 @@ def prepare_experiment_watcher_records(
                 "log_path": spec.log_path,
                 "cwd": spec.cwd,
                 "group": group,
-                **({"job_id": spec.job_id} if spec.job_id is not None else {}),
+                "cancel_command": spec.cancel_command,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -849,7 +848,7 @@ def prepare_experiment_watcher_records(
                 episode_id=binding.episode_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
-                job_id=spec.job_id,
+                cancel_command=spec.cancel_command,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
@@ -1062,6 +1061,10 @@ def _watcher_state(
                     "check_command": record.check_command,
                     "log_path": record.log_path,
                     "cwd": record.cwd,
+                    "cancel_command": record.cancel_command,
+                    "cancel_requested_by": record.cancel_requested_by,
+                    "cancel_requested_at": record.cancel_requested_at,
+                    "cancel_error": record.cancel_error,
                     "last_checked_at": record.last_checked_at,
                     "last_exit_code": record.last_exit_code,
                     "last_error": record.last_error,
@@ -1071,10 +1074,6 @@ def _watcher_state(
                     "group_label": record.group_label,
                 }
             )
-        if isinstance(record, WatcherRecord) and record.job_id is not None:
-            item.pop("check_command", None)
-            item.pop("cwd", None)
-            item.update(job_watcher_payload(execution.store, record.job_id))
         state.append(item)
     return state
 

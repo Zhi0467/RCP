@@ -2691,14 +2691,12 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
     assert effects.spawn_calls == []
 
 
-@pytest.mark.parametrize("verb", ["launch", "job_status", "cancel"])
-def test_auto_research_root_refuses_compute_verbs(tmp_path, verb):
+def test_auto_research_root_refuses_compute_launch(tmp_path):
     from .test_compute_jobs_commands import _request
 
     store, episode, root = _setup_auto_research(tmp_path)
     effects = _Effects(store, episode, root)
-    arguments = {"cwd": str(tmp_path), "argv": ["true"]} if verb == "launch" else {"job_id": "job"}
-    request = _request(verb, "refused-compute", **arguments)
+    request = _request("launch", "refused-compute", cwd=str(tmp_path), argv=["true"])
     response = _dispatcher(store, effects.bundle()).dispatch(root.operation_id, request)
     assert response.status == "invalid"
     assert "does not authorize" in response.message

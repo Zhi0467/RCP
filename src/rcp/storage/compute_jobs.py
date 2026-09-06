@@ -117,10 +117,6 @@ class ComputeJobStoreMixin:
             current = _compute_job_record(row)
             if current.status != "running":
                 return current
-            if status != "running" and current.cancel_requested_at is not None:
-                if status == "lost":
-                    diagnostic = None
-                status = "cancelled"
             refreshed = ComputeJobRecord.model_validate(
                 {
                     **current.model_dump(),
@@ -144,20 +140,3 @@ class ComputeJobStoreMixin:
                 ),
             )
         return refreshed
-
-    def request_compute_job_cancel(self, job_id: str, requested_by: str) -> ComputeJobRecord:
-        if not requested_by.strip():
-            raise ValueError("compute cancellation requires a requester")
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "UPDATE compute_jobs SET cancel_requested_by = ?, cancel_requested_at = ? "
-                "WHERE job_id = ? AND status = 'running' AND cancel_requested_at IS NULL",
-                (requested_by, self.now(), job_id),
-            )
-            row = connection.execute(
-                "SELECT * FROM compute_jobs WHERE job_id = ?", (job_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(job_id)
-            return _compute_job_record(row)

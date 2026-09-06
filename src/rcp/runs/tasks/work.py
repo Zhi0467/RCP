@@ -179,7 +179,7 @@ def _prepare_work_chat_prompt(
     attachment_pointers: list[dict[str, object]],
     result_view: _PreparedResultView | None,
     write_scope: ProjectWriteScope,
-    launch_command: str,
+    execution_instructions: str,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -194,11 +194,11 @@ def _prepare_work_chat_prompt(
         contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
         values=stable_values,
     )
-    launch_command_path = _stage_task_input(
+    execution_instructions_path = _stage_task_input(
         local_stage,
         remote_stage,
-        f"task-{_task_token(execution)}-launch.md",
-        f"RCP launch command for this turn: `{launch_command}`\n",
+        f"task-{_task_token(execution)}-execution.md",
+        execution_instructions,
     )
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
@@ -216,9 +216,20 @@ def _prepare_work_chat_prompt(
         result_view_action=result_view.action if result_view is not None else None,
         result_view_path=result_view.prompt_path if result_view is not None else None,
         write_scope=write_scope,
-        launch_command_path=posixpath.relpath(launch_command_path, write_scope.workspace_root),
+        execution_instructions_path=posixpath.relpath(
+            execution_instructions_path, write_scope.workspace_root
+        ),
     )
     return prompt, retained_master_path
+
+
+def _work_execution_instructions(turn: WorkTurn) -> str:
+    if turn.compute_commands is None:
+        return ""
+    command = turn.patch_inputs.validator_staged.client_command(
+        "launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--", "<argv...>"
+    )
+    return turn.compute_commands.execution_instructions(command)
 
 
 def _resolve_work_execution(
@@ -547,16 +558,9 @@ def _compose_resume_prompt(
         original_contract_path=original_contract_path,
         mode="resume",
         patch_path=turn.patch_inputs.patch_path,
+        watch_path=turn.patch_inputs.watch_path,
         validator_command=turn.patch_inputs.validator_command,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -604,15 +608,7 @@ def _compose_fresh_prompt(
             turn.request.message,
         )
         contract = PromptFactory.work_task_contract(
-            launch_command=turn.patch_inputs.validator_staged.client_command(
-                "launch",
-                "--key",
-                "<idempotency-key>",
-                "--cwd",
-                "<working-directory>",
-                "--",
-                "<argv...>",
-            ),
+            execution_instructions=_work_execution_instructions(turn),
             project_name=turn.context.project_name,
             ontology_path=f"{turn.context.graph_path}#ontology",
             ontology_extensions=turn.context.ontology_extensions,
@@ -709,15 +705,7 @@ def _compose_fresh_prompt(
     prompt, retained_master_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),
@@ -776,15 +764,7 @@ def _compose_retry_prompt(
         watch_path=turn.patch_inputs.watch_path,
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
         skill_pointers=staged.skill_pointers if resumed_retry else None,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1076,7 +1056,7 @@ async def _validate_watch_deliverable(
         if turn.compute_commands is not None:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
-                {item.job_id for item in ordinary_handoff.external if item.job_id},
+                {item.check_command for item in ordinary_handoff.external},
             )
         specs = ordinary_handoff.external
         graph_conditions = ordinary_handoff.graph
@@ -1107,8 +1087,6 @@ async def _validate_watch_deliverable(
             binding,
             graph_conditions=graph_conditions,
             state=graph_state,
-            manifest=turn.service.manifest,
-            data_dir=turn.execution.store.path.parent,
         )
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
@@ -1150,6 +1128,8 @@ def _reject_watch_deliverable(
     settled: _SettledWorkDeliverables,
     failure: _DeliverableFailure,
     correction_rounds: int,
+    *,
+    required_handoff: bool = False,
 ) -> _DeliverableStep:
     if turn.execution is not None:
         turn.execution.store.record_agent_task_receipt(
@@ -1167,6 +1147,17 @@ def _reject_watch_deliverable(
             level="warning",
         )
     settled.watch_correction_rounds = correction_rounds
+    if required_handoff:
+        return _DeliverableStep(
+            frames=(
+                _sse(
+                    AgentEvent(
+                        event="error", text=f"Compute watcher handoff failed: {failure.message}"
+                    )
+                ),
+            ),
+            stop=True,
+        )
     return _DeliverableStep()
 
 
@@ -1405,7 +1396,15 @@ async def _settle_watch_deliverable(
             or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
-            step = _reject_watch_deliverable(turn, settled, failure, correction_rounds)
+            required_handoff = False
+            if turn.compute_commands is not None:
+                try:
+                    await asyncio.to_thread(turn.compute_commands.validate_handoff, set())
+                except ValueError:
+                    required_handoff = True
+            step = _reject_watch_deliverable(
+                turn, settled, failure, correction_rounds, required_handoff=required_handoff
+            )
             for frame in step.frames:
                 yield frame
             if step.stop:

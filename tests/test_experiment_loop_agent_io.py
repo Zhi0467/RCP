@@ -49,7 +49,7 @@ from rcp.storage import (
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
 from .test_prompts import _assert_compute_handoff
-from .test_prompts import launch_command as launch_command
+from .test_prompts import execution_instructions as execution_instructions
 
 _EXPERIMENT_ID = "exp/native-wake"
 
@@ -836,9 +836,9 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
         _parent_task_contract_path(retried, new_stage, None)
 
 
-def test_compact_wake_message_is_human_style_and_authority_truthful(launch_command) -> None:
+def test_compact_wake_message_is_human_style_and_authority_truthful(execution_instructions) -> None:
     message = experiment_loop_wake_message(
-        launch_command=launch_command,
+        execution_instructions=execution_instructions,
         focused_experiment_id=_EXPERIMENT_ID,
         experiment_contract_path="/stage/inputs/experiment-contract.md",
         invocation=2,
@@ -876,7 +876,7 @@ def test_compact_wake_message_is_human_style_and_authority_truthful(launch_comma
         "failed or repeatedly terminated process without that diagnosis stays on path 1"
         in normalized
     )
-    assert launch_command in message
+    assert " ".join(execution_instructions.split()) in normalized
     _assert_compute_handoff(message)
     assert "do not wait or poll for detached work" not in message
     assert "Merely observing that all jobs ended is not enough" in message

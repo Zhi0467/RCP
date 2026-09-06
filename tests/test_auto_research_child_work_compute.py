@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,10 @@ from .helpers import (
     wait_for_task,
 )
 from .test_compute_jobs_commands import commands as commands
-from .test_compute_jobs_settlement import _command
+from .test_compute_jobs_settlement import _command, _job_for_watcher
 
 
-@pytest.mark.parametrize("state", ["running", "exited", "cancelled", "nothing", "malformed"])
+@pytest.mark.parametrize("state", ["running", "exited", "nothing", "malformed"])
 def test_child_compute_mailbox_and_work_watcher_settlement(
     manifest, tmp_path, monkeypatch, commands, state
 ):
@@ -39,6 +40,9 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     staged_turns = []
+    monkeypatch.setattr(
+        work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
+    )
     for owner, name in (
         (child_work, "_start_auto_research_child_validator_mailbox"),
         (work, "_start_work_validator_mailbox"),
@@ -54,6 +58,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
     class Launcher:
         calls = []
         job_id = None
+        watcher = None
         wake_contract = None
 
         async def stream(self, provider, prompt, **kwargs):
@@ -63,7 +68,18 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             assert handler.episode_id == "child-compute"
             assert kwargs["invocation_gate"] is staged.invocation_gate
             if len(self.calls) == 1:
-                contract = Path(prompt.splitlines()[1]).read_text()
+                if "This is a Work turn." in prompt:
+                    prefix = "Read current execution instructions relative to this turn's cwd: `"
+                    path = next(
+                        line.removeprefix(prefix).removesuffix("`")
+                        for line in prompt.splitlines()
+                        if line.startswith(prefix)
+                    )
+                    contract = (workspace / path).read_text()
+                    master = Path(prompt.splitlines()[1]).read_text()
+                    assert "Auto-research child Work boundary" not in master
+                else:
+                    contract = Path(prompt.splitlines()[1]).read_text()
                 assert (
                     staged.client_command(
                         "launch",
@@ -78,20 +94,18 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 )
                 boundary = contract.split("## Auto-research child Work boundary", 1)[1]
                 assert "`launch`" in boundary.split("- Do not invoke", 1)[0]
-                assert "`job-status`" in boundary.split("- Do not invoke", 1)[0]
-                assert "`cancel`" in boundary.split("- Do not invoke", 1)[0]
+                assert "`job-status`" not in boundary
+                assert "`cancel`" not in boundary
                 assert "RCP ignores child watcher output" not in boundary
             if len(self.calls) == 1 and state != "nothing":
                 launched = await _command(
                     staged, "launch", "--key", "launch", "--cwd", str(workspace), "--", "true"
                 )
-                self.job_id = launched["job_id"]
-                status = await _command(staged, "job-status", "--key", "status", self.job_id)
-                assert status["status"] == "running"
-                if state == "cancelled":
-                    cancelled = await _command(staged, "cancel", "--key", "cancel", self.job_id)
-                    assert cancelled["status"] == "cancelled"
-                elif state == "exited":
+                self.watcher = launched["watcher"]
+                self.job_id = _job_for_watcher(
+                    store, handler.write_scope.project_id, self.watcher
+                ).job_id
+                if state == "exited":
                     job = store.compute_job(self.job_id)
                     Path(job.exit_path).write_text("0 101")
                     commands.backend.alive_handles.remove(self.job_id)
@@ -99,13 +113,13 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
             elif self.job_id and len(self.calls) == 2:
                 correction = Path(prompt.splitlines()[1]).read_text()
-                assert '"job_id"' in correction
+                assert '"job_id"' not in correction
                 assert "`check_command`, `log_path`, and `cwd`" in correction
                 if state == "running":
                     assert self.job_id in correction
-                    assert "add a job observer for each named job id" in correction
+                    assert "use its launch receipt or authoritative" in correction
                 (workspace / "watch.json").write_text(
-                    json.dumps({"external": [{"job_id": self.job_id}], "graph": []})
+                    json.dumps({"external": [self.watcher], "graph": []})
                 )
             if len(self.calls) == 3:
                 self.wake_contract = Path(prompt.splitlines()[1]).read_text()
@@ -168,7 +182,8 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
     watchers = store.watchers(app.state.default_project_id)
     if needs_correction:
         assert len(watchers) == 1
-        assert watchers[0].job_id == launcher.job_id
+        assert watchers[0].check_command == launcher.watcher["check_command"]
+        assert watchers[0].cancel_command == launcher.watcher["cancel_command"]
         assert watchers[0].episode_id == episode.episode_id
         assert watchers[0].worker_id == child.request["chat_id"]
         assert watchers[0].status == "active"
@@ -190,12 +205,11 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         commands.backend.alive_handles.remove(job.backend_handle)
         groups = WatcherPoller(
             store,
-            manifest_for_project=lambda _: service.manifest,
-            data_dir=data_dir,
+            check_runner=commands.check_runner,
             clock=lambda: watchers[0].next_check_at or store.now(),
         ).poll_once()
         assert len(groups) == 1
-        request = _generic_watcher_delivery_request(groups[0], store=store)
+        request = _generic_watcher_delivery_request(groups[0])
         wake = start_watcher_notification(
             background,
             child.project_id,
@@ -209,8 +223,8 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert len(launcher.calls) == 3
         assert launcher.calls[-1]["session_id"] == "child-compute-session"
         assert launcher.calls[-1]["cwd"] == launcher.calls[0]["cwd"]
-        assert launcher.job_id in launcher.wake_contract
-        assert '"duration_seconds": 5.0' in launcher.wake_contract
+        assert launcher.watcher["log_path"] in launcher.wake_contract
+        assert watchers[0].watcher_id in launcher.wake_contract
         assert "Auto-research child Work boundary" in launcher.wake_contract
         assert wake.native_session_id == child.native_session_id
         assert store.episode(episode.episode_id).invocations_used == 3

@@ -3149,12 +3149,15 @@ class WatcherDeliveryRecord(BaseModel):
 
 
 class WatcherRecord(WatcherDeliveryRecord):
-    """Durable external observer of either a shell check or an RCP compute job."""
+    """Durable shell observer with an optional human-triggered cancellation action."""
 
-    check_command: str | None = None
-    log_path: str | None = None
-    cwd: str | None = None
-    job_id: str | None = Field(default=None, min_length=1)
+    check_command: str
+    log_path: str
+    cwd: str
+    cancel_command: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_requested_at: str | None = None
+    cancel_error: str | None = None
     last_checked_at: str | None = None
     last_exit_code: int | None = None
     last_error: str | None = None
@@ -3163,15 +3166,20 @@ class WatcherRecord(WatcherDeliveryRecord):
     group_id: str | None = None
     group_label: str | None = None
 
-    @model_validator(mode="after")
-    def closed_observer_form(self) -> WatcherRecord:
-        shell = (self.check_command, self.log_path, self.cwd)
-        if self.job_id is not None:
-            if not self.job_id.strip() or any(value is not None for value in shell):
-                raise ValueError("a job observer has only a nonblank job_id and no shell fields")
-        elif any(value is None for value in shell):
-            raise ValueError("a shell observer requires check_command, log_path, and cwd")
-        return self
+    @field_validator("cancel_command")
+    @classmethod
+    def cancel_command_is_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("cancel_command must not be blank")
+        return value.strip() if value is not None else None
+
+    @property
+    def can_cancel(self) -> bool:
+        return bool(
+            self.cancel_command
+            and self.completed_at is None
+            and (self.cancel_requested_at is None or self.cancel_error is not None)
+        )
 
 
 class GraphWatcherRecord(WatcherDeliveryRecord):

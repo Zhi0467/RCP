@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,12 @@ async def _command(staged, *arguments):
     return json.loads(stdout)["result"]
 
 
+def _job_for_watcher(store, project_id, watcher):
+    return next(
+        job for job in store.compute_jobs(project_id) if job.log_path == watcher["log_path"]
+    )
+
+
 def _capture_commands(monkeypatch, owner):
     """Keep the real owner/mailbox lifecycle while replacing only the provider."""
     staged_turns = []
@@ -55,6 +62,7 @@ class _ComputeTurnLauncher:
         self.state = state
         self.calls = []
         self.job_id = None
+        self.watcher = None
         self.native_session_id = str(uuid.uuid4())
 
     async def stream(self, _provider, _prompt, **kwargs):
@@ -68,15 +76,17 @@ class _ComputeTurnLauncher:
             response = await _command(
                 staged, "launch", "--key", "once", "--cwd", str(workspace), "--", "true"
             )
-            self.job_id = response["job_id"]
+            self.watcher = response["watcher"]
+            self.job_id = _job_for_watcher(
+                commands.execution.store, commands.write_scope.project_id, self.watcher
+            ).job_id
             if self.state == "exited":
                 job = commands.execution.store.compute_job(self.job_id)
                 Path(job.exit_path).write_text("0 101")
                 self.backend.alive_handles.remove(self.job_id)
         elif self.job_id:
-            await _command(staged, "job-status", "--key", "inspect-correction", self.job_id)
             (workspace / "watch.json").write_text(
-                json.dumps({"external": [{"job_id": self.job_id}], "graph": []})
+                json.dumps({"external": [self.watcher], "graph": []})
             )
         yield AgentEvent(event="session", session_id=self.native_session_id)
         yield AgentEvent(event="answer", text="Handed off computation.")
@@ -104,6 +114,9 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
         project_id=app.state.default_project_id,
         request=request,
     )
+    monkeypatch.setattr(
+        work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
+    )
     staged_turns = _capture_commands(monkeypatch, work)
     launcher = _ComputeTurnLauncher(staged_turns, commands.backend, state=state)
     events = await _events(
@@ -119,7 +132,10 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
     if state == "running":
         assert len(corrections) == 1
         assert launcher.job_id in corrections[0].payload["problem"]
-        assert [watcher.job_id for watcher in watchers] == [launcher.job_id]
+        assert [watcher.check_command for watcher in watchers] == [
+            launcher.watcher["check_command"]
+        ]
+        assert watchers[0].cancel_command == launcher.watcher["cancel_command"]
         assert watchers[0].status == "active"
         assert launcher.calls[1]["session_id"] == launcher.native_session_id
         assert staged_turns[0][0].invocation_gate != staged_turns[1][0].invocation_gate
@@ -152,6 +168,18 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
         app.state.default_project_id,
         "compute-loop-correction",
         request,
+    )
+    real_check = experiment_loop.validate_watch_specs
+
+    def check(spec, host, timeout):
+        if spec.check_command == "false":
+            from rcp.watchers import run_watcher_check
+
+            return run_watcher_check(spec, host, timeout)
+        return commands.check_runner(spec, host, timeout)
+
+    monkeypatch.setattr(
+        experiment_loop, "validate_watch_specs", partial(real_check, check_runner=check)
     )
     staged_turns = _capture_commands(monkeypatch, experiment_loop)
 
@@ -189,7 +217,10 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
                     "--",
                     "true",
                 )
-                self.job_id = response["job_id"]
+                self.watcher = response["watcher"]
+                self.job_id = _job_for_watcher(
+                    handler.execution.store, handler.write_scope.project_id, self.watcher
+                ).job_id
                 if rewrite_patch:
                     (workspace / "patch.json").write_text(
                         json.dumps({"summary": "Corrected reflection", "ops": []})
@@ -215,8 +246,80 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     assert len(launcher.calls) == 3
     assert len(commands.backend.starts) == 1
     watchers = execution.store.watchers(app.state.default_project_id)
-    assert [item.job_id for item in watchers] == [launcher.job_id]
+    assert [item.check_command for item in watchers] == [launcher.watcher["check_command"]]
     assert watchers[0].status == "active"
     runtime = execution.store.experiment_loop_runtime(app.state.default_project_id, _EXPERIMENT_ID)
     assert runtime.invocations_used == 1
     assert {call["session_id"] for call in launcher.calls[1:]} == {launcher.native_session_id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_session", ["same-session", None])
+async def test_missing_helper_watcher_fails_and_retains_recovery(
+    manifest, tmp_path, monkeypatch, commands, native_session
+):
+    data_dir = tmp_path / "handoff-failure-data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir, compute_ready=False)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Run compute.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="missing-compute-handoff",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    staged_turns = _capture_commands(monkeypatch, work)
+
+    class Launcher:
+        calls = 0
+        watcher = None
+        workspace = None
+
+        async def stream(self, _provider, _prompt, **kwargs):
+            self.calls += 1
+            self.workspace = Path(kwargs["cwd"])
+            if self.calls == 1:
+                result = await _command(
+                    staged_turns[-1][0],
+                    "launch",
+                    "--key",
+                    "once",
+                    "--cwd",
+                    str(self.workspace),
+                    "--",
+                    "true",
+                )
+                self.watcher = result["watcher"]
+                (self.workspace / "patch.json").write_text(
+                    json.dumps({"summary": "Retain completed progress", "ops": []})
+                )
+            if native_session:
+                yield AgentEvent(event="session", session_id=native_session)
+            yield AgentEvent(event="answer", text="Compute started.")
+            yield AgentEvent(event="done")
+
+    launcher = Launcher()
+    events = await _events(
+        work.stream_work_run(service, launcher, request, data_dir, execution=execution)
+    )
+    errors = [event.text for event in events if event.event == "error"]
+    assert len(errors) == 1 and "Compute watcher handoff failed" in errors[0]
+    assert not any(event.event == "done" for event in events)
+    assert execution.store.watchers(app.state.default_project_id) == []
+    job = _job_for_watcher(execution.store, app.state.default_project_id, launcher.watcher)
+    assert job.status == "running"
+    assert launcher.workspace.is_dir()
+    assert (launcher.workspace / "patch.json").is_file()
+    assert len(commands.backend.starts) == 1
+    assert launcher.calls == (work.PATCH_CORRECTION_MAX_ROUNDS + 1 if native_session else 1)
+    assert any(
+        receipt.category == "watcher_handoff_rejected"
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    )

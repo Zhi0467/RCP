@@ -193,10 +193,6 @@ async def _process_experiment_watcher_maintenance(
                             validate_watch_specs,
                             handoff.observers,
                             staged.resource.execution_host,
-                            store=execution.store,
-                            binding=binding,
-                            manifest=service.manifest,
-                            data_dir=execution.store.path.parent,
                         )
                         if handoff.observers
                         else []

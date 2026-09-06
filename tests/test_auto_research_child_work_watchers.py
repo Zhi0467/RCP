@@ -7,6 +7,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.api.app import _generic_watcher_delivery_request
 from rcp.background import BackgroundAgentTasks
+from rcp.compute_jobs.jobs import helper_watch_spec
 from rcp.runs.auto_research import project_auto_research_episode, request_auto_research_stop
 from rcp.runs.auto_research_admission import (
     reconcile_committed_auto_research_dispatches,
@@ -97,11 +98,8 @@ def _waiting_child(tmp_path, *, ceiling=6):
     store.create_compute_job(job)
     observer = shell.model_copy(
         update={
-            "watcher_id": "child-job",
-            "job_id": job.job_id,
-            "check_command": None,
-            "log_path": None,
-            "cwd": None,
+            "watcher_id": "child-helper",
+            **helper_watch_spec(job),
         }
     )
     watchers = store.create_watchers([shell, observer])
@@ -109,7 +107,7 @@ def _waiting_child(tmp_path, *, ceiling=6):
 
 
 def _deliver(tasks, episode, watchers):
-    request = _generic_watcher_delivery_request(watchers, store=tasks.store)
+    request = _generic_watcher_delivery_request(watchers)
     return start_watcher_notification(
         tasks,
         episode.project_id,
@@ -141,17 +139,17 @@ def test_child_watcher_wake_preserves_route_session_payload_and_spends_once(tmp_
     )
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
     payload = wake.request["message"]
-    for field in (
-        '"job_id": "job-1"',
-        '"exit_status": 3',
-        '"duration_seconds": 5.0',
-        '"log_path": "/jobs/job-1/log"',
-        '"backend_id": "systemd_user"',
-        '"started_at"',
-        '"ended_at"',
-        "/tmp/child-shell.log",
-    ):
-        assert field in payload
+    for watcher in watchers:
+        assert f"external watcher `{watcher.watcher_id}`: `{watcher.log_path}`" in payload
+        assert watcher.check_command and watcher.cwd
+    helper = watchers[1]
+    job = store.compute_job("job-1")
+    assert {
+        field: getattr(helper, field)
+        for field in ("check_command", "log_path", "cwd", "cancel_command")
+    } == helper_watch_spec(job)
+    assert '"job_id"' not in payload
+    assert '"exit_status"' not in payload
     assert _deliver(tasks, episode, watchers) is None
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
     assert [item[1:3] for item in seen] == [
@@ -185,7 +183,7 @@ def test_child_watcher_completion_stays_unclaimed_when_fenced(tmp_path, fence):
             assert retained.status == "completed" and not retained.notified
         else:
             assert retained.status == "stopped" and retained.notified
-    assert store.compute_job("job-1").cancel_requested_at is None
+    assert all(store.watcher(item.watcher_id).cancel_requested_at is None for item in watchers)
 
 
 def test_child_watcher_wake_reconciles_paid_dispatch_after_crash(tmp_path, monkeypatch):
@@ -252,3 +250,16 @@ def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_pa
     next_task = wait_for_task(tasks.store, next_id, expect="succeeded")
     for field in ("model", "reasoning", "invoked_skill_ids", "invoked_workflow_ids"):
         assert next_task.request[field] == wake.request[field]
+
+
+def test_targeted_worker_status_reports_its_watcher_wait(tmp_path):
+    from rcp.runs.auto_research_effects import _worker_status
+
+    tasks, episode, child, watchers, _seen = _waiting_child(tmp_path)
+    store = tasks.store
+    route = store.auto_research_child_works(episode.episode_id)[0]
+    leaf = store.agent_task(route.current_operation_id)
+    assert leaf.status == "succeeded"
+    result = _worker_status(store, route, leaf)
+    assert result["status"] == "waiting"
+    assert result["status_message"] == "Waiting for watched work."

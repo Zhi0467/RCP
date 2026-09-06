@@ -27,9 +27,9 @@ def _probe(*, ready: bool) -> ComputeBackendProbe:
 
 @pytest.mark.parametrize("episode_kind", ["experiment", "auto_research"])
 @pytest.mark.parametrize("ready", [False, True])
-@pytest.mark.parametrize("stored", [False, True])
-def test_episode_start_requires_resolved_machine_probe(
-    manifest, tmp_path, monkeypatch, episode_kind, ready, stored
+@pytest.mark.parametrize("stored_ready", [None, False, True])
+def test_episode_start_rechecks_readiness_even_with_a_stored_result(
+    manifest, tmp_path, monkeypatch, episode_kind, ready, stored_ready
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data", compute_ready=False)
     project_id = app.state.default_project_id
@@ -46,8 +46,8 @@ def test_episode_start_requires_resolved_machine_probe(
         return expected
 
     monkeypatch.setattr("rcp.compute_jobs.admission.probe_compute_backend", probe)
-    if stored:
-        store.record_compute_backend_probe(project_id, expected)
+    if stored_ready is not None:
+        store.record_compute_backend_probe(project_id, _probe(ready=stored_ready))
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **_kwargs: record)
     if episode_kind == "experiment":
         url = f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run"
@@ -58,7 +58,7 @@ def test_episode_start_requires_resolved_machine_probe(
     response = TestClient(app).post(url, json=body)
 
     assert response.status_code == (202 if ready else 422), response.text
-    assert calls == ([] if stored else [(manifest.path, "laptop", tmp_path / "data")])
+    assert calls == [(manifest.path, "laptop", tmp_path / "data")]
     assert store.compute_backend_probe(project_id, "laptop") == expected
     if ready:
         assert len(store.episodes(project_id)) == 1

@@ -5,11 +5,12 @@ import textwrap
 from typing import Literal
 
 from rcp.agents.prompts import (
+    _CURRENT_OPERATIONAL_INSTRUCTIONS,
+    _EXTERNAL_WATCHER_FORMS,
     _RETAINED_LOCAL_CAUSAL_CHECK,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     _authoring_rules,
-    _compute_launch_rules,
     _invoked_package_section,
     _patch_validator_rules,
     _pointer,
@@ -26,13 +27,11 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
   infrastructure symptom as a mechanical fault to diagnose. It is not by itself a graph Blocker,
   a human-authority pause, or a reason to end the episode.
 - Capacity contention is not a fault and not a finding. A full cluster, busy queue, or occupied
-  device means work has not started yet. Submit through `launch` and let the job wait in the queue,
-  then arm a job observer and finish the turn. Never report contention as a limit you could not act on.
-- A scheduler or backend rejection (`unavailable` carrying a `required_action`, refused submission,
-  missing account or partition) is a setup failure: stop with a Blocker naming the failure and
-  required action from the response. Do not find another execution path, run attached, or retry a
-  rejected launch. An `unavailable` without a `required_action` is not a rejection; repeat that
-  command once with the same key, as the launch rules say.
+  device means work has not started yet. Let submitted work wait in the queue, arm a shell watcher,
+  and finish the turn. Never report contention as a limit you could not act on.
+- Diagnose a rejected submission before deciding it needs human action. Repair your own command,
+  script, or resource request within the existing authority. Missing access or prerequisites need
+  a concrete required action; a bad argument does not by itself establish an authority gap.
 - Do not infer an external lifetime policy or authority gap from elapsed timing, repeated symptoms,
   or the absence of an application error or OOM record. Inspect authoritative evidence along the
   actual execution path: launch wrapper and process ancestry, scheduler or service unit and journal,
@@ -40,9 +39,10 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
   Form a concrete causal hypothesis, change a relevant condition, and test it. Two similar failures
   do not prove an external cause.
 - Continue useful, safe, in-scope diagnosis, repair, and relaunch work in this episode. If the next
-  diagnostic or repaired run must outlive this turn, use `launch` and arm a job observer.
-- Apart from the setup rejections above, create a Blocker and exit only when concrete evidence
-  identifies a persistent constraint and the exact next action needed to clear it is unavailable
+  diagnostic or repaired run must outlive this turn, follow the current execution instructions
+  and hand off a shell watcher.
+- Create a Blocker and exit only when concrete evidence identifies a persistent constraint and the
+  exact next action needed to clear it is unavailable
   under this contract's tools or authority. First exhaust useful, safe in-scope diagnosis and repair;
   cite the evidence, unavailable action, and required human action. An unexplained or plausibly
   transient failure is uncertainty, not a Blocker."""
@@ -66,7 +66,7 @@ def experiment_loop_task_contract(
     artifact_path: str,
     output_schema_path: str,
     validator_command: str,
-    launch_command: str,
+    execution_instructions: str,
     write_scope: ProjectWriteScope | None = None,
     execution_host: str = "",
     recovery_diagnostics_path: str | None = None,
@@ -240,13 +240,13 @@ ExperimentAttempt reading and recording protocol:
   attempt state anywhere else in RCP canonical files.
 
 Watcher handoff protocol:
-{_compute_launch_rules(launch_command)}
+{execution_instructions}
 - You must write `{watch_path}` on every invocation as one JSON object with exactly two keys:
   `external` and `graph`, each holding a list. For example:
 
   ```json
   {{
-    "external": [{{"job_id": "<id>"}}],
+    "external": [{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],
     "graph": [{{"node_id": "blk/foo", "status_in": ["resolved"]}}]
   }}
   ```
@@ -255,8 +255,8 @@ Watcher handoff protocol:
   authoritative inspection confirms that nothing from this Experiment remains to watch and the
   same Patch explicitly records success, queues a Decision, creates a Hypothesis Proposal, or
   creates a same-Patch Blocker.
-- Each `external` observer contains only `job_id`, or, for external work RCP did not launch,
-  exactly `check_command`, `log_path`, and `cwd`; either may add one non-blank `group` label.
+{_EXTERNAL_WATCHER_FORMS}
+- Each observer may also add one non-blank `group` label.
   Observers sharing a label form one immutable group of at least two newly armed observers;
   a member completing early does not wake this loop by itself.
 - The `external` list may also contain a stop item with exactly `stop_watcher_id` and a non-blank
@@ -279,14 +279,7 @@ Watcher handoff protocol:
   `proposal_resolved` condition waits for a Proposal resolution committed after it is armed;
   older resolved Proposals do not satisfy a new wait. Use an external observer instead when the
   fact lives in a scheduler, process, repository, log, or other non-canonical system.
-- For external work RCP did not launch, RCP runs every check on {_watcher_execution_host(execution_host)}.
-  `log_path` and `cwd` are absolute there. The command uses literal external identifiers and no
-  shell state inherited from this turn. In a cold login shell in `cwd`, it exits 1 while the named
-  work remains, 0 when gone, otherwise unobservable; it never submits, cancels, kills, or modifies.
-- External scheduler example: `{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}`,
-  with `check_command` set to `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids";
-  case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real external id.
-  Test membership in the whole active set: a direct lookup confuses finished ids with service failure.
+- RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
 - RCP discovers `watch.json` after the turn, validates both lists, and arms them atomically; one
   invalid observer, group, stop item, or graph condition rejects the whole object for in-session
   correction.
@@ -376,7 +369,7 @@ def experiment_loop_wake_message(
     watch_path: str,
     output_schema_path: str,
     validator_command: str,
-    launch_command: str,
+    execution_instructions: str,
     execution_host: str = "",
     context_replacement: dict[str, object] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -459,24 +452,21 @@ Read the fresh state before acting:
 For this turn, apply the following rule before choosing whichever path matches the operational
 state:
 
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
 1. A watcher condition remains, or you have useful debugging and relaunching work to do.
 
    Continue useful work now. For work that must outlive this turn:
 
-{textwrap.indent(_compute_launch_rules(launch_command), "   ")}
+{textwrap.indent(execution_instructions, "   ")}
 
    Write `{watch_path}` with exactly the `external` and `graph` lists:
-   `{{"external":[{{"job_id":"<id>"}}],"graph":[]}}`.
-   For external work RCP did not launch, a shell example is:
-   `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`,
-   with `check_command` set to `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<"$ids";
-   case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac`. Replace `48192` with the external job id.
-   RCP runs shell checks on {_watcher_execution_host(execution_host)} with absolute paths there.
-   In a cold login shell in `cwd`, exit 1 means present, 0 gone, otherwise unobservable. The check
-   must only observe; whole-set membership distinguishes a finished id from scheduler failure.
-   Either observer form may add one non-blank `group`. Once useful synchronous work and handoff
+   `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
+{textwrap.indent(_EXTERNAL_WATCHER_FORMS, "   ")}
+   RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
+   Each observer may also add one non-blank `group`. Once useful synchronous work and handoff
    are complete, finish this turn. The graph list accepts only
    `{{"node_id":"...","status_in":["..."]}}` and
    `{{"node_id":"...","proposal_resolved":true}}`; graph conditions are evaluated against
@@ -572,7 +562,7 @@ def experiment_loop_continuation_contract(
     watch_path: str,
     output_schema_path: str,
     validator_command: str,
-    launch_command: str | None = None,
+    execution_instructions: str = "",
     diagnostics_path: str | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
@@ -628,7 +618,9 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
 - {_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
-{_compute_launch_rules(launch_command) if launch_command else ""}
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{execution_instructions}
+{_EXTERNAL_WATCHER_FORMS}
 """
 
 
@@ -668,8 +660,8 @@ Preserve the completed operational result. Do not rerun the Experiment, resubmit
 new external side effect. Inspect authoritative scheduler, process, job, result, log, and canonical
 graph state as needed. Judge the terminal Patch/watch pair, not whether either file changed. If an
 external observer or canonical graph condition is still needed, reconstruct a valid object with a
-non-empty `external` or `graph` list using the exact schema and cold-shell or canonical-state
-semantics in the original contract, and preserve the Patch. If nothing remains to watch but useful
+non-empty `external` or `graph` list using the current shell-observer rules below and the original
+canonical-condition rules, and preserve the Patch. If nothing remains to watch but useful
 synchronous work is still required, continue that work now without repeating completed side
 effects. Then either finish the Experiment, or explicitly pause for human authority by queuing a
 Decision, creating a Hypothesis Proposal, or creating a same-Patch Blocker. Write
@@ -681,6 +673,9 @@ still invalid: continue the named work until `next_action` can truthfully be nul
 nonterminal status and choose a real watcher or human-authority pause. Validate every Patch rewrite
 with the exact command below. Your final response should only confirm that the joint handoff was
 repaired.
+
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{_EXTERNAL_WATCHER_FORMS}
 
 If you rewrite the semantic Patch, its candidate must pass the retained
 `Local causal check for this Patch` in the original authoring contract.
@@ -719,10 +714,14 @@ Work session.
 Preserve the completed operational result. Do not rerun an Experiment, resubmit work, repeat another
 external side effect, alter this conversation's own watcher file, or change `patch.json`. Read the
 original contract for the target resource, current watcher-state pointer, episode execution host,
-exact item shapes, grouping and retirement rules, wake target, and protected fields. The diagnostic
-locates the invalidity but grants no new authority. Rewrite only the exact output above using that
-original contract; do not add a target or control field. Your final response should only confirm that
-the Experiment watcher maintenance handoff was rewritten.
+grouping and retirement rules, wake target, and protected fields. Use the current external-observer
+shape below. The diagnostic locates the invalidity but grants no new authority. Rewrite only the
+exact output above; do not add a target or control field.
+
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{_EXTERNAL_WATCHER_FORMS}
+
+Your final response should only confirm that the Experiment watcher maintenance handoff was rewritten.
 """
 
 

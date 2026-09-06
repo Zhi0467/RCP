@@ -209,12 +209,12 @@ episode's pinned operational ceiling. Historical episodes retain their pinned
 used/ceiling values while the current node value remains separately visible as
 **Next episode limit**.
 
-Human Experiment-loop episode admission checks the resolved execution machine's
-stored compute backend probe before launch, including a completed-watcher start.
-When no probe exists it runs and stores one first. A non-ready result refuses
-with 422 naming the machine, diagnostic, and required action. Ordinary human
-Work is not gated; Stop and pause do not cancel jobs. The [compute jobs
-spec](compute-jobs.md) owns setup and explicit Cancel.
+Human Experiment-loop episode admission runs a fresh readiness check for the
+resolved execution route, including a completed-watcher start. A non-ready
+result refuses with 422 naming the machine, diagnostic, and required action.
+Ordinary human Work is not gated; Stop and pause do not cancel jobs. The
+[compute jobs spec](compute-jobs.md) owns scheduler prerequisites, the generic
+helper, and explicit human Cancel.
 
 Starting an episode does not create an ExperimentAttempt. Attempts are semantic
 agent-authored bookkeeping and never control budget, watcher identity, or
@@ -287,17 +287,18 @@ episode association retain the same target.
 
 Every watcher file has two all-or-none lists:
 
-- `external` observations in either closed form: a literal `check_command`,
-  absolute `log_path`, and absolute `cwd`, or only a `job_id`; and
+- `external` observations with required literal `check_command`, absolute
+  `log_path`, and absolute `cwd`, plus optional nonblank `cancel_command`; and
 - `graph` conditions from a closed vocabulary.
+
+This is one external watcher form for direct scheduler submissions and
+helper-launched processes. Experiment items may additionally carry their
+existing `group` label; ordinary conversation items cannot. A helper's returned
+watcher object uses these same fields; there is no job-id observer form.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
 or a named Proposal being resolved after arming. There is no arbitrary query,
 standing predicate, new-node arrival, or relation predicate.
-
-Shell and job observations can coexist. Experiment external items may also
-carry their existing `group` label; ordinary conversation items cannot. Stored
-job observations have no shell fields, and shell observations have no job id.
 
 ## Graph-condition delivery
 
@@ -328,18 +329,22 @@ unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
 the error count. A degraded observation is never inferred complete or dead.
 
-Job observations use `refresh_compute_job` instead of a shell. Arming requires
-the job to belong to the project and originating task lineage: the same origin
-operation, or the same episode for Experiment-loop. An already exited or
-cancelled job arms completed. Polling keeps a running job active, completes an
-exited or cancelled job, and degrades a lost job with its diagnostic; loss is
-never completion. These states report operational liveness, not scientific
-success. The [compute jobs spec](compute-jobs.md) owns launch and cancellation.
+Shell completion reports operational liveness, not scientific success. The
+Experiment watcher-state file and generic Work wake message, including child
+Work, retain the shell watcher's log-path evidence and ordinary coalescing and
+claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
+submission, generic helper launch, and human cancellation.
 
-For each delivered job observer, the Experiment watcher-state file and generic
-Work wake message, including child Work, carry `job_id`, `exit_status`,
-`started_at`, `ended_at`, `duration_seconds`, `log_path`, and `backend_id`. Shell
-observers retain their existing log-path payload. Both use the same durable coalescing and claim path.
+An optional saved `cancel_command` runs only on a human Cancel request, after a
+fresh check confirms active work. It uses the recorded execution host and cwd,
+and never changes the watcher into a separate cancelled lifecycle. A successful
+command is an attributed request; observation still determines completion.
+Stop fences continuation and leaves the action available for still-live work.
+Cancellation failures permit explicit retry. Transfer and offline restore
+remove executable actions; ordinary restart preserves them.
+
+Prompt guidance lets short jobs finish inline and recommends a watcher for
+roughly more than ten minutes of waiting. This is not a runtime cutoff.
 
 Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is

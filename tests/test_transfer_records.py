@@ -272,11 +272,22 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
         store.export_project_transfer_records(project_id, attributions=attributions)
 
     with store.connection() as connection:
-        connection.execute("UPDATE watchers SET notified = 1 WHERE watcher_id = ?", (watcher_id,))
+        connection.execute(
+            "UPDATE watchers SET notified = 1, worker_id = 'history-worker', "
+            "cancel_command = 'scancel 33', cancel_requested_by = ?, "
+            "cancel_requested_at = ?, cancel_error = 'Scheduler unavailable' WHERE watcher_id = ?",
+            (actor.user_id, now, watcher_id),
+        )
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
     assert bundle.watchers[0].status == "completed"
     assert "check_command" not in type(bundle.watchers[0]).model_fields
     assert "continuation" not in type(bundle.watchers[0]).model_fields
+
+    assert bundle.watchers[0].worker_id == "history-worker"
+    assert bundle.watchers[0].cancel_requested_by == actor.user_id
+    assert bundle.watchers[0].cancel_requested_at == now
+    assert bundle.watchers[0].cancel_error == "Scheduler unavailable"
+    assert "cancel_command" not in type(bundle.watchers[0]).model_fields
 
 
 def test_finished_auto_research_corpus_exports_all_terminal_record_groups(

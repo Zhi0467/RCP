@@ -42,8 +42,6 @@ _MUTATING = frozenset(
         "inbox",
         "finish",
         "launch",
-        "job_status",
-        "cancel",
     )
 )
 
@@ -214,11 +212,6 @@ def _parser():
     launch.add_argument("--label")
     launch.add_argument("argv", nargs=argparse.REMAINDER)
 
-    for verb in ("job-status", "cancel"):
-        job = subparsers.add_parser(verb)
-        job.add_argument("--key", required=True)
-        job.add_argument("job_id")
-
     finish = subparsers.add_parser("finish")
     finish.add_argument("--key", required=True)
     return parser
@@ -375,8 +368,6 @@ def _request_arguments(namespace, workspace):
         if label is not None:
             label = _nonblank(label, "compute label")
         arguments = {"cwd": namespace.cwd, "argv": argv, "label": label}
-    elif verb in ("job_status", "cancel"):
-        arguments = {"job_id": _nonblank(namespace.job_id, "job id")}
     elif verb == "finish":
         arguments = {}
     else:
@@ -583,8 +574,6 @@ def _requested_verb(argv):
             "inbox",
             "finish",
             "launch",
-            "job-status",
-            "cancel",
         ):
             return argument
     return None

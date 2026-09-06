@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 import plistlib
 import shlex
-import signal
 import subprocess
 from pathlib import Path
 from typing import get_args
@@ -19,9 +17,6 @@ from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId, resolv
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
-from rcp.transport import remote_job_launch
-from rcp.transport.remote_job_launch import alive, process_identity
-from rcp.transport.state import _remote_script
 
 
 class Runner:
@@ -44,15 +39,11 @@ def request():
 
 
 def test_registry_and_resolution():
-    assert (
-        set(get_args(ComputeBackendId))
-        == set(COMPUTE_BACKENDS)
-        == {"systemd_user", "launchd", "ssh_session", "slurm"}
-    )
+    assert set(get_args(ComputeBackendId)) == set(COMPUTE_BACKENDS) == {"systemd_user", "launchd"}
     for os_name, remote, manager, expected in [
         ("Linux", False, True, "systemd_user"),
         ("Linux", True, True, "systemd_user"),
-        ("Linux", True, False, "ssh_session"),
+        ("Linux", True, False, None),
         ("Linux", False, False, None),
         ("Darwin", False, False, "launchd"),
         ("Darwin", True, False, "launchd"),
@@ -60,11 +51,10 @@ def test_registry_and_resolution():
     ]:
         backend = resolve_backend(None, os_name, remote, manager)
         assert (backend.id if backend else None) == expected
-    assert (
-        resolve_backend(MachineComputeConfig(backend="slurm"), "Linux", False, True).id == "slurm"
-    )
-    assert not COMPUTE_BACKENDS["ssh_session"].supports("Linux", False)
-    assert not COMPUTE_BACKENDS["ssh_session"].supports("Darwin", True)
+    # An opted-in scheduler is used directly; it never resolves to a launch wrapper.
+    assert resolve_backend(MachineComputeConfig(job_manager="slurm"), "Linux", False, True) is None
+    with pytest.raises(ValueError):
+        MachineComputeConfig(backend="ssh_session")
 
 
 def test_runner_remote_quotes_and_resolves_target_uid():
@@ -159,9 +149,6 @@ def test_systemd_cooperative_start_omits_protected_paths():
         ("launchd", (0, "\tstate = not running\n", ""), False),
         ("launchd", (1, "", "Could not find service rcp-job-x"), False),
         ("launchd", (1, "", "Operation not permitted"), None),
-        ("slurm", (0, "42\n43\n", ""), True),
-        ("slurm", (0, "43\n", ""), False),
-        ("slurm", (1, "", "Unable to contact controller"), None),
     ],
 )
 def test_backend_observation_states(backend_id, response, expected):
@@ -188,147 +175,6 @@ def test_launchd_plist_and_commands(tmp_path):
     assert runner.calls[1][0] == ["launchctl", "bootout", "gui/501/rcp-job-abc"]
 
 
-def test_slurm_exact_commands():
-    backend = COMPUTE_BACKENDS["slurm"]
-    runner = Runner((0, "42;cluster\n", ""), (0, "42\n", ""))
-    ctx = context(runner)
-    ctx.compute = MachineComputeConfig(
-        backend="slurm", slurm_account="lab", slurm_partition="gpu", slurm_submit_args=["--time=1"]
-    )
-    assert backend.start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx) == "42"
-    assert runner.calls[0][0] == [
-        "sbatch",
-        "--parsable",
-        "--job-name",
-        "rcp-job-abc",
-        "--output",
-        "/jobs/abc/log",
-        "--error",
-        "/jobs/abc/log",
-        "--account",
-        "lab",
-        "--partition",
-        "gpu",
-        "--time=1",
-        "/jobs/abc/run.sh",
-    ]
-    assert backend.alive("42", ctx) is True
-    assert runner.calls[1][0] == ["squeue", "-h", "-o", "%A"]
-    backend.cancel("42", ctx)
-    assert runner.calls[2][0] == ["scancel", "42"]
-
-
-def test_slurm_shell_stubs(tmp_path, monkeypatch):
-    marker = tmp_path / "cancelled"
-    for name, body in {
-        "sbatch": 'printf "42;cluster\\n"',
-        "squeue": 'test "$*" = "-h -o %A" || exit 2\nprintf "42\\n"',
-        "scancel": f'printf "%s" "$1" > {shlex.quote(str(marker))}',
-    }.items():
-        path = tmp_path / name
-        path.write_text("#!/bin/sh\n" + body + "\n")
-        path.chmod(0o700)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    backend = COMPUTE_BACKENDS["slurm"]
-    ctx = context(subprocess.run)
-    handle = backend.start(str(tmp_path), str(tmp_path / "run.sh"), request(), ctx)
-    assert backend.alive(handle, ctx) is True
-    backend.cancel(handle, ctx)
-    assert marker.read_text() == handle
-
-
-def test_ssh_session_ships_source_and_checks_identity():
-    backend = COMPUTE_BACKENDS["ssh_session"]
-    runner = Runner(
-        (0, "123456:789\n", ""), (0, "alive\n", ""), (0, "gone\n", ""), (1, "", "SSH failed")
-    )
-    ctx = BackendContext("worker", "remote", None, runner=runner)
-    handle = backend.start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
-    assert shlex.split(runner.calls[0][0][-1]) == [
-        "python3",
-        "-c",
-        _remote_script("remote_job_launch.py"),
-        "start",
-        "/jobs/abc",
-        "/jobs/abc/run.sh",
-    ]
-    assert backend.alive(handle, ctx) is True
-    assert backend.alive(handle, ctx) is False
-    assert backend.alive(handle, ctx) is None
-    backend.cancel(handle, ctx)
-    assert shlex.split(runner.calls[-1][0][-1])[-4:] == ["cancel", handle, "1.0", "0.05"]
-    with pytest.raises(ValueError, match="remote"):
-        backend.start("/jobs/abc", "/jobs/abc/run.sh", request(), context(runner))
-
-
-def test_process_identity_handles_parentheses_and_pid_reuse(monkeypatch):
-    stat = "123 (worker (a b)) S 1 123 " + " ".join(["0"] * 16) + " 987 0\n"
-    monkeypatch.setattr(Path, "read_text", lambda path: stat)
-    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: False)
-    assert process_identity(123) == ("987", "S")
-    assert alive("123:987") is True
-    assert alive("123:986") is False
-
-
-def test_session_liveness_reports_gone_when_leader_identity_mismatches(monkeypatch):
-    if not Path("/proc/self/stat").is_file():
-        pytest.skip("SSH session process groups require Linux /proc")
-    with subprocess.Popen(
-        ["sh", "-c", "sleep 60 & echo $!"],
-        stdout=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    ) as leader:
-        try:
-            child = int(leader.stdout.readline())
-            leader.wait(timeout=5)
-            assert process_identity(child)[1] not in {"Z", "X"}
-            monkeypatch.setattr(remote_job_launch, "process_identity", lambda pid: ("988", "S"))
-            # A live group under a recycled leader pid is not this job and is never signalled.
-            assert alive(f"{leader.pid}:987") is False
-        finally:
-            os.killpg(leader.pid, signal.SIGKILL)
-
-
-@pytest.mark.parametrize("leader_state", ["missing", "Z", "X"])
-def test_session_liveness_tracks_group_after_leader_exits(monkeypatch, leader_state):
-    def identity(pid):
-        if leader_state == "missing":
-            raise FileNotFoundError
-        return "987", leader_state
-
-    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
-    members = []
-    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: bool(members))
-    assert not alive("123:987")
-    members.append(456)
-    assert alive("123:987")
-
-
-@pytest.mark.parametrize("already_gone", [False, True])
-def test_session_cancel_signals_group_without_leader(monkeypatch, already_gone):
-    def identity(pid):
-        raise FileNotFoundError
-
-    signals = []
-
-    def killpg(pid, requested_signal):
-        assert pid == 123
-        signals.append(requested_signal)
-        if already_gone:
-            raise ProcessLookupError
-
-    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
-    monkeypatch.setattr(
-        remote_job_launch, "_group_alive", lambda pid: signal.SIGKILL not in signals
-    )
-    monkeypatch.setattr(os, "killpg", killpg)
-    clock = iter(range(10))
-    monkeypatch.setattr(remote_job_launch.time, "monotonic", lambda: next(clock))
-    remote_job_launch.cancel("123:987", grace=0.5, poll_interval=0.1)
-    assert signals == ([signal.SIGTERM] if already_gone else [signal.SIGTERM, signal.SIGKILL])
-
-
 @pytest.mark.parametrize(
     "backend_id,response",
     [
@@ -337,7 +183,6 @@ def test_session_cancel_signals_group_without_leader(monkeypatch, already_gone):
             (5, "", "Failed to stop rcp-job-x.service: Unit rcp-job-x.service not loaded."),
         ),
         ("launchd", (3, "", "Boot-out failed: 3: No such process")),
-        ("slurm", (1, "", "scancel: error: Kill job error on job id 42: Invalid job id specified")),
     ],
 )
 def test_cancellation_is_idempotent_for_gone_jobs(backend_id, response):
@@ -407,25 +252,27 @@ def test_runner_exit_255_is_transport_failure_only_over_ssh(check, remote):
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
-def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
+@pytest.mark.parametrize(
+    "failure",
+    [subprocess.TimeoutExpired("launch", 10), ComputeTransportError("connection dropped")],
+)
+def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
     calls = []
 
     def runner(command, **kwargs):
         calls.append(command)
         if "systemd-run" in command or "bootstrap" in command:
-            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            raise failure
         return subprocess.CompletedProcess(command, 0, "", "")
 
     root = tmp_path / "abc"
     root.mkdir()
-    # A collected systemd unit may already have run, so its receipts are retained.
-    expected = (
-        ComputeLaunchUncertainError if backend_id == "systemd_user" else subprocess.TimeoutExpired
-    )
-    with pytest.raises(expected):
+    # The manager may have already run the job, even when cleanup succeeds.
+    with pytest.raises(ComputeLaunchUncertainError) as error:
         COMPUTE_BACKENDS[backend_id].start(
             str(root), str(root / "run.sh"), request(), context(runner)
         )
+    assert error.value.__cause__ is failure
     assert calls[-1] == (
         ["env", "XDG_RUNTIME_DIR=/run/user/501", "systemctl", "--user", "stop", "rcp-job-abc"]
         if backend_id == "systemd_user"
@@ -460,8 +307,6 @@ def test_unconfirmed_launch_reports_uncertain_acceptance(backend_id, tmp_path):
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     ctx = context(runner)
-    if backend_id == "ssh_session":
-        ctx.execution_host = "worker"
     root = tmp_path / "abc"
     root.mkdir()
     with pytest.raises(ComputeLaunchUncertainError):

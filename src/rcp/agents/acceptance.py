@@ -233,7 +233,9 @@ class AcceptanceAgentLauncher(AgentLauncher):
 
         state = _read_state(resolved_cwd)
         contract = (
-            prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else _read_launch_contract(prompt)
+            prompt
+            if _RESULT_VIEW_AUTHORING_MARKER in prompt
+            else _read_launch_contract(prompt, resolved_cwd)
         )
         scenario = _scenario(prompt, contract, state)
         active_contract = prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else contract
@@ -420,13 +422,29 @@ class AcceptanceAgentLauncher(AgentLauncher):
             self._launch_records.append(record)
 
 
-def _read_launch_contract(prompt: str) -> str:
+def _read_launch_contract(prompt: str, cwd: Path) -> str:
     lines = prompt.splitlines()
     if len(lines) < 2:
         raise ValueError("Acceptance-agent launch text has no contract path.")
-    path = Path(lines[1].strip())
+    retained_prefix = "RCP master context: "
+    path = Path(
+        lines[0][len(retained_prefix) :]
+        if lines[0].startswith(retained_prefix)
+        else lines[1].strip()
+    )
+    paths = [path]
+    execution_prefix = "Read current execution instructions relative to this turn's cwd: `"
+    execution_lines = [line for line in lines if line.startswith(execution_prefix)]
+    if execution_lines:
+        if len(execution_lines) != 1 or not execution_lines[0].endswith("`"):
+            raise ValueError("Acceptance-agent launch text has a malformed execution path.")
+        execution_path = execution_lines[0][len(execution_prefix) : -1]
+        if not execution_path or "`" in execution_path:
+            raise ValueError("Acceptance-agent launch text has a malformed execution path.")
+        # Follow this invocation's pointer; retained inputs can contain expired commands.
+        paths.append(cwd / execution_path)
     try:
-        return path.read_text(encoding="utf-8")
+        return "\n\n".join(path.read_text(encoding="utf-8") for path in paths)
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"Acceptance-agent contract is unreadable: {exc}") from exc
 

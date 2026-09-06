@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def reconcile_compute_jobs(
     store: AppStore,
-    manifest: Manifest,
+    manifest: Manifest | None,
     *,
     project_id: str,
     data_dir: Path,

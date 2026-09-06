@@ -131,8 +131,13 @@ installed-service control socket, entered as the service account, to run
 `ComputeBackendProbe`, returned inside `ServerControlComputeProbeResult` with
 service, project, and machine identity. It prints the status label, backend id, containment,
 diagnostic, and any required action; it exits 0 when ready and 1 otherwise.
-The probe executes inside the running service so local cgroup separation is
-checked against the server itself. This is the only compute CLI verb.
+The probe executes inside the running service. Generic helper readiness checks
+local cgroup separation against the server itself. With `job_manager = "slurm"`,
+it instead checks scheduler tool availability and queue access through the
+execution account's bounded login shell, without submitting a job or changing
+scheduler configuration. Slurm validates permission and resources when the agent
+submits its actual command. The diagnostic names missing prerequisites and asks
+an administrator to repair them. This is the only compute CLI verb.
 
 ### Package identity and offline storage migration
 

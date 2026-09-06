@@ -43,7 +43,7 @@ class AppStoreBase:
         (7, "space_run_projection_indexes_v1"),
         (8, "conversation_worktrees_v1"),
         (9, "compute_jobs_v1"),
-        (10, "compute_job_observers_v1"),
+        (10, "external_watcher_actions_v1"),
         (11, "child_work_watchers_v1"),
         (12, "compute_job_labels_v1"),
     )
@@ -487,8 +487,8 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection,
             version=10,
-            name="compute_job_observers_v1",
-            migration=self._migrate_compute_job_observers,
+            name="external_watcher_actions_v1",
+            migration=self._migrate_external_watcher_actions,
         )
         self._run_storage_schema_migration(
             connection,
@@ -1928,7 +1928,7 @@ class AppStoreBase:
         self._migrate_artifact_revision_candidates(connection)
         self._migrate_conversation_worktrees(connection)
         self._migrate_compute_jobs(connection)
-        self._migrate_compute_job_observers(connection)
+        self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
         self._migrate_compute_job_labels(connection)
         if not schema_template:
@@ -1977,38 +1977,20 @@ class AppStoreBase:
         )
 
     @classmethod
-    def _migrate_compute_job_observers(cls, connection: sqlite3.Connection) -> None:
+    def _migrate_external_watcher_actions(cls, connection: sqlite3.Connection) -> None:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS compute_backend_probes ("
             "project_id TEXT NOT NULL, execution_machine TEXT NOT NULL, "
             "probe_json TEXT NOT NULL, probed_at TEXT NOT NULL, "
             "PRIMARY KEY (project_id, execution_machine))"
         )
-        columns = {row[1]: row for row in connection.execute("PRAGMA table_info(watchers)")}
-        if "job_id" in columns:
-            return
-        # Rebuild once to remove the legacy shell-only NOT NULL constraints,
-        # retaining every row and the exact existing index definitions.
-        create_sql = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'watchers'"
-        ).fetchone()[0]
-        indexes = [
-            row[0]
-            for row in connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND tbl_name = 'watchers' AND sql IS NOT NULL"
-            )
-        ]
-        for column in ("check_command", "log_path", "cwd"):
-            create_sql = re.sub(rf"\b{column} TEXT NOT NULL", f"{column} TEXT", create_sql)
-        create_sql = create_sql.rstrip().removesuffix(")") + ", job_id TEXT)"
-        cls._rebuild_storage_table(connection, "watchers", create_sql)
-        for statement in indexes:
-            connection.execute(statement)
-        connection.execute(
-            "UPDATE watchers SET check_command = NULL, log_path = NULL, cwd = NULL "
-            "WHERE graph_condition_json IS NOT NULL"
-        )
+        for column in (
+            "cancel_command",
+            "cancel_requested_by",
+            "cancel_requested_at",
+            "cancel_error",
+        ):
+            cls._ensure_column(connection, "watchers", column, "TEXT")
 
     @staticmethod
     def _migrate_compute_jobs(connection: sqlite3.Connection) -> None:
@@ -2034,8 +2016,6 @@ class AppStoreBase:
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 ended_at TEXT,
-                cancel_requested_by TEXT,
-                cancel_requested_at TEXT,
                 diagnostic TEXT
             )
             """

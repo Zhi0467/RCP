@@ -62,8 +62,6 @@ import type {
   SkillDefaults,
 } from "../types";
 
-import { COMPUTE_BACKEND_IDS } from "../types";
-
 interface Props {
   apiBase: string;
   project: ProjectSnapshot;
@@ -142,6 +140,15 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
   return project.skill_catalog ?? [];
 }
 
+function machineComputeProbeKey(machine: ProjectSnapshot["machines"][number]): string {
+  return settingsFingerprint({
+    alias: machine.alias,
+    host: machine.host,
+    os_account: machine.os_account,
+    compute: machine.compute ?? null,
+  });
+}
+
 /** The staged edits for this project, or the manifest's values when none exist. */
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
@@ -149,7 +156,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
-    machineCompute: machineComputeFrom(project.machines),
+    machineComputeEdits: {} as MachineComputeSettings,
     skillDefaults: skillDefaultsFrom(project),
     computeConnections: project.compute_connections ?? [],
   };
@@ -168,7 +175,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
       staged.autoResearchInvocationCeiling ?? saved.autoResearchInvocationCeiling,
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
-    machineCompute: { ...saved.machineCompute, ...staged.machineCompute },
+    machineComputeEdits: staged.machineComputeEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
     computeConnections: saved.computeConnections,
   };
@@ -208,15 +215,16 @@ export function ProjectSettings({
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
     () => restoredSettings.providerPaths,
   );
-  const [machineCompute, setMachineCompute] = useState<MachineComputeSettings>(
-    () => restoredSettings.machineCompute,
+  const [machineComputeEdits, setMachineComputeEdits] = useState<MachineComputeSettings>(
+    () => restoredSettings.machineComputeEdits,
   );
+  const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
   const currentProjectId = useRef(project.id);
   currentProjectId.current = project.id;
   const [probingMachine, setProbingMachine] = useState<string | null>(null);
-  const [machineProbes, setMachineProbes] = useState<Record<string, ComputeBackendProbe | null>>(
-    {},
-  );
+  const [machineProbes, setMachineProbes] = useState<
+    Record<string, { configuration: string; probe: ComputeBackendProbe }>
+  >({});
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
   );
@@ -241,16 +249,12 @@ export function ProjectSettings({
     setAutoResearchInvocationCeiling(restoredSettings.autoResearchInvocationCeiling);
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
-    setMachineCompute(restoredSettings.machineCompute);
+    setMachineComputeEdits(restoredSettings.machineComputeEdits);
     setMachineProbes({});
     setProbingMachine(null);
     setSkillDefaults(restoredSettings.skillDefaults);
     setComputeConnections(restoredSettings.computeConnections);
   }, [restoredSettings]);
-
-  useEffect(() => {
-    setMachineProbes({});
-  }, [project.machines]);
 
   // Cache metrics are server-owned, so they follow every snapshot.
   useEffect(() => {
@@ -301,7 +305,10 @@ export function ProjectSettings({
             autoResearchInvocationCeiling,
             profiles,
             providerPaths,
-            machineCompute,
+            machineComputeEdits: machineComputeUpdates(
+              machineComputeFrom(project.machines),
+              machineComputeEdits,
+            ),
             skillDefaults,
           }),
         );
@@ -405,7 +412,7 @@ export function ProjectSettings({
     setAutoResearchInvocationCeiling(project.default_auto_research_invocation_ceiling);
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
-    setMachineCompute(machineComputeFrom(project.machines));
+    setMachineComputeEdits({});
     setSkillDefaults(savedSkillDefaults);
     setComputeConnections(project.compute_connections ?? []);
     setStatus(null);
@@ -446,8 +453,7 @@ export function ProjectSettings({
         body: JSON.stringify(body),
       });
       setProviderPaths(machineProviderPathsFrom(saved.machines));
-      setMachineCompute(machineComputeFrom(saved.machines));
-      setMachineProbes({});
+      setMachineComputeEdits({});
       setComputeConnections(saved.compute_connections);
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
@@ -478,7 +484,10 @@ export function ProjectSettings({
     try {
       const probe = await probeMachineCompute(apiBase, alias);
       if (currentProjectId.current !== project.id) return;
-      setMachineProbes((currentProbes) => ({ ...currentProbes, [alias]: probe }));
+      setMachineProbes((currentProbes) => ({
+        ...currentProbes,
+        [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
+      }));
     } catch (caught) {
       if (currentProjectId.current !== project.id) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
@@ -488,7 +497,17 @@ export function ProjectSettings({
   };
 
   const updateMachineCompute = (alias: string, config: MachineComputeConfig | null) => {
-    setMachineCompute((currentCompute) => ({ ...currentCompute, [alias]: config }));
+    setMachineComputeEdits((currentEdits) => {
+      const next = { ...currentEdits, [alias]: config };
+      if (
+        !machineComputeUpdates(
+          { [alias]: machineByAlias[alias].compute ?? null },
+          { [alias]: config },
+        )
+      )
+        delete next[alias];
+      return next;
+    });
     setStatus(null);
   };
 
@@ -694,11 +713,8 @@ export function ProjectSettings({
         <div className="provider-machine-list">
           {project.machines.map((machine) => {
             const config = machineCompute[machine.alias] ?? {
-              backend: null,
+              job_manager: null,
               jobs_root: "",
-              slurm_account: "",
-              slurm_partition: "",
-              slurm_submit_args: [],
             };
             const needsSave = Boolean(
               machineComputeUpdates(
@@ -706,9 +722,12 @@ export function ProjectSettings({
                 { [machine.alias]: machineCompute[machine.alias] ?? null },
               ),
             );
+            const latestProbe = machineProbes[machine.alias];
             const probe = needsSave
               ? null
-              : (machineProbes[machine.alias] ?? machine.compute_probe);
+              : latestProbe?.configuration === machineComputeProbeKey(machine)
+                ? latestProbe.probe
+                : machine.compute_probe;
             const presentation = computeProbePresentation(probe);
             const computeDisabled = writesDisabled || saving || probingMachine !== null;
             return (
@@ -764,31 +783,20 @@ export function ProjectSettings({
                   })}
                 </div>
                 <fieldset className="machine-compute" disabled={computeDisabled}>
-                  <legend>Compute runner</legend>
+                  <legend>Long-running jobs</legend>
                   <div className="compute-connection-fields">
                     <label>
-                      <span>Backend</span>
-                      <select
-                        value={config.backend ?? ""}
-                        onChange={(event) => {
-                          const backend = (event.target.value ||
-                            null) as MachineComputeConfig["backend"];
+                      <span>Use Slurm</span>
+                      <input
+                        type="checkbox"
+                        checked={config.job_manager === "slurm"}
+                        onChange={(event) =>
                           updateMachineCompute(machine.alias, {
                             ...config,
-                            backend,
-                            ...(backend === "slurm"
-                              ? {}
-                              : { slurm_account: "", slurm_partition: "", slurm_submit_args: [] }),
-                          });
-                        }}
-                      >
-                        <option value="">Automatic</option>
-                        {COMPUTE_BACKEND_IDS.map((id) => (
-                          <option value={id} key={id}>
-                            {id}
-                          </option>
-                        ))}
-                      </select>
+                            job_manager: event.target.checked ? "slurm" : null,
+                          })
+                        }
+                      />
                     </label>
                     <label>
                       <span>Jobs root</span>
@@ -802,48 +810,6 @@ export function ProjectSettings({
                         }
                       />
                     </label>
-                    {config.backend === "slurm" && (
-                      <>
-                        <label>
-                          <span>Slurm account</span>
-                          <input
-                            value={config.slurm_account}
-                            onChange={(event) =>
-                              updateMachineCompute(machine.alias, {
-                                ...config,
-                                slurm_account: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Slurm partition</span>
-                          <input
-                            value={config.slurm_partition}
-                            onChange={(event) =>
-                              updateMachineCompute(machine.alias, {
-                                ...config,
-                                slurm_partition: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Slurm submit arguments (one per line)</span>
-                          <textarea
-                            value={config.slurm_submit_args.join("\n")}
-                            onChange={(event) =>
-                              updateMachineCompute(machine.alias, {
-                                ...config,
-                                slurm_submit_args: event.target.value
-                                  ? event.target.value.split("\n")
-                                  : [],
-                              })
-                            }
-                          />
-                        </label>
-                      </>
-                    )}
                     <button
                       className="button secondary compact"
                       type="button"
@@ -856,11 +822,8 @@ export function ProjectSettings({
                     <span className="compute-probe-dot" aria-hidden="true" />
                     <span>{presentation.label}</span>
                     {probe?.backend_id && <span>{probe.backend_id}</span>}
-                    {probe?.required_action ? (
-                      <em>{probe.required_action}</em>
-                    ) : presentation.tone === "error" && probe ? (
-                      <em>{probe.diagnostic}</em>
-                    ) : null}
+                    {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                    {probe?.required_action && <em>{probe.required_action}</em>}
                     <button
                       className="button secondary compact"
                       type="button"

@@ -16,7 +16,7 @@ export interface SettingsDraft {
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
-  machineCompute?: MachineComputeSettings;
+  machineComputeEdits?: MachineComputeSettings;
   skillDefaults?: SkillDefaults;
 }
 
@@ -111,7 +111,13 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     dropProfilesWithoutRuntime(parsed.profiles);
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
-    if (parsed.machineCompute !== undefined && !isMachineComputeSettings(parsed.machineCompute))
+    // Earlier drafts stored the entire map, including untouched machines. It cannot
+    // safely override newer saved configuration; retain only explicit edits.
+    delete parsed.machineCompute;
+    if (
+      parsed.machineComputeEdits !== undefined &&
+      !isMachineComputeSettings(parsed.machineComputeEdits)
+    )
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     // v3 briefly persisted unsaved compute metadata per keystroke. Drop it on
@@ -251,11 +257,8 @@ function isMachineComputeSettings(value: unknown): value is MachineComputeSettin
     (config) =>
       config === null ||
       (isRecord(config) &&
-        (config.backend === null || typeof config.backend === "string") &&
+        (config.job_manager === null || config.job_manager === "slurm") &&
         typeof config.jobs_root === "string" &&
-        typeof config.slurm_account === "string" &&
-        typeof config.slurm_partition === "string" &&
-        Array.isArray(config.slurm_submit_args) &&
-        config.slurm_submit_args.every((argument) => typeof argument === "string")),
+        Object.keys(config).every((key) => key === "job_manager" || key === "jobs_root")),
   );
 }

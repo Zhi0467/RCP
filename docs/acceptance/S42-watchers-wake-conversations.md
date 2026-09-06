@@ -106,9 +106,9 @@ An MCP reverse tunnel, automatic outcome interpretation, wake-on-new-output,
 stale-watcher cleanup, a user-facing cleanup primitive, or treating a watcher
 as an experiment attempt.
 
-RCP-owned compute submission and job observers have their separate pending live
-journey in [S136](S136-long-running-compute-outlives-the-agent.md); this scenario
-continues to exercise shell observers for work RCP did not launch.
+The OS launch helper, direct Slurm setup, and human Cancel have their pending
+live journey in [S136](S136-long-running-compute-outlives-the-agent.md). Both use
+the same shell observers whose continuation behavior this scenario exercises.
 
 ## Failure means
 

@@ -21,10 +21,8 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.compute_jobs.jobs import cancel_compute_job
-from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord
+from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.compute_jobs.probe import probe_compute_backend
-from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
@@ -352,61 +350,6 @@ def probe_project_compute_backend(
         raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
     probe = probe_compute_backend(service.manifest, machine_alias, data_dir=catalog.data_dir)
     return store.record_compute_backend_probe(project_id, probe)
-
-
-class ComputeJobResponse(ComputeJobRecord):
-    """A job row plus the one control decision the web layer must not derive."""
-
-    can_cancel: bool
-
-
-def _compute_job_response(job: ComputeJobRecord) -> ComputeJobResponse:
-    return ComputeJobResponse(**job.model_dump(), can_cancel=job.status == "running")
-
-
-@router.get("/api/projects/{project_id}/compute-jobs", response_model=list[ComputeJobResponse])
-def project_compute_jobs(
-    project_id: str,
-    *,
-    catalog: CatalogDependency,
-    store: StoreDependency,
-) -> list[ComputeJobResponse]:
-    project_id = catalog.resolve_project_id(project_id)
-    service = get_project_service(catalog, project_id)
-    # One pass with the per-host short-circuit, so an unreachable host costs one timeout.
-    reconcile_compute_jobs(
-        store, service.manifest, project_id=project_id, data_dir=catalog.data_dir
-    )
-    return [_compute_job_response(job) for job in store.compute_jobs(project_id)]
-
-
-@router.post(
-    "/api/projects/{project_id}/compute-jobs/{job_id}/cancel",
-    dependencies=[Depends(require_project_write_admission)],
-    response_model=ComputeJobResponse,
-)
-def cancel_project_compute_job(
-    project_id: str,
-    job_id: str,
-    request: Request,
-    *,
-    catalog: CatalogDependency,
-    store: StoreDependency,
-    identity_access: IdentityDependency,
-) -> ComputeJobResponse:
-    human = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
-    job = store.compute_job(job_id)
-    if job is None or job.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Compute job not found")
-    if job.status != "running":
-        return _compute_job_response(job)
-    service = get_project_service(catalog, project_id)
-    return _compute_job_response(
-        cancel_compute_job(
-            store, service.manifest, job_id, human.user_id, data_dir=catalog.data_dir
-        )
-    )
 
 
 @router.get("/api/projects/{project_id}/sources")

@@ -228,9 +228,11 @@ turn-bound broker and pass its invocation gate to the provider launch. Broker
 authority is explicit and does not require an episode id. The broker binds the
 live provider process tree on the execution host and signs each request; a
 prior turn's process cannot acquire the next turn's authority. Validate-only
-credentials still refuse keyed commands. These Work owners also serve the
-`launch`, `job-status`, and `cancel` operational verbs described in
-[compute jobs](compute-jobs.md), with task events and diagnostic receipts.
+credentials still refuse keyed commands. These Work owners serve the generic
+`launch` helper only on the selected helper route, with task events and durable
+diagnostic receipts. A Slurm route uses agent-authored scheduler submission
+commands. Both hand off the shell watcher described in
+[compute jobs](compute-jobs.md).
 This gives no additional graph output channel or command authority to other
 task surfaces.
 

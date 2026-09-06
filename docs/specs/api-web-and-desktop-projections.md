@@ -77,29 +77,34 @@ to the machine configuration owner. A changed block invalidates its stored probe
 project write admission, stores a fresh probe, and returns that same model with
 its backend-owned label and tone.
 
-`GET /api/projects/{project_id}/compute-jobs` refreshes running project jobs,
-then returns the bounded newest-first list of `ComputeJobRecord` rows, each
-with a backend-owned `can_cancel` that the web layer never derives. Fields
-include job id, optional label, status, exit status, created/start/end timestamps,
-backend id, execution machine, log path, origin operation id, episode id,
-cancellation requester and timestamp, and diagnostic.
-`POST /api/projects/{project_id}/compute-jobs/{job_id}/cancel` uses project write
-admission and Stop's named human identity, records that user's id, and calls the
-compute owner. Repeating Cancel for a terminal row returns it unchanged with 200;
-a missing or foreign-project job returns 404. These APIs add no background poller.
-Settings stages per-machine compute blocks alongside provider paths and sends
-only changed aliases through the existing Save. Each machine exposes Automatic
-or a registry backend, jobs root, and Slurm-only account, partition, and submit
-arguments. Unsaved machine edits mask the stored result and require Save before
-Probe. The probe response replaces the displayed result; absent probes are pending.
+`GET /api/projects/{project_id}/watchers` supplies the external job rows for both
+scheduler and helper work. Every external row includes its required shell check,
+log path and cwd, optional cancel command, check state/diagnostic, and cancellation
+requester/time/diagnostic. The backend exports `can_cancel`; the browser does not
+derive it from watcher status. There is no separate compute-job list request.
 
-Chat and Experiment run detail load project jobs on mount and on existing watcher
-refreshes, with no new timer. Job observers match records by `job_id` and show
-label or id, literal status, exit status, backend, diagnostics, and cancellation
-requester/time. Shell observers retain their existing presentation. The job status
-is opaque in `web/src/types.ts`; display conversion does not decide lifecycle.
-Each row carries a backend-owned `can_cancel`; the Cancel control follows it,
-calls the cancel route, and replaces the row from the response.
+`POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires project
+write admission and an attributed human. A missing or foreign-project watcher
+returns 404. An already-observed completion or accepted cancellation request
+returns the row unchanged; no cancel command returns 409. A fresh precheck may
+establish completion without attributing it to Cancel, or report why the action
+could not run. Otherwise the route claims and executes the saved command once.
+Its result is an action receipt, not a separate cancelled watcher state. Errors
+are returned on the watcher and allow an explicit retry.
+
+Settings stages per-machine `job_manager` and optional helper `jobs_root` beside
+provider paths. **Use Slurm** opts into direct scheduler submission; RCP exposes
+no resource-argument inputs. Only changed aliases are saved. Draft storage keeps
+explicit machine edits, so an unrelated draft cannot restore an older full
+compute configuration. Unsaved machine edits mask readiness and require Save
+before Probe. The response supplies its own label, tone, and diagnostic.
+
+Chat and Experiment use the existing watcher refreshes to show one external job
+row. It displays the log path, observation state, check diagnostic, and Cancel
+history. Human Cancel follows the backend's capability even for a stopped
+watcher, independent of graph read-only mode; the API enforces project write
+admission. The immediate action response updates its row without adding a
+second job-list polling lifecycle.
 
 ## Atomic client project snapshots
 

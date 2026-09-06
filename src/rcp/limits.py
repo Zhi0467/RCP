@@ -94,13 +94,10 @@ COMPUTE_JOB_STATUS_TIMEOUT_SECONDS = 10
 COMPUTE_PROBE_TIMEOUT_SECONDS = 15
 COMPUTE_PROBE_JOB_SECONDS = 0.5
 COMPUTE_JOB_LOG_TAIL_MAX_BYTES = 64 * 1024
-# Keep keyed status responses inside durable diagnostic receipts, even with JSON escaping.
-COMPUTE_COMMAND_LOG_TAIL_MAX_BYTES = 1024
 COMPUTE_JOB_LABEL_MAX_CHARS = 80
 COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT = 100
 COMPUTE_JOB_DIAGNOSTIC_MAX_CHARS = 600
 COMPUTE_JOB_POLL_INTERVAL_SECONDS = 0.05
-COMPUTE_JOB_TERMINATE_GRACE_SECONDS = 1.0
 # A launch resolves the machine (several status-timeout calls), may run one probe,
 # and then starts the job; the client must outwait that whole sequence.
 COMPUTE_COMMAND_TIMEOUT_SECONDS = 120

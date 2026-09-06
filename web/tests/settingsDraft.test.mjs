@@ -350,28 +350,55 @@ test("settings compare keeps list order, which the researcher chose", () => {
 
 test("machine compute edits stage, restore, and save only changed aliases", async () => {
   const { machineComputeFrom, machineComputeUpdates } = await import("../src/settingsDraft.ts");
-  const slurm = {
-    backend: "slurm",
-    jobs_root: "/jobs",
-    slurm_account: "lab",
-    slurm_partition: "gpu",
-    slurm_submit_args: ["--nodes=2"],
-  };
+  const slurm = { job_manager: "slurm", jobs_root: "/jobs" };
   const saved = machineComputeFrom([
     { alias: "local", compute: null },
     { alias: "cluster", compute: slurm },
   ]);
   assert.equal(machineComputeUpdates(saved, saved), undefined);
-  assert.deepEqual(machineComputeUpdates(saved, { ...saved, cluster: null }), { cluster: null });
-  const draft = { version: 4, scope: ["repo"], profiles: {}, machineCompute: saved };
+  assert.deepEqual(machineComputeUpdates(saved, { cluster: null }), { cluster: null });
+  const draft = {
+    version: 4,
+    scope: ["repo"],
+    profiles: {},
+    machineComputeEdits: { cluster: null },
+  };
   assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
   assert.equal(
     deserializeSettingsDraft(
       JSON.stringify({
         ...draft,
-        machineCompute: { cluster: { ...slurm, slurm_submit_args: "--nodes=2" } },
+        machineComputeEdits: { cluster: { ...slurm, job_manager: "unknown" } },
       }),
     ),
     null,
   );
+});
+
+test("compute drafts cannot restore untouched stale machine settings", async () => {
+  const { machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const original = { job_manager: null, jobs_root: "/old" };
+  const fresh = { job_manager: null, jobs_root: "/new" };
+  const saved = { local: fresh, cluster: null };
+  const unrelatedDraft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 4,
+      scope: ["changed-repo"],
+      profiles: {},
+      machineCompute: { local: original, cluster: null },
+    }),
+  );
+  assert.equal(unrelatedDraft.machineCompute, undefined);
+  assert.equal(machineComputeUpdates(saved, unrelatedDraft.machineComputeEdits ?? {}), undefined);
+  const edits = { cluster: { job_manager: "slurm", jobs_root: "" } };
+  const staged = deserializeSettingsDraft(
+    serializeSettingsDraft({
+      version: 4,
+      scope: ["repo"],
+      profiles: {},
+      machineComputeEdits: edits,
+    }),
+  );
+  assert.deepEqual({ ...saved, ...staged.machineComputeEdits }, { local: fresh, ...edits });
+  assert.deepEqual(machineComputeUpdates(saved, staged.machineComputeEdits), edits);
 });

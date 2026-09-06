@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 import sys
 import threading
-from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -21,9 +19,7 @@ from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.config import MachineComputeConfig
-from rcp.limits import COMPUTE_JOB_POLL_INTERVAL_SECONDS, COMPUTE_JOB_TERMINATE_GRACE_SECONDS
 from rcp.storage import AppStore
-from rcp.transport import remote_job_launch
 from tests.helpers import wait_until
 
 
@@ -78,7 +74,6 @@ def launch_environment(tmp_path, manifest, monkeypatch):
         is_alive = False
         failure = False
         unknown = False
-        cancelled = 0
 
         def start(self, root, wrapper, request, context):
             assert (Path(root) / "command.json").is_file()
@@ -90,10 +85,6 @@ def launch_environment(tmp_path, manifest, monkeypatch):
 
         def alive(self, handle, context):
             return None if self.unknown else self.is_alive
-
-        def cancel(self, handle, context):
-            self.cancelled += 1
-            self.is_alive = False
 
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
@@ -118,7 +109,7 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     return store, backend, launch
 
 
-def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, manifest):
+def test_launch_receipt_refresh_and_log(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     assert record.status == "running"
@@ -128,12 +119,7 @@ def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, ma
     assert root.parent == tmp_path / "data" / "jobs"
     assert json.loads((root / "command.json").read_text())["origin_operation_id"] == "turn"
     assert json.loads((root / "launch.json").read_text())["backend_handle"] == record.backend_handle
-    assert (
-        jobs.read_job_log_tail(
-            store, manifest, record.job_id, data_dir=tmp_path / "data", max_bytes=5
-        )
-        == "world"
-    )
+    assert (root / "log").read_text() == "hello world"
     result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "exited" and result.exit_status == 0
     assert result.started_at and result.ended_at
@@ -143,62 +129,13 @@ def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, ma
     )
 
 
-def test_ssh_group_survives_leader_until_cancel_then_refresh_exits(
-    launch_environment, tmp_path, manifest
-):
-    if not Path("/proc/self/stat").is_file():
-        pytest.skip("SSH session process groups require Linux /proc")
-    store, backend, launch = launch_environment
-    backend.start = lambda root, wrapper, *_: remote_job_launch.launch(root, wrapper)
-    backend.alive = lambda handle, _: remote_job_launch.alive(handle)
-    record = launch(
-        ComputeLaunchRequest(argv=["sh", "-c", "sleep 60 & echo $! > child.pid"], cwd=str(tmp_path))
-    )
-    handle = record.backend_handle
-    leader, _ = remote_job_launch.parse_handle(handle)
-
-    def leader_gone():
-        with suppress(ChildProcessError):
-            os.waitpid(leader, os.WNOHANG)
-        return not Path(f"/proc/{leader}").exists()
-
-    try:
-        wait_until(leader_gone)
-        assert not Path(f"/proc/{leader}").exists()
-        child = int((tmp_path / "child.pid").read_text())
-        assert remote_job_launch.process_identity(child)[1] not in {"Z", "X"}
-        assert Path(record.exit_path).is_file()
-        assert remote_job_launch.alive(handle)
-        assert (
-            jobs.refresh_compute_job(
-                store, manifest, record.job_id, data_dir=tmp_path / "data"
-            ).status
-            == "running"
-        )
-        remote_job_launch.cancel(
-            handle, COMPUTE_JOB_TERMINATE_GRACE_SECONDS, COMPUTE_JOB_POLL_INTERVAL_SECONDS
-        )
-        assert not remote_job_launch.alive(handle)
-        with suppress(FileNotFoundError):
-            assert remote_job_launch.process_identity(child)[1] in {"Z", "X"}
-        result = jobs.refresh_compute_job(
-            store, manifest, record.job_id, data_dir=tmp_path / "data"
-        )
-        assert result.status == "exited"
-        assert result.exit_status == 0
-    finally:
-        remote_job_launch.cancel(
-            handle, COMPUTE_JOB_TERMINATE_GRACE_SECONDS, COMPUTE_JOB_POLL_INTERVAL_SECONDS
-        )
-
-
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_reconcile_missing_exit(launch_environment, tmp_path, manifest, cancelled):
     store, backend, launch = launch_environment
     record = launch()
     Path(record.exit_path).unlink()
     if cancelled:
-        store.request_compute_job_cancel(record.job_id, "human")
+        Path(record.job_root, "cancelled").write_text("1757000000")
     reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == ("cancelled" if cancelled else "lost")
@@ -246,19 +183,30 @@ def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_pa
     assert "could not determine" in result.diagnostic
 
 
-def test_cancel_records_first_requester_and_is_idempotent(launch_environment, tmp_path, manifest):
+def test_cancel_receipt_waits_for_owner_to_disappear(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
+    Path(record.exit_path).unlink()
+    Path(record.job_root, "cancelled").write_text("1757000000")
     backend.is_alive = True
-    result = jobs.cancel_compute_job(
-        store, manifest, record.job_id, "human-one", data_dir=tmp_path / "data"
+    running = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert running.status == "running"
+    assert running.ended_at is None
+    backend.unknown = True
+    unknown = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert unknown.status == "running"
+    assert unknown.diagnostic
+    backend.unknown = False
+    backend.is_alive = False
+    cancelled = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert cancelled.status == "cancelled"
+    assert cancelled.ended_at == jobs.epoch_timestamp("1757000000")
+    assert cancelled.exit_status is None and cancelled.diagnostic is None
+    Path(record.job_root, "cancelled").unlink()
+    assert (
+        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+        == cancelled
     )
-    assert result.status == "cancelled"
-    again = jobs.cancel_compute_job(
-        store, manifest, record.job_id, "human-two", data_dir=tmp_path / "data"
-    )
-    assert again.cancel_requested_by == "human-one"
-    assert backend.cancelled == 1
 
 
 def test_launch_without_backend_names_machine_and_setup_action(
@@ -297,7 +245,7 @@ def test_insert_failure_retains_backend_receipt(launch_environment, tmp_path, mo
 
 @pytest.mark.parametrize("change", ["removed", "repointed"])
 @pytest.mark.parametrize("reconcile", [False, True])
-def test_changed_machine_refresh_and_cancel_use_recorded_identity(
+def test_changed_machine_refresh_uses_recorded_identity(
     launch_environment, tmp_path, manifest, monkeypatch, change, reconcile
 ):
     store, backend, launch = launch_environment
@@ -327,13 +275,7 @@ def test_changed_machine_refresh_and_cancel_use_recorded_identity(
         assert handle == record.backend_handle
         return backend.is_alive
 
-    def cancel(handle, context):
-        observed.append(context)
-        assert handle == record.backend_handle
-        backend.is_alive = False
-
     monkeypatch.setattr(backend, "alive", alive)
-    monkeypatch.setattr(backend, "cancel", cancel)
     backend.is_alive = True
     if reconcile:
         reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
@@ -344,11 +286,12 @@ def test_changed_machine_refresh_and_cancel_use_recorded_identity(
         )
     assert result.status == "running"
     assert result.diagnostic is None
-    result = jobs.cancel_compute_job(
-        store, manifest, record.job_id, "human", data_dir=tmp_path / "data"
-    )
+    backend.is_alive = False
+    Path(record.exit_path).unlink()
+    Path(record.job_root, "cancelled").write_text("1757000000")
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "cancelled"
-    assert len(observed) == 3
+    assert len(observed) == 2
     for context in observed:
         assert context.execution_host == record.execution_host
         assert context.execution_machine == record.execution_machine
@@ -357,52 +300,38 @@ def test_changed_machine_refresh_and_cancel_use_recorded_identity(
 
 
 @pytest.mark.parametrize(
-    "backend_id, remote", [("ssh_session", True), ("slurm", True), ("slurm", False)]
+    "failure",
+    [subprocess.TimeoutExpired("launch", 10), ComputeTransportError("connection dropped")],
 )
-@pytest.mark.parametrize("returncode, stdout", [(255, ""), (0, "launch accepted\nnoisy stdout")])
-def test_launch_retains_root_when_acceptance_is_uncertain(
-    launch_environment, tmp_path, manifest, monkeypatch, backend_id, remote, returncode, stdout
+def test_launchd_keeps_completed_job_receipts_after_uncertain_bootstrap(
+    launch_environment, tmp_path, manifest, monkeypatch, failure
 ):
-    from rcp.transport.state import _remote_script
+    from rcp.compute_jobs.backends.launchd import LaunchdBackend
 
     store, _, launch = launch_environment
     context, _ = jobs.resolve_context(manifest, "laptop")
-    context.execution_host = "worker" if remote else ""
-    context.compute = MachineComputeConfig(jobs_root=str(tmp_path / "remote-jobs"))
+    context.uid = "501"
     calls = []
 
     def runner(command, **kwargs):
-        if remote:
-            assert command[-2] == "worker"
-            command = shlex.split(command[-1])
-            if command[:3] == ["python3", "-c", _remote_script("remote_job_files.py")]:
-                return subprocess.run([sys.executable, *command[1:]], **kwargs)
         calls.append(command)
-        return subprocess.CompletedProcess(
-            command, returncode, stdout, "connection dropped" if returncode else ""
-        )
+        if command[:2] == ["launchctl", "bootstrap"]:
+            subprocess.run(["sh", str(Path(command[-1]).with_name("run.sh"))], check=True)
+            raise failure
+        assert command[:2] == ["launchctl", "bootout"]
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     context.runner = runner
-    monkeypatch.setattr(
-        jobs, "resolve_context", lambda *_: (context, jobs.COMPUTE_BACKENDS[backend_id])
-    )
-    uncertain = remote or returncode == 0
-    expected_error = ComputeLaunchUncertainError if uncertain else RuntimeError
-    with pytest.raises(expected_error) as error:
+    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, LaunchdBackend()))
+    with pytest.raises(ComputeLaunchUncertainError) as error:
         launch()
-    assert len(calls) == 1
-    roots = list((tmp_path / "remote-jobs" if remote else tmp_path / "data" / "jobs").iterdir())
-    if uncertain:
-        assert isinstance(
-            error.value.__cause__, ComputeTransportError if returncode else ValueError
-        )
-        assert len(roots) == 1
-        assert (roots[0] / "run.sh").is_file()
-        assert json.loads((roots[0] / "command.json").read_text())["origin_operation_id"] == "turn"
-        assert not (roots[0] / "launch.json").exists()
-    else:
-        assert type(error.value) is RuntimeError
-        assert roots == []
+    assert error.value.__cause__ is failure
+    assert len(calls) == 2
+    (root,) = (tmp_path / "data" / "jobs").iterdir()
+    assert json.loads((root / "command.json").read_text())["origin_operation_id"] == "turn"
+    assert (root / "log").read_text() == "hello world"
+    assert (root / "exit").read_text().split()[0] == "0"
+    assert not (root / "launch.json").exists()
     assert store.running_compute_jobs() == []
 
 
@@ -448,7 +377,7 @@ def test_local_backend_oserror_is_not_a_host_outage(
     def alive(handle, context):
         calls.append(handle)
         if len(calls) == 1:
-            raise FileNotFoundError("squeue")
+            raise FileNotFoundError("launchctl")
         return False
 
     monkeypatch.setattr(backend, "alive", alive)
@@ -510,6 +439,11 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
         startup_effect_fence=StartupEffectFence("test") if fenced else None,
     )
     store = app.state.catalog.store
+
+    def unavailable_project(*args, **kwargs):
+        raise OSError("Project history is offline")
+
+    monkeypatch.setattr(app.state.catalog, "open", unavailable_project)
     record = ComputeJobRecord(
         job_id="startup",
         project_id=app.state.default_project_id,

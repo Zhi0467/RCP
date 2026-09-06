@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from rcp.api.dependencies import (
     get_catalog,
+    get_identity_access,
     get_store,
     get_watcher_poller,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.identity import IdentityAccess
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore, StoredWatcherRecord, WatcherClaimConflict, WatcherRecord
 from rcp.watchers import WatcherPoller
@@ -19,6 +22,7 @@ router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 WatcherPollerDependency = Annotated[WatcherPoller, Depends(get_watcher_poller)]
 
 
@@ -79,8 +83,33 @@ def stop_watcher(
     return _watcher_response(stopped[0])
 
 
+@router.post(
+    "/api/projects/{project_id}/watchers/{watcher_id}/cancel",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def cancel_watcher(
+    project_id: str,
+    watcher_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    watcher_poller: WatcherPollerDependency,
+    identity_access: IdentityDependency,
+) -> dict[str, object]:
+    human = identity_access.require_patch_capable_identity(request)
+    project_id = catalog.resolve_project_id(project_id)
+    try:
+        watcher = watcher_poller.cancel(project_id, watcher_id, human.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Watcher not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _watcher_response(watcher)
+
+
 def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
     payload = record.model_dump(mode="json")
+    payload["can_cancel"] = isinstance(record, WatcherRecord) and record.can_cancel
     payload["can_check_now"] = bool(
         isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified
     )
@@ -98,6 +127,7 @@ def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
 
 
 __all__ = [
+    "cancel_watcher",
     "check_watcher_now",
     "project_watchers",
     "router",

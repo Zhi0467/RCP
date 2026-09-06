@@ -1,12 +1,11 @@
 # Compute runner handoff
 
 Date: 2026-09-06
-Status: active integration on `codex/compute-runner-simplify`. PRs A, B, C,
-D1, D2, and E are combined locally; their combined verification and the real
-team-server drive remain. On 2026-09-06 the user superseded the scheduler-wrapper
-and second watcher contract: scheduler submission stays agent-owned, Slurm
-integration is readiness only, and helper-launched jobs use ordinary shell
-watchers. The implementation below is the predecessor plan being replaced.
+Status: superseded on 2026-09-06 by the human-confirmed
+[single watcher design](../../handoffs/handoff-2026-09-06-external-job-simplification.md).
+The scheduler wrapper, job-id watcher form, and separate job-list control surface
+below are historical proposals, not current instructions. The successor handoff
+owns unfinished implementation and verification.
 
 ## What this is
 

@@ -8,7 +8,6 @@ from typing import Any, Literal
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from rcp.compute_jobs.backends import ComputeBackendId
 from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import (
@@ -30,27 +29,14 @@ COMPUTE_SSH_TARGET = re.compile(
 class MachineComputeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    backend: ComputeBackendId | None = None
+    job_manager: Literal["slurm"] | None = None
     jobs_root: str = ""
-    slurm_account: str = ""
-    slurm_partition: str = ""
-    slurm_submit_args: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_compute(self) -> MachineComputeConfig:
-        for value in (
-            self.jobs_root,
-            self.slurm_account,
-            self.slurm_partition,
-            *self.slurm_submit_args,
-        ):
-            validate_compute_metadata(value)
+        validate_compute_metadata(self.jobs_root)
         if self.jobs_root and not PurePosixPath(self.jobs_root).is_absolute():
             raise ValueError("compute jobs_root must be absolute when configured")
-        if self.backend != "slurm" and (
-            self.slurm_account or self.slurm_partition or self.slurm_submit_args
-        ):
-            raise ValueError("Slurm fields require the slurm compute backend")
         return self
 
 

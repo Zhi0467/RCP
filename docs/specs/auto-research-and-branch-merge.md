@@ -11,12 +11,11 @@ one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
 grants no authority.
 
-Human start and reauthorization resolve the execution machine and require its
-stored compute backend probe to be ready before reserving an episode or branch.
-If no probe exists, admission runs and stores it first. A non-ready result
-refuses with 422 naming the machine, diagnostic, and required action; ordinary
-human Work is not gated. Setup and explicit job Cancel follow the [compute jobs
-spec](compute-jobs.md).
+Human start and reauthorization resolve the execution machine and freshly check
+its selected execution route before reserving an episode or branch. A non-ready
+result refuses with 422 naming the machine, diagnostic, and required action;
+ordinary human Work is not gated. Setup and explicit human Cancel follow the
+[compute jobs spec](compute-jobs.md).
 
 The episode has two brakes:
 
@@ -55,11 +54,12 @@ The orchestrator may seat an ordinary Work worker only on an Experiment or
 Blocker, both of which have mechanically recognizable operational exits. Seating
 selects context and accountability, not a second graph-authority subtree. The
 worker's repository scope is the exact child run scope and its graph target is
-the parent Auto-research branch. Child Work serves the compute `launch`,
-`job-status`, and `cancel` verbs using the current turn's execution machine,
-writable roots, operation id, and episode id. Its `watch.json` uses ordinary
-Work validation, settlement correction, and arming, including the rule that a
-still-running job launched in the turn needs a job observer.
+the parent Auto-research branch. Child Work follows the selected execution
+route: direct Slurm submission or the generic `launch` helper. The helper binds
+the current turn's machine, writable roots, operation, and episode. Both routes
+use ordinary shell `watch.json` validation, settlement correction, and arming.
+A still-running helper launched by the turn or retained from its recovery
+lineage needs the returned shell watcher before the turn ends.
 
 A child route is waiting when its current task succeeded and it has an armed,
 undelivered watcher. Waiting is derived from the route, task, and watcher rows;

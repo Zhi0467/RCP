@@ -30,8 +30,6 @@ CommandVerb = Literal[
     "inbox",
     "finish",
     "launch",
-    "job_status",
-    "cancel",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -46,8 +44,6 @@ MutatingCommandVerb = Literal[
     "inbox",
     "finish",
     "launch",
-    "job_status",
-    "cancel",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -63,8 +59,6 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "inbox",
         "finish",
         "launch",
-        "job_status",
-        "cancel",
     }
 )
 
@@ -245,19 +239,6 @@ class LaunchArguments(ComputeLaunchRequest):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class ComputeJobArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    job_id: str = Field(min_length=1, max_length=200)
-
-    @field_validator("job_id")
-    @classmethod
-    def nonblank_job_id(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("job id must not be blank")
-        return value.strip()
-
-
 class _CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -344,18 +325,6 @@ class LaunchCommandRequest(_CommandRequest):
     arguments: LaunchArguments
 
 
-class JobStatusCommandRequest(_CommandRequest):
-    idempotency_key: str = Field(min_length=1, max_length=200)
-    verb: Literal["job_status"]
-    arguments: ComputeJobArguments
-
-
-class CancelCommandRequest(_CommandRequest):
-    idempotency_key: str = Field(min_length=1, max_length=200)
-    verb: Literal["cancel"]
-    arguments: ComputeJobArguments
-
-
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | ApplyCommandRequest
@@ -369,9 +338,7 @@ CommandRequest: TypeAlias = Annotated[
     | EpisodeCommandRequest
     | InboxCommandRequest
     | FinishCommandRequest
-    | LaunchCommandRequest
-    | JobStatusCommandRequest
-    | CancelCommandRequest,
+    | LaunchCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)

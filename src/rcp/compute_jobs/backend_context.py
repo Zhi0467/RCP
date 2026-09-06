@@ -142,7 +142,7 @@ def resolve_context(
         raise RuntimeError("The compute machine returned an invalid user id.")
     context = replace(context, os_name=os_result.stdout.strip(), uid=uid)
     has_user_manager = False
-    if context.os_name == "Linux" and context.compute.backend is None:
+    if context.os_name == "Linux" and context.compute.job_manager is None:
         try:
             manager = context.run(
                 [
@@ -166,8 +166,8 @@ def resolve_context(
     return context, profile
 
 
-def recorded_job_context(manifest: Manifest, record: ComputeJobRecord) -> BackendContext:
-    machine = manifest.machine_map.get(record.execution_machine)
+def recorded_job_context(manifest: Manifest | None, record: ComputeJobRecord) -> BackendContext:
+    machine = manifest.machine_map.get(record.execution_machine) if manifest is not None else None
     return BackendContext(
         execution_host=record.execution_host,
         execution_machine=record.execution_machine,

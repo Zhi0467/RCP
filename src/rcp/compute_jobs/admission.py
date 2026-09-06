@@ -17,10 +17,10 @@ def require_episode_compute_backend(
     manifest: Manifest,
     machine_alias: str,
 ) -> None:
-    probe = store.compute_backend_probe(project_id, machine_alias)
-    if probe is None:
-        probe = probe_compute_backend(manifest, machine_alias, data_dir=store.path.parent)
-        store.record_compute_backend_probe(project_id, probe)
+    # Setup readiness is an observation, not durable permission. Recheck the
+    # selected route so restored or superseded settings cannot authorize a run.
+    probe = probe_compute_backend(manifest, machine_alias, data_dir=store.path.parent)
+    store.record_compute_backend_probe(project_id, probe)
     if not probe.ready:
         raise ComputeBackendNotReady(
             f"Compute backend on machine {machine_alias} is not ready: {probe.diagnostic} "

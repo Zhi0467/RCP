@@ -137,17 +137,6 @@ def test_probe_without_resolvable_backend_is_unavailable(manifest, tmp_path):
     assert not (tmp_path / "jobs").exists()
 
 
-@pytest.mark.parametrize("backend_id", ["systemd_user", "ssh_session"])
-def test_explicit_backend_must_support_execution_machine(manifest, tmp_path, backend_id):
-    manifest.machines[0].compute = MachineComputeConfig(backend=backend_id)
-    runner = ProbeRunner()
-    result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
-    assert result.state == "failed"
-    assert result.backend_id == backend_id
-    assert "does not support" in result.diagnostic
-    assert runner.commands == [["uname", "-s"], ["id", "-u"]]
-
-
 def test_probe_returns_fresh_observation(manifest, tmp_path):
     first = probe_compute_backend(manifest, "laptop", ProbeRunner(), data_dir=tmp_path)
     second = probe_compute_backend(
@@ -155,6 +144,65 @@ def test_probe_returns_fresh_observation(manifest, tmp_path):
     )
     assert first.ready
     assert not second.ready
+
+
+@pytest.mark.parametrize("execution_host", ["", "rcp@cluster.example"])
+@pytest.mark.parametrize("failure", [None, "sbatch", "squeue", "scancel", "queue"])
+def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
+    manifest, tmp_path, monkeypatch, execution_host, failure
+):
+    import shlex
+
+    machine = manifest.machines[0]
+    machine.compute = MachineComputeConfig(job_manager="slurm")
+    machine.host = execution_host
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    submission = tmp_path / "unexpected-submission"
+    for tool in ("sbatch", "squeue", "scancel"):
+        if tool == failure:
+            continue
+        body = (
+            ("echo 'Queue unavailable' >&2; exit 1" if failure == "queue" else "exit 0")
+            if tool == "squeue"
+            else f"echo invoked > {shlex.quote(str(submission))}; exit 99"
+        )
+        path = binaries / tool
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o700)
+    calls = []
+
+    def execute(command, cwd, host, timeout):
+        calls.append((cwd, host))
+        return subprocess.run(
+            ["/bin/sh", "-c", command],
+            cwd=cwd,
+            env={"PATH": str(binaries)},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+    def unexpected_helper(*_args, **_kwargs):
+        pytest.fail("A selected scheduler must not probe or launch an OS helper")
+
+    monkeypatch.setattr("rcp.watchers._run_watcher_command", execute)
+    result = probe_compute_backend(manifest, "laptop", unexpected_helper, data_dir=tmp_path)
+    assert result.backend_id == "slurm"
+    assert result.ready is (failure is None)
+    assert calls == [("/", execution_host)]
+    assert not submission.exists()
+    assert not (tmp_path / "jobs").exists()
+    if failure:
+        assert result.required_action
+        assert "administrator" in result.required_action
+        assert (
+            "Queue unavailable" if failure == "queue" else f"Missing Slurm tool: {failure}"
+        ) in result.diagnostic
+    else:
+        assert result.required_action is None
+        assert "when the agent submits" in result.diagnostic
 
 
 def test_systemd_probe_records_explicit_cooperative_fallback(manifest, tmp_path, monkeypatch):
@@ -210,7 +258,7 @@ def test_cgroup_comparison_rejects_same_service_and_descendants():
     )
 
 
-def test_resolution_uses_target_os_and_uid_over_ssh(manifest):
+def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path):
     manifest.machines[0].host = "compute.example"
     commands = []
 
@@ -226,8 +274,15 @@ def test_resolution_uses_target_os_and_uid_over_ssh(manifest):
 
     context, profile = resolve_context(manifest, "laptop", runner)
     assert context.uid == "1234"
-    assert profile.id == "ssh_session"
+    assert profile is None
     assert all(command[0] == "ssh" and "compute.example" in command for command in commands)
+    commands.clear()
+    result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
+    assert result.state == "unavailable"
+    assert not result.ready
+    assert result.required_action
+    assert len(commands) == 3
+    assert not (tmp_path / "jobs").exists()
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
@@ -284,7 +339,9 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
                 timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
                 check=False,
             )
-    manifest.machines[0].compute = MachineComputeConfig(backend=backend_id)
+    manifest.machines[0].compute = None
+    if (backend_id == "launchd") != (os.uname().sysname == "Darwin"):
+        pytest.skip("The automatic backend uses the execution machine's operating system")
     units = []
 
     def runner(command, **kwargs):

@@ -1,5 +1,4 @@
-import { ComputeJobRow } from "./ComputeJobRow";
-import { useComputeJobs } from "../hooks/useComputeJobs";
+import { ExternalJobRow } from "./ExternalJobRow";
 import {
   AlertTriangle,
   ChevronUp,
@@ -86,7 +85,6 @@ import {
   visibleChatWatchers,
   watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
-  retainedChatJobObservers,
   watcherIsActive,
 } from "../runProjection";
 import {
@@ -673,7 +671,7 @@ export function NodeChat({
       channel?.close();
     };
   }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
-  const liveWatchers = useMemo(
+  const watcherRows = useMemo(
     () => visibleChatWatchers(watchers, chatId, node),
     [chatId, node, watchers],
   );
@@ -698,11 +696,6 @@ export function NodeChat({
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const computeJobs = useComputeJobs(apiBase, watchers);
-  const watcherRows = useMemo(
-    () => [...liveWatchers, ...retainedChatJobObservers(watchers, chatId, computeJobs.jobs)],
-    [chatId, computeJobs.jobs, liveWatchers, watchers],
-  );
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
@@ -1499,7 +1492,7 @@ export function NodeChat({
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
       type="button"
       aria-expanded={watchersOpen}
-      aria-label={`${watcherRows.length} active watcher${watcherRows.length === 1 ? "" : "s"}`}
+      aria-label={`${watcherRows.length} watcher${watcherRows.length === 1 ? "" : "s"}`}
       onClick={() => setWatchersOpen((open) => !open)}
     >
       <RadioTower size={12} /> {watcherRows.length}
@@ -1559,35 +1552,24 @@ export function NodeChat({
         )}
       </div>
       {watcherRows.length > 0 && watchersOpen && (
-        <section className="chat-watchers" aria-label="Active watchers">
-          {computeJobs.error && <span role="alert">Compute jobs: {computeJobs.error}</span>}
+        <section className="chat-watchers" aria-label="Watchers">
           {watcherRows.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
-                {external && watcher.job_id ? (
-                  <ComputeJobRow
-                    jobId={watcher.job_id}
-                    jobs={computeJobs.jobs}
-                    onCancel={computeJobs.cancel}
-                    cancelling={computeJobs.cancelling}
-                  />
+                {external ? (
+                  <ExternalJobRow apiBase={apiBase} watcher={watcher} disabled={readOnly} />
                 ) : (
-                  <strong>
-                    {external
-                      ? fileName(watcher.log_path ?? "")
-                      : graphConditionLabel(watcher.condition)}
-                  </strong>
+                  <>
+                    <strong>{graphConditionLabel(watcher.condition)}</strong>
+                    <time dateTime={observedAt ?? undefined}>
+                      {observedAt
+                        ? `Evaluated ${new Date(observedAt).toLocaleString()}`
+                        : "Not evaluated yet"}
+                    </time>
+                  </>
                 )}
-                <time dateTime={observedAt ?? undefined}>
-                  {observedAt
-                    ? `${external ? "Checked" : "Evaluated"} ${new Date(observedAt).toLocaleString()}`
-                    : external
-                      ? "Not checked yet"
-                      : "Not evaluated yet"}
-                </time>
-                {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
                 {!readOnly &&
                   onStopWatcher &&
                   watcherIsActive(watcher) &&
@@ -2646,10 +2628,6 @@ function formatBytes(bytes: number): string {
 function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
   if (ref.current !== null) window.clearTimeout(ref.current);
   ref.current = null;
-}
-
-function fileName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function readStorage(key: string): string | null {

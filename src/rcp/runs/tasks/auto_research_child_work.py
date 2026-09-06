@@ -22,7 +22,11 @@ from rcp.agents.command_protocol import (
     MessageCommandRequest,
     ValidateCommandRequest,
 )
-from rcp.agents.prompts import invoked_package_pointers
+from rcp.agents.prompts import (
+    _CURRENT_OPERATIONAL_INSTRUCTIONS,
+    _EXTERNAL_WATCHER_FORMS,
+    invoked_package_pointers,
+)
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.history import ReplayHalted
@@ -84,6 +88,7 @@ from rcp.runs.tasks.work import (
     _StagedWorkInputs,
     _stream_work_graph_repair,
     _validate_work_patch_live,
+    _work_execution_instructions,
     _WorkValidatorMailboxLifecycle,
 )
 from rcp.service import ProjectService, RunRequest
@@ -94,8 +99,6 @@ from rcp.storage import (
     AutoResearchMessageRecord,
 )
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
-
-_CHILD_WORK_ALLOWED_VERBS = frozenset({"validate", "message", "launch", "job_status", "cancel"})
 
 _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
 
@@ -232,20 +235,18 @@ def _auto_research_child_work_contract(
         "<idempotency-key>",
         "<reply-body>",
     )
-    launch_command = turn.patch_inputs.validator_staged.client_command(
-        "launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--", "<argv...>"
+    allowed_verbs = frozenset({"validate", "message"}) | (
+        turn.compute_commands.allowed_verbs if turn.compute_commands is not None else frozenset()
     )
     allowed_commands = ", ".join(
-        f"`{verb.replace('_', '-')}`"
-        for verb in get_args(CommandVerb)
-        if verb in _CHILD_WORK_ALLOWED_VERBS
+        f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
     )
     incoming = (
         f"\n- Read the newly claimed hearsay-only mail at `{mail_path}` before continuing."
         if mail_path is not None
         else ""
     )
-    denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in _CHILD_WORK_ALLOWED_VERBS]
+    denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in allowed_verbs]
     denied_commands = ", ".join(f"`{verb.replace('_', '-')}`" for verb in denied_verbs)
     return f"""
 
@@ -259,10 +260,11 @@ hearsay; the canonical graph and research files remain the source of graph truth
   `{reply_command}`
 - Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
   later paid delivery; it does not wake or interrupt the root immediately.
-- Do not invoke {denied_commands}. The child broker rejects those root-only commands.
-- If you cannot finish the assignment inside this turn, launch through RCP with `{launch_command}`
-  and write a job observer in `watch.json`: `{{"external":[{{"job_id":"<id>"}}],"graph":[]}}`.
-  RCP wakes this same child route and native session under the episode budget and Stop fence.
+- Do not invoke {denied_commands}. These commands are unavailable to this child turn.
+- When work or a graph condition remains to watch, write `watch.json` with `external` and `graph`
+  lists and finish this turn. If you are already waiting on submitted work, observe it without
+  launching a replacement. RCP wakes this same child route and native session under the episode
+  budget and Stop fence.
 - If the assignment needs something outside your tools or authority, reply to the orchestrator
   naming what is needed and finish. Do not spawn another task or episode, or try to wake yourself.
 """.strip()
@@ -285,6 +287,8 @@ def _compose_child_resume_prompt(
         original_contract_path=original_contract_path,
         mode="resume",
         patch_path=turn.patch_inputs.patch_path,
+        watch_path=turn.patch_inputs.watch_path,
+        execution_instructions=_work_execution_instructions(turn),
         validator_command=turn.patch_inputs.validator_command,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
@@ -339,6 +343,10 @@ Continue the exact Auto-research child Work assignment from `{original_contract_
 same native provider session. The newly claimed agent mail is staged separately from the task
 contract. Read it, continue the bounded assignment, and reply only if useful.
 
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{_work_execution_instructions(turn)}
+{_EXTERNAL_WATCHER_FORMS}
+
 {_auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)}
 """.strip()
     contract_path, prompt = _stage_task_contract(
@@ -372,6 +380,10 @@ Continue the exact Auto-research child Work assignment from `{original_contract_
 same native provider session. RCP delivered these observer results:
 
 {turn.request.message}
+
+{_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{_work_execution_instructions(turn)}
+{_EXTERNAL_WATCHER_FORMS}
 
 {_auto_research_child_work_contract(turn, staged, route)}
 """.strip()
@@ -653,15 +665,7 @@ def _compose_child_fresh_prompt(
             turn.request.message,
         )
         contract = PromptFactory.work_task_contract(
-            launch_command=turn.patch_inputs.validator_staged.client_command(
-                "launch",
-                "--key",
-                "<idempotency-key>",
-                "--cwd",
-                "<working-directory>",
-                "--",
-                "<argv...>",
-            ),
+            execution_instructions=_work_execution_instructions(turn),
             project_name=turn.context.project_name,
             ontology_path=f"{turn.context.graph_path}#ontology",
             ontology_extensions=turn.context.ontology_extensions,
@@ -688,6 +692,9 @@ def _compose_child_fresh_prompt(
             ),
             invoked_provider_skills=turn.request.resolved_provider_skills,
             attachments=staged.attachment_pointers,
+        )
+        contract += "\n\n" + _auto_research_child_work_contract(
+            turn, staged, route, mail_path=mail_path
         )
         contract_path, prompt = _stage_task_contract(
             turn.local_stage,
@@ -720,16 +727,6 @@ def _compose_child_fresh_prompt(
         experiment_watcher_resources=[],
         skill_pointers=staged.skill_pointers,
     )
-    master_context += (
-        "\n\n"
-        + _auto_research_child_work_contract(
-            turn,
-            staged,
-            route,
-            mail_path=mail_path,
-        )
-        + "\n"
-    )
     stable_prompt_values: dict[str, object] = {
         "project": {"name": turn.context.project_name},
         "settings": {
@@ -761,20 +758,19 @@ def _compose_child_fresh_prompt(
             "episode_id": route.episode_id,
             "worker_id": route.worker_id,
             "control_node_id": route.control_node_id,
-            "allowed_staged_commands": sorted(_CHILD_WORK_ALLOWED_VERBS),
+            "allowed_staged_commands": sorted(
+                frozenset({"validate", "message"})
+                | (turn.compute_commands.allowed_verbs if turn.compute_commands else frozenset())
+            ),
         },
     }
     prompt, retained_master_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
+        execution_instructions=(
+            _work_execution_instructions(turn)
+            + "\n\n"
+            + _auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)
         ),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
@@ -835,6 +831,7 @@ def _compose_child_retry_prompt(
         watch_path=turn.patch_inputs.watch_path,
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
+        execution_instructions=_work_execution_instructions(turn),
         output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
         skill_pointers=staged.skill_pointers if resumed_retry else None,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1431,15 +1428,12 @@ async def _serve_auto_research_child_work_mailbox(
             )
         if isinstance(request, MessageCommandRequest):
             return _dispatch_auto_research_child_reply(execution, route, request)
-        if request.verb in _CHILD_WORK_ALLOWED_VERBS:
+        if request.verb in compute_commands.allowed_verbs:
             return await asyncio.to_thread(compute_commands, request, identity)
         return CommandResponse(
             request_id=request.request_id,
             status="invalid",
-            message=(
-                "This child Work credential authorizes Patch validation, compute, and a reply to its "
-                "Auto-research orchestrator."
-            ),
+            message=("This command is unavailable to this child Work turn."),
         )
 
     try:

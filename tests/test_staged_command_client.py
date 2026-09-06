@@ -20,11 +20,9 @@ from rcp.agents.command_mailbox import (
 )
 from rcp.agents.command_protocol import (
     ApplyCommandRequest,
-    CancelCommandRequest,
     CommandResponse,
     EpisodeCommandRequest,
     InboxCommandRequest,
-    JobStatusCommandRequest,
     LaunchCommandRequest,
     SpawnCommandRequest,
     StatusArguments,
@@ -523,8 +521,8 @@ async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> 
         ("launch", "--key", "k", "--cwd", "/tmp", "true"),
         ("launch", "--key", "k", "--cwd", "/tmp", "--"),
         ("launch", "--key", "k", "--cwd", "/tmp", "--host", "elsewhere", "--", "true"),
-        ("job-status", "job-1"),
-        ("cancel", "job-1"),
+        ("job-status", "--key", "once", "job-1"),
+        ("cancel", "--key", "once", "job-1"),
     ],
 )
 async def test_closed_cli_rejects_retry_launch_profile_and_ambiguous_status(
@@ -563,8 +561,6 @@ async def test_closed_cli_rejects_retry_launch_profile_and_ambiguous_status(
     [
         ("message", "--key", "once", "This must not be dispatched."),
         ("launch", "--key", "once", "--cwd", "/tmp", "--", "true"),
-        ("job-status", "--key", "once", "job-1"),
-        ("cancel", "--key", "once", "job-1"),
     ],
 )
 async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path, arguments) -> None:
@@ -1219,7 +1215,7 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("episode_id", [None, "episode"])
-async def test_compute_verbs_use_turn_bound_broker_without_bearer_credential(
+async def test_compute_launch_uses_turn_bound_broker_without_bearer_credential(
     tmp_path, episode_id
 ) -> None:
     staged = stage_command_mailbox(
@@ -1273,8 +1269,6 @@ async def test_compute_verbs_use_turn_bound_broker_without_bearer_credential(
                     "print('hello')",
                     "",
                 ),
-                ("job-status", "--key", "status-once", "job-1"),
-                ("cancel", "--key", "cancel-once", "job-1"),
             ):
                 code, output = await _run_client(staged, *arguments)
                 assert code == 0, output
@@ -1288,9 +1282,7 @@ async def test_compute_verbs_use_turn_bound_broker_without_bearer_credential(
         "label": "A run",
         "argv": ["python3", "-c", "print('hello')", ""],
     }
-    assert isinstance(seen[1], JobStatusCommandRequest)
-    assert isinstance(seen[2], CancelCommandRequest)
-    assert seen[1].arguments.job_id == seen[2].arguments.job_id == "job-1"
+    assert len(seen) == 1
     assert staged.credential.expired
 
 
@@ -1298,8 +1290,6 @@ async def test_compute_verbs_use_turn_bound_broker_without_bearer_credential(
     ("verb", "arguments"),
     [
         ("launch", {"cwd": "/tmp", "argv": ["true"]}),
-        ("job_status", {"job_id": "job-1"}),
-        ("cancel", {"job_id": "job-1"}),
     ],
 )
 def test_compute_protocol_requires_a_nonblank_key(verb, arguments) -> None:
@@ -1314,5 +1304,20 @@ def test_compute_protocol_requires_a_nonblank_key(verb, arguments) -> None:
     for key in (None, "", " "):
         with pytest.raises(ValueError):
             validate_command_request(json.dumps({**envelope, "idempotency_key": key}))
+    with pytest.raises(ValueError):
+        validate_command_request(json.dumps(envelope))
+
+
+@pytest.mark.parametrize("verb", ["job_status", "cancel"])
+def test_removed_compute_verbs_are_not_in_the_command_protocol(verb):
+    envelope = {
+        "version": 1,
+        "mailbox_id": "a" * 32,
+        "request_id": "b" * 32,
+        "credential": "c" * 64,
+        "verb": verb,
+        "idempotency_key": "once",
+        "arguments": {"job_id": "job-1"},
+    }
     with pytest.raises(ValueError):
         validate_command_request(json.dumps(envelope))

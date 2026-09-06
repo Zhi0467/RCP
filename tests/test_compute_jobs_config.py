@@ -12,13 +12,14 @@ from rcp.limits import COMPUTE_JOB_DIAGNOSTIC_MAX_CHARS, COMPUTE_JOB_LABEL_MAX_C
 
 def test_compute_backend_type_is_registry_derived() -> None:
     assert set(get_args(ComputeBackendId)) == set(COMPUTE_BACKENDS)
-    for backend in COMPUTE_BACKENDS:
-        assert MachineComputeConfig(backend=backend).backend == backend
+    assert MachineComputeConfig().job_manager is None
+    assert MachineComputeConfig(job_manager="slurm").job_manager == "slurm"
 
 
 @pytest.mark.parametrize(
     "values",
     [
+        {"job_manager": "unknown"},
         {"backend": "subprocess"},
         {"backend": "launchd", "slurm_account": "lab"},
         {"slurm_partition": "gpu"},
@@ -47,11 +48,8 @@ def test_machine_compute_writer_round_trip_preserves_other_configuration(manifes
     manifest = write_agent_settings(manifest, manifest.agent.default_run_truth_scope, {})
     before = manifest.model_dump(mode="json")
     config = MachineComputeConfig(
-        backend="slurm",
+        job_manager="slurm",
         jobs_root="/srv/rcp/jobs",
-        slurm_account="lab",
-        slurm_partition="gpu",
-        slurm_submit_args=["--time=00:01:00", "--cpus-per-task=2"],
     )
     updated = write_agent_settings(
         manifest, manifest.agent.default_run_truth_scope, {}, machine_compute={"laptop": config}

@@ -602,7 +602,8 @@ async def test_operational_continuation_renders_current_launch_client(
             composed = compose(turn, staged)
         contract = Path(composed.contract_path).read_text()
         if owner is work_module and continuation == "message_wake":
-            tooling = list((turn.local_stage / "inputs").glob("task-*-launch.md"))
+            assert turn.patch_inputs.validator_staged.client_command(*launch_args) not in contract
+            tooling = list((turn.local_stage / "inputs").glob("task-*-execution.md"))
             assert len(tooling) == 1
             assert tooling[0].name in composed.prompt
             contract = tooling[0].read_text()

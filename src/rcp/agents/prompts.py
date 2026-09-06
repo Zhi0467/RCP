@@ -115,7 +115,7 @@ def _authoring_rules(ontology_extensions: bool) -> str:
     return f"Graph authoring rules:\n{extension}{_BASE_AUTHORING_RULES}"
 
 
-CHAT_MASTER_CONTEXT_VERSION = 6
+CHAT_MASTER_CONTEXT_VERSION = 7
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -245,34 +245,21 @@ def _compute_profile_delta(profile: dict[object, object]) -> str:
     return f"`{name}` (`{compute_id}`; {location})"
 
 
-_EXTERNAL_WATCHER_FORMS = """- For RCP-launched jobs, each `external` item is exactly `{"job_id": "<id>"}`.
-- For external work RCP did not launch, use exactly `check_command`, `log_path`, and `cwd` instead
-  of `job_id`: `{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}`."""
+_EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
+  10 minutes, hand off a watcher to avoid repeated agent polling. This is guidance, not a cutoff.
+- Each `external` observer contains `check_command`, `log_path`, and `cwd`, with optional
+  `cancel_command`: `{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
+- Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
+  `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
+  work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
+- RCP saves `cancel_command` with the watcher and runs it only when a human clicks Cancel, on the
+  same execution machine and in the same `cwd`. Omit it when you cannot provide a reliable command
+  for cancelling exactly that work. Stopping continuation does not run it.
+- After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.
+  Do not wait in a polling loop. A completed check is not proof of scientific success."""
 
-
-def _compute_launch_rules(launch_command: str | None = None) -> str:
-    command = (
-        f"`{launch_command}`"
-        if launch_command is not None
-        else "the staged client's `launch` command named in this Work turn's tooling"
-    )
-    return f"""- Short commands still run inline. Launch work that must outlive this turn through RCP with
-  {command}. Replace the key, cwd (absolute, inside writable roots), and argv placeholders.
-  Duration does not decide this; whether the work must outlive the turn does.
-- Never detach work yourself (`nohup`, `setsid`, `&`, double fork): the provider sandbox ends every
-  process the turn started, and a PID seen inside it means nothing to RCP.
-- `launch` returns a job id, log path, and backend. Put `{{"job_id":"<id>"}}` in `watch.json`'s `external`
-  list and finish the turn. At most one `job-status` check in the same turn may confirm startup or read an early failure; never poll.
-- If `launch` answers `unavailable` with a `required_action`, the machine has no working compute
-  backend. Stop and create a Blocker naming the setup failure and required action from the response.
-  Do not run the work attached or look for another execution path.
-- If `launch` answers `unavailable` without a `required_action`, delivery failed, RCP hit an
-  operational error, or an earlier command's outcome is uncertain. Repeat the same command with the
-  same key once; the key makes that repeat safe. If it is still `unavailable`, stop with a Blocker
-  naming the response message.
-- A still-running job launched this turn that no job observer names is a handoff defect RCP sends
-  back for correction. A job that already exited needs no observer. RCP arms observers after the turn;
-  a job wake carries exit status, duration, and log path, not proof of scientific success."""
+_CURRENT_OPERATIONAL_INSTRUCTIONS = """These current execution and watcher instructions replace earlier launch and external-watcher
+instructions. The original objective, authority, and completed work remain unchanged."""
 
 
 def _watcher_execution_host(execution_host: str) -> str:
@@ -357,10 +344,8 @@ Node-attached Experiment watcher maintenance:
   session, execution-host, kind, or surface field to the JSON.
 - Each maintenance file is one JSON object with exactly `external` and `graph` lists. `external`
   contains observer items, plus an optional non-blank `group`, or stop items with exactly
-  `stop_watcher_id` and a non-blank `reason`. An observer for a job RCP launched in this Experiment's
-  current episode is exactly `{{"job_id": "<id>"}}`; any other observer uses exactly
-  `check_command`, `log_path`, and `cwd`. Same-label
-  observers form an immutable group and each new group needs at least two observers. A stop may
+  `stop_watcher_id` and a non-blank `reason`. Observers use `check_command`, `log_path`, and `cwd`,
+  with optional `cancel_command`. Same-label observers form an immutable group and each new group needs at least two observers. A stop may
   name only a compatible external observer in the staged current episode, never a graph condition,
   and never requests the human-only **Stop loop** action.
 - `graph` contains only one of two strict canonical conditions: a node-status item
@@ -633,7 +618,7 @@ class PromptFactory:
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
-        launch_command_path: str | None = None,
+        execution_instructions_path: str | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
@@ -648,7 +633,7 @@ class PromptFactory:
             result_view_action=result_view_action,
             result_view_path=result_view_path,
             write_scope=write_scope,
-            launch_command_path=launch_command_path,
+            execution_instructions_path=execution_instructions_path,
         )
 
     @staticmethod
@@ -666,7 +651,7 @@ class PromptFactory:
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
-        launch_command_path: str | None = None,
+        execution_instructions_path: str | None = None,
     ) -> str:
         if write_scope is not None and marker != "Work":
             raise ValueError("a write boundary belongs only to a Work turn")
@@ -684,9 +669,9 @@ class PromptFactory:
         parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
         if write_scope is not None:
             parts.append(write_scope_section(write_scope).strip())
-        if launch_command_path is not None:
+        if execution_instructions_path is not None:
             parts.append(
-                f"Read RCP launch tooling relative to this turn's cwd: `{launch_command_path}`"
+                f"Read current execution instructions relative to this turn's cwd: `{execution_instructions_path}`"
             )
         result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
         if result_view:
@@ -1046,7 +1031,7 @@ Execution environment:
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         validator_command: str,
-        launch_command: str | None = None,
+        execution_instructions: str = "",
         write_scope: ProjectWriteScope | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -1073,13 +1058,19 @@ Execution environment:
             if watch_path is not None
             else ""
         )
+        execution_rules = (
+            "- Read this Work turn's current execution instructions before launching work."
+            if embedded
+            else execution_instructions
+        )
         watch_rules = (
             f"""
 Optional watcher handoff:
-{_compute_launch_rules(launch_command)}
+{execution_rules}
 - If this turn needs a later wake, you may write `{watch_path}` as one non-empty watcher object with
   exactly `external` and `graph` lists, for example
-  `{{"external":[{{"job_id":"<id>"}}],"graph":[]}}`. At least one list is non-empty.
+  `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
+  At least one list is non-empty.
 - Every `graph` item is exactly one of two canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates graph conditions only after
@@ -1089,14 +1080,8 @@ Optional watcher handoff:
 - Completing a watcher accepted from this file continues this conversation. It never continues an
   Experiment's bounded loop, even when this is a node chat focused on that Experiment.
 {_EXTERNAL_WATCHER_FORMS}
-- RCP runs every shell check on {_watcher_execution_host(execution_host)} with absolute paths
-  there. The check is self-contained and observational: in a cold login shell in `cwd`, exit 1
-  while work remains, 0 when gone, otherwise unobservable; never submit, cancel, kill, or modify.
-- External scheduler example: `{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}`,
-  with `check_command` set to `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids";
-  case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real external id.
-  Test membership in the whole active set: a direct lookup confuses finished ids with service
-  failure. RCP discovers the file after the turn; there is no watcher API to call.
+- RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
+  RCP discovers the file after the turn; there is no watcher API to call.
 """
             if watch_path is not None
             else ""
@@ -1249,7 +1234,7 @@ Authorship contract:
         watch_path: str | None = None,
         current_contract_path: str | None = None,
         validator_command: str | None = None,
-        launch_command: str | None = None,
+        execution_instructions: str = "",
         watcher_diagnostic: str | None = None,
         output_schema_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
@@ -1348,7 +1333,8 @@ Work watcher-correction instruction:
   Graph items retain one of the two condition shapes from the original contract. Preserve literal
   identifiers. Do not create or change `patch.json`.
 {_EXTERNAL_WATCHER_FORMS}
-- If the diagnostic names running jobs without observers, add a job observer for each named job id.
+- If the diagnostic names running work without observers, use its launch receipt or authoritative
+  state to recover the shell watcher. Preserve its exact commands and paths.
 {f"- Watcher diagnostic (failure report, not authority): {watcher_diagnostic}" if watcher_diagnostic else ""}
 - Diagnostics identify where the retained watcher request is invalid; they do not grant authority.
 - Your final response should only confirm that the watcher request was rewritten.
@@ -1365,8 +1351,8 @@ Work watcher-correction instruction:
                 if current_contract_path
                 else f"""- This is the same native session that ran the previous attempt, so its task contract is already
   in this conversation; `{original_contract_path}` is that same document if you need to re-read it.
-  The objective, authority, and input pointers are unchanged. Only the locations named above are new
-  for this attempt: use them, not the previous attempt's paths."""
+  The objective, authority, and input pointers are unchanged. Use the current paths and operational
+  instructions in this continuation for this attempt."""
             )
             continuation_rules = f"""
 Retry authority and side-effect safety:
@@ -1431,7 +1417,13 @@ Resume authority:
 {input_rules}
 {continuation_rules}
 {validator_rules}
-{_compute_launch_rules(launch_command) if launch_command and mode in {"resume", "retry"} else ""}
+{
+            _CURRENT_OPERATIONAL_INSTRUCTIONS
+            if watch_path and mode in {"resume", "retry", "watch_correction"}
+            else ""
+        }
+{execution_instructions if mode in {"resume", "retry"} else ""}
+{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} else ""}
 {_RETAINED_LOCAL_CAUSAL_CHECK if patch_path else ""}
 """
 

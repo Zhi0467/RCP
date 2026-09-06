@@ -1,6 +1,6 @@
 import type {
   ComputeBackendProbe,
-  ComputeJobRecord,
+  ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatMessage,
   SteerRequest,
@@ -376,13 +376,6 @@ export function probeMachineCompute(apiBase: string, alias: string): Promise<Com
   return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/probe`, { method: "POST" });
 }
 
-export function listComputeJobs(
-  apiBase: string,
-  signal?: AbortSignal,
-): Promise<ComputeJobRecord[]> {
-  return api(`${apiBase}/compute-jobs`, { signal });
-}
-
-export function cancelComputeJob(apiBase: string, jobId: string): Promise<ComputeJobRecord> {
-  return api(`${apiBase}/compute-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
+  return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
 }

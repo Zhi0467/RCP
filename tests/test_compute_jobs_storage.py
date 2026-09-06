@@ -53,40 +53,8 @@ def test_compute_job_storage_roundtrip_listing_and_terminal_guard(tmp_path, monk
     assert exited.started_at is not None
     assert {record.job_id for record in store.running_compute_jobs()} == {"job-2", "other"}
     assert store.record_compute_job_refresh("job-1", status="running") == exited
-
-
-def test_compute_job_cancel_request_is_idempotent_and_attributed(tmp_path) -> None:
-    store = AppStore(tmp_path / "app.sqlite")
-    store.create_compute_job(job_record())
-    requested = store.request_compute_job_cancel("job-1", "human-a")
-    assert requested.cancel_requested_by == "human-a"
-    assert requested.cancel_requested_at is not None
-    assert requested.status == "running"
-    assert store.request_compute_job_cancel("job-1", "human-b") == requested
-    cancelled = store.record_compute_job_refresh("job-1", status="cancelled", ended_at=store.now())
-    assert store.request_compute_job_cancel("job-1", "human-c") == cancelled
-    with pytest.raises(KeyError):
-        store.request_compute_job_cancel("missing", "human")
     with pytest.raises(KeyError):
         store.record_compute_job_refresh("missing", status="lost")
-
-
-@pytest.mark.parametrize("observed_status", ["exited", "lost"])
-def test_terminal_refresh_uses_cancel_intent_from_its_transaction(
-    tmp_path, observed_status
-) -> None:
-    store = AppStore(tmp_path / "app.sqlite")
-    store.create_compute_job(job_record())
-    store.request_compute_job_cancel("job-1", "human")
-    refreshed = store.record_compute_job_refresh(
-        "job-1",
-        status=observed_status,
-        ended_at=store.now(),
-        diagnostic="Job is gone without an exit file." if observed_status == "lost" else None,
-    )
-    assert refreshed.status == "cancelled"
-    assert refreshed.cancel_requested_by == "human"
-    assert refreshed.diagnostic is None
 
 
 def test_compute_jobs_migration_upgrades_version_eight_without_changing_records(tmp_path) -> None:
@@ -143,7 +111,7 @@ def test_compute_job_label_migration_preserves_existing_rows(tmp_path) -> None:
     store.create_compute_job(job_record())
     with store.connection() as connection:
         connection.execute("ALTER TABLE compute_jobs DROP COLUMN label")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 11")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 12")
     upgraded = AppStore(path)
     assert upgraded.compute_job("job-1") == job_record(label=None)
     labelled = job_record("labelled", label="Training run")

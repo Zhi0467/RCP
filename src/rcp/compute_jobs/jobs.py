@@ -1,8 +1,9 @@
-"""Launch, inspect, and cancel durable compute without provider task policy."""
+"""Launch and reconcile OS-owned helper jobs without provider task policy."""
 
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 import uuid
 from contextlib import suppress
@@ -27,7 +28,7 @@ from rcp.compute_jobs.files import (
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
-from rcp.limits import COMPUTE_JOB_LOG_TAIL_MAX_BYTES
+from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 from rcp.storage import AppStore
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def launch_compute_job(
 
 def refresh_compute_job(
     store: AppStore,
-    manifest: Manifest,
+    manifest: Manifest | None,
     job_id: str,
     *,
     data_dir: Path,
@@ -170,7 +171,10 @@ def refresh_compute_job(
                 )
             else:
                 status, exit_status, diagnostic = "exited", parsed_status, None
-        # Storage resolves any concurrent cancellation intent in this transition.
+        cancelled = read_job_file(context, str(PurePosixPath(record.job_root) / "cancelled"))
+        if cancelled is not None:
+            ended_at = epoch_timestamp(cancelled.strip())
+            status, diagnostic = "cancelled", None
         return store.record_compute_job_refresh(
             job_id,
             status=status,
@@ -187,42 +191,34 @@ def refresh_compute_job(
         )
 
 
-def cancel_compute_job(
-    store: AppStore,
-    manifest: Manifest,
-    job_id: str,
-    requested_by: str,
-    *,
-    data_dir: Path,
-) -> ComputeJobRecord:
-    record = store.request_compute_job_cancel(job_id, requested_by)
-    if record.status != "running":
-        return record
-    try:
-        context = recorded_job_context(manifest, record)
-        COMPUTE_BACKENDS[record.backend_id].cancel(record.backend_handle, context)
-    except Exception as exc:
-        return store.record_compute_job_refresh(
-            job_id,
-            status="running",
-            diagnostic=safe_compute_diagnostic(str(exc)),
-        )
-    return refresh_compute_job(store, manifest, job_id, data_dir=data_dir)
-
-
-def read_job_log_tail(
-    store: AppStore,
-    manifest: Manifest,
-    job_id: str,
-    *,
-    data_dir: Path,
-    max_bytes: int = COMPUTE_JOB_LOG_TAIL_MAX_BYTES,
-) -> str:
-    record = store.compute_job(job_id)
-    if record is None:
-        raise KeyError(job_id)
-    return read_job_file(recorded_job_context(manifest, record), record.log_path, max_bytes) or ""
-
-
 def epoch_timestamp(value: str) -> str:
     return datetime.fromtimestamp(int(value), tz=UTC).isoformat()
+
+
+def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
+    """The same shell watcher contract used by directly submitted external jobs."""
+    script = str(PurePosixPath(job.job_root) / "owner.py")
+    return {
+        "check_command": shlex.join(
+            [
+                "python3",
+                script,
+                "check",
+                job.backend_id,
+                job.backend_handle,
+                str(COMPUTE_JOB_STATUS_TIMEOUT_SECONDS),
+            ]
+        ),
+        "cancel_command": shlex.join(
+            [
+                "python3",
+                script,
+                "cancel",
+                job.backend_id,
+                job.backend_handle,
+                str(COMPUTE_JOB_STATUS_TIMEOUT_SECONDS),
+            ]
+        ),
+        "log_path": job.log_path,
+        "cwd": job.cwd,
+    }

@@ -49,6 +49,7 @@ def prepare_job_root(
         json.dumps(
             {
                 "run.sh": render_wrapper(job_root, request),
+                "owner.py": _remote_script("compute_process_owner.py"),
                 "command.json": command_provenance(
                     request,
                     project_id=project_id,

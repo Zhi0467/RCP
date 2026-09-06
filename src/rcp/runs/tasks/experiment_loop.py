@@ -117,6 +117,7 @@ from rcp.runs.tasks.work import (
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
+    _work_execution_instructions,
     _work_graph_repairable,
     _work_patch_proposal_ids,
     _WorkValidatorMailboxLifecycle,
@@ -552,15 +553,7 @@ def _compose_resume_prompt(
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -599,15 +592,7 @@ def _compose_wake_prompt(
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
     experiment_contract_path = _experiment_session_contract_path(turn)
     contract = experiment_loop_wake_message(
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         focused_experiment_id=turn.request.control_node_id,
         experiment_contract_path=experiment_contract_path,
         invocation=turn.request.control_invocation,
@@ -699,15 +684,7 @@ def _compose_fresh_prompt(
         turn.request.message,
     )
     contract = experiment_loop_task_contract(
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,
@@ -774,15 +751,7 @@ def _compose_retry_prompt(
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
-        launch_command=turn.patch_inputs.validator_staged.client_command(
-            "launch",
-            "--key",
-            "<idempotency-key>",
-            "--cwd",
-            "<working-directory>",
-            "--",
-            "<argv...>",
-        ),
+        execution_instructions=_work_execution_instructions(turn),
         diagnostics_path=retry_diagnostics_path,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
@@ -944,7 +913,7 @@ async def _validate_watch_deliverable(
         if turn.compute_commands is not None:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
-                {item.job_id for item in handoff.observers if item.job_id},
+                {item.check_command for item in handoff.observers},
             )
         settled.loop_watch_text = watch_text
         if handoff.is_empty:
@@ -1001,10 +970,6 @@ async def _validate_watch_deliverable(
                 validate_watch_specs,
                 handoff.observers,
                 turn.execution_host,
-                store=turn.execution.store,
-                binding=binding,
-                manifest=turn.service.manifest,
-                data_dir=turn.execution.store.path.parent,
             )
             if handoff.observers
             else []
@@ -1294,7 +1259,7 @@ async def _resettle_changed_watch_handoff(
         try:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
-                {item.job_id for item in observers if item.job_id},
+                {item.check_command for item in observers},
             )
         except ValueError:
             changed_watch = True

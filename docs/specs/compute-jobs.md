@@ -1,247 +1,188 @@
 # Compute jobs
 
-RCP owns launch and durable observation; the execution machine's process owner
-owns the computation. Work, Experiment-loop, and Auto-research child Work turns
-can launch, inspect, and cancel jobs through the staged command client, then hand
-observation to RCP. Setup, web controls, and prompts are implemented across the
-integrated PRs; the real-host acceptance drive remains pending.
+RCP observes external work through shell watchers. Agents submit scheduler jobs
+directly and choose the command, script, and resources.
+Where a process would otherwise die with the provider or RCP service, a generic
+launch helper starts it under an OS process owner. Both routes use the same
+watcher contract and human job controls. The real-host acceptance drive remains
+pending in [S136](../acceptance/S136-long-running-compute-outlives-the-agent.md).
 
-## Backend profiles
+## Execution route
 
-`compute_jobs.backends` is one registry of profiles. Each profile owns support
-detection, start, alive, cancel, and facility checks. Shared task execution gains
-no backend selector. All backend commands use one injectable command runner;
-remote commands use RCP's ordinary SSH argument construction. Shipped remote
-helpers are stdlib-only source modules.
+An optional `machines[].compute` block contains `job_manager` and `jobs_root`.
+`job_manager = "slurm"` opts into direct scheduler submission. An unset manager
+selects the generic helper automatically: Linux requires a reachable systemd
+user manager; macOS uses launchd. A Linux machine without reliable process
+ownership has no helper route. There is no detached-process or SSH-session
+fallback. A selected scheduler does not silently fall back to the helper.
 
-- `systemd_user` uses transient `rcp-job-<job_id>` user units with `--collect`,
-  explicit log paths. Every user-manager command sets
-  `XDG_RUNTIME_DIR=/run/user/<target uid>` even from a session-less service.
-- `launchd` bootstraps a job-root plist into `gui/<uid>`, with `RunAtLoad=true`
-  and `KeepAlive=false`. It never uses `launchctl submit`.
-- `ssh_session` is offered only remotely on Linux. The shipped launcher creates
-  a separate session and records PID plus `/proc/<pid>/stat` start time. While
-  the leader exists its start time must match; a recycled leader PID reads as
-  gone and is never signalled. Once the leader is absent or a zombie, liveness
-  is any process whose group and session are both the leader PID. Cancellation
-  terminates that group, escalating from SIGTERM to SIGKILL. A command that
-  daemonizes itself (`setsid` or a double fork) leaves that group and escapes
-  observation and Cancel; this backend is for hosts without a user manager, and
-  where one exists the `systemd_user` backend tracks every descendant through
-  its cgroup.
-- `slurm` submits through `sbatch --parsable`, with machine-owned account,
-  partition, and extra submission arguments. Liveness tests membership in the
-  whole `squeue -h -o %A` active set; a scheduler command failure is unknown,
-  never completion. Cancellation uses `scancel`.
+The current macOS route remains an unresolved merge blocker. Live launchd
+verification found that a descendant which calls `setsid` escapes the process
+group: the owner can disappear and Cancel can return while that child continues.
+A passing short probe does not establish reliable descendant ownership. The
+user has not yet decided whether macOS helper launches must be refused or an
+explicit exception is acceptable; the code still offers launchd. The
+[active handoff](../handoffs/handoff-2026-09-06-external-job-simplification.md)
+records the audit and decision boundary.
 
-An explicit backend wins resolution. Otherwise Linux with a reachable user
-manager selects `systemd_user`; remote Linux without one selects `ssh_session`;
-macOS selects `launchd`. Other machines, including local Linux without a user
-manager, have no automatic backend. There is no local subprocess backend.
+Slurm submission belongs to the agent. RCP supplies no account, partition, GPU,
+memory, time-limit, or other submission arguments, and never creates scheduler
+users or associations. The execution route belongs to the turn's execution
+machine; an attached compute connection alone does not change it.
 
-## Machine configuration and roots
+Short jobs may finish inline. Prompt guidance recommends handing off a watcher
+for work expected to take roughly more than ten minutes, so the agent can end
+its turn instead of repeatedly polling. This is an agent judgment, not an
+enforced duration limit or mandatory watcher for every launch.
 
-An optional `machines[].compute` block contains `backend`, `jobs_root`,
-`slurm_account`, `slurm_partition`, and `slurm_submit_args`. Backend ids derive
-from the registry. Slurm fields require an explicit Slurm backend. Metadata is
-one-line, rejects credential-shaped text, and provides no credential channel.
-A configured jobs root must be absolute. Existing manifests need no changes.
-The manifest writer validates and atomically replaces the TOML while preserving
-other machine settings.
+## Readiness and setup
 
-Local roots are `<data_dir>/jobs/<job_id>` regardless of configured `jobs_root`.
-Remote roots are `<jobs_root>/<job_id>`, defaulting to `~/.rcp/jobs` expanded on
-the execution account. These private durable directories are outside task stages
-and their retention. A job id grants no filesystem authority.
+For Slurm, the probe uses the same bounded login shell and execution host as
+watcher checks. It verifies `sbatch`, `squeue`, and `scancel` are available and
+queries the queue under that account. It submits no readiness job, including no
+default dry run: a default resource policy could reject an account whose real
+jobs work with agent-supplied arguments. Failure names the prerequisite problem
+and asks an administrator to repair it. Slurm validates submission permission
+and resources when the agent submits the actual job; readiness does not claim
+to have proved those job-specific conditions.
 
-Project transfer excludes machine-bound compute rows and job directories; it
-does not relocate or cancel OS-owned work. Whole-database backups retain job
-rows, while their filesystem payload excludes local `jobs` directories. Job
-outputs remain on the execution machine and need their own retention or backup;
-restoring the database does not recreate them. Project deletion refuses while
-compute jobs are running and removes terminal job rows in its database
-transaction; job directories on disk are not removed.
+For the generic helper, the probe resolves the OS owner, starts a bounded test
+job, observes it alive, and requires its exit receipt and log marker. On local
+Linux, its cgroup must be outside the RCP process's cgroup. A remote cgroup path
+cannot establish separation from the local server's process tree. The real
+provider-exit and service-restart journey remains a separate live check.
 
-## Wrapper and receipts
+The systemd probe first tries `PrivateUsers=yes`, `ProtectSystem=strict`,
+`ProtectHome=read-only`, and exact `ReadWritePaths`. If only cooperative
+containment passes, the result explicitly reports that limitation. Mirrored
+launches apply the same resolved writable roots and protect the turn's excluded
+paths. These are write guardrails, not read secrecy, network isolation, or a
+hostile same-account security boundary.
 
-One RCP-authored POSIX `run.sh` starts from the job root, writes `started` as
-epoch seconds, changes to the absolute requested working directory, and runs
-the shell-quoted argv with both output streams appended to `log`. A failed
-directory change also records failure.
-It atomically publishes `exit` as `<status> <epoch>`; scheduler accounting is not
-an exit-status source. On Linux it captures its cgroup for probe verification.
-`command.json` preserves argv, cwd, optional label, and requester lineage.
+Install enables and verifies linger for the service account. An ordinary update
+preserves configured machine choices. Selecting Slurm is a setup choice; the
+probe executes as the actual execution account, including the `rcp` service
+account for server-local work.
 
-`command.json` is the pre-start intent receipt. After the backend starts,
-`launch.json` records the backend handle before SQLite insert. An interrupted
-start/insert leaves inspectable evidence in the durable job root. A successful
-launch returns only after the running row and handle exist.
-A known failed start removes its root; an ambiguous submission timeout or a
-failed post-start receipt or database write
-retains evidence for operator repair. Automatic orphan-directory adoption is not
-implemented. Log-tail reads have a fixed byte ceiling.
-A remote transport failure at launch is uncertain and retains the job root.
-A successful launch response with an unparseable handle also retains the job root.
+`rcp server compute probe --project <project_id> <machine_alias>` uses the
+installed-service control socket. The matching API is
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe`.
+Both store the current readiness result; the CLI exits zero only when ready.
+Settings accepts `machine_compute`, a partial alias-to-config map: omission
+preserves a machine, null removes its optional block. A changed block invalidates
+its stored probe. Machine projections include configuration and readiness.
 
-## Probe and containment
+Human Experiment-loop start and Auto-research start or reauthorization run a
+fresh readiness check for the selected route before reserving the episode.
+A non-ready result refuses with the machine, diagnostic, and required action.
+Ordinary human Work is not gated by episode admission. Setup failures should
+be surfaced as blockers rather than worked around by repeated polling.
 
-A probe resolves the execution machine, checks its facility, launches a bounded
-trivial job through the real backend, observes it alive, and requires an exit of
-zero and the `rcp-probe` log marker. The caller supplies the data directory and
-receives the result. SQLite's `compute_backend_probes` table retains the latest
-`ComputeBackendProbe` JSON and `probed_at` for each `(project_id,
-execution_machine)`. Agent launch reads that result; when none exists, it runs
-one probe and stores the result before deciding. A stored result that is not
-ready is re-run at the next launch and replaced; if it is still not ready, launch
-is refused with the fresh diagnostic and required action.
-A stored probe whose backend no longer matches current resolution is re-run once
-at launch and replaced.
-Missing automatic resolution is `unavailable` with the action
-"configure a compute backend for this machine"; execution failures are `failed`
-with redacted single-line diagnostics and an action.
+## Generic launch helper
 
-The public launch function still resolves the configured backend; the task owner
-owns probe admission and passes the turn's writable roots to that function.
+`compute_jobs.backends` contains the generic OS owners. `systemd_user` uses
+transient `rcp-job-<id>` units with `--collect`, explicit log paths, and
+`XDG_RUNTIME_DIR=/run/user/<uid>`. `launchd` bootstraps a job-root plist into
+`gui/<uid>` with `RunAtLoad=true`, `KeepAlive=false`, and same-process-group
+cleanup. That cleanup does not retain descendants which enter another session.
+Remote commands use ordinary SSH transport; executable remote helpers ship from
+their source modules.
 
-On local Linux, the job's captured cgroup must differ from the RCP process's
-`/proc/self/cgroup`; a shared service cgroup fails the probe. Remote cgroup paths
-cannot establish separation from a process on another host, so that comparison
-is unknown there. Passing a short probe proves the observed launch and exit, not
-survival of a future machine reboot, account logout, or scheduler outage.
+A helper job's root is `<data_dir>/jobs/<id>` locally. Remotely it is
+`<jobs_root>/<id>`, defaulting to the execution account's `~/.rcp/jobs`.
+Configured roots must be absolute. These directories are outside task-stage
+retention. Internal helper ids grant no filesystem authority and are not a
+second watcher identifier.
 
-The systemd probe first attempts `PrivateUsers=yes`, `ProtectSystem=strict`,
-`ProtectHome=read-only`, and exact `ReadWritePaths`. If that attempt fails but a
-cooperative attempt passes, the result explicitly records that limitation. A
-mirrored backend start applies those properties to the supplied writable roots
-and its job root. Agent launch uses mirrored containment when the stored probe
-proved support.
-Mirrored containment also marks the turn's protected write paths read-only inside
-the writable roots; cooperative backends cannot.
-Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
-hostile same-account isolation claims.
+The wrapper writes `started`, runs the supplied argv in its absolute working
+directory with output appended to `log`, and atomically writes `exit` with the
+status and end time. `command.json` records the launch intent and
+`launch.json` records the OS handle. An uncertain start or failed post-start
+receipt/database write retains evidence; RCP does not guess that nothing ran
+or automatically adopt orphaned directories.
 
-## Setup and human control
+Ordinary Work, Experiment-loop, and child Work serve one keyed helper verb:
+`launch --key K --cwd <absolute-path> [--label <text>] -- <argv...>`.
+The turn binds the project, execution host, writable roots, operation, and
+episode. The working directory must remain inside the writable scope and
+outside protected paths. The response is
+`{watcher: {check_command, log_path, cwd, cancel_command}}`; the agent copies that
+object into `watch.json` rather than inventing a PID check. Helper-owned observation distinguishes running work, a valid completion receipt, and unknown
+or missing evidence. Cancellation uses the saved OS handle.
 
-Install enables and verifies linger for the service account. The installed-service
-CLI `rcp server compute probe --project <project_id> <machine_alias>` and
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` run the
-same backend probe under the service account and store its result. The CLI
-prints label, backend id, containment, diagnostic, and required action, returning
-0 only when ready and 1 otherwise. The API returns `ComputeBackendProbe` directly.
+A helper launch runs a fresh readiness probe. Before a turn ends, settlement
+checks that its still-running helper jobs have their returned check commands in
+the final handoff. This includes helper jobs retained from a retry or resume
+lineage. Missing observers enter the existing correction path without another
+invocation or relaunch; an unresolved handoff cannot become normal completion.
+A job that already finished needs no watcher. Slurm submission has no RCP
+launch registry or corresponding automatic handoff enforcement.
 
-Project settings accept `machine_compute`, a partial map from machine alias to
-`MachineComputeConfig`: omission preserves a machine and null removes its block;
-an unset backend selects automatic resolution. Writes use the manifest writer.
-Changing a compute block deletes that machine's stored probe before publication,
-so the next probe or launch verifies the new settings. An unchanged block keeps
-its probe. Project machine entries carry `compute` and the live stored
-`compute_probe` (or null), including on cached project reads.
+The broker binds one live provider process tree; validate-only credentials
+cannot issue launch. Keys and protected command receipts make the same intent
+replayable without duplicate launch. An interrupted command without a result
+retains an uncertain-outcome diagnostic. These operational effects create no
+new graph-change channel. Discuss, graph merge, Seed/Refresh, Paper, and the
+Auto-research root do not gain helper launch authority.
 
-`GET /api/projects/{project_id}/compute-jobs` refreshes running project rows on
-read, then returns `ComputeJobRecord` rows newest first with the existing list
-limit. Records include the optional launch label; pre-label records have null.
-No new polling worker is added. Human
-`POST /api/projects/{project_id}/compute-jobs/{job_id}/cancel` requires project
-write admission and the same named human identity as Stop. It records the human's
-user id and the first cancellation timestamp, calls the backend, and returns the
-row; terminal cancellation is an unchanged 200 response. Jobs from another
-project are not visible through either route. Stop and pause never cancel jobs.
+The staged helper client's 120-second wait has not been shown to cover the
+combined remote resolution, probe, and launch timeouts. A slow valid operation
+may outlast it. Keyed receipts preserve replay safety; they do not prove deadline
+coverage. This remains an open review item in the active handoff.
 
-Experiment-loop and Auto-research human episode starts require a ready stored
-probe for the resolved execution machine. When absent, admission runs and stores
-one first. A failed or unavailable probe refuses with 422 naming the machine,
-diagnostic, and required action, before reserving an episode. Ordinary human
-Work is not gated. The concrete request admission owns this check; shared
-background execution does not.
+## One watcher and human Cancel contract
 
-## Turn-bound agent commands
+Every external `watch.json` entry requires `check_command`, absolute `log_path`,
+and absolute `cwd`; it may include one nonblank `cancel_command`. Experiment
+entries may additionally retain their existing group label. There is no
+`job_id` observer form. Scheduler commands and helper-generated commands use
+this same schema and the recorded execution host.
 
-Explicit graph-repair tasks retain their existing validation-only policy.
-The staged client serves these keyed commands in ordinary Work, Experiment-loop,
-and Auto-research child Work turns, including their same-invocation correction
-turns:
+Check exit zero means the named work is gone; one means it remains present;
+other results are unobservable. Completion is an operational observation, not
+scientific success. Error backoff, grouping, target binding, native-session
+continuation, budget spend, and Stop fences remain owned by the
+[watcher spec](conversations-episodes-and-watchers.md).
 
-- `launch --key K --cwd <absolute-path> [--label <text>] -- <argv...>` returns
-  `{job_id, log_path, backend_id}`. The working directory must be inside the
-  turn's writable roots. Repeating the same keyed intent returns the same job id
-  and starts no additional job.
-- `job-status --key K <job_id>` refreshes a project-owned job and returns
-  `{status, exit_status, started_at, ended_at, log_tail}`. The command's log tail
-  reads at most 1 KiB so its replayable response fits the diagnostic receipt.
-- `cancel --key K <job_id>` records the task operation id as requester and calls
-  the backend. Repeating the same key is a no-op.
+The job UI reads external watcher records from
+`GET /api/projects/{project_id}/watchers`. It shows observation state, log path,
+check diagnostic, and cancellation history. There is no separate compute-job
+list API. The backend exports `can_cancel`; the browser never derives it from
+watcher status.
 
-Execution machine, host, project, operation id, and optional episode id come
-from the turn, never the command. A bad request answers `invalid`; a machine
-without a ready probe answers `unavailable` with its diagnostic and required
-action; success answers `ok`. A broker turn's client waits up to the compute
-command timeout, which covers machine resolution, one probe, and a backend
-start in sequence, so a slow remote launch is not misreported as unavailable. Each call has a task event; each new keyed command
-has two protected diagnostic receipts, one for its start and one for its result.
-Commands do not apply a graph Patch.
+A human clicks Cancel through
+`POST /api/projects/{project_id}/watchers/{watcher_id}/cancel`. The route requires
+project membership, write admission, and an attributed human. Foreign-project
+ids return 404. RCP first runs a fresh saved check. Already completed work is
+observed complete without attributing its exit to Cancel. A failed check records
+why Cancel was not run. Otherwise an atomic durable claim records the human and
+time, then executes the saved cancel command in the same bounded shell on the
+recorded host and working directory.
 
-Idempotency is scoped to the task operation, verb, and key, including correction
-turns within that operation. The start receipt retains an argument digest, and
-the result receipt retains the response; both survive ordinary diagnostic
-retention. Reusing a key with different arguments is invalid. An interrupted
-call without a result stays unavailable with an uncertain-outcome diagnostic;
-replay never guesses that a missing response means nothing started.
+Concurrent requests share the claim. A successful command means **Cancel
+requested**, not proof of cancellation or a new watcher lifecycle state. Its
+receipt disables further requests. A failed command records a bounded diagnostic
+and allows an explicit retry; a timeout reports an unknown outcome. Polling
+continues to determine whether observed work is gone. A process interruption
+between claim and result leaves the request recorded and is not automatically
+replayed.
 
-Broker authority is explicit and independent of episode identity. One live
-provider process tree binds each turn, with a fresh binding for correction;
-remote turns run the broker on their execution host. A validate-only identity
-cannot issue keyed commands. Auto-research retains its episode identity and
-per-request signatures, and stale processes cannot command a later Work turn.
-Task owners retain policy: the Auto-research root, Discuss, graph merge,
-Seed/Refresh, and Paper do not serve these compute verbs. Child Work reuses the
-Work handler with its own current operation and parent episode identity.
+Stop and pause never execute cancellation. A stopped watcher may still describe
+live work and keeps its Cancel action. Its fresh check can record completion
+without reopening delivery. Arming, polling, and Stop never run `cancel_command`.
 
-## Job observers and settlement
+## Durable state and transfer
 
-An external item in `watch.json` may be `{"job_id": "<id>"}` instead of the
-closed shell form. Experiment items may also carry their existing `group` label;
-shell and job items may coexist in one list. A stored job observer has no shell
-fields, and a stored shell observer has no job id.
+Internal helper rows retain the OS identity, roots, requester lineage, and
+receipts for recovery. Background reconciliation does not block startup and
+uses the saved execution identity even when the project manifest or graph
+history is unavailable. Transport errors remain diagnostics rather
+than evidence of completion. Helper job directories are not included in
+whole-database backup payloads; restoring a row does not recreate its outputs.
+Project deletion refuses while recorded helper jobs remain running.
 
-Arming requires a job in the same project and task lineage: the same origin
-operation, or the same episode for an Experiment-loop. A refreshed `exited` or
-`cancelled` job arms completed. An initially lost job rejects the handoff like
-an unobservable initial shell check. Polling uses `refresh_compute_job`, never an
-agent shell: `running` stays active, `exited` or `cancelled` completes, and `lost`
-degrades with its diagnostic instead of completing. Completion says the process
-ended, not that its computation succeeded.
-
-After reading the final watcher declaration, settlement refreshes jobs launched
-by that turn. Any still-running job missing a job observer is a correctable
-handoff defect naming every unobserved job id. It enters the existing correction
-round without spending an invocation; arming remains after settlement. Exited
-jobs need no observer, and a turn that launched nothing is unaffected.
-
-Each delivered job observer contributes `job_id`, `exit_status`, `started_at`,
-`ended_at`, `duration_seconds`, `log_path`, and `backend_id` to the Experiment
-watcher-state file or the Work wake message, including a child Work wake. A child
-watcher wakes its own route and native session, spends one parent B unit, and
-leaves completion pending when no B remains. Existing target, coalescing,
-admission, and Stop fences still own delivery. Stop and pause do not cancel jobs.
-Duration is end time minus start time, or null when either timestamp is absent.
-
-## Durable state and startup
-
-SQLite records requester lineage, execution alias and host, backend id and opaque
-handle, paths, argv, containment, lifecycle, timestamps, cancellation attribution,
-and diagnostics. Reconciliation runs in background maintenance after startup;
-failures are logged and never block startup. After a backend is unreachable, the
-same diagnostic is recorded on remaining rows for that execution host in the
-pass without contacting it again. Only transport failures (SSH exit 255, a timeout,
-or an unstartable transport) mark a host unavailable for the rest of a pass; other
-observation failures stay with their row. Reconciliation uses the saved backend and
-execution identity rather than retargeting old jobs after configuration changes.
-
-Alive remains `running`. Unknown also remains `running`, with a diagnostic even
-when an exit file exists. Once gone, a valid exit file yields `exited`; an absent
-or malformed exit receipt yields `lost` with a diagnostic. A job with a recorded
-cancellation request becomes `cancelled` once gone. Cancellation preserves the
-first requester and time and is idempotent for terminal jobs. Stop and pause do
-not call it. Terminal records stay terminal.
-Restore rehearsal rebinds local job paths to known-absent overlay locations, as
-it does watcher paths; remote paths retain their execution-host qualification.
+Project transfer retains watcher worker identity and cancellation attribution,
+time, and diagnostics as history. It strips executable check and cancel actions
+and does not move or cancel external work. Offline restore also clears every
+watcher's cancel action, including already-stopped watchers, while detaching
+continuations. Ordinary restart retains watchers and their human actions.

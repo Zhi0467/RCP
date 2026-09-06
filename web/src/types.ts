@@ -902,10 +902,14 @@ interface WatcherDeliveryRecord {
 }
 
 export interface ExternalWatcherRecord extends WatcherDeliveryRecord {
-  check_command: string | null;
-  log_path: string | null;
-  cwd: string | null;
-  job_id: string | null;
+  check_command: string;
+  log_path: string;
+  cwd: string;
+  cancel_command: string | null;
+  cancel_requested_by: string | null;
+  cancel_requested_at: string | null;
+  cancel_error: string | null;
+  can_cancel: boolean;
   last_checked_at: string | null;
   last_exit_code: number | null;
   last_error: string | null;
@@ -1623,16 +1627,11 @@ export interface Machine {
   compute_probe: ComputeBackendProbe | null;
 }
 
-export const COMPUTE_BACKEND_IDS = ["systemd_user", "launchd", "ssh_session", "slurm"] as const;
-export type ComputeBackendId = (typeof COMPUTE_BACKEND_IDS)[number];
 export type ComputeContainment = "mirrored" | "cooperative";
 
 export interface MachineComputeConfig {
-  backend: ComputeBackendId | null;
+  job_manager: "slurm" | null;
   jobs_root: string;
-  slurm_account: string;
-  slurm_partition: string;
-  slurm_submit_args: string[];
 }
 
 export interface ComputeBackendProbe {
@@ -1646,38 +1645,6 @@ export interface ComputeBackendProbe {
   cgroup_isolated: boolean | null;
   status_label: string;
   status_tone: "ready" | "error";
-}
-
-/** Lifecycle decisions belong to the backend, never a browser status comparison. */
-declare const OPAQUE_COMPUTE_JOB_STATUS: unique symbol;
-export type ComputeJobStatus = { readonly [OPAQUE_COMPUTE_JOB_STATUS]: "ComputeJobStatus" };
-
-export interface ComputeJobRecord {
-  job_id: string;
-  project_id: string;
-  origin_operation_id: string;
-  label: string | null;
-  episode_id: string | null;
-  execution_machine: string;
-  execution_host: string;
-  backend_id: string;
-  backend_handle: string;
-  job_root: string;
-  cwd: string;
-  argv: string[];
-  log_path: string;
-  exit_path: string;
-  containment: ComputeContainment;
-  status: ComputeJobStatus;
-  exit_status: number | null;
-  created_at: string;
-  started_at: string | null;
-  ended_at: string | null;
-  cancel_requested_by: string | null;
-  cancel_requested_at: string | null;
-  diagnostic: string | null;
-  /** Backend-owned control decision; the browser never derives it from status. */
-  can_cancel: boolean;
 }
 
 export interface ComputeConnection {

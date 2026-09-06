@@ -1,5 +1,4 @@
-import { ComputeJobRow } from "./ComputeJobRow";
-import { useComputeJobs } from "../hooks/useComputeJobs";
+import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { taskStatusLabel } from "../agentTasks";
@@ -97,7 +96,6 @@ export function ExperimentRunDetail({
   onCheckWatcher,
   episodeReportHref,
 }: Props) {
-  const computeJobs = useComputeJobs(apiBase, run.watchers);
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   const operational = control.operational;
@@ -343,7 +341,6 @@ export function ExperimentRunDetail({
             The owning Auto-research episode is watching this Experiment's completion.
           </p>
         )}
-        {computeJobs.error && <p role="alert">Compute jobs: {computeJobs.error}</p>}
         {currentWatcherItems.length === 0 ? (
           <p className="experiment-run-empty">
             {ownedByAutoResearch && health === "agent_active"
@@ -355,7 +352,7 @@ export function ExperimentRunDetail({
         ) : (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">
             <WatcherItems
-              computeJobs={computeJobs}
+              apiBase={apiBase}
               items={currentWatcherItems}
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={watcherActionsDisabled}
@@ -367,7 +364,7 @@ export function ExperimentRunDetail({
           <Fold title="Stopped watchers" count={stoppedWatcherCount} nested>
             <ul className="experiment-run-watchers" aria-label="Stopped experiment watchers">
               <WatcherItems
-                computeJobs={computeJobs}
+                apiBase={apiBase}
                 items={stoppedWatcherItems}
                 watcherCheckBusyId={watcherCheckBusyId}
                 actionsDisabled={watcherActionsDisabled}
@@ -547,13 +544,13 @@ function joinFacts(parts: (string | null | undefined)[]): string | null {
 }
 
 function WatcherItems({
-  computeJobs,
+  apiBase,
   items,
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
 }: {
-  computeJobs: ReturnType<typeof useComputeJobs>;
+  apiBase: string;
   items: ExperimentWatcherItem[];
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
@@ -562,7 +559,7 @@ function WatcherItems({
   return items.map((item) =>
     item.kind === "group" ? (
       <WatcherGroupDetail
-        computeJobs={computeJobs}
+        apiBase={apiBase}
         group={item.group}
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
@@ -571,7 +568,7 @@ function WatcherItems({
       />
     ) : (
       <WatcherDetail
-        computeJobs={computeJobs}
+        apiBase={apiBase}
         watcher={item.watcher}
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
@@ -593,13 +590,13 @@ function watcherItemIsStopped(item: ExperimentWatcherItem): boolean {
 }
 
 function WatcherGroupDetail({
-  computeJobs,
+  apiBase,
   group,
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
 }: {
-  computeJobs: ReturnType<typeof useComputeJobs>;
+  apiBase: string;
   group: ExperimentWatcherGroup;
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
@@ -622,7 +619,7 @@ function WatcherGroupDetail({
         <ul className="experiment-run-watcher-group-members" aria-label={`${group.label} watchers`}>
           {group.watchers.map((watcher) => (
             <WatcherDetail
-              computeJobs={computeJobs}
+              apiBase={apiBase}
               watcher={watcher}
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={actionsDisabled}
@@ -637,13 +634,13 @@ function WatcherGroupDetail({
 }
 
 function WatcherDetail({
-  computeJobs,
+  apiBase,
   watcher,
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
 }: {
-  computeJobs: ReturnType<typeof useComputeJobs>;
+  apiBase: string;
   watcher: WatcherRecord;
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
@@ -654,14 +651,9 @@ function WatcherDetail({
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
-      {external && watcher.job_id && (
+      {external && (
         <div className="chat-watcher-row">
-          <ComputeJobRow
-            jobId={watcher.job_id}
-            jobs={computeJobs.jobs}
-            onCancel={computeJobs.cancel}
-            cancelling={computeJobs.cancelling}
-          />
+          <ExternalJobRow apiBase={apiBase} watcher={watcher} disabled={actionsDisabled} />
         </div>
       )}
       <details>
@@ -704,7 +696,7 @@ function WatcherDetail({
               label: "Consecutive failures",
               value: external ? watcher.consecutive_error_count : null,
             },
-            { label: "Exit code", value: external ? watcher.last_exit_code : null },
+            { label: "Check exit code", value: external ? watcher.last_exit_code : null },
             { label: "Completed", value: formatMoment(watcher.completed_at) },
             { label: "Machine", value: watcher.execution_host || "Local" },
             {
@@ -738,24 +730,22 @@ function WatcherDetail({
           </div>
         )}
         {external ? (
-          watcher.job_id ? null : (
-            <>
-              <div className="experiment-run-watcher-command">
-                <span className="eyebrow">Check command</span>
-                <code>{watcher.check_command}</code>
-              </div>
-              <div className="experiment-run-watcher-paths">
-                <span>
-                  <span className="eyebrow">Log</span>
-                  <code>{watcher.log_path}</code>
-                </span>
-                <span>
-                  <span className="eyebrow">Working directory</span>
-                  <code>{watcher.cwd}</code>
-                </span>
-              </div>
-            </>
-          )
+          <>
+            <div className="experiment-run-watcher-command">
+              <span className="eyebrow">Check command</span>
+              <code>{watcher.check_command}</code>
+            </div>
+            <div className="experiment-run-watcher-paths">
+              <span>
+                <span className="eyebrow">Log</span>
+                <code>{watcher.log_path}</code>
+              </span>
+              <span>
+                <span className="eyebrow">Working directory</span>
+                <code>{watcher.cwd}</code>
+              </span>
+            </div>
+          </>
         ) : (
           <div className="experiment-run-watcher-command">
             <span className="eyebrow">Graph condition</span>

@@ -245,7 +245,10 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     child_routes = store.auto_research_child_works(episode_id)
     assert len(child_routes) == 1
     child = store.agent_task(child_routes[0].current_operation_id)
-    assert child is not None and child.kind == "node_chat" and child.status == "succeeded"
+    assert child is not None and child.kind == "node_chat"
+    assert child.status == "succeeded", child.error or child.status_message
+    reply = store.agent_command_by_key(episode_id, "acceptance-worker-reply")
+    assert reply is not None and reply.status == "ok"
     assert child.parent_operation_id is None
     assert [item.operation_id for item in store.episode_invocations(episode_id)] == [
         tasks[0].operation_id,

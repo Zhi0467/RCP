@@ -611,6 +611,10 @@ class TransferWatcherRecord(_StrictTransferRecord):
     chat_id: str = Field(min_length=1)
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_requested_at: AwareTimestamp | None = None
+    cancel_error: str | None = None
     graph_target: TransferGraphTarget = Field(default_factory=TransferGraphTarget)
     status: Literal["completed", "stopped"]
     graph_condition: TransferJsonDocument | None = None

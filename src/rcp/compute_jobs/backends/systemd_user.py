@@ -11,6 +11,7 @@ from rcp.compute_jobs.backend_context import (
     facility_probe,
 )
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
+from rcp.transport.compute_process_owner import owner_alive, owner_command, require_cancel_success
 
 if TYPE_CHECKING:
     from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
@@ -87,27 +88,16 @@ class SystemdUserBackend:
 
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
-            result = context.run(
-                self.command(context, "systemctl", "show", "-p", "ActiveState", handle)
-            )
+            result = context.run(owner_command(self.id, handle, context.target_uid()))
         except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
             raise
         except (RuntimeError, subprocess.SubprocessError):
             return None
-        if result.returncode:
-            return False if "could not be found" in result.stderr.casefold() else None
-        state = result.stdout.strip().removeprefix("ActiveState=")
-        if state in {"active", "activating", "reloading", "deactivating", "refreshing"}:
-            return True
-        return False if state in {"inactive", "failed"} else None
+        return owner_alive(self.id, result)
 
     def cancel(self, handle: str, context: BackendContext) -> None:
-        result = context.run(self.command(context, "systemctl", "stop", handle))
-        if result.returncode and not any(
-            marker in result.stderr.casefold()
-            for marker in ("not loaded", "could not be found", "does not exist")
-        ):
-            raise RuntimeError(result.stderr or "systemd cancellation failed")
+        result = context.run(owner_command(self.id, handle, context.target_uid(), cancel=True))
+        require_cancel_success(self.id, result)
 
     def probe(self, context: BackendContext) -> ComputeBackendProbe:
         return facility_probe(

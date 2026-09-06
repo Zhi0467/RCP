@@ -8,7 +8,6 @@ import type {
   GraphWatcherRecord,
   GraphNode,
   WatcherRecord,
-  ComputeJobRecord,
 } from "./types";
 
 export interface AgentTaskGroup {
@@ -56,7 +55,7 @@ export function watcherIsActive(watcher: WatcherRecord): boolean {
 }
 
 export function isExternalWatcherRecord(watcher: WatcherRecord): watcher is ExternalWatcherRecord {
-  return "job_id" in watcher || "check_command" in watcher;
+  return "check_command" in watcher;
 }
 
 export function isGraphWatcherRecord(watcher: WatcherRecord): watcher is GraphWatcherRecord {
@@ -86,7 +85,7 @@ export function visibleChatWatchers(
   const experimentNodeId = node?.type === "experiment" ? node.id : null;
   const visible = new Map<string, WatcherRecord>();
   for (const watcher of watchers) {
-    if (!watcherIsActive(watcher)) continue;
+    if (!watcherIsActive(watcher) && !isExternalWatcherRecord(watcher)) continue;
     const nodeLoopWatcher =
       experimentNodeId !== null &&
       watcher.continuation.patch_kind === "experiment_loop" &&
@@ -96,27 +95,6 @@ export function visibleChatWatchers(
     if (nodeLoopWatcher || chatSelfWakeWatcher) visible.set(watcher.watcher_id, watcher);
   }
   return [...visible.values()];
-}
-
-/**
- * A chat's own job observers stay listed after Stop watching while the backend still reports
- * the job cancellable, so Stop (which never cancels compute) does not hide the Cancel control.
- */
-export function retainedChatJobObservers(
-  watchers: WatcherRecord[],
-  chatId: string,
-  jobs: readonly ComputeJobRecord[],
-): WatcherRecord[] {
-  const cancellable = new Set(jobs.flatMap((job) => (job.can_cancel ? [job.job_id] : [])));
-  return watchers.filter(
-    (watcher) =>
-      !watcherIsActive(watcher) &&
-      watcher.chat_id === chatId &&
-      watcher.continuation.patch_kind === "work" &&
-      isExternalWatcherRecord(watcher) &&
-      watcher.job_id !== null &&
-      cancellable.has(watcher.job_id),
-  );
 }
 
 export function isExperimentLoopTask(task: AgentTask): boolean {

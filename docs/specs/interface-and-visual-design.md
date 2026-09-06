@@ -167,24 +167,27 @@ with a concise save-first label until the metadata is saved. A compute-settings
 save also invalidates older in-flight readiness responses, so a late old-target
 success cannot replace the empty state left by a failed new-target probe.
 
-Settings groups provider executables and a **Compute runner** block under each
-machine. The block offers **Automatic** or a registered backend, **Jobs root**,
-and account, partition, and submit arguments only for Slurm. Submit arguments
-use one argument per line. **Reset compute** stages removal of the optional block;
-the normal Settings **Save** publishes it. Probes share compute connections' label,
-tone, and pending presentation. Editing the block masks the stored result and
-requires Save before Probe; probe and save cannot overlap.
+Settings groups provider executables and **Long-running jobs** under each
+machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
+configures helper storage. RCP exposes no scheduler resource settings. **Reset
+compute** removes the optional block through the normal Settings **Save**.
+Readiness uses the same label, tone, and pending presentation as compute
+connections. Editing masks the saved result and requires Save before Probe;
+probe and save cannot overlap.
 
-Chat and Experiment watcher rows distinguish RCP job observers from shell
-observers. A job row carries its label or id, status, exit status, and backend,
-with Cancel requester and timestamp when recorded. Missing list entries retain
-the job id and show **Job details unavailable**. Shell observers keep their log
-and check presentation. **Stop watching** retains its existing meaning and never
-cancels compute. A **Cancel** control appears on a job row only while the
-backend's `can_cancel` says so, independent of chat read-only mode or Experiment
-action locks, because the cancel route is project-scoped and enforces its own
-write admission. It calls that route and replaces the row with the response. The
-browser never infers availability from job status.
+Chat and Experiment show one external job row per shell watcher. Its log path,
+observation status, last check, and diagnostic remain visible with Cancel
+requester and time when recorded. A completed watcher does not assert scientific
+success; **Cancel requested** does not assert the process was stopped. There is
+no second job-ID-based display path.
+
+**Stop watching** keeps its existing meaning and never cancels external work.
+A **Cancel** control appears only while the backend's `can_cancel` permits it,
+including on a stopped watcher that may still describe live work. It is
+independent of graph read-only mode or Experiment action locks because the API
+owns project write admission. The action response updates the displayed receipt;
+the existing watcher refresh owns observation. The browser does not infer
+cancellation availability from watcher status.
 
 ## Paper
 

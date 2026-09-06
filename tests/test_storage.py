@@ -69,7 +69,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (7, "space_run_projection_indexes_v1"),
         (8, "conversation_worktrees_v1"),
         (9, "compute_jobs_v1"),
-        (10, "compute_job_observers_v1"),
+        (10, "external_watcher_actions_v1"),
         (11, "child_work_watchers_v1"),
         (12, "compute_job_labels_v1"),
     ]
