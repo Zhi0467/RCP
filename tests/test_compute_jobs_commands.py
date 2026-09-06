@@ -234,14 +234,8 @@ def test_compute_status_refreshes_exit_and_rejects_other_project(commands):
     assert not commands.backend.cancels
 
 
-@pytest.mark.parametrize("stored_backend", [None, "ssh_session"])
-def test_compute_unavailable_probe_is_persisted_and_not_repeated(
-    commands, monkeypatch, stored_backend
-):
-    if stored_backend:
-        commands.store.record_compute_backend_probe(
-            "project", commands.probe.model_copy(update={"backend_id": stored_backend})
-        )
+@pytest.mark.parametrize("stored", [False, True])
+def test_compute_not_ready_probe_is_rerun_at_launch_until_ready(commands, monkeypatch, stored):
     unavailable = commands.probe.model_copy(
         update={
             "ready": False,
@@ -251,18 +245,30 @@ def test_compute_unavailable_probe_is_persisted_and_not_repeated(
             "status_tone": "error",
         }
     )
+    if stored:
+        commands.store.record_compute_backend_probe("project", unavailable)
+    results = [unavailable, commands.probe]
     calls = []
-    monkeypatch.setattr(
-        compute_commands, "probe_compute_backend", lambda *a, **kw: calls.append(1) or unavailable
-    )
-    for key in ("first", "second"):
-        response = commands.launch(key)
-        assert response.status == "unavailable"
-        assert response.message == "No user manager"
-        assert response.result["required_action"] == "Enable the user manager"
-    assert calls == [1]
+
+    def probe(*_args, **_kwargs):
+        calls.append(1)
+        return results[len(calls) - 1]
+
+    monkeypatch.setattr(compute_commands, "probe_compute_backend", probe)
+    first = commands.launch("first")
+    assert first.status == "unavailable"
+    assert first.message == "No user manager"
+    assert first.result["required_action"] == "Enable the user manager"
     assert AppStore(commands.store.path).compute_backend_probe("project", "laptop") == unavailable
     assert not commands.backend.starts
+    # The manager became available: the stored failure is re-run, not trusted forever.
+    second = commands.launch("second")
+    assert second.status == "ok"
+    assert calls == [1, 1]
+    assert (
+        AppStore(commands.store.path).compute_backend_probe("project", "laptop") == commands.probe
+    )
+    assert len(commands.backend.starts) == 1
 
 
 def test_compute_launch_reprobes_stale_backend_once(commands):

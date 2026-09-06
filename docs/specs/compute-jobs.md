@@ -85,7 +85,8 @@ receives the result. SQLite's `compute_backend_probes` table retains the latest
 `ComputeBackendProbe` JSON and `probed_at` for each `(project_id,
 execution_machine)`. Agent launch reads that result; when none exists, it runs
 one probe and stores the result before deciding. A stored result that is not
-ready refuses launch with its diagnostic and required action.
+ready is re-run at the next launch and replaced; if it is still not ready, launch
+is refused with the fresh diagnostic and required action.
 A stored probe whose backend no longer matches current resolution is re-run once
 at launch and replaced.
 Missing automatic resolution is `unavailable` with the action

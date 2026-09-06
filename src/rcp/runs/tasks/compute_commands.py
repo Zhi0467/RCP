@@ -157,7 +157,7 @@ class WorkComputeCommands:
                 raise ValueError("Compute cwd is a protected write path.")
             machine = self.write_scope.execution_machine
             probe = store.compute_backend_probe(self.write_scope.project_id, machine)
-            if probe is None:
+            if probe is None or not probe.ready:
                 probe = probe_compute_backend(self.manifest, machine, data_dir=self.data_dir)
                 store.record_compute_backend_probe(self.write_scope.project_id, probe)
             launch = launch.model_copy(update={"cwd": str(cwd)})
