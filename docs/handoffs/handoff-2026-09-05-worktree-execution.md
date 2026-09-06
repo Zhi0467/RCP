@@ -286,9 +286,24 @@ in the shared checkout. The server log recorded no errors or 5xx responses.
 
 ### Explicit gaps
 
-Browser UI interaction/console, Discuss reads of the worktree, the pull-request
+Real-server browser UI interaction/console, Discuss reads of the worktree, the pull-request
 option's provider turn, provider-handled merge conflict recovery, and real
 Pause/Resume/Retry were not verified. Regression tests exercise those relevant runtime boundaries with fake
 provider events and real disposable Git, which does not replace a live provider
 drive. SSH was not attempted, as instructed. GitHub pull-request creation was not
 attempted, as instructed; PR verification stops at the local bare-origin push.
+
+### PR review verification (2026-09-05)
+
+Review of implementation commit `2643b03` found no unresolved review threads or
+known merge-blocking code defect. GitHub CI passed lint/format, pytest on Python
+3.11 and 3.12, old-data upgrade, and Web typecheck/tests. A new local run passed
+all 86 worktree API/Git/scope and existing write-scope regressions.
+
+The Chromium composer interaction regression also passed outside the restricted
+sandbox. It exercises the actual `NodeChat` component with fixture API responses:
+first-Work binding selection, branch badge, backend-disabled integration,
+ordinary Work integration dispatch without losing the draft, removal evidence,
+Cancel, and confirmed removal. No page errors were observed. This closes the
+earlier browser-test launch failure, not the real-server/provider/SSH acceptance
+journey. S133 and this handoff remain open for those explicitly listed gaps.
