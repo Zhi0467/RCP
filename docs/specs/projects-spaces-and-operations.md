@@ -93,13 +93,13 @@ canonical home refuses ordinary registration/writes instead of inventing a
 second identity or read-only catalog mode. Low-level replay stays space-neutral
 for recovery and never consults local membership or admission data.
 
-The current product has no project transfer workflow, multi-space desktop
-switcher, or fresh-identity fork. The confirmed one-way personal-to-team target
+The desktop supports a one-way personal-to-team transfer and switching between
+enrolled spaces; there is no fresh-identity fork. Transfer
 creates a separate team checkout and moves the canonical home only after the old
 home is fenced. Its home-change record preserves both space-scoped human actors;
 it does not change ownership of a person's checkout. Team-to-team and
 team-to-personal product transfers remain excluded. The transfer's
-operational-record boundary and sole archive format are settled in the
+operational-record boundary and versioned archive formats are settled in the
 [personal-to-team transfer decision](../decisions/2026-08-27-personal-to-team-transfer-archive.md).
 
 Every project has exactly one canonical state repository, local or remote. Its

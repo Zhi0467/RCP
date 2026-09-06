@@ -34,8 +34,6 @@ from rcp.storage.provisioning import (
     project_transfer_source_configuration_sha256,
 )
 from rcp.transfer.archive import (
-    TRANSFER_ARCHIVE_CODEC,
-    TRANSFER_ARCHIVE_SCHEMA_VERSION,
     TRANSFER_RESEARCH_CANONICAL_ROOTS,
     TRANSFER_RESEARCH_DELEGATED_ROOTS,
     TRANSFER_RESEARCH_EXCLUDED_ROOTS,
@@ -369,15 +367,22 @@ def _validate_protocol_bindings(
     ):
         raise ValueError("target provisioning and transfer link identities differ")
     if (
-        archive.schema_version != TRANSFER_ARCHIVE_SCHEMA_VERSION
-        or archive.archive_codec != TRANSFER_ARCHIVE_CODEC
-        or archive.source_rcp_version != source.source_rcp_version
+        archive.source_rcp_version != source.source_rcp_version
         or archive.source_schema_generation != source.source_schema_generation
         or archive.source_schema_generation != link.accepted_schema_generation
         or archive.archive_codec != link.accepted_archive_codec
         or link.accepted_archive_codec not in source.supported_archive_codecs
     ):
         raise ValueError("transfer archive uses a different accepted format")
+    expected_bundles = {
+        f"repositories/{repository.alias}.bundle"
+        for repository in source.repositories
+        if repository.source_commit is not None
+    }
+    if expected_bundles != {
+        entry.archive_path for entry in archive.entries if entry.group == "repository_git"
+    }:
+        raise ValueError("transfer Git bundles do not match the reviewed source commits")
     expected = {
         "project_id": link.project_id,
         "source_space_id": link.source_space_id,

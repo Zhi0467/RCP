@@ -7,25 +7,21 @@ Active:
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
 
-- [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
-  — human-confirmed implementation through one genuinely usable lab/server
-  deployment. The direct-`main` exception ended on 2026-09-02; remaining work
-  on this handoff uses short-lived branches, PR CI, and human merge. The gate,
-  server foundation, provisioning, backup, restore, and member-removal lanes are
-  implemented; two of them still owe a live drive. The desktop team-space lane
-  is in progress, and the read-only Server Settings projection is complete.
-  Transfer implementation, including relay, activation, cleanup, and UI, is
-  complete; its source-built desktop/SSH lab drive remains.
-  Read the handoff's packet status table for the current state of any packet.
-  Its dated implementation log and completed packet sections were archived to
-  [the evidence file](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
-  on 2026-09-01; the handoff itself retains only work with an open drive.
 - [External supervisor and release artifacts](handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-  — human-confirmed on 2026-09-02; nothing implemented yet. Moves server
+  — contract and build/release workflows implemented; public-source transition
+  cleanup remains. Moves server
   update and restore out of the application into a Python supervisor that
   installs promoted release artifacts from `stable`, with one CI build per
-  merge and human promotion. Phases 0–2 (contract, builds, going public) may
-  start now; Phases 3–6 wait for the team-server handoff above to archive.
+  merge and human promotion. The private CLI connection remains for existing
+  non-deployment operations, as confirmed on 2026-09-05. The supervisor package is not implemented.
+  The first-lab closure gate is satisfied; finish Phase 2 cleanup, then dispatch
+  Phases 3–6 in the documented short-PR order.
+
+The [team-space/server handoff is closed](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md):
+the backed-up CoT project was transferred and verified through the desktop on
+2026-09-05. Existing two-member production use was accepted by the human;
+separate disposable-host SSH qualification was deliberately skipped. Unrun
+acceptance coverage remains explicit, rather than being relabeled as passed.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

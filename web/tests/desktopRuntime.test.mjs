@@ -494,10 +494,15 @@ test("native transfer preparation bindings keep ids and provisioning intent publ
     assert.equal(invocations[0].args.request.target_request_id, request.targetRequestId);
     assert.equal(invocations[0].args.request.connection_id, request.connectionId);
     assert.equal(invocations[0].args.request.source_project_id, request.sourceProjectId);
+    assert.equal(Object.hasOwn(invocations[0].args.request, "include_local_commits"), false);
     assert.equal(invocations[0].args.request.target_provisioning.machines[0].host, "");
     assert.equal(JSON.stringify(invocations).includes("archive_bytes"), false);
     assert.equal(JSON.stringify(invocations).includes("proof_bytes"), false);
     assert.equal(JSON.stringify(invocations).includes("member_token"), false);
+    await prepareDesktopProjectTransfer({ ...request, includeLocalCommits: true });
+    assert.equal(invocations.at(-1).args.request.include_local_commits, true);
+    await prepareDesktopProjectTransfer({ ...request, includeLocalCommits: false });
+    assert.equal(Object.hasOwn(invocations.at(-1).args.request, "include_local_commits"), false);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

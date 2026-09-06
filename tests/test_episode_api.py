@@ -580,6 +580,8 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     monkeypatch,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    # Count retry admission probes, not unrelated asynchronous startup warming.
+    monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: [])
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.catalog.open(project_id)

@@ -44,10 +44,12 @@ from rcp.transfer.project_files import (
     capture_project_transfer_files,
     transfer_project_file_payload,
 )
+from rcp.transfer.repository_git import capture_repository_bundle
 from rcp.transfer.source import seal_transfer_archive
 
 from .helpers import authorized_human
 from .test_transfer_project_files import _finished_project, _write_canonical_sources
+from .test_transfer_repository_git import _git
 
 
 def _entry(root: Path, archive_path: str, group: str, payload: bytes) -> TransferArchiveEntry:
@@ -71,7 +73,9 @@ def _target_actor(store: AppStore) -> AuthorizedHuman:
     )
 
 
-def _source_configuration(service) -> ProjectTransferSourceConfiguration:
+def _source_configuration(
+    service, *, include_local_commits=False
+) -> ProjectTransferSourceConfiguration:
     manifest = service.history.manifest
     repositories = tuple(
         ProjectTransferRepositorySource(
@@ -80,13 +84,18 @@ def _source_configuration(service) -> ProjectTransferSourceConfiguration:
                 f"git@github.com:Example/{repository.alias}.git"
             ),
             machine_alias=repository.machine,
+            source_commit=(
+                _git(Path(repository.path), "rev-parse", "HEAD") if include_local_commits else None
+            ),
         )
         for repository in manifest.repositories
     )
     return ProjectTransferSourceConfiguration(
         source_rcp_version="0.1.0.dev0+main",
         source_schema_generation=1,
-        supported_archive_codecs=(TRANSFER_ARCHIVE_CODEC,),
+        supported_archive_codecs=(
+            "rcp-transfer-v2" if include_local_commits else TRANSFER_ARCHIVE_CODEC,
+        ),
         machine_aliases=tuple(sorted(manifest.machine_map)),
         repositories=repositories,
         state_repository=manifest.state.repository,
@@ -217,6 +226,7 @@ def _archive_fixture(
     monkeypatch: pytest.MonkeyPatch,
     *,
     seal_archive: bool = False,
+    include_local_commits: bool = False,
 ):
     service, records, artifact, artifact_name, view, view_name = _finished_project(
         manifest,
@@ -228,7 +238,16 @@ def _archive_fixture(
     target_data = tmp_path / "target-data"
     target = AppStore(target_data / "rcp.sqlite3", space_kind="team")
     target_actor = _target_actor(target)
-    source_configuration = _source_configuration(service)
+    if include_local_commits:
+        for repository in manifest.repositories:
+            path = Path(repository.path)
+            _git(path, "init", "--template=")
+            (path / "revision.txt").write_text(f"Reviewed {repository.alias}")
+            _git(path, "add", "revision.txt")
+            _git(path, "commit", "-m", "Reviewed source commit")
+    source_configuration = _source_configuration(
+        service, include_local_commits=include_local_commits
+    )
     source_request = source.create_source_project_transfer_request(
         project_id=records.project_id,
         target_space_id=target.space_id,
@@ -243,6 +262,11 @@ def _archive_fixture(
         central_root=tmp_path / "central",
         monkeypatch=monkeypatch,
     )
+    if include_local_commits:
+        for repository in provisioning.repositories:
+            path = Path(repository.resolved_path)
+            _git(path, "init", "--template=")
+            _git(path, "commit", "--allow-empty", "-m", "Target baseline")
     target_request = target.create_target_project_transfer_request(
         provisioning_request_id=provisioning.request_id,
         source_request_id=source_request.request_id,
@@ -255,7 +279,7 @@ def _archive_fixture(
         ),
         source_release_proof_sha256=source_request.source_release_proof_sha256,
         accepted_schema_generation=source_configuration.source_schema_generation,
-        accepted_archive_codec=TRANSFER_ARCHIVE_CODEC,
+        accepted_archive_codec=source_configuration.supported_archive_codecs[0],
     )
     assert target_request.link_receipt is not None
     source_request = source.link_source_project_transfer_request(
@@ -365,8 +389,27 @@ def _archive_fixture(
             source_proof,
         )
     )
+    if include_local_commits:
+        for repository in source_configuration.repositories:
+            bundle = tmp_path / f"{repository.alias}.bundle"
+            capture_repository_bundle(
+                "",
+                manifest.repository_map[repository.alias].path,
+                repository.source_commit,
+                bundle,
+            )
+            entries.append(
+                _entry(
+                    archive_root,
+                    f"repositories/{repository.alias}.bundle",
+                    "repository_git",
+                    bundle.read_bytes(),
+                )
+            )
     ordered = tuple(sorted(entries, key=lambda item: item.archive_path))
     archive = TransferArchiveManifest(
+        schema_version=2 if include_local_commits else 1,
+        archive_codec=source_configuration.supported_archive_codecs[0],
         project_id=records.project_id,
         source_space_id=source.space_id,
         target_space_id=target.space_id,
@@ -451,12 +494,16 @@ def _archive_fixture(
     }
 
 
+@pytest.mark.parametrize("include_local_commits", [False, True])
 def test_target_import_publishes_exact_history_but_does_not_activate(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    include_local_commits: bool,
 ) -> None:
-    fixture = _archive_fixture(manifest, tmp_path, monkeypatch)
+    fixture = _archive_fixture(
+        manifest, tmp_path, monkeypatch, include_local_commits=include_local_commits
+    )
 
     receipt = import_project_transfer(
         fixture["catalog"],
@@ -554,13 +601,17 @@ def test_target_import_cleans_only_imported_sources_if_completion_crashes(
     "boundary",
     ("database", "canonical", "project_files", "provider_history", "completion"),
 )
+@pytest.mark.parametrize("include_local_commits", [False, True])
 def test_target_import_retries_the_same_archive_after_each_committed_boundary(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boundary: str,
+    include_local_commits: bool,
 ) -> None:
-    fixture = _archive_fixture(manifest, tmp_path, monkeypatch)
+    fixture = _archive_fixture(
+        manifest, tmp_path, monkeypatch, include_local_commits=include_local_commits
+    )
     target = fixture["target"]
     archive = fixture["archive"]
 

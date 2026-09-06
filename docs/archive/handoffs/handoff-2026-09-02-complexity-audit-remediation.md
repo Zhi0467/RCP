@@ -30,7 +30,7 @@ facts. Findings 2 and 3 do not block this closure.
 The accepted source is the
 [complexity and brittleness audit](rcp-complexity-brittleness-audit-2026-09-02.md).
 This handoff carries findings 4, 5, 6, and 7. Finding 1 is recorded in the
-[team/server surface freeze decision](../../decisions/2026-09-02-freeze-new-team-server-surface-until-lab-closure.md).
+[fulfilled team/server surface freeze decision](../decisions/2026-09-02-freeze-new-team-server-surface-until-lab-closure.md).
 
 Do not restructure source update and restore as a second control plane or extract
 the installed-service lifecycle from `create_app` here. Those are findings 2 and

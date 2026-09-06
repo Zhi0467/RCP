@@ -47,7 +47,7 @@ def _source_configuration(**changes: object) -> ProjectTransferSourceConfigurati
     values: dict[str, object] = {
         "source_rcp_version": "0.1.0.dev0+main",
         "source_schema_generation": 1,
-        "supported_archive_codecs": ("rcp-transfer-v1", "rcp-transfer-v2"),
+        "supported_archive_codecs": ("rcp-transfer-v1", "future-transfer-codec"),
         "machine_aliases": ("laptop",),
         "repositories": (
             ProjectTransferRepositorySource(

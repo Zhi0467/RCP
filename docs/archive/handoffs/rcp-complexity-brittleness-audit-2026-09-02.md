@@ -73,7 +73,7 @@ project provisioning, personal-to-team transfer, backup, restore, member
 removal, desktop switching, source install, source update, candidate rehearsal,
 rollback, and recovery.
 
-The [active first-team server handoff](../../handoffs/handoff-2026-08-27-dev-team-space-and-server.md)
+The [now-archived first-team server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 still lists integrated two-member desktop switching, first task, SSH execution,
 backup/restore, transfer, and final one-lab closure drives as open. At the same
 time, those paths already constrain ordinary application startup, storage,

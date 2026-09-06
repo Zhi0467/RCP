@@ -180,7 +180,63 @@ def _attribution_fields(
 
 
 class ProjectTransferStoreMixin:
-    """One read-only, snapshot-consistent projection of finished project history."""
+    """Confirmed settlement, read-only export, and atomic import of project history."""
+
+    def settle_source_transfer_tasks(self, request_id: str) -> None:
+        """Close dormant standalone attempts under an already-confirmed move.
+
+        Like offline restore detachment, this is an administrative end to a
+        continuation, not a worker reporting failure after Pause. Keep the
+        original output, session evidence, and scratch; export stays read-only.
+        Any live project work rolls the entire settlement back.
+        """
+
+        now = self.now()
+        detail = (
+            "Paused attempt closed by the confirmed move to a team space. "
+            "Its history and source scratch are preserved; it will not resume on the team."
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            transfer = self._project_transfer_request_from_connection(connection, request_id)
+            if (
+                transfer.side != "source"
+                or transfer.phase != "source_released"
+                or transfer.source_release_receipt is None
+                or transfer.target_admission_receipt is None
+            ):
+                raise ValueError("task settlement requires the confirmed source release")
+            rows = connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE project_id = ? "
+                "AND status = 'paused' AND episode_id IS NULL",
+                (transfer.project_id,),
+            ).fetchall()
+            for row in rows:
+                operation_id = row["operation_id"]
+                connection.execute(
+                    "UPDATE graph_runs SET status = 'interrupted', updated_at = ?, "
+                    "finished_at = COALESCE(finished_at, ?), status_message = ?, error = ?, "
+                    "phase = 'interrupted', last_activity_at = ? WHERE operation_id = ?",
+                    (now, now, detail, detail, now, operation_id),
+                )
+                self._insert_agent_task_event(
+                    connection, operation_id, detail, level="warning", created_at=now
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_interrupted",
+                    self._bounded_receipt_payload(
+                        {
+                            "status": "interrupted",
+                            "reason": "project_transfer",
+                            "request_id": request_id,
+                        }
+                    ),
+                    tier="summary",
+                    created_at=now,
+                )
+            self._require_finished_transfer_state(connection, transfer.project_id)
 
     def export_project_transfer_records(
         self,
