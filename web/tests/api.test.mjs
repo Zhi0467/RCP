@@ -432,7 +432,7 @@ test("team shell protocol one remains the initial thin entrance contract", () =>
     minimum: 1,
     maximum: 1,
   });
-  assert.equal(TEAM_SHELL_PROTOCOL_VERSION, 2);
+  assert.equal(TEAM_SHELL_PROTOCOL_VERSION, 3);
   assert.equal(teamShellProtocolOne.selection_header, TEAM_SHELL_PROTOCOL_HEADER);
   assert.deepEqual(teamShellProtocolOne.mismatch, {
     status: 426,
@@ -443,6 +443,17 @@ test("team shell protocol one remains the initial thin entrance contract", () =>
     { method: "POST", path: "/api/team/session/exchange" },
     { method: "GET", path: "/api/projects" },
   ]);
+});
+
+test("team shell protocol three matches the current wire selection", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL("../../tests/fixtures/team_shell_protocol_v3.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal(fixture.protocol_version, TEAM_SHELL_PROTOCOL_VERSION);
+  assert.equal(fixture.selection_header, TEAM_SHELL_PROTOCOL_HEADER);
 });
 
 test("team invitation helpers use the member-scoped collection without code URLs", async () => {

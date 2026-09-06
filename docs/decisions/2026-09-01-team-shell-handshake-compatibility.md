@@ -37,9 +37,13 @@ cached cards, optional operator route, and the independent Keychain account.
 Unknown registry versions and unknown fields still fail closed.
 
 The ordinary server-served Web/API surface and server operator capability are
-outside this protocol. Project provisioning, transfer, provider execution,
+outside this protocol. Project provisioning, transfer policy, provider execution,
 backup, update, and other features continue to use their owning contracts after
-the native shell has established the browser session.
+the native shell has established the browser session. Native-owned request wire
+changes, including the transfer relay's optional reviewed commits and v2 archives,
+must still advance this protocol: a successful entrance must not admit a desktop
+whose requests the server cannot decode. The current ranges live in the projection
+spec; this does not introduce feature or operator-capability discovery.
 
 ## Why
 
