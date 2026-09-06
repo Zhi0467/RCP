@@ -8,11 +8,14 @@ covered_by:
   - tests/test_api.py::test_chat_artifacts_are_bounded_sandboxed_and_independent
   - tests/test_result_view_artifacts.py
   - web/tests/resultViews.test.mjs
+  - web/tests/artifactSelection.browser.test.mjs
 invariants: [1, 2, 4, 6, 9, 10e]
-last_checked: 2026-09-02 — the source-generated viewer was driven in Safari's
-  WebKit: highlighting text enabled Add highlighted text without creating a rail
-  item, and the explicit button created exactly one commentable selection. A
-  source-built desktop also opened and downloaded the live TIDMAD artifact over
+last_checked: 2026-09-05 — direct selection and confirmation passed in Chromium
+  and WebKit using the source-generated nested viewer with synthetic report data.
+  Text stays highlighted; area drags need no Box mode; neither enters the rail
+  before Comment. Cancel, Escape, repeated drags and report controls were checked.
+  Earlier production verification used a source-built desktop to open and
+  download the live TIDMAD artifact over
   the WTH UCSD team's SSH-tunneled HTTPS origin, then closed the preview without
   leaving the team project. Candidate-disposition regressions pass; the browser
   drive covers Box, comment, Add to chat, Keep, and live external reread. A
@@ -48,8 +51,10 @@ canonical state.
 2. Open the HTML. Confirm the unified viewer shows the page, transient-selection
    rail, and Keep control; no result-view destination, selector, or second card
    exists.
-3. Highlight text and confirm it remains an ordinary selection until the human
-   explicitly adds it to the rail. Add that highlight, then box a region. Add
+3. Highlight text, then choose Comment to add it to the rail. Drag a figure or
+   blank area directly, without a Box button. Confirm the rectangle remains
+   visible until Comment, Cancel or Escape; neither a highlight nor an area
+   enters the rail automatically. Confirm ordinary report controls still work. Add
    separate comments and add the assembled context to the chat. Confirm no task
    starts automatically and the editable composer remains in Discuss.
 4. Send a question. Confirm the exact originating native session receives the

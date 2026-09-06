@@ -289,7 +289,13 @@ def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
     # The workers are detached and sleep before writing, so this is the one
     # place that legitimately waits on them rather than deciding for them.
     wait_until(
-        lambda: all(Path(spec.log_path).with_suffix(".done").is_file() for spec in specs),
+        # Creation precedes write/close: wait for the completed contents rather
+        # than racing the detached worker while the new file is still empty.
+        lambda: all(
+            (marker := Path(spec.log_path).with_suffix(".done")).is_file()
+            and marker.read_text(encoding="utf-8") == "done\n"
+            for spec in specs
+        ),
         timeout=TASK_SETTLE_TIMEOUT,
         detail="the detached fixture jobs never wrote their completion markers",
     )

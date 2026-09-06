@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from html import unescape
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -67,10 +70,23 @@ def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None
     assert "event.isTrusted" in document
     assert "new TextEncoder()" in document
     assert "type:'rcp-artifact-selection'" in document
-    assert "kind:'rcp-artifact-box-start'" in document
+    assert "installArtifactSelection(document" in document
+    assert "event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection" in unescape(
+        document
+    )
+    assert "window.parent===window || event.source!==window.parent" in document
     assert "value.kind!=='rcp-reference'" in document
     assert "artifact.contentWindow?.postMessage" not in document
-    assert "portPost(artifactPort,{kind:'rcp-artifact-box-start'})" in document
+    assert "rcp-artifact-box-start" not in document
+
+
+def test_selection_runtime_is_included_in_the_frozen_backend() -> None:
+    root = Path(__file__).resolve().parents[1]
+    sidecar = (root / "packaging" / "rcp_backend.spec").read_text()
+    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text()
+    assert 'SOURCE_ROOT / "rcp" / "artifact_selection.js"' in sidecar
+    assert '(str(ARTIFACT_SELECTION), "rcp")' in sidecar
+    assert "_selection_script()" in hook
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:

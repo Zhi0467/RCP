@@ -1177,13 +1177,38 @@ def test_viewer_assembles_transient_context_without_dispatch_or_mode_change() ->
     assert "mode" not in document
     assert "fetch(config.keepUrl" in document
     assert "A prompt can include at most 12 selections." in document
-    assert "if(boxWidth<=0||boxHeight<=0)" in document
-    assert 'id="captureText"' in document
-    assert "pendingText={kind:'text'" in document
-    assert "captureText.addEventListener('click'" in document
+    assert "right - left < 4" in document
+    assert 'id="pending"' in document
+    assert "installSelectionConfirmation" in document
+    assert "frame.addEventListener('load',enableSelection)" in document
+    assert "type:'rcp-artifact-selection-enable'" in document
+    assert "installArtifactSelection(boxLayer,offerSelection)" in document
+    assert 'id="box"' not in document
+    assert ">Comment</button>" in document
+    assert ">Cancel</button>" in document
     assert "if(raw.kind==='text'&&typeof raw.text==='string') appendSelection" not in document
     assert "connect-src 'self'" in csp
     assert "img-src 'self' data: blob:" in csp
+
+
+def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
+    document, _csp = artifact_viewer_document(
+        preview_url="/preview",
+        keep_url=None,
+        project_id="project",
+        chat_id=None,
+        operation_id="operation",
+        descriptor=AgentArtifactDescriptor(
+            artifact_id="0123456789abcdef01234567",
+            name="curves.html",
+            media_type="text/html",
+            size_bytes=128,
+        ),
+    )
+
+    assert 'id="preview"' in document
+    assert 'id="pending"' not in document
+    assert "rcp-artifact-selection-enable" not in document
 
 
 def test_prompt_addresses_comments_without_implying_an_edit() -> None:
