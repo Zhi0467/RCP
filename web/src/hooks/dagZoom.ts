@@ -1,4 +1,6 @@
 export const DAG_ZOOM_MIN = 0.5;
+/** Fit's own floor. Pinch stops at DAG_ZOOM_MIN; framing a whole graph cannot. */
+export const DAG_FIT_ZOOM_MIN = 0.05;
 export const DAG_ZOOM_MAX = 2.5;
 
 export interface DagZoomResult {
@@ -53,6 +55,11 @@ interface DagFitInput {
  * Returns null when there is nothing to frame yet. The result never magnifies
  * past 1: a small graph keeps its authored node size instead of ballooning to
  * fill the pane.
+ *
+ * Fit reaches below the pinch floor on purpose. A large graph needs a scale the
+ * gesture never offers — a 2,090px-tall graph in a 475px pane needs about 0.2 —
+ * and clamping to the gesture floor would frame only part of exactly the graphs
+ * that most need framing.
  */
 export function fitDagToViewport({
   nodes,
@@ -78,7 +85,7 @@ export function fitDagToViewport({
   const usableHeight = Math.max(1, viewportHeight - padding * 2);
   const zoom = clamp(
     Math.min(usableWidth / contentWidth, usableHeight / contentHeight),
-    DAG_ZOOM_MIN,
+    DAG_FIT_ZOOM_MIN,
     1,
   );
   return {

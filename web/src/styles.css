@@ -4471,7 +4471,9 @@ button:disabled {
   align-items: center;
   background: var(--ink);
   border-radius: 50%;
-  color: white;
+  /* --ink inverts with the theme, so its text has to invert too; a literal white
+     leaves the dark-mode badge at about 1.3:1. */
+  color: var(--paper);
   display: flex;
   font-family: var(--mono);
   font-size: 9px;
@@ -7521,7 +7523,8 @@ button.relation-map-node:hover {
   border-radius: 7px;
   bottom: 18px;
   box-shadow: var(--shadow);
-  color: white;
+  /* Notices carry errors, so this pair must stay readable in both themes. */
+  color: var(--paper);
   font-size: 11px;
   left: 50%;
   max-width: min(620px, 90vw);

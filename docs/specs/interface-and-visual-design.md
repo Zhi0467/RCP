@@ -64,10 +64,12 @@ DAG **Research flow** columns follow semantic stage rather than relation-arrow
 direction.
 
 Runs is the episode ledger for bounded Experiment loops and Auto-research. It
-carries no page title and is ordered **Needs Action**, then **Completed**. Needs
-Action is an unfolded reverse-chronological card list across both episode modes.
-Completed is grouped into foldable **Experiment loop** and **Auto-research**
-lists, in that order. The owning Experiment title or Auto-research identity is
+carries no page title and is ordered **Needs Action**, **In progress**, then
+**Completed**. Needs Action holds only runs that have stopped advancing and stay
+stopped until a human acts; a run still moving on its own is In progress. Each of
+those two is an unfolded reverse-chronological card list across both episode
+modes. Completed is grouped into foldable **Experiment loop** and
+**Auto-research** lists, in that order. The owning Experiment title or Auto-research identity is
 the card's visual headline; start time is secondary metadata without an
 `Episode` prefix. Completed groups name
 the episode mode once; cards do not repeat it or add muted recommendation and

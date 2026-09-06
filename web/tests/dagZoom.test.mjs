@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DAG_ZOOM_MAX,
+  DAG_FIT_ZOOM_MIN,
   DAG_ZOOM_MIN,
   fitDagToViewport,
   zoomDagAtPoint,
@@ -64,7 +65,23 @@ test("fit frames a graph that overflows the pane and never magnifies a small one
   assert.equal(small.zoom, 1, "a graph that already fits keeps its authored size");
 });
 
-test("fit never zooms past the pinch floor", () => {
+test("fit reaches below the pinch floor so a large graph actually fits", () => {
+  // The graph that motivated framing: ~1680x2090px of nodes in a ~475px pane.
+  const tall = fitDagToViewport({
+    nodes: [
+      { left: 0, top: 0, width: 10, height: 10 },
+      { left: 1670, top: 2080, width: 10, height: 10 },
+    ],
+    viewportWidth: 900,
+    viewportHeight: 475,
+  });
+
+  assert.ok(tall.zoom < DAG_ZOOM_MIN, "the pinch floor cannot frame this graph");
+  assert.ok(2090 * tall.zoom <= 475, "every node fits the pane at the fitted scale");
+  assert.ok(1680 * tall.zoom <= 900);
+});
+
+test("fit still has a floor rather than collapsing to nothing", () => {
   const fitted = fitDagToViewport({
     nodes: [
       { left: 0, top: 0, width: 10, height: 10 },
@@ -73,7 +90,8 @@ test("fit never zooms past the pinch floor", () => {
     viewportWidth: 800,
     viewportHeight: 500,
   });
-  assert.equal(fitted.zoom, DAG_ZOOM_MIN);
+
+  assert.equal(fitted.zoom, DAG_FIT_ZOOM_MIN);
 });
 
 test("fit reports nothing to frame instead of guessing", () => {

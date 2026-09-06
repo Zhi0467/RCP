@@ -27,9 +27,9 @@ last_passed: 2026-08-24 — served an isolated demo project, staged a Decision
 last_checked: >-
   2026-09-06 — the three-section Runs grammar replaced the two-section rule in
   the projection and both ledgers. The listed web suites assert the new section
-  membership for every lifecycle in both surfaces. A served drive reading the
-  space Needs Action count against the same project's Overview answer has not
-  been repeated since the change.
+  membership for every lifecycle in both surfaces. A served drive confirming
+  that in-flight auto-research is counted as In progress rather than Needs
+  Action has not been repeated since the change.
 ---
 
 # Attention and run surfaces tell one truthful story
@@ -90,9 +90,9 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
    summary or next action is explicitly stale rather than shown as current.
 8. Open Runs with active, actionable, and completed episodes of both modes, then
    project History, then inspect a terminal task. Return to the space project
-   index and inspect its Runs ledger across projects. Read the Needs Action
-   count on that ledger and the Overview answer for the same project at the same
-   moment, and confirm they agree.
+   index and inspect its Runs ledger across projects. With auto-research still
+   advancing and nothing awaiting a human, confirm the Needs Action count and
+   heading claim no owed work, and that those runs appear under In progress.
 
 ## Assert
 
@@ -127,9 +127,11 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
 - Runs has exactly **Needs Action**, **In progress**, and **Completed**, in that
   order, and every row is an Experiment-loop or Auto-research episode parent.
   A run appears under Needs Action only when it has stopped advancing and stays
-  stopped until a human acts, so the Needs Action count never disagrees with the
-  Overview answer about the same project at the same moment. A run still moving
-  on its own is In progress.
+  stopped until a human acts; a run still moving on its own is In progress. No
+  section heading or count describes still-moving work as owed to a human.
+  Runs sections and the Overview attention answer stay separate questions: the
+  Overview tile and Inbox count graph attention, and its own detail line names
+  the proposals and decisions it counts. Neither surface speaks for the other.
 - Needs Action and In progress each mix both episode modes in reverse
   chronological order and are never folded as sections. Completed groups
   episodes in foldable lists ordered **Experiment loop** then **Auto-research**.

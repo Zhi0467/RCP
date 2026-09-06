@@ -76,3 +76,71 @@ test("blocked storage still honours a dark system preference before first paint"
   assert.equal(stampedTheme({ stored: blocked, systemDark: true }), "dark");
   assert.equal(stampedTheme({ stored: blocked, systemDark: false }), "light");
 });
+
+const STYLESHEET = readFileSync(
+  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
+  "utf-8",
+);
+
+function rootTokens(selector) {
+  const start = STYLESHEET.indexOf(`${selector} {`);
+  assert.ok(start >= 0, `stylesheet must define ${selector}`);
+  const block = STYLESHEET.slice(start, STYLESHEET.indexOf("}", start));
+  return Object.fromEntries(
+    [...block.matchAll(/(--[a-z0-9-]+):\s*([^;]+);/g)].map(([, name, value]) => [
+      name,
+      value.trim(),
+    ]),
+  );
+}
+
+/** Resolve one token for a theme, following var() indirection through the base palette. */
+function resolveToken(name, theme) {
+  const base = rootTokens(":root");
+  const dark = rootTokens(':root[data-theme="dark"]');
+  const lookup = theme === "dark" ? { ...base, ...dark } : base;
+  let value = lookup[name];
+  for (let hop = 0; hop < 4 && value?.startsWith("var("); hop += 1) {
+    value = lookup[value.slice(4, value.indexOf(")")).trim()];
+  }
+  assert.match(value ?? "", /^#[0-9a-f]{6}$/i, `${name} must resolve to a hex color in ${theme}`);
+  return value;
+}
+
+function luminance(hex) {
+  const channels = hex
+    .slice(1)
+    .match(/.{2}/g)
+    .map((value) => Number.parseInt(value, 16) / 255)
+    .map((value) => (value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4)));
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+
+function contrastRatio(foreground, background) {
+  const a = luminance(foreground);
+  const b = luminance(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+test("text on the inverting ink surface stays readable in both themes", () => {
+  for (const theme of ["light", "dark"]) {
+    const ratio = contrastRatio(resolveToken("--paper", theme), resolveToken("--ink", theme));
+    assert.ok(ratio >= 4.5, `${theme} ink surface contrast is ${ratio.toFixed(2)}:1`);
+  }
+});
+
+test("no rule paints a literal text color on a theme-inverting background", () => {
+  // Toasts and Attention badges once hardcoded white on --ink. That reads at
+  // about 1.3:1 once --ink inverts, and a palette-pair sweep cannot see it
+  // because the offending color is not a token.
+  const offenders = [];
+  for (const [, selector, body] of STYLESHEET.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const background = body.match(/background(?:-color)?:\s*([^;]+);/);
+    const color = body.match(/(?<!-)color:\s*([^;]+);/);
+    if (!background || !color) continue;
+    const inverting = /var\(--(ink|walnut)\)/.test(background[1]);
+    const literal = !/^(var\(|color-mix\(|inherit|currentColor|transparent)/.test(color[1].trim());
+    if (inverting && literal) offenders.push(selector.trim().split("\n").pop().trim());
+  }
+  assert.deepEqual(offenders, []);
+});
