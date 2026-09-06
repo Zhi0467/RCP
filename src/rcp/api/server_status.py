@@ -231,7 +231,7 @@ def _backup_status(report: ServerDoctorReport) -> ServerStatusSummary:
 def _restore_status(restored_at: datetime | None, now: datetime) -> ServerRestoreStatus:
     if restored_at is None:
         return ServerRestoreStatus(
-            status=ServerStatusSummary(label="No restore drill recorded", tone="neutral"),
+            status=ServerStatusSummary(label="Restore history is unavailable", tone="neutral"),
             last_completed_at=None,
             drill_age_days=None,
         )

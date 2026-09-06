@@ -201,6 +201,32 @@ def test_server_status_is_team_only_and_fails_loudly_on_unsafe_read(tmp_path) ->
     assert receipt_response.json()["detail"] == response.json()["detail"]
 
 
+def test_server_status_default_restore_reader_keeps_team_settings_available(tmp_path) -> None:
+    store, _bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    member = store.preprovision_team_member("Alice")
+    app = create_app(
+        data_dir=tmp_path,
+        trusted_principal_resolver=lambda _request, opened: opened.space_user(member.user_id),
+        server_doctor_reader=_report,
+        server_protected_backup_reader=lambda _report: _protected_backup(),
+        server_status_clock=lambda: NOW,
+    )
+
+    with TestClient(app, base_url="https://team.test", raise_server_exceptions=False) as client:
+        response = client.get("/api/server-status")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["releases"]["running_commit"] == COMMIT
+    assert payload["backup"]["protected_projects"] == 3
+    assert payload["restore"]["status"] == {
+        "label": "Restore history is unavailable",
+        "tone": "neutral",
+    }
+    assert payload["restore"]["last_completed_at"] is None
+    assert payload["restore"]["drill_age_days"] is None
+
+
 def test_server_status_does_not_invent_a_restore_age() -> None:
     status = project_server_status(
         _report(),
@@ -209,7 +235,7 @@ def test_server_status_does_not_invent_a_restore_age() -> None:
         now=NOW,
     )
 
-    assert status.restore.status.label == "No restore drill recorded"
+    assert status.restore.status.label == "Restore history is unavailable"
     assert status.restore.drill_age_days is None
 
 

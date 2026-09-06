@@ -16,8 +16,10 @@ turn fast-forwarded the shared checkout onto that commit with both checkouts
 clean (receipt below). The Chromium chat-component interaction drive also passes
 with fixture API responses. Full served-app/provider browser interaction,
 Discuss reads of the worktree, the pull-request option's provider turn, and real Pause/Resume/Retry remain
-unverified. SSH and GitHub `gh pr create` are explicit
-unexercised gaps. S133 remains blocked-external. The settled decisions below
+unverified. A human-approved disposable SSH check on 2026-09-06 verified the
+shipped Git module on Git 2.34.1 as the operator account. The full provider/SSH
+workflow and GitHub `gh pr create` remain unexercised. S133 remains
+blocked-external. The settled decisions below
 remain the contract; implementation choices and check receipts follow.
 
 ## What this is
@@ -126,10 +128,11 @@ integration and Remove without losing unmerged work.
 
 S133 is the single new acceptance scenario authorized by the brief. Its complete
 journey still needs a browser and a provider environment that can execute the
-existing containment contract, followed by separately authorized SSH and GitHub
-PR verification. The current brief forbids those external operations and handoff
-archival. Leave this file active; do not treat the local partial drive or provider
-task completion as acceptance success.
+existing containment contract, including the full SSH and GitHub PR workflows.
+The human approved only a disposable SSH Git compatibility check on 2026-09-06;
+that does not complete provider execution or GitHub verification. Leave this
+file active; do not treat the partial drives or provider task completion as
+acceptance success.
 
 ## Implementation choices where the handoff was silent
 
@@ -291,8 +294,21 @@ Real-server browser UI interaction/console, Discuss reads of the worktree, the p
 option's provider turn, provider-handled merge conflict recovery, and real
 Pause/Resume/Retry were not verified. Regression tests exercise those relevant runtime boundaries with fake
 provider events and real disposable Git, which does not replace a live provider
-drive. SSH was not attempted, as instructed. GitHub pull-request creation was not
+drive. The later disposable SSH Git check below does not verify the full provider
+workflow as the team service account. GitHub pull-request creation was not
 attempted, as instructed; PR verification stops at the local bare-origin push.
+
+### Git 2.34 compatibility check (2026-09-06)
+
+After explicit approval to send the module source to the team host, a disposable
+SSH drive under the operator account reproduced the deployed module's
+`unknown switch z` failure on Git 2.34.1. The corrected portable porcelain reader
+passed plan, create, inspect, merge preflight, and removal with the branch
+retained. Both a path with spaces and a path containing Unicode, a tab, quotes,
+and a backslash passed. The drive used only temporary repositories, removed them
+on exit, and did not touch team projects or the running service. Local regressions
+cover both legacy raw paths and modern quoted paths, plus an independent check
+of the bound checkout's actual branch.
 
 ### PR review verification (2026-09-05)
 

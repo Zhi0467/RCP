@@ -8,7 +8,7 @@ covered_by:
   - tests/test_conversation_worktree_scope.py
   - tests/test_conversation_worktree_api.py
   - web/tests/worktreeChat.browser.test.mjs
-last_passed: not yet fully verified; local verification receipts are in the active handoff
+last_passed: not yet fully verified; local and bounded SSH Git receipts are in the active handoff
 invariants: [4, 5, 9, 10b, 10c]
 reported_by: human-confirmed worktree execution brief, 2026-09-05
 ---
@@ -55,8 +55,10 @@ worktree also violates this contract.
 
 ## Verification boundary
 
-The implementing brief prohibits SSH and GitHub repository/PR creation. Local
-verification uses a throwaway checkout and local bare origin. Pushing that branch
-is a partial pull-request drive; it does not verify `gh pr create` on GitHub.
-This scenario remains blocked-external until those journeys and the browser
-drive are verified. The active handoff records exact executed checks and gaps.
+Local verification uses a throwaway checkout and local bare origin. Pushing that
+branch does not verify `gh pr create` on GitHub. On 2026-09-06, the human approved
+a disposable SSH Git compatibility check: the shipped module's Git lifecycle
+passed on Git 2.34.1 under the operator account. The full provider workflow as the
+team service account, GitHub PR creation, and the remaining browser journeys are
+still unverified, so this scenario remains blocked-external. The active handoff
+records exact executed checks and gaps.

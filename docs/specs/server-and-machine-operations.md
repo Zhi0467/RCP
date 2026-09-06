@@ -399,6 +399,12 @@ deployment journal and makes no release, checkpoint or rollback decision.
 private control availability and the root-owned observational status projection;
 that projection cannot authorize startup or replace the private journals.
 
+Team Settings reads release and backup status without opening the supervisor's
+private restore journals. The current public projection has no completed-restore
+timestamp, so Settings reports restore history as unavailable with no completion
+time or drill age. Missing history does not imply that no restore occurred and
+does not prevent the rest of server status from loading.
+
 ### Source installation adoption and qualification
 
 The first paired-wheel bootstrap on a source installation stages new integration
