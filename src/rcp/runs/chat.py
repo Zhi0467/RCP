@@ -1362,18 +1362,7 @@ def _append_chat_exchange(
                 ),
             }
         )
-        lock_path = service.history.workspace.root / ".chat.lock"
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                with path.open("a", encoding="utf-8") as handle:
-                    for record in records:
-                        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+        _append_chat_records(service, path, records, reserve_prompt=True)
 
 
 def _append_chat_graph_receipt(
@@ -1411,15 +1400,44 @@ def _append_chat_graph_receipt(
             "appliedRevision": graph_update.applied_revision,
             "graphUpdate": graph_update.model_dump(mode="json"),
         }
-        lock_path = service.history.workspace.root / ".chat.lock"
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+        _append_chat_records(service, path, [record])
     service.invalidate_source_index()
+
+
+def _append_chat_records(
+    service: ProjectService,
+    path: Path,
+    records: list[dict[str, object]],
+    *,
+    reserve_prompt: bool = False,
+) -> None:
+    """Append under the chat lock; callers own the StateWorkspace transaction."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = service.history.workspace.root / ".chat.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            if reserve_prompt and path.exists():
+                # A live steer may already have recorded this attempt's original
+                # human prompt. Inspect only identity, never use transcript as input.
+                existing = [json.loads(line) for line in path.read_text().splitlines() if line]
+                recorded = {
+                    item.get("operationId")
+                    for item in existing
+                    if item.get("role") == "user" and item.get("steering") is None
+                }
+                records = [
+                    item
+                    for item in records
+                    if item.get("role") != "user"
+                    or not item.get("operationId")
+                    or item.get("operationId") not in recorded
+                ]
+            with path.open("a", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    service.history.workspace.publish([path.relative_to(service.history.workspace.root)])

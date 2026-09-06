@@ -7,6 +7,7 @@ import type {
   ConversationMode,
   GraphUpdateResult,
   TaskTrigger,
+  SteerReceipt,
 } from "./types";
 
 export interface TaskTranscriptLine {
@@ -20,6 +21,7 @@ export interface TaskTranscriptLine {
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
+  steering?: SteerReceipt | null;
 }
 
 export function isActiveTask(task: AgentTask): boolean {
@@ -142,7 +144,9 @@ export function chatTasksMissingFromHistory(
   messages: ChatMessage[],
 ): AgentTask[] {
   const persistedOperationIds = new Set(
-    messages.flatMap((message) => (message.operation_id ? [message.operation_id] : [])),
+    messages.flatMap((message) =>
+      message.operation_id && !message.steering ? [message.operation_id] : [],
+    ),
   );
   // Operation id is the turn identity. Matching by prompt text loses one of
   // two legitimate turns when the human sends the same message twice.
@@ -160,6 +164,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     trigger: message.trigger,
     graphUpdate: message.graph_update,
     attachments: message.attachments,
+    steering: message.steering,
   };
 }
 
@@ -181,8 +186,21 @@ export function reconcileChatHistoryArtifacts(
   tasks.forEach((task) => {
     const artifacts = taskArtifacts(task);
     const lineIndex = answerLineByOperationId.get(task.operation_id);
-    if (!artifacts.length || lineIndex === undefined) return;
-    lines[lineIndex] = { ...lines[lineIndex], artifacts };
+    if (lineIndex !== undefined) {
+      if (artifacts.length) lines[lineIndex] = { ...lines[lineIndex], artifacts };
+      return;
+    }
+    // The first steer reserves the original human message before the answer is
+    // persisted. Keep that attempt's live answer or failure beside its receipts.
+    const operationMessages = messages.filter(
+      (message) => message.operation_id === task.operation_id,
+    );
+    if (
+      operationMessages.some((message) => message.steering) &&
+      operationMessages.some((message) => message.role === "user" && !message.steering)
+    ) {
+      lines.push(...reconstructTaskTranscript([task]).filter((line) => line.role !== "human"));
+    }
   });
   return lines;
 }

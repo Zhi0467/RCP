@@ -13,8 +13,9 @@ drive on the committed branch proved the provider path: a real Codex Work turn
 created and committed a file on the chat's worktree branch while the shared
 checkout stayed untouched, and the human-selected merge-into-starting-branch
 turn fast-forwarded the shared checkout onto that commit with both checkouts
-clean (receipt below). Browser interaction, Discuss reads of the worktree, the
-pull-request option's provider turn, and real Pause/Resume/Retry remain
+clean (receipt below). The Chromium chat-component interaction drive also passes
+with fixture API responses. Full served-app/provider browser interaction,
+Discuss reads of the worktree, the pull-request option's provider turn, and real Pause/Resume/Retry remain
 unverified. SSH and GitHub `gh pr create` are explicit
 unexercised gaps. S133 remains blocked-external. The settled decisions below
 remain the contract; implementation choices and check receipts follow.

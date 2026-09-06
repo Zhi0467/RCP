@@ -823,6 +823,11 @@ class BackgroundAgentTasks:
             return settled
         return record
 
+    def live_control(self, operation_id: str) -> AgentProcessControl | None:
+        """Return only the process control owned by this exact in-process attempt."""
+        with self._controls_lock:
+            return self._controls.get(operation_id)
+
     def _signal_agent_task_pause(self, operation_id: str) -> None:
         """Best-effort re-signal of a pause whose durable intent already exists."""
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from rcp.providers import (
     ProviderRuntime,
     ProviderRuntimeStep,
+    ProviderSteeringState,
+    ProviderSteerReceipt,
     ProviderStreamEvent,
     ProviderTurn,
     ProviderTurnRequest,
@@ -39,6 +41,7 @@ class CodexAppServerRuntime(ProviderRuntime):
     """Fresh-stdio Codex app-server transport for one RCP provider turn."""
 
     id = CODEX_APP_SERVER_RUNTIME_ID
+    supports_steering = True
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _CodexAppServerTurn(request)
@@ -60,6 +63,7 @@ class _CodexAppServerTurn(ProviderTurn):
         self._thread_id: str | None = None
         self._turn_id: str | None = None
         self._usage: ProviderUsage | None = None
+        self._steers: dict[str, tuple[str, str]] = {}
         self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
 
@@ -139,8 +143,49 @@ class _CodexAppServerTurn(ProviderTurn):
             return ProviderRuntimeStep(events=(ProviderStreamEvent(event="raw", text=line),))
         return self._notification(method, params)
 
+    def steering_state(self) -> ProviderSteeringState:
+        if self._phase != "running":
+            return ProviderSteeringState(False, "The provider turn is not running.")
+        return ProviderSteeringState(True, turn_id=self._turn_id)
+
+    def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
+        state = self.steering_state()
+        if not state.can_steer:
+            raise ValueError(state.reason)
+        if expected_turn_id != self._turn_id:
+            raise ValueError("The addressed provider turn is no longer active.")
+        request_id = f"steer:{message_id}"
+        if request_id in self._steers:
+            raise ValueError("This message was already sent to the provider.")
+        self._steers[request_id] = (message_id, expected_turn_id)
+        return _rpc_bytes(
+            {
+                "id": request_id,
+                "method": "turn/steer",
+                "params": {
+                    "threadId": self._thread_id,
+                    "expectedTurnId": expected_turn_id,
+                    "clientUserMessageId": message_id,
+                    "input": [{"type": "text", "text": text}],
+                },
+            }
+        )
+
     def _response(self, value: dict[str, object]) -> ProviderRuntimeStep:
         request_id = value.get("id")
+        if isinstance(request_id, str) and request_id in self._steers:
+            message_id, expected_turn_id = self._steers[request_id]
+            error = value.get("error")
+            result = value.get("result")
+            if error is not None:
+                receipt = ProviderSteerReceipt("refused", _error_text(error))
+            elif isinstance(result, dict) and result.get("turnId") == expected_turn_id:
+                receipt = ProviderSteerReceipt("delivered")
+            else:
+                receipt = ProviderSteerReceipt(
+                    "unknown", "The provider did not acknowledge the addressed turn."
+                )
+            return ProviderRuntimeStep(steer_receipts=((message_id, receipt),))
         if request_id not in {_INITIALIZE_ID, _CONFIG_READ_ID, _THREAD_ID, _TURN_ID}:
             return self._protocol_error(
                 f"Codex app-server returned an unknown response id {request_id!r}."

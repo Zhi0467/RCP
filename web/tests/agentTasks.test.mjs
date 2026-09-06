@@ -655,3 +655,60 @@ test("a completed retry clears its failed parent, while a failed retry stays act
     "failed-retry",
   );
 });
+
+test("a steer receipt preserves the original turn and the unfinished answer", () => {
+  const active = task({
+    operation_id: "running-task",
+    status: "running",
+    request: { message: "Original prompt", mode: "discuss" },
+    result: { messages: ["Answer in progress"] },
+  });
+  const receipt = {
+    message_id: "steer-uuid",
+    operation_id: active.operation_id,
+    role: "user",
+    trigger: "human",
+    text: "Steer text",
+    steering: {
+      attempt: 1,
+      turn_id: "turn",
+      status: "delivered",
+      label: "Delivered",
+      reason: null,
+    },
+  };
+  assert.deepEqual(chatTasksMissingFromHistory([active], [receipt]), [active]);
+  assert.deepEqual(chatMessageTranscriptLine(receipt).steering, receipt.steering);
+  const history = [
+    {
+      message_id: "original",
+      operation_id: active.operation_id,
+      role: "user",
+      trigger: "human",
+      text: "Original prompt",
+    },
+    receipt,
+  ];
+  const lines = reconcileChatHistoryArtifacts(history, [active]);
+  assert.deepEqual(
+    lines.map(({ role, text }) => ({ role, text })),
+    [
+      { role: "human", text: "Original prompt" },
+      { role: "human", text: "Steer text" },
+      { role: "agent", text: "Answer in progress" },
+    ],
+  );
+  const completedHistory = [
+    ...history,
+    {
+      message_id: "final-answer",
+      operation_id: active.operation_id,
+      role: "assistant",
+      text: "Final answer",
+    },
+  ];
+  assert.deepEqual(
+    reconcileChatHistoryArtifacts(completedHistory, [active]).map((line) => line.text),
+    ["Original prompt", "Steer text", "Final answer"],
+  );
+});
