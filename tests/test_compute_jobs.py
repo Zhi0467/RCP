@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
 import threading
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,9 @@ from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.config import MachineComputeConfig
+from rcp.limits import COMPUTE_JOB_POLL_INTERVAL_SECONDS, COMPUTE_JOB_TERMINATE_GRACE_SECONDS
 from rcp.storage import AppStore
+from rcp.transport import remote_job_launch
 from tests.helpers import wait_until
 
 
@@ -95,11 +99,12 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "launchd", backend)
 
-    def launch():
+    def launch(request=None):
         return jobs.launch_compute_job(
             store,
             manifest,
-            ComputeLaunchRequest(
+            request
+            or ComputeLaunchRequest(
                 argv=["printf", "hello world"], cwd=str(tmp_path), label="Training"
             ),
             data_dir=tmp_path / "data",
@@ -138,6 +143,55 @@ def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, ma
     )
 
 
+def test_ssh_group_survives_leader_until_cancel_then_refresh_exits(
+    launch_environment, tmp_path, manifest
+):
+    if not Path("/proc/self/stat").is_file():
+        pytest.skip("SSH session process groups require Linux /proc")
+    store, backend, launch = launch_environment
+    backend.start = lambda root, wrapper, *_: remote_job_launch.launch(root, wrapper)
+    backend.alive = lambda handle, _: remote_job_launch.alive(handle)
+    record = launch(
+        ComputeLaunchRequest(argv=["sh", "-c", "sleep 60 & echo $! > child.pid"], cwd=str(tmp_path))
+    )
+    handle = record.backend_handle
+    leader, _ = remote_job_launch.parse_handle(handle)
+
+    def leader_gone():
+        with suppress(ChildProcessError):
+            os.waitpid(leader, os.WNOHANG)
+        return not Path(f"/proc/{leader}").exists()
+
+    try:
+        wait_until(leader_gone)
+        assert not Path(f"/proc/{leader}").exists()
+        child = int((tmp_path / "child.pid").read_text())
+        assert remote_job_launch.process_identity(child)[1] not in {"Z", "X"}
+        assert Path(record.exit_path).is_file()
+        assert remote_job_launch.alive(handle)
+        assert (
+            jobs.refresh_compute_job(
+                store, manifest, record.job_id, data_dir=tmp_path / "data"
+            ).status
+            == "running"
+        )
+        remote_job_launch.cancel(
+            handle, COMPUTE_JOB_TERMINATE_GRACE_SECONDS, COMPUTE_JOB_POLL_INTERVAL_SECONDS
+        )
+        assert not remote_job_launch.alive(handle)
+        with suppress(FileNotFoundError):
+            assert remote_job_launch.process_identity(child)[1] in {"Z", "X"}
+        result = jobs.refresh_compute_job(
+            store, manifest, record.job_id, data_dir=tmp_path / "data"
+        )
+        assert result.status == "exited"
+        assert result.exit_status == 0
+    finally:
+        remote_job_launch.cancel(
+            handle, COMPUTE_JOB_TERMINATE_GRACE_SECONDS, COMPUTE_JOB_POLL_INTERVAL_SECONDS
+        )
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_reconcile_missing_exit(launch_environment, tmp_path, manifest, cancelled):
     store, backend, launch = launch_environment
@@ -149,6 +203,37 @@ def test_reconcile_missing_exit(launch_environment, tmp_path, manifest, cancelle
     result = store.compute_job(record.job_id)
     assert result.status == ("cancelled" if cancelled else "lost")
     assert bool(result.diagnostic) is not cancelled
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    ["", "0", "0 123 extra", "nope 123", "-1 123", "256 123", "0 nope", "0 " + "9" * 100],
+    ids=[
+        "empty",
+        "truncated",
+        "extra-field",
+        "non-numeric",
+        "negative",
+        "too-large",
+        "bad-epoch",
+        "epoch-overflow",
+    ],
+)
+def test_gone_job_with_malformed_exit_stays_lost(launch_environment, tmp_path, manifest, receipt):
+    store, backend, launch = launch_environment
+    record = launch()
+    Path(record.exit_path).write_text(receipt)
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert result.status == "lost"
+    assert result.exit_status is None
+    assert result.ended_at
+    assert "malformed exit receipt" in result.diagnostic
+    assert record.exit_path in result.diagnostic
+    backend.is_alive = True
+    assert (
+        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+        == result
+    )
 
 
 def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_path, manifest):
@@ -274,8 +359,9 @@ def test_changed_machine_refresh_and_cancel_use_recorded_identity(
 @pytest.mark.parametrize(
     "backend_id, remote", [("ssh_session", True), ("slurm", True), ("slurm", False)]
 )
-def test_launch_exit_255_retains_root_only_for_remote_transport_failure(
-    launch_environment, tmp_path, manifest, monkeypatch, backend_id, remote
+@pytest.mark.parametrize("returncode, stdout", [(255, ""), (0, "launch accepted\nnoisy stdout")])
+def test_launch_retains_root_when_acceptance_is_uncertain(
+    launch_environment, tmp_path, manifest, monkeypatch, backend_id, remote, returncode, stdout
 ):
     from rcp.transport.state import _remote_script
 
@@ -292,19 +378,24 @@ def test_launch_exit_255_retains_root_only_for_remote_transport_failure(
             if command[:3] == ["python3", "-c", _remote_script("remote_job_files.py")]:
                 return subprocess.run([sys.executable, *command[1:]], **kwargs)
         calls.append(command)
-        return subprocess.CompletedProcess(command, 255, "", "connection dropped")
+        return subprocess.CompletedProcess(
+            command, returncode, stdout, "connection dropped" if returncode else ""
+        )
 
     context.runner = runner
     monkeypatch.setattr(
         jobs, "resolve_context", lambda *_: (context, jobs.COMPUTE_BACKENDS[backend_id])
     )
-    expected_error = ComputeLaunchUncertainError if remote else RuntimeError
+    uncertain = remote or returncode == 0
+    expected_error = ComputeLaunchUncertainError if uncertain else RuntimeError
     with pytest.raises(expected_error) as error:
         launch()
     assert len(calls) == 1
     roots = list((tmp_path / "remote-jobs" if remote else tmp_path / "data" / "jobs").iterdir())
-    if remote:
-        assert isinstance(error.value.__cause__, ComputeTransportError)
+    if uncertain:
+        assert isinstance(
+            error.value.__cause__, ComputeTransportError if returncode else ValueError
+        )
         assert len(roots) == 1
         assert (roots[0] / "run.sh").is_file()
         assert json.loads((roots[0] / "command.json").read_text())["origin_operation_id"] == "turn"
@@ -313,6 +404,58 @@ def test_launch_exit_255_retains_root_only_for_remote_transport_failure(
         assert type(error.value) is RuntimeError
         assert roots == []
     assert store.running_compute_jobs() == []
+
+
+def test_launch_receipt_write_failure_still_records_the_accepted_job(
+    launch_environment, tmp_path, monkeypatch
+):
+    store, backend, launch = launch_environment
+    real_write = jobs.write_job_file
+
+    def failing_write(context, path, text):
+        if path.endswith("launch.json"):
+            raise OSError("connection dropped")
+        return real_write(context, path, text)
+
+    monkeypatch.setattr(jobs, "write_job_file", failing_write)
+    record = launch()
+    stored = store.compute_job(record.job_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.backend_handle == record.backend_handle
+    assert "Launch receipt not written" in stored.diagnostic
+
+
+def test_gone_job_with_malformed_started_receipt_still_exits(
+    launch_environment, tmp_path, manifest
+):
+    store, backend, launch = launch_environment
+    record = launch()
+    Path(record.job_root, "started").write_text("nope")
+    Path(record.exit_path).write_text("0 1757000000")
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert result.status == "exited"
+    assert result.exit_status == 0
+
+
+def test_local_backend_oserror_is_not_a_host_outage(
+    launch_environment, tmp_path, manifest, monkeypatch
+):
+    store, backend, launch = launch_environment
+    records = [launch() for _ in range(3)]
+    calls = []
+
+    def alive(handle, context):
+        calls.append(handle)
+        if len(calls) == 1:
+            raise FileNotFoundError("squeue")
+        return False
+
+    monkeypatch.setattr(backend, "alive", alive)
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    assert len(calls) == 3
+    statuses = sorted(store.compute_job(record.job_id).status for record in records)
+    assert statuses == ["exited", "exited", "running"]
 
 
 def test_uncertain_launch_retains_intent(launch_environment, tmp_path):
@@ -438,8 +581,45 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     assert all(command[1] == "-c" for command in calls)
 
 
+@pytest.mark.parametrize("failure", ["unregistered", "unknown", "invalid handle"])
+def test_reconcile_row_failure_does_not_skip_other_jobs(
+    launch_environment, tmp_path, manifest, monkeypatch, failure
+):
+    store, backend, launch = launch_environment
+    backend.id = "unregistered" if failure == "unregistered" else "launchd"
+    bad = launch()
+    backend.id = "launchd"
+    valid = [launch() for _ in range(3)]
+    calls = []
+
+    def observe(handle, context):
+        calls.append(handle)
+        if failure != "unregistered" and len(calls) == 1:
+            if failure == "invalid handle":
+                raise ValueError("invalid handle")
+            return None
+        return False
+
+    monkeypatch.setattr(backend, "alive", observe)
+    assert store.running_compute_jobs()[0].job_id == bad.job_id
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    bad = store.compute_job(bad.job_id)
+    assert bad.status == "running"
+    assert ("could not determine" if failure == "unknown" else failure) in bad.diagnostic
+    assert len(calls) == (3 if failure == "unregistered" else 4)
+    for record in valid:
+        refreshed = store.compute_job(record.job_id)
+        assert refreshed.status == "exited"
+        assert refreshed.diagnostic is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    # A local OSError is row-specific; see test_local_backend_oserror_is_not_a_host_outage.
+    [ComputeTransportError("connection dropped"), subprocess.TimeoutExpired("backend status", 10)],
+)
 def test_reconcile_contacts_unreachable_host_once_per_pass(
-    launch_environment, tmp_path, manifest, monkeypatch
+    launch_environment, tmp_path, manifest, monkeypatch, error
 ):
     store, backend, launch = launch_environment
     records = [launch() for _ in range(4)]
@@ -449,7 +629,7 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
         calls.append(handle)
         if len(calls) > 1:
             pytest.fail("reconciliation retried an unreachable host")
-        raise subprocess.TimeoutExpired("backend status", 10)
+        raise error
 
     monkeypatch.setattr(backend, "alive", unreachable)
     reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
@@ -457,7 +637,7 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
     refreshed = [store.compute_job(record.job_id) for record in records]
     assert all(record.status == "running" for record in refreshed)
     assert all(record.diagnostic == refreshed[0].diagnostic for record in refreshed)
-    assert "timed out" in refreshed[0].diagnostic
+    assert refreshed[0].diagnostic == str(error)
 
     backend.is_alive = False
     monkeypatch.setattr(backend, "alive", lambda *_: False)

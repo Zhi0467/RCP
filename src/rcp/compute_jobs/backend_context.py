@@ -51,7 +51,7 @@ class BackendContext:
             ssh_arguments(self.execution_host, shlex.join(argv)) if self.execution_host else argv
         )
         result = self.runner(command, capture_output=True, text=True, timeout=timeout, input=input)
-        if check and result.returncode:
+        if result.returncode and (check or (self.execution_host and result.returncode == 255)):
             diagnostic = result.stderr.strip() or result.stdout.strip() or "Compute command failed"
             if self.execution_host and result.returncode == 255:
                 raise ComputeTransportError(diagnostic)
