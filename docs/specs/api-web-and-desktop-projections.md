@@ -78,6 +78,19 @@ the backend. A preview conflict retains the invalid edit and last valid draft
 separately. Sync revalidates the complete batch against live canonical main and
 commits once or not at all.
 
+Human Sync accepts built-in and active custom nodes through the existing
+`custom_nodes` collection, plus `added_edges` and `removed_edge_ids`. Preview and
+commit share the same backend owner and exact base revision. Edge replacements
+remove the old edge before creating its replacement in the same transition;
+layers are resolved by the backend. The membership-protected `graph-edit-options`
+endpoint publishes built-in relation names, Evidence-assessment requirements
+and node ID prefixes from backend rules without replaying project history. The
+client reads custom relations from the displayed ontology; backend preview completes
+new node defaults and resolves edge layers. A draft with edge
+changes retains its original edge-edit revision across refresh/reload; it cannot
+silently rebase connection edits onto a newer graph.
+These controls remain human-only and add no WebMCP graph-writing tool.
+
 Resolved/superseded Blockers remain canonical but are omitted from active
 Research-flow and attention projections. Stale Experiment summaries and next
 actions are labelled historical and never rendered as current guidance.
@@ -610,8 +623,9 @@ each claim-relative direction, relevance, weight, scope, and qualifications.
 Historical global strength is clearly legacy and never shown as current edge
 weight.
 
-Glossary terms already in canonical history render as best-effort inline
-definitions. There is no standalone Glossary or current authoring path.
+Graph-writing agents add or revise glossary terms through `upsert_glossary`
+Patches. Canonical definitions render inline; there is no standalone Glossary
+view or human glossary editor.
 
 ## Desktop shell
 

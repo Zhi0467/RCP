@@ -189,7 +189,7 @@ all-or-none validation as `watch.json`.
 
 **Only the orchestrator may address a worker.** Workers may reply to the
 orchestrator. Worker-to-worker is out of scope and is documented as an open
-question (Q9 in [`open-questions.md`](../../open-questions.md)), because it only
+question (Q9 in [`open-questions.md`](../open-questions-2026-09-05.md)), because it only
 becomes compelling in a multiplayer project.
 
 **The human messages the orchestrator, never a worker directly** (decided
@@ -363,7 +363,7 @@ inside an implementation.
    human-set budget**. The orchestrator may create and revise graph framing
    inside that scope; it may not expand its own campaign authorization.
 2. **Q2's deferral.** *"Graph-level scheduling across the research frontier is
-   still separately deferred"* ([open-questions.md](../../open-questions.md)). This
+   still separately deferred"* ([open-questions.md](../open-questions-2026-09-05.md)). This
    piece un-defers exactly that. Update or delete the sentence when it lands.
 
 ## 8. UI sketch

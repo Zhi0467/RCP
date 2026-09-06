@@ -80,6 +80,9 @@ from rcp.core.validation.proposals import decision_transition_error, validate_pr
 EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
     {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
 )
+ASSESSMENT_REQUIRED_FOR = {
+    relation: frozenset({("evidence", "hypothesis")}) for relation in EVIDENCE_HYPOTHESIS_RELATIONS
+}
 
 
 def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
@@ -317,11 +320,7 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         relation = edge.relation
         source_type = _node_type(ctx, source_id)
         target_type = _node_type(ctx, target_id)
-        assessment_applies = (
-            relation in EVIDENCE_HYPOTHESIS_RELATIONS
-            and source_type == "evidence"
-            and target_type == "hypothesis"
-        )
+        assessment_applies = (source_type, target_type) in ASSESSMENT_REQUIRED_FOR.get(relation, ())
         edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
         evidence_relation_endpoints_apply = target_type == "hypothesis" and (
             source_type == "evidence" or (relation == "contradicts" and source_type == "hypothesis")

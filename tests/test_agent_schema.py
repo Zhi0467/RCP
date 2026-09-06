@@ -11,6 +11,7 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
+from rcp.agents.schema import parse_agent_patch_json
 from rcp.core.models import Patch, Proposal
 from rcp.core.operations import graph_operations_from_proposal
 from tests.helpers import graph_operation, seed_patch
@@ -259,7 +260,7 @@ def test_agent_output_schema_omits_nested_rcp_bookkeeping() -> None:
     assert "CreateAmbiguitiesOperation" not in definitions
     assert "ResolveAmbiguitiesOperation" not in definitions
     assert "AgentGlossaryTerm" not in definitions
-    assert "UpsertGlossaryOperation" not in definitions
+    assert "updated_rev" not in definitions["NewGlossaryTerm"]["properties"]
     for definition in ("AgentSourceRef", "AgentExperimentAttempt", "AgentGatedCard"):
         assert definitions[definition]["additionalProperties"] is False
     assert {
@@ -302,15 +303,34 @@ def test_agent_schema_has_no_ambiguity_operations(operation: dict[str, object]) 
     assert '"resolve_ambiguities"' not in rendered
 
 
-def test_agent_schema_does_not_advertise_unpermitted_glossary_writes() -> None:
+@pytest.mark.parametrize("profile", ["ordinary", "orchestrator"])
+def test_agent_schema_advertises_thin_project_glossary_writes(profile) -> None:
     operation = {
         "op": "upsert_glossary",
         "terms": [{"term": "RCP", "plain_definition": "Research Control Panel"}],
     }
 
+    draft = parse_agent_patch_json(
+        json.dumps({"summary": "Defined a project term.", "ops": [operation]}), profile=profile
+    )
+    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+    validate_agent_patch_shape(patch, profile=profile)
+    assert patch.ops[0].terms[0].plain_definition == "Research Control Panel"
+    assert '"upsert_glossary"' in json.dumps(agent_output_schema(profile=profile))
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        {"term": "RCP", "plain_definition": "Research Control Panel", "updated_rev": 9},
+        {"term": "RCP", "plain_definition": "Research Control Panel", "node_id": "rq/example"},
+    ],
+)
+def test_agent_glossary_rejects_bookkeeping_and_node_scope(term) -> None:
     with pytest.raises(ValidationError):
-        AgentPatch.model_validate({"summary": "Tried a glossary write.", "ops": [operation]})
-    assert '"upsert_glossary"' not in json.dumps(agent_output_schema())
+        AgentPatch.model_validate(
+            {"summary": "Invalid definition.", "ops": [{"op": "upsert_glossary", "terms": [term]}]}
+        )
 
 
 def test_agent_schema_allows_a_new_ready_decision() -> None:

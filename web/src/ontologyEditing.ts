@@ -1,6 +1,8 @@
 import type {
   BaseNodeType,
   GraphNode,
+  GraphEditOptions,
+  NewNode,
   OntologyFieldDefinition,
   OntologyRelationDefinition,
   OntologyState,
@@ -175,67 +177,41 @@ export function removeOntologyRelation(ontology: OntologyState, name: string): O
   return { ...ontology, relations: ontology.relations.filter((item) => item.name !== name) };
 }
 
-export function makeCustomNode(
-  ontology: OntologyState,
-  extensionType: string,
+export function makeHumanNode(
+  definition: { name: string; base_type: BaseNodeType },
+  prefixes: GraphEditOptions["node_prefixes"],
   slug: string,
   title: string,
   primaryText: string,
   origin: GraphNode["origin"],
   extensionFields: GraphNode["extension_fields"],
-): GraphNode {
-  const definition = ontology.types.find((item) => item.name === extensionType && !item.deprecated);
-  if (!definition) throw new Error(`Ontology type ${extensionType} is not active.`);
+): NewNode {
   const base = baseOntologyTypes.find((item) => item.name === definition.base_type)!;
-  const node: GraphNode = {
-    id: `${extensionType}/${slug
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")}`,
-    type: definition.base_type,
-    extension_type: extensionType,
+  return {
+    id: humanNodeId(definition, prefixes, slug),
+    type: base.name,
+    extension_type: definition.name === base.name ? null : definition.name,
     extension_fields: extensionFields,
     title: title.trim(),
-    standing: "asserted",
-    created_rev: 0,
-    updated_rev: 0,
-    source_refs: [],
     [base.primaryField]: primaryText.trim(),
+    ...(base.name === "evidence" && origin ? { origin } : {}),
   };
-  const defaults: Record<BaseNodeType, Record<string, unknown>> = {
-    research_question: { motivation: "", scope: "", status: "open" },
-    hypothesis: { rationale: "", predictions: [], scope: "", status: "proposed" },
-    decision: {
-      options: [],
-      selected_option: null,
-      rationale: null,
-      consequences: [],
-      status: "open",
-    },
-    experiment: {
-      design: "",
-      expected_outcomes: [],
-      interpretation_rules: [],
-      completion_criteria: [],
-      status: "proposed",
-      attempts: [],
-      current_summary: "",
-      next_action: null,
-    },
-    evidence: {
-      interpretation: "",
-      role: "result",
-      validity: "valid",
-      origin: origin ?? "unknown",
-      artifact_refs: [],
-    },
-    blocker: {
-      blocker_type: "unknown",
-      status: "open",
-      resolution_condition: "",
-      recommended_action: null,
-    },
-  };
-  return { ...node, ...defaults[definition.base_type] };
+}
+
+export function humanNodeId(
+  definition: { name: string; base_type: BaseNodeType },
+  prefixes: GraphEditOptions["node_prefixes"],
+  slug: string,
+): string {
+  const prefix =
+    definition.name === definition.base_type ? prefixes[definition.base_type] : definition.name;
+  return `${prefix}/${normalizeSlug(slug)}`;
+}
+
+export function normalizeSlug(slug: string): string {
+  return slug
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }

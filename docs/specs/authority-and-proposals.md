@@ -187,8 +187,12 @@ these rules:
   Experiments, and Blockers, including standing, subject to operation validation.
 - No agent may resolve a Proposal or change project truth scope or ontology.
 - Seed/Refresh alone may write coverage bookkeeping.
-- Historical Ambiguity and glossary authoring operations remain replayable but
-  no current agent or human surface grants their legacy authoring authority.
+- Graph-writing agents may add or revise project-wide glossary definitions through
+  `upsert_glossary`, including bounded Experiment and Auto-research work. Entries
+  are explanatory metadata, not protected belief nodes; Discuss remains without
+  graph authority. No separate human glossary editor is exposed.
+- Historical Ambiguity operations remain replayable but no current agent or
+  human surface grants their legacy authoring authority.
 
 Any action whose ordinary typed payload cannot distinguish a special human path
 must declare the exact `human_action`; for example, a Decision choice cannot be

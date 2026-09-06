@@ -7,6 +7,7 @@ import {
   Focus,
   Gauge,
   GitBranch,
+  Link2,
   Maximize2,
   Minimize2,
   Orbit,
@@ -30,6 +31,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type ReactNode,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   buildNodeProjectionEmphasis,
@@ -54,7 +56,7 @@ import {
   experimentHealthLabel,
   experimentHealthTone,
 } from "../components/ExperimentRunDetail";
-import { NewCustomNode } from "../components/NewCustomNode";
+import { GraphEditingControls, type GraphEditingProps } from "../components/GraphEditingControls";
 import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../components/CampaignRuns";
 import { runsEpisodeCards } from "../campaigns";
 import {
@@ -89,10 +91,7 @@ interface Props {
   onSelectNode: (node: GraphNode) => void;
 }
 
-interface ScientificProps extends Props {
-  mutationsDisabled?: boolean;
-  onStageCustomNode: (node: GraphNode) => void;
-}
+interface ScientificProps extends Props, GraphEditingProps {}
 
 const scienceOrder: GraphNode["type"][] = [
   "research_question",
@@ -112,13 +111,7 @@ const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> =
   blocker: { label: "Blockers", color: "#bc5545" },
 };
 
-export function ScientificView({
-  graph,
-  trustView,
-  onSelectNode,
-  mutationsDisabled = false,
-  onStageCustomNode,
-}: ScientificProps) {
+export function ScientificView({ graph, trustView, onSelectNode, ...editing }: ScientificProps) {
   const nodes = projectNodes(Object.values(graph.nodes), trustView);
   const projection = buildResearchPaths(nodes, Object.values(graph.edges));
   const hidden = Object.values(graph.nodes).length - nodes.length;
@@ -131,15 +124,8 @@ export function ScientificView({
             ? `${hidden} hidden`
             : `${projection.paths.length} question${projection.paths.length === 1 ? "" : "s"}`
         }
-        action={
-          <NewCustomNode
-            ontology={graph.ontology}
-            disabled={mutationsDisabled}
-            existingNodeIds={new Set(Object.keys(graph.nodes))}
-            onStage={onStageCustomNode}
-          />
-        }
       />
+      <GraphEditingControls graph={graph} {...editing} />
       {projection.paths.length === 0 && projection.unconnected.length === 0 ? (
         <EmptyState icon={<Search size={20} />} title="No research structure" />
       ) : (
@@ -184,8 +170,7 @@ export function ScientificView({
   );
 }
 
-interface DagProps extends Props {
-  projectId: string;
+interface DagProps extends Props, GraphEditingProps {
   /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
   viewportRef: MutableRefObject<DagViewport | null>;
   relationFocusNodeId?: string | null;
@@ -208,7 +193,10 @@ export function DagView({
   viewportRef,
   relationFocusNodeId,
   onClearRelationFocus,
+  ...editing
 }: DagProps) {
+  const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
+  const connectionDrag = useRef<{ source: string; pointerId: number } | null>(null);
   const projection = useMemo(
     () => buildDagProjection(graph, trustView, relationFocusNodeId),
     [graph, relationFocusNodeId, trustView],
@@ -411,6 +399,11 @@ export function DagView({
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>, nodeId: string) => {
     if (event.button !== 0) return;
+    if ((event.target as Element).closest(".dag-connect-handle")) {
+      connectionDrag.current = { source: nodeId, pointerId: event.pointerId };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
     dragRef.current = {
       nodeId,
@@ -462,7 +455,27 @@ export function DagView({
   };
 
   const pointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const connection = connectionDrag.current;
+    if (connection?.pointerId === event.pointerId) {
+      connectionDrag.current = null;
+      if (event.type === "pointerup") {
+        const target = document
+          .elementFromPoint(event.clientX, event.clientY)
+          ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+        setConnection({
+          source: connection.source,
+          target: target && target !== connection.source ? target : "",
+        });
+      }
+      return;
+    }
     finishDrag(event.pointerId);
+  };
+
+  const connectionClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.detail !== 0 || !(event.target as Element).closest(".dag-connect-handle")) return;
+    const source = event.currentTarget.dataset.nodeId;
+    if (source) setConnection({ source, target: "" });
   };
 
   const inspectNode = (node: GraphNode) => {
@@ -503,6 +516,12 @@ export function DagView({
       <ViewHeading
         title="DAG view"
         aside={`${projection.nodes.length} nodes · ${projection.edges.length} edges`}
+      />
+      <GraphEditingControls
+        graph={graph}
+        projectId={projectId}
+        {...editing}
+        connection={connection}
       />
       {relationFocusNodeId && graph.nodes[relationFocusNodeId] && (
         <div className="dag-relation-focus" role="status">
@@ -728,6 +747,7 @@ export function DagView({
                       onPointerUp={pointerEnd}
                       onPointerCancel={pointerEnd}
                       onLostPointerCapture={pointerEnd}
+                      onClick={connectionClick}
                     >
                       <button
                         aria-label={`${node.title}. Inspect node. Drag this card to pin it.`}
@@ -742,6 +762,16 @@ export function DagView({
                           <span>{node.status || node.validity || ""}</span>
                         </small>
                       </button>
+                      {!editing.mutationsDisabled && (
+                        <button
+                          className="dag-connect-handle"
+                          type="button"
+                          aria-label={`Connect from ${node.title}`}
+                          title="Drag to another node, or click to choose a connection"
+                        >
+                          <Link2 size={14} />
+                        </button>
+                      )}
                       {position.pinned && (
                         <button
                           aria-label={`Release pin from ${node.title}`}

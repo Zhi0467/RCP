@@ -4,6 +4,8 @@ import {
   type GraphState,
   type OntologyState,
   type Standing,
+  type NewEdge,
+  type NewNode,
 } from "./types";
 
 export type DraftNodeValue =
@@ -31,7 +33,10 @@ export interface HumanDraft {
   removed_node_ids: string[];
   proposals: Record<string, { decision: ProposalDecision; reason?: string }>;
   ontology: OntologyState | null;
-  custom_nodes: Record<string, GraphNode>;
+  custom_nodes: Record<string, NewNode>;
+  added_edges: NewEdge[];
+  removed_edge_ids: string[];
+  edge_base_revision: number | null;
 }
 
 export interface HumanSyncRequest {
@@ -46,7 +51,9 @@ export interface HumanSyncRequest {
   }>;
   proposals: Array<{ proposal_id: string; decision: ProposalDecision; reason?: string }>;
   ontology: OntologyState | null;
-  custom_nodes: GraphNode[];
+  custom_nodes: NewNode[];
+  added_edges: NewEdge[];
+  removed_edge_ids: string[];
 }
 
 export interface HumanDraftReconciliation {
@@ -68,6 +75,9 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
     proposals: {},
     ontology: null,
     custom_nodes: {},
+    added_edges: [],
+    removed_edge_ids: [],
+    edge_base_revision: null,
   };
 }
 
@@ -122,6 +132,10 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     nodes,
     removed_node_ids: removedNodeIds,
     ontology,
+    edge_base_revision:
+      next.added_edges.length || next.removed_edge_ids.length
+        ? (draft.edge_base_revision ?? draft.base_revision)
+        : null,
     ...(ontology
       ? { ontology_base_revision: draft.ontology_base_revision ?? draft.base_revision }
       : { ontology_base_revision: undefined }),
@@ -353,16 +367,57 @@ export function stageOntology(
   );
 }
 
-export function stageCustomNode(draft: HumanDraft, node: GraphNode): HumanDraft {
+export function stageCustomNode(draft: HumanDraft, node: NewNode): HumanDraft {
   const next = cloneDraft(draft);
   next.custom_nodes[node.id] = { ...node, extension_fields: { ...node.extension_fields } };
   return next;
 }
 
-export function unstageCustomNode(draft: HumanDraft, nodeId: string): HumanDraft {
+export function unstageCustomNode(
+  draft: HumanDraft,
+  graph: GraphState,
+  nodeId: string,
+): HumanDraft {
   const next = cloneDraft(draft);
   delete next.custom_nodes[nodeId];
-  return next;
+  next.added_edges = next.added_edges.filter(
+    (edge) => edge.source !== nodeId && edge.target !== nodeId,
+  );
+  return normalizeHumanDraft(next, graph);
+}
+
+export function stageEdgeAddition(draft: HumanDraft, graph: GraphState, edge: NewEdge): HumanDraft {
+  return normalizeHumanDraft(
+    {
+      ...cloneDraft(draft),
+      added_edges: [...draft.added_edges, edge],
+    },
+    graph,
+  );
+}
+
+export function stageEdgeRemoval(draft: HumanDraft, graph: GraphState, edgeId: string): HumanDraft {
+  const next = cloneDraft(draft);
+  if (next.added_edges.some((edge) => edge.id === edgeId)) {
+    next.added_edges = next.added_edges.filter((edge) => edge.id !== edgeId);
+  } else {
+    next.removed_edge_ids = [...new Set([...next.removed_edge_ids, edgeId])];
+  }
+  return normalizeHumanDraft(next, graph);
+}
+
+export function unstageEdgeRemoval(
+  draft: HumanDraft,
+  graph: GraphState,
+  edgeId: string,
+): HumanDraft {
+  return normalizeHumanDraft(
+    {
+      ...cloneDraft(draft),
+      removed_edge_ids: draft.removed_edge_ids.filter((id) => id !== edgeId),
+    },
+    graph,
+  );
 }
 
 export function applyHumanDraft(graph: GraphState, draft: HumanDraft | null): GraphState {
@@ -379,13 +434,27 @@ export function applyHumanDraft(graph: GraphState, draft: HumanDraft | null): Gr
     };
   }
   for (const [nodeId, node] of Object.entries(draft.custom_nodes)) {
-    nodes[nodeId] = { ...node, draft_touched: true };
+    // Structural drafts are completed by backend preview, including node defaults.
+    if (nodes[nodeId]) nodes[nodeId] = { ...nodes[nodeId], ...node, draft_touched: true };
   }
   for (const nodeId of draft.removed_node_ids) {
     const node = nodes[nodeId];
     if (node) nodes[nodeId] = { ...node, draft_touched: true };
   }
-  return { ...graph, nodes, ontology: draft.ontology ?? graph.ontology };
+  // Keep backend-resolved edge layers. Additions arrive in the preview graph;
+  // removals also apply while that preview is pending or has a conflict.
+  const addedEdgeIds = new Set(draft.added_edges.map((edge) => edge.id));
+  const removedEdges = new Set(draft.removed_edge_ids.filter((id) => !addedEdgeIds.has(id)));
+  const removedNodes = new Set(draft.removed_node_ids);
+  const edges = Object.fromEntries(
+    Object.entries(graph.edges).filter(
+      ([, edge]) =>
+        !removedEdges.has(edge.id) &&
+        !removedNodes.has(edge.source) &&
+        !removedNodes.has(edge.target),
+    ),
+  );
+  return { ...graph, nodes, edges, ontology: draft.ontology ?? graph.ontology };
 }
 
 export function humanDraftChangeCount(draft: HumanDraft | null): number {
@@ -403,7 +472,9 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     draft.removed_node_ids.length +
     Object.keys(draft.proposals).length +
     (draft.ontology ? 1 : 0) +
-    Object.keys(draft.custom_nodes).length
+    Object.keys(draft.custom_nodes).length +
+    draft.added_edges.length +
+    draft.removed_edge_ids.length
   );
 }
 
@@ -459,7 +530,7 @@ export function draftNodeIsBehind(
 
 export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanSyncRequest {
   return {
-    base_revision: graph.revision,
+    base_revision: draft.edge_base_revision ?? graph.revision,
     removed_node_ids: [...draft.removed_node_ids],
     nodes: Object.entries(draft.nodes).flatMap(([nodeId, entry]) =>
       draftNodeIsBehind(entry, graph.nodes[nodeId])
@@ -482,6 +553,8 @@ export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanS
     })),
     ontology: draft.ontology,
     custom_nodes: Object.values(draft.custom_nodes),
+    added_edges: draft.added_edges,
+    removed_edge_ids: draft.removed_edge_ids,
   };
 }
 
@@ -532,8 +605,27 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
       proposals: parsed.proposals as unknown as HumanDraft["proposals"],
       ontology: isRecord(parsed.ontology) ? (parsed.ontology as unknown as OntologyState) : null,
       custom_nodes: isRecord(parsed.custom_nodes)
-        ? (parsed.custom_nodes as Record<string, GraphNode>)
+        ? (parsed.custom_nodes as Record<string, NewNode>)
         : {},
+      added_edges: Array.isArray(parsed.added_edges)
+        ? parsed.added_edges.map((edge: NewEdge) => ({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            relation: edge.relation,
+            explanation: edge.explanation,
+            ...(edge.assessment ? { assessment: edge.assessment } : {}),
+          }))
+        : [],
+      removed_edge_ids: Array.isArray(parsed.removed_edge_ids)
+        ? parsed.removed_edge_ids.filter((id): id is string => typeof id === "string")
+        : [],
+      edge_base_revision: Number.isInteger(parsed.edge_base_revision)
+        ? (parsed.edge_base_revision as number)
+        : (Array.isArray(parsed.added_edges) && parsed.added_edges.length) ||
+            (Array.isArray(parsed.removed_edge_ids) && parsed.removed_edge_ids.length)
+          ? (parsed.base_revision as number)
+          : null,
     };
   } catch {
     return null;
@@ -543,6 +635,15 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
 function cloneDraft(draft: HumanDraft): HumanDraft {
   return {
     ...draft,
+    added_edges: draft.added_edges.map((edge) => ({
+      ...edge,
+      ...(edge.assessment
+        ? {
+            assessment: { ...edge.assessment, qualifications: [...edge.assessment.qualifications] },
+          }
+        : {}),
+    })),
+    removed_edge_ids: [...draft.removed_edge_ids],
     removed_node_ids: [...draft.removed_node_ids],
     nodes: Object.fromEntries(
       Object.entries(draft.nodes).map(([id, entry]) => [
@@ -573,7 +674,6 @@ function cloneDraft(draft: HumanDraft): HumanDraft {
         {
           ...node,
           extension_fields: { ...node.extension_fields },
-          source_refs: [...node.source_refs],
         },
       ]),
     ),
