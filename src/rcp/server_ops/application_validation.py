@@ -688,7 +688,9 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                     (str(rebound / "output"), row["rowid"]),
                 )
     if "watchers" in tables:
-        rows = connection.execute("SELECT rowid, execution_host FROM watchers").fetchall()
+        rows = connection.execute(
+            "SELECT rowid, execution_host FROM watchers WHERE job_id IS NULL"
+        ).fetchall()
         for row in rows:
             if row["execution_host"]:
                 continue
@@ -805,7 +807,7 @@ def _validate_rebound_paths(
                     )
         if table == "watchers":
             for row in connection.execute(
-                "SELECT execution_host, log_path, cwd FROM watchers"
+                "SELECT execution_host, log_path, cwd FROM watchers WHERE job_id IS NULL"
             ).fetchall():
                 if not row["execution_host"] and any(
                     not Path(str(row[name])).is_relative_to(root) for name in ("log_path", "cwd")

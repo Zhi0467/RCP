@@ -86,10 +86,10 @@ from rcp.runs.shared import (
     _stage_json_task_input,
     _stage_task_contract,
     _stage_task_input,
-    _stream_agent_events,
     _swept_stage_root,
     _task_token,
 )
+from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
 )
@@ -327,13 +327,8 @@ async def _stage_work_turn(
             stage_name=stage_name,
             task_id=execution.operation_id if execution is not None else token,
             turn_id=f"{token}:work",
-        )
-        validator_lifecycle = _start_work_validator_mailbox(
-            service,
-            patch_inputs.validator_staged,
-            execution=execution,
-            budget=validator_budget,
-            run_truth_scope=context.run_truth_scope,
+            broker=True,
+            episode_id=request.control_episode_id,
         )
         if clear_stale_handoffs:
             _clear_stale_turn_handoffs(workspace, remote_stage)
@@ -396,6 +391,23 @@ async def _stage_work_turn(
                 else None
             ),
         )
+        compute_commands = (
+            WorkComputeCommands(
+                execution, service.manifest, write_scope, remote_stage, request.control_episode_id
+            )
+            if execution is not None
+            and execution.store.auto_research_child_work_for_operation(execution.operation_id)
+            is None
+            else None
+        )
+        validator_lifecycle = _start_work_validator_mailbox(
+            service,
+            patch_inputs.validator_staged,
+            execution=execution,
+            budget=validator_budget,
+            compute_commands=compute_commands,
+            run_truth_scope=context.run_truth_scope,
+        )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = await stage_chat_experiment_watcher_resources(
             request,
@@ -456,6 +468,7 @@ async def _stage_work_turn(
             patch_inputs=patch_inputs,
             validator_lifecycle=validator_lifecycle,
             validator_budget=validator_budget,
+            compute_commands=compute_commands,
             outcome=outcome,
         )
         return turn, _StagedWorkInputs(
@@ -1017,6 +1030,11 @@ async def _validate_watch_deliverable(
         if origin_task is None:
             raise ValueError("The originating Work operation is no longer available.")
         ordinary_handoff = parse_watch_json(watch_text)
+        if turn.compute_commands is not None:
+            await asyncio.to_thread(
+                turn.compute_commands.validate_handoff,
+                {item.job_id for item in ordinary_handoff.external if item.job_id},
+            )
         specs = ordinary_handoff.external
         graph_conditions = ordinary_handoff.graph
         binding = WatcherBinding(
@@ -1042,6 +1060,8 @@ async def _validate_watch_deliverable(
             binding,
             graph_conditions=graph_conditions,
             state=graph_state,
+            manifest=turn.service.manifest,
+            data_dir=turn.execution.store.path.parent,
         )
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
@@ -1175,6 +1195,8 @@ async def _settle_patch_deliverable(
         correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
         try:
             correction_validator = stage_patch_validation_mailbox(
+                authority="broker",
+                episode_id=turn.request.control_episode_id,
                 local_stage=turn.workspace if turn.remote_stage is None else None,
                 remote_stage=turn.remote_stage,
                 local_input_stage=turn.local_stage if turn.remote_stage is None else None,
@@ -1189,6 +1211,7 @@ async def _settle_patch_deliverable(
                 correction_validator,
                 execution=turn.execution,
                 budget=turn.validator_budget,
+                compute_commands=turn.compute_commands,
                 run_truth_scope=turn.context.run_truth_scope,
             )
             validator_command = correction_validator.client_command(
@@ -1300,7 +1323,13 @@ async def _settle_watch_deliverable(
     text = initial.text
     failure = initial.failure
     if text is None and failure is None:
-        return
+        if turn.compute_commands is not None:
+            try:
+                await asyncio.to_thread(turn.compute_commands.validate_handoff, set())
+            except ValueError as exc:
+                failure = _DeliverableFailure(str(exc), correctable=True)
+        if failure is None:
+            return
 
     maximum_corrections = PATCH_CORRECTION_MAX_ROUNDS
     correction_rounds = 0
@@ -1348,71 +1377,94 @@ async def _settle_watch_deliverable(
             phase="correcting",
             event=True,
         )
-        diagnostics_path = _stage_json_task_input(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-watch-correction-{correction_rounds}.json",
-            {"problem": failure.message},
-        )
-        correction_contract = _watch_correction_contract(
-            turn,
-            composed,
-            diagnostics_path,
-        )
-        correction_path, correction_prompt = _stage_task_contract(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-watch-correction-{correction_rounds}.md",
-            correction_contract,
-            execution=turn.execution,
-            role=f"watch_correction_{correction_rounds}",
-        )
-        _record_agent_launch_receipt(
-            turn.execution,
-            turn.request,
-            prompt=correction_prompt,
-            contract_path=correction_path,
-            remote=bool(turn.execution_host),
-            resumed=True,
-            write_scope=turn.write_scope,
-            continuation="watch_correction",
-            extra={
-                "surface": turn.surface,
-                "mode": "work",
-                "capability": "work_auto",
-                "network_access": True,
-                "launch_kind": "watch_correction",
-                "correction_round": correction_rounds,
-                "write_directory_count": len(turn.write_dirs),
-                "canonical_state_boundary": "prompt_only",
-            },
-        )
-        correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
-        correction_error: str | None = None
-        correction_stream = _stream_agent_events(
-            launcher,
-            turn.request,
-            correction_prompt,
-            workspace=turn.workspace,
-            session_id=settled.native_session_id,
-            read_dirs=turn.read_dirs,
-            write_dirs=turn.write_dirs,
-            write_scope=turn.write_scope,
-            execution_host=turn.execution_host,
-            execution=turn.execution,
+        correction_validator = stage_patch_validation_mailbox(
+            local_stage=turn.workspace if turn.remote_stage is None else None,
             remote_stage=turn.remote_stage,
-            capability="work_auto",
-            outcome=correction_outcome,
-            binary=turn.provider_binary,
+            local_input_stage=turn.local_stage if turn.remote_stage is None else None,
+            task_id=turn.execution.operation_id,
+            turn_id=f"{staged.token}:watch-correction:{correction_rounds}",
+            timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            authority="broker",
+            episode_id=turn.request.control_episode_id,
         )
-        async with aclosing(correction_stream) as stream:
-            async for frame in stream:
-                event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-                if event.event == "error":
-                    correction_error = event.text or "Watcher correction failed."
-                    continue
-                if event.event not in {"answer", "done"}:
-                    yield frame
+        correction_lifecycle = _start_work_validator_mailbox(
+            turn.service,
+            correction_validator,
+            execution=turn.execution,
+            budget=turn.validator_budget,
+            compute_commands=turn.compute_commands,
+            run_truth_scope=turn.context.run_truth_scope,
+        )
+        primary_error: BaseException | None = None
+        try:
+            diagnostics_path = _stage_json_task_input(
+                turn.local_stage,
+                turn.remote_stage,
+                f"task-{staged.token}-watch-correction-{correction_rounds}.json",
+                {
+                    "problem": failure.message,
+                    "validator_command": correction_validator.client_command(
+                        "validate", turn.patch_inputs.patch_path
+                    ),
+                },
+            )
+            correction_contract = _watch_correction_contract(
+                turn,
+                composed,
+                diagnostics_path,
+            )
+            correction_path, correction_prompt = _stage_task_contract(
+                turn.local_stage,
+                turn.remote_stage,
+                f"task-{staged.token}-watch-correction-{correction_rounds}.md",
+                correction_contract,
+                execution=turn.execution,
+                role=f"watch_correction_{correction_rounds}",
+            )
+            _record_agent_launch_receipt(
+                turn.execution,
+                turn.request,
+                prompt=correction_prompt,
+                contract_path=correction_path,
+                remote=bool(turn.execution_host),
+                resumed=True,
+                write_scope=turn.write_scope,
+                continuation="watch_correction",
+                extra={
+                    "surface": turn.surface,
+                    "mode": "work",
+                    "capability": "work_auto",
+                    "network_access": True,
+                    "launch_kind": "watch_correction",
+                    "correction_round": correction_rounds,
+                    "write_directory_count": len(turn.write_dirs),
+                    "canonical_state_boundary": "prompt_only",
+                },
+            )
+            correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
+            correction_error: str | None = None
+            correction_stream = _stream_turn_agent_events(
+                turn,
+                launcher,
+                correction_prompt,
+                session_id=settled.native_session_id,
+                outcome=correction_outcome,
+                validator_staged=correction_validator,
+                validator_lifecycle=correction_lifecycle,
+            )
+            async with aclosing(correction_stream) as stream:
+                async for frame in stream:
+                    event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                    if event.event == "error":
+                        correction_error = event.text or "Watcher correction failed."
+                        continue
+                    if event.event not in {"answer", "done"}:
+                        yield frame
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            await correction_lifecycle.close(primary_error=primary_error)
         settled.native_session_id = correction_outcome.session_id or settled.native_session_id
         if correction_outcome.paused:
             settled.stop = True
@@ -1900,6 +1952,8 @@ async def _stream_work_graph_repair(
             stage_name=stage_name,
             task_id=execution.operation_id,
             turn_id=f"{token}:work-graph-repair",
+            broker=True,
+            episode_id=request.control_episode_id,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -2076,12 +2130,14 @@ def _start_work_validator_mailbox(
     *,
     execution: AgentTaskExecution | None,
     budget: PatchValidationBudget,
+    compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
     return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
+        command_handler=compute_commands,
         serve=serve_patch_validation_mailbox,
         validate=lambda text: _validate_work_patch_live(
             service,

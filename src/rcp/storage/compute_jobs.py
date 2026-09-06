@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from rcp.compute_jobs.models import ComputeJobRecord, ComputeJobStatus
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeJobStatus
 from rcp.limits import COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT
 
 
@@ -16,6 +16,44 @@ def _compute_job_record(row: sqlite3.Row) -> ComputeJobRecord:
 
 
 class ComputeJobStoreMixin:
+    def compute_command_receipts(
+        self, operation_id: str, verb: str, key: str
+    ) -> list[dict[str, object]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM graph_run_receipts WHERE operation_id = ? "
+                "AND category IN ('compute_command_started', 'compute_command_result') "
+                "AND json_extract(payload_json, '$.verb') = ? "
+                "AND json_extract(payload_json, '$.key') = ? ORDER BY receipt_id",
+                (operation_id, verb, key),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def compute_backend_probe(
+        self, project_id: str, execution_machine: str
+    ) -> ComputeBackendProbe | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT probe_json FROM compute_backend_probes "
+                "WHERE project_id = ? AND execution_machine = ?",
+                (project_id, execution_machine),
+            ).fetchone()
+        return ComputeBackendProbe.model_validate_json(row[0]) if row is not None else None
+
+    def record_compute_backend_probe(
+        self, project_id: str, probe: ComputeBackendProbe
+    ) -> ComputeBackendProbe:
+        probe = ComputeBackendProbe.model_validate(probe.model_dump())
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO compute_backend_probes "
+                "(project_id, execution_machine, probe_json, probed_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(project_id, execution_machine) DO UPDATE SET "
+                "probe_json = excluded.probe_json, probed_at = excluded.probed_at",
+                (project_id, probe.execution_machine, probe.model_dump_json(), self.now()),
+            )
+        return probe
+
     def create_compute_job(self, record: ComputeJobRecord) -> ComputeJobRecord:
         record = ComputeJobRecord.model_validate(record.model_dump())
         values = record.model_dump(mode="json")

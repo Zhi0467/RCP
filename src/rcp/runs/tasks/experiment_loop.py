@@ -96,6 +96,7 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
+from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work import (
     WorkTurn,
     _AppliedWorkTurn,
@@ -309,15 +310,8 @@ async def _stage_work_turn(
             stage_name=stage_name,
             task_id=execution.operation_id if execution is not None else token,
             turn_id=f"{token}:work",
-        )
-        validator_lifecycle = _start_work_validator_mailbox(
-            service,
-            patch_inputs.validator_staged,
-            execution=execution,
-            budget=validator_budget,
-            run_truth_scope=context.run_truth_scope,
-            control_node_id=request.control_node_id,
-            control_decision_bundle=request.control_decision_bundle,
+            broker=True,
+            episode_id=request.control_episode_id,
         )
         if clear_stale_handoffs:
             _clear_stale_turn_handoffs(workspace, remote_stage)
@@ -357,6 +351,23 @@ async def _stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+        )
+        compute_commands = (
+            WorkComputeCommands(
+                execution, service.manifest, write_scope, remote_stage, request.control_episode_id
+            )
+            if execution is not None
+            else None
+        )
+        validator_lifecycle = _start_work_validator_mailbox(
+            service,
+            patch_inputs.validator_staged,
+            execution=execution,
+            budget=validator_budget,
+            compute_commands=compute_commands,
+            run_truth_scope=context.run_truth_scope,
+            control_node_id=request.control_node_id,
+            control_decision_bundle=request.control_decision_bundle,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = []
@@ -408,6 +419,7 @@ async def _stage_work_turn(
             patch_inputs=patch_inputs,
             validator_lifecycle=validator_lifecycle,
             validator_budget=validator_budget,
+            compute_commands=compute_commands,
             outcome=outcome,
         )
         return turn, _StagedWorkInputs(
@@ -893,6 +905,11 @@ async def _validate_watch_deliverable(
         if origin_task is None:
             raise ValueError("The originating Experiment-loop operation is no longer available.")
         handoff = parse_experiment_watch_json(watch_text)
+        if turn.compute_commands is not None:
+            await asyncio.to_thread(
+                turn.compute_commands.validate_handoff,
+                {item.job_id for item in handoff.observers if item.job_id},
+            )
         settled.loop_watch_text = watch_text
         if handoff.is_empty:
             exit_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
@@ -948,6 +965,10 @@ async def _validate_watch_deliverable(
                 validate_watch_specs,
                 handoff.observers,
                 turn.execution_host,
+                store=turn.execution.store,
+                binding=binding,
+                manifest=turn.service.manifest,
+                data_dir=turn.execution.store.path.parent,
             )
             if handoff.observers
             else []
@@ -1105,6 +1126,8 @@ async def _settle_watch_deliverable(
         try:
             validator_command = turn.patch_inputs.validator_command
             correction_validator = stage_patch_validation_mailbox(
+                authority="broker",
+                episode_id=turn.request.control_episode_id,
                 local_stage=turn.local_stage,
                 remote_stage=turn.remote_stage,
                 task_id=turn.execution.operation_id,
@@ -1116,6 +1139,7 @@ async def _settle_watch_deliverable(
                 correction_validator,
                 execution=turn.execution,
                 budget=turn.validator_budget,
+                compute_commands=turn.compute_commands,
                 run_truth_scope=turn.context.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
@@ -1211,6 +1235,44 @@ async def _settle_watch_deliverable(
         text = corrected.text
         failure = corrected.failure
         settled.loop_watch_text = text
+
+
+async def _resettle_changed_watch_handoff(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    staged: _StagedWorkInputs,
+    composed: _ComposedWorkPrompt,
+    settled: _SettledExperimentDeliverables,
+    applied: _AppliedWorkTurn,
+) -> AsyncIterator[str]:
+    # A correction can change the observer declaration or launch more compute.
+    # Preserve Patch-read diagnostics before checking that operational handoff.
+    try:
+        changed_watch = (
+            _read_watch_request(turn.workspace, turn.remote_stage) != settled.loop_watch_text
+        )
+    except (OSError, StateUnavailable, ValueError):
+        changed_watch = True
+    if not changed_watch and turn.compute_commands is not None:
+        observers = settled.pending_loop_handoff[0] if settled.pending_loop_handoff else []
+        try:
+            await asyncio.to_thread(
+                turn.compute_commands.validate_handoff,
+                {item.job_id for item in observers if item.job_id},
+            )
+        except ValueError:
+            changed_watch = True
+    if changed_watch:
+        settled.native_session_id = applied.native_session_id
+        async with aclosing(
+            _settle_watch_deliverable(turn, launcher, staged, composed, None, settled)
+        ) as stream:
+            async for frame in stream:
+                yield frame
+        if settled.stop:
+            applied.stop = True
+            return
+        applied.native_session_id = settled.native_session_id
 
 
 async def _apply_experiment_loop_turn(
@@ -1334,6 +1396,8 @@ async def _apply_experiment_loop_turn(
                 {"kind": "experiment_loop", "problem": final_failure.message},
             )
             loop_validator = stage_patch_validation_mailbox(
+                authority="broker",
+                episode_id=turn.request.control_episode_id,
                 local_stage=turn.local_stage,
                 remote_stage=turn.remote_stage,
                 task_id=turn.execution.operation_id,
@@ -1345,6 +1409,7 @@ async def _apply_experiment_loop_turn(
                 loop_validator,
                 execution=turn.execution,
                 budget=turn.validator_budget,
+                compute_commands=turn.compute_commands,
                 run_truth_scope=turn.context.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
@@ -1443,6 +1508,22 @@ async def _apply_experiment_loop_turn(
                 continue
             assert corrected.text is not None
             final_patch_text = corrected.text
+            async with aclosing(
+                _resettle_changed_watch_handoff(turn, launcher, staged, composed, settled, applied)
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            if applied.stop:
+                return
+
+    # Even rejected graph reflection must retain a complete operational handoff.
+    async with aclosing(
+        _resettle_changed_watch_handoff(turn, launcher, staged, composed, settled, applied)
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if applied.stop:
+        return
 
     if (
         turn.execution is None
@@ -1940,6 +2021,8 @@ async def _stream_work_graph_repair(
             stage_name=stage_name,
             task_id=execution.operation_id,
             turn_id=f"{token}:work-graph-repair",
+            broker=True,
+            episode_id=request.control_episode_id,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -2193,6 +2276,7 @@ def _start_work_validator_mailbox(
     *,
     execution: AgentTaskExecution | None,
     budget: PatchValidationBudget,
+    compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
@@ -2201,6 +2285,7 @@ def _start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
+        command_handler=compute_commands,
         serve=serve_patch_validation_mailbox,
         validate=lambda text: _validate_work_patch_live(
             service,

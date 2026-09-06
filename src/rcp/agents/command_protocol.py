@@ -8,6 +8,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.storage import GraphCondition
 
 COMMAND_PROTOCOL_VERSION = 1
@@ -28,6 +29,9 @@ CommandVerb = Literal[
     "episode",
     "inbox",
     "finish",
+    "launch",
+    "job_status",
+    "cancel",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -41,6 +45,9 @@ MutatingCommandVerb = Literal[
     "episode",
     "inbox",
     "finish",
+    "launch",
+    "job_status",
+    "cancel",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -55,6 +62,9 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "episode",
         "inbox",
         "finish",
+        "launch",
+        "job_status",
+        "cancel",
     }
 )
 
@@ -231,6 +241,23 @@ class FinishArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class LaunchArguments(ComputeLaunchRequest):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ComputeJobArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    job_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("job_id")
+    @classmethod
+    def nonblank_job_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("job id must not be blank")
+        return value.strip()
+
+
 class _CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -311,6 +338,24 @@ class FinishCommandRequest(_CommandRequest):
     arguments: FinishArguments = Field(default_factory=FinishArguments)
 
 
+class LaunchCommandRequest(_CommandRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    verb: Literal["launch"]
+    arguments: LaunchArguments
+
+
+class JobStatusCommandRequest(_CommandRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    verb: Literal["job_status"]
+    arguments: ComputeJobArguments
+
+
+class CancelCommandRequest(_CommandRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    verb: Literal["cancel"]
+    arguments: ComputeJobArguments
+
+
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | ApplyCommandRequest
@@ -323,7 +368,10 @@ CommandRequest: TypeAlias = Annotated[
     | WatchGraphCommandRequest
     | EpisodeCommandRequest
     | InboxCommandRequest
-    | FinishCommandRequest,
+    | FinishCommandRequest
+    | LaunchCommandRequest
+    | JobStatusCommandRequest
+    | CancelCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)
@@ -386,7 +434,7 @@ def staged_command_broker_source() -> str:
 
 
 def command_authentication_payload(document: str) -> bytes:
-    """Canonical bytes covered by an Auto-research broker's per-request HMAC.
+    """Canonical bytes covered by a turn broker's per-request HMAC.
 
     The broker signs the request exactly as the client wrote it, so verification
     has to canonicalize that same text. Rebuilding the payload from the validated

@@ -252,8 +252,9 @@ waiting. If that turn pauses, fails, or is interrupted, the episode shows
 **Needs action** and only the exact available Resume, Retry, or Switch-provider
 recovery. Recovery cannot clear Stop or reenable watcher delivery.
 
-Stop does not cancel external work, delete watcher history, edit Experiment
-status, create or close an attempt, or discard a valid Patch. If the exact saved
+Stop and pause do not cancel compute jobs. Stop does not cancel external work,
+delete watcher history, edit Experiment status, create or close an attempt, or
+discard a valid Patch. If the exact saved
 session is unusable, Stop may durably abandon only recovery of that already
 terminal task while preserving history, then settle.
 
@@ -277,13 +278,17 @@ episode association retain the same target.
 
 Every watcher file has two all-or-none lists:
 
-- `external` observations with a literal `check_command`, absolute `log_path`,
-  and absolute `cwd`; and
+- `external` observations in either closed form: a literal `check_command`,
+  absolute `log_path`, and absolute `cwd`, or only a `job_id`; and
 - `graph` conditions from a closed vocabulary.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
 or a named Proposal being resolved after arming. There is no arbitrary query,
 standing predicate, new-node arrival, or relation predicate.
+
+Shell and job observations can coexist. Experiment external items may also
+carry their existing `group` label; ordinary conversation items cannot. Stored
+job observations have no shell fields, and shell observations have no job id.
 
 ## Graph-condition delivery
 
@@ -305,7 +310,7 @@ delivery idempotent.
 
 ## External observation
 
-External checks run in a cold login shell with a hard timeout. A timeout kills
+Shell checks run in a cold login shell with a hard timeout. A timeout kills
 the check's process group on its execution machine, including shell children;
 it never cancels the separate external job being observed. SSH checks carry
 their own bounded timeout owner so a lost client cannot abandon the check.
@@ -313,6 +318,19 @@ Exit `0` means the named work is gone, `1` means still present, and any other re
 unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
 the error count. A degraded observation is never inferred complete or dead.
+
+Job observations use `refresh_compute_job` instead of a shell. Arming requires
+the job to belong to the project and originating task lineage: the same origin
+operation, or the same episode for Experiment-loop. An already exited or
+cancelled job arms completed. Polling keeps a running job active, completes an
+exited or cancelled job, and degrades a lost job with its diagnostic; loss is
+never completion. These states report operational liveness, not scientific
+success. The [compute jobs spec](compute-jobs.md) owns launch and cancellation.
+
+For each delivered job observer, the Experiment watcher-state file and generic
+Work wake message carry `job_id`, `exit_status`, `started_at`, `ended_at`,
+`duration_seconds`, `log_path`, and `backend_id`. Shell observers retain their
+existing log-path payload. Both use the same durable coalescing and claim path.
 
 Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is
@@ -326,6 +344,12 @@ atomically. One invalid item arms none. An empty final watcher declaration is
 legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
+
+At Work and Experiment-loop settlement, RCP also refreshes every job launched
+by the turn. A still-running job absent from the declared job observers is a
+correctable handoff defect listing the unobserved job ids. The same correction
+round repairs it without another invocation; jobs already exited need no
+observer, and a turn that launched nothing is unaffected.
 
 ## Watcher maintenance authority
 

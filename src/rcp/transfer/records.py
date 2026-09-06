@@ -72,6 +72,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "chat_session_contexts",
         # Backend handles and job paths remain owned by the source machine.
         "compute_jobs",
+        "compute_backend_probes",
         "conversation_worktrees",
         "graph_watcher_reconciliation",
         "project_aliases",

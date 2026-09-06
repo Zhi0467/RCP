@@ -1142,7 +1142,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert str(service.manifest.research_dir / "research.md") in wake_contract
     assert "chat-patch-schema-" in wake_contract
     assert "rcp-agent-client-" in wake_contract
-    assert " --credential " in wake_contract
+    assert " --broker " in wake_contract
+    assert " --credential " not in wake_contract
     assert " --workspace " in wake_contract
     assert " validate " in wake_contract
 

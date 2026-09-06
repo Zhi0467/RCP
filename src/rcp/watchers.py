@@ -10,12 +10,15 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from rcp.compute_jobs.jobs import refresh_compute_job
+from rcp.compute_jobs.models import ComputeJobRecord
+from rcp.config import Manifest
 from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState, Patch
 from rcp.core.transition_models import (
     GraphHeadRef,
@@ -61,13 +64,30 @@ _LOGIN_SHELL_NOISE = (
 class WatchSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    check_command: str = Field(min_length=1)
-    log_path: str = Field(min_length=1)
-    cwd: str = Field(min_length=1)
+    check_command: str | None = Field(default=None, min_length=1)
+    log_path: str | None = Field(default=None, min_length=1)
+    cwd: str | None = Field(default=None, min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def closed_observer_form(cls, value: object) -> object:
+        if isinstance(value, dict):
+            shell_fields = {"check_command", "log_path", "cwd"}
+            if "job_id" in value:
+                if value["job_id"] is None or shell_fields.intersection(value):
+                    raise ValueError("a job observer cannot contain shell fields")
+                if not str(value["job_id"]).strip():
+                    raise ValueError("job_id must not be blank")
+            elif any(value.get(field) is None for field in shell_fields):
+                raise ValueError("a shell observer requires check_command, log_path, and cwd")
+        return value
 
     @field_validator("check_command")
     @classmethod
-    def check_command_is_not_blank(cls, value: str) -> str:
+    def check_command_is_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         stripped = value.strip()
         if not stripped:
             raise ValueError("check_command must not be blank")
@@ -75,7 +95,9 @@ class WatchSpec(BaseModel):
 
     @field_validator("log_path", "cwd")
     @classmethod
-    def paths_are_absolute(cls, value: str) -> str:
+    def paths_are_absolute(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not PurePosixPath(value).is_absolute():
             raise ValueError("watcher paths must be absolute")
         return value
@@ -241,7 +263,7 @@ class WatcherInitialCheckError(ValueError):
         self.failures = failures
         self.results = results
         detail = "; ".join(
-            f"watcher {index + 1} ({spec.log_path}): {result.error or 'check failed'}"
+            f"watcher {index + 1} ({spec.job_id or spec.log_path}): {result.error or 'check failed'}"
             for index, spec, result in failures
         )
         super().__init__(detail)
@@ -1134,6 +1156,9 @@ def run_watcher_check(
 ) -> WatcherCheckResult:
     """Ask a watcher from a fresh login shell without interpreting its command."""
 
+    if spec.job_id is not None:
+        raise ValueError("a job observer requires the compute job refresh path")
+    assert spec.check_command is not None and spec.cwd is not None
     if execution_host:
         command = ssh_arguments(
             execution_host,
@@ -1191,18 +1216,79 @@ def run_watcher_check(
     )
 
 
+def job_watcher_payload(store: AppStore, job_id: str) -> dict[str, object]:
+    """Expose durable compute evidence in both attributed wake forms."""
+
+    job = store.compute_job(job_id)
+    if job is None:
+        raise ValueError(f"compute job does not exist: {job_id}")
+    duration = None
+    if job.started_at is not None and job.ended_at is not None:
+        duration = (
+            datetime.fromisoformat(job.ended_at) - datetime.fromisoformat(job.started_at)
+        ).total_seconds()
+    return {
+        "job_id": job.job_id,
+        "exit_status": job.exit_status,
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+        "duration_seconds": duration,
+        "log_path": job.log_path,
+        "backend_id": job.backend_id,
+    }
+
+
+def _job_check_result(job: ComputeJobRecord) -> WatcherCheckResult:
+    return WatcherCheckResult(
+        state=(
+            "error"
+            if job.status == "lost"
+            else "complete"
+            if job.status in {"exited", "cancelled"}
+            else "active"
+        ),
+        checked_at=_now(),
+        exit_code=job.exit_status,
+        error=job.diagnostic if job.status == "lost" else None,
+    )
+
+
 def validate_watch_specs(
     specs: list[WatchSpec],
     execution_host: str,
     *,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+    store: AppStore | None = None,
+    binding: WatcherBinding | None = None,
+    manifest: Manifest | None = None,
+    data_dir: Path | None = None,
 ) -> list[WatcherCheckResult]:
     """Run every initial check; any error rejects the entire list."""
 
     if not specs:
         raise ValueError("a watch list must contain at least one watcher")
-    results = [check_runner(spec, execution_host, timeout) for spec in specs]
+    results = []
+    for spec in specs:
+        if spec.job_id is None:
+            results.append(check_runner(spec, execution_host, timeout))
+            continue
+        if store is None or binding is None or manifest is None:
+            raise ValueError("a job observer requires its bound task and compute context")
+        job = store.compute_job(spec.job_id)
+        if job is None or job.project_id != binding.project_id:
+            raise ValueError(f"compute job does not exist in this project: {spec.job_id}")
+        same_episode = (
+            binding.continuation.patch_kind == "experiment_loop"
+            and job.episode_id is not None
+            and job.episode_id == binding.continuation.control_episode_id
+        )
+        if job.origin_operation_id != binding.origin_operation_id and not same_episode:
+            raise ValueError(f"compute job is outside this task lineage: {spec.job_id}")
+        job = refresh_compute_job(
+            store, manifest, spec.job_id, data_dir=data_dir or store.path.parent
+        )
+        results.append(_job_check_result(job))
     failures = [
         (index, specs[index], result)
         for index, result in enumerate(results)
@@ -1223,6 +1309,8 @@ def arm_watchers(
     watcher_ids: list[str] | None = None,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+    manifest: Manifest | None = None,
+    data_dir: Path | None = None,
 ) -> list[StoredWatcherRecord]:
     """Validate one mixed handoff and persist all of it, or persist none of it."""
 
@@ -1252,6 +1340,10 @@ def arm_watchers(
             binding.execution_host,
             check_runner=check_runner,
             timeout=timeout,
+            store=store,
+            binding=binding,
+            manifest=manifest,
+            data_dir=data_dir,
         )
         if specs
         else []
@@ -1276,6 +1368,7 @@ def arm_watchers(
                 episode_id=binding.episode_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
+                job_id=spec.job_id,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
@@ -1338,8 +1431,12 @@ class WatcherPoller:
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
+        manifest_for_project: Callable[[str], Manifest] | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self.store = store
+        self.manifest_for_project = manifest_for_project
+        self.data_dir = data_dir or store.path.parent
         self.on_completed = on_completed
         self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
@@ -1394,17 +1491,28 @@ class WatcherPoller:
                 raise RuntimeError("External watcher changed type during its check.")
             return updated
 
+    def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
+        if record.job_id is None:
+            return self.check_runner(_spec_from_record(record), record.execution_host, self.timeout)
+        if self.manifest_for_project is None:
+            raise ValueError("compute job observer has no project manifest resolver")
+        job = self.store.compute_job(record.job_id)
+        if job is None or job.project_id != record.project_id:
+            raise ValueError("compute job observer has no job in its project")
+        return _job_check_result(
+            refresh_compute_job(
+                self.store,
+                self.manifest_for_project(record.project_id),
+                record.job_id,
+                data_dir=self.data_dir,
+            )
+        )
+
     def _check_records(self, records: list[WatcherRecord]) -> None:
         if records:
             with ThreadPoolExecutor(max_workers=min(self.workers, len(records))) as executor:
                 futures = {
-                    executor.submit(
-                        self.check_runner,
-                        _spec_from_record(record),
-                        record.execution_host,
-                        self.timeout,
-                    ): record
-                    for record in records
+                    executor.submit(self._check_record, record): record for record in records
                 }
                 for future in as_completed(futures):
                     record = futures[future]

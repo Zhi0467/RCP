@@ -1842,7 +1842,7 @@ class AutoResearchCommandDispatcher:
             assert isinstance(request, FinishCommandRequest)
             assert planned_finish_effect_id is not None
             return self.effects.finish(context, planned_finish_effect_id)
-        raise AssertionError(f"unhandled auto_research command verb: {request.verb}")
+        raise AutoResearchCommandInvalid(f"Auto-research does not authorize {request.verb}.")
 
     def _require_worker(
         self,

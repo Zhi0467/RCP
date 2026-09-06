@@ -46,6 +46,7 @@ from rcp.watchers import (
     WatcherBinding,
     WatcherCheckResult,
     graph_condition_result,
+    job_watcher_payload,
     validate_graph_conditions,
 )
 
@@ -831,6 +832,7 @@ def prepare_experiment_watcher_records(
                 "log_path": spec.log_path,
                 "cwd": spec.cwd,
                 "group": group,
+                **({"job_id": spec.job_id} if spec.job_id is not None else {}),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -847,6 +849,7 @@ def prepare_experiment_watcher_records(
                 episode_id=binding.episode_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
+                job_id=spec.job_id,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
@@ -1068,6 +1071,10 @@ def _watcher_state(
                     "group_label": record.group_label,
                 }
             )
+        if isinstance(record, WatcherRecord) and record.job_id is not None:
+            item.pop("check_command", None)
+            item.pop("cwd", None)
+            item.update(job_watcher_payload(execution.store, record.job_id))
         state.append(item)
     return state
 

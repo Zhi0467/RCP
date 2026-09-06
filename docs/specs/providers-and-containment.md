@@ -210,8 +210,9 @@ tool output, and the Patch verdict remain separate. A rejected Patch does not
 discard an already-produced answer.
 
 Every patch-producing Seed, Refresh, or Work stage carries an RCP-staged Python
-validator client. It exchanges bounded request and response files through the
-writable workspace while RCP polls locally or through the existing SSH run stage,
+command client with a validator verb. It exchanges bounded request and response
+files through the writable workspace while RCP polls locally or through the
+existing SSH run stage,
 prepares the candidate against live current state in process, and records each
 check. Client exit codes distinguish valid, semantically invalid, and validator
 unavailable, so a transport failure can never become a correction loop.
@@ -221,6 +222,17 @@ references; it never reorders operations. A validator self-check is not a
 reservation: Apply re-prepares RCP-owned bookkeeping and reruns the same semantic
 validator against current state while holding the canonical append lock, so graph
 movement between response and Apply is not by itself a rejection.
+
+Ordinary Work and Experiment-loop, including correction turns, stage the
+turn-bound broker and pass its invocation gate to the provider launch. Broker
+authority is explicit and does not require an episode id. The broker binds the
+live provider process tree on the execution host and signs each request; a
+prior turn's process cannot acquire the next turn's authority. Validate-only
+credentials still refuse keyed commands. These Work owners also serve the
+`launch`, `job-status`, and `cancel` operational verbs described in
+[compute jobs](compute-jobs.md), with task events and diagnostic receipts.
+This gives no additional graph output channel or command authority to other
+task surfaces.
 
 ## Durable task lifecycle
 

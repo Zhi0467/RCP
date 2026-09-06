@@ -38,7 +38,11 @@ def _request() -> RunRequest:
 
 def _assert_command_state_removed(staged: StagedCommandMailbox) -> None:
     assert staged.credential.expired
-    assert not Path(staged.credential_path).exists()
+    if staged.credential_path is not None:
+        assert not Path(staged.credential_path).exists()
+    else:
+        assert staged.invocation_gate is not None
+        assert not Path(staged.invocation_gate.socket_path).exists()
     assert not any(
         name.startswith(_COMMAND_STATE_PREFIXES) for name in staged.mailbox.entry_names()
     )

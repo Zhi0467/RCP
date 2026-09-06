@@ -20,7 +20,7 @@ from rcp.compute_jobs.files import (
     resolve_jobs_root,
     write_job_file,
 )
-from rcp.compute_jobs.models import ComputeJobRecord, ComputeLaunchRequest
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
 from rcp.limits import COMPUTE_JOB_LOG_TAIL_MAX_BYTES
@@ -40,6 +40,7 @@ def launch_compute_job(
     episode_id: str | None,
     execution_machine: str,
     writable_roots: list[str] | tuple[str, ...],
+    probe: ComputeBackendProbe | None = None,
 ) -> ComputeJobRecord:
     request = ComputeLaunchRequest.model_validate(request.model_dump())
     if any(not PurePosixPath(root).is_absolute() for root in writable_roots):
@@ -51,6 +52,14 @@ def launch_compute_job(
             "configure a compute backend for this machine."
         )
     job_id = uuid.uuid4().hex
+    if probe is not None:
+        if (
+            not probe.ready
+            or probe.execution_machine != execution_machine
+            or probe.backend_id != backend.id
+        ):
+            raise ValueError("Compute probe does not match the resolved ready backend.")
+        context.containment = probe.containment
     root = PurePosixPath(resolve_jobs_root(context, data_dir)) / job_id
     context.writable_roots = tuple(dict.fromkeys((*writable_roots, str(root))))
     record = ComputeJobRecord(

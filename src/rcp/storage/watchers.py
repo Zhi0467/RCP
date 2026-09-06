@@ -302,7 +302,7 @@ class WatcherStoreMixin:
             "group_label",
         ]
         if isinstance(existing, WatcherRecord):
-            immutable_fields.extend(("check_command", "log_path", "cwd"))
+            immutable_fields.extend(("check_command", "log_path", "cwd", "job_id"))
         else:
             immutable_fields.append("condition")
         if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
@@ -367,12 +367,9 @@ class WatcherStoreMixin:
                 and record.armed_revision < int(consumed["revision"])
             ):
                 raise ValueError("a graph watcher cannot arm behind the consumed target boundary")
-            # Legacy watcher tables keep these external-only columns NOT NULL.
-            # The separate GraphWatcherRecord never exposes the compatibility
-            # placeholders; graph_condition_json selects its stored type.
-            check_command = ""
-            log_path = ""
-            cwd = ""
+            check_command = None
+            log_path = None
+            cwd = None
             graph_condition_json = record.condition.model_dump_json()
             armed_revision = record.armed_revision
         else:
@@ -391,8 +388,8 @@ class WatcherStoreMixin:
                 last_exit_code, last_error, completed_at, next_check_at,
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
-                stop_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                stop_operation_id, job_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -426,6 +423,7 @@ class WatcherStoreMixin:
                 record.stop_reason,
                 record.stopped_at,
                 record.stop_operation_id,
+                record.job_id if isinstance(record, WatcherRecord) else None,
             ),
         )
 

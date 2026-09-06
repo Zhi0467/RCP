@@ -179,6 +179,11 @@ or one of its live descendants on the execution host. It stores no reusable
 bearer credential in prompt, environment, stage, or command arguments. This
 guards command provenance within the cooperative execution-account model; it
 does not defend against an arbitrary hostile same-UID process.
+Broker authority is separate from episode identity: ordinary Work and
+Experiment-loop use the same turn binding, while every Auto-research request
+retains its episode id and signature. Generalizing that binding does not widen
+the root's command policy: it has no compute launch, status, or cancel verbs.
+Child Work also rejects those verbs until its watcher continuation is implemented.
 
 Apply uses the ordinary transition-manager path on the branch target, with
 idempotent source effect identity and refreshed graph pointers. Guarded finish

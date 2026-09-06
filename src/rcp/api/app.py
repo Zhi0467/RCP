@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -179,6 +180,7 @@ from rcp.storage import (
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
+    WatcherRecord,
 )
 from rcp.transfer.target import (
     TargetTransferActivationCoordinator,
@@ -190,6 +192,7 @@ from rcp.watchers import (
     WatcherDelivery,
     WatcherPoller,
     WatcherRetryWorker,
+    job_watcher_payload,
     ready_graph_watcher_groups,
 )
 from rcp.web_assets import web_dist_path
@@ -1042,7 +1045,7 @@ def create_app(
             target,
             expected_episode_id=(target.branch_id if target.kind == "branch" else None),
         ),
-        generic_request=_generic_watcher_delivery_request,
+        generic_request=lambda group: _generic_watcher_delivery_request(group, store=store),
         experiment_operation_lock=experiment_operation_lock,
         experiment_admission=experiment_admission,
         deliver_auto_research_group=lambda group: deliver_auto_research_watcher_group(
@@ -1171,6 +1174,8 @@ def create_app(
 
     watcher_poller = WatcherPoller(
         store,
+        manifest_for_project=lambda project_id: _project_service(catalog, project_id).manifest,
+        data_dir=app_data,
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
     )
@@ -1803,17 +1808,28 @@ def create_app(
     return app
 
 
-def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:
+def _generic_watcher_delivery_request(
+    group: list[StoredWatcherRecord], *, store: AppStore | None = None
+) -> RunRequest:
     first = group[0]
     continuation = first.continuation
     if continuation.patch_kind != "work":
         raise ValueError("A generic watcher cannot carry Experiment-loop authority.")
+    if store is None and any(
+        isinstance(item, WatcherRecord) and item.job_id is not None for item in group
+    ):
+        raise ValueError("A job watcher wake requires durable compute evidence.")
     watcher_ids = [item.watcher_id for item in group]
     details = "\n".join(
         (
             f"- graph condition `{item.watcher_id}`: `{item.condition.model_dump_json()}`"
             if isinstance(item, GraphWatcherRecord)
-            else f"- external watcher `{item.watcher_id}`: `{item.log_path}`"
+            else (
+                f"- job observer `{item.watcher_id}`: "
+                + json.dumps(job_watcher_payload(store, item.job_id), sort_keys=True)
+                if item.job_id is not None and store is not None
+                else f"- external watcher `{item.watcher_id}`: `{item.log_path}`"
+            )
         )
         for item in group
     )

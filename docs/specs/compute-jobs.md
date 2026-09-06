@@ -1,9 +1,10 @@
 # Compute jobs
 
 RCP owns launch and durable observation; the execution machine's process owner
-owns the computation. This foundation adds no agent-visible behavior. Agent
-launch verbs, job observers, setup surfaces, and human Cancel controls are not
-yet implemented; their sequence is the [compute runner handoff](../handoffs/handoff-2026-09-06-compute-runner.md).
+owns the computation. Work and Experiment-loop turns can launch, inspect, and
+cancel jobs through the staged command client, then hand observation to RCP.
+Child Work continuation, setup surfaces, human Cancel controls, and agent prompt
+instructions remain in the [compute runner handoff](../handoffs/handoff-2026-09-06-compute-runner.md).
 
 ## Backend profiles
 
@@ -76,12 +77,17 @@ implemented. Log-tail reads have a fixed byte ceiling.
 A probe resolves the execution machine, checks its facility, launches a bounded
 trivial job through the real backend, observes it alive, and requires an exit of
 zero and the `rcp-probe` log marker. The caller supplies the data directory and
-receives the result. Missing automatic resolution is `unavailable` with the action
+receives the result. SQLite's `compute_backend_probes` table retains the latest
+`ComputeBackendProbe` JSON and `probed_at` for each `(project_id,
+execution_machine)`. Agent launch reads that result; when none exists, it runs
+one probe and stores the result before deciding. A stored result that is not
+ready refuses launch with its diagnostic and required action.
+Missing automatic resolution is `unavailable` with the action
 "configure a compute backend for this machine"; execution failures are `failed`
 with redacted single-line diagnostics and an action.
 
-Launch resolves the backend directly. If none resolves, it raises a `RuntimeError`
-naming the machine and asking to configure a compute backend.
+The public launch function still resolves the configured backend; the task owner
+owns probe admission and passes the turn's writable roots to that function.
 
 On local Linux, the job's captured cgroup must differ from the RCP process's
 `/proc/self/cgroup`; a shared service cgroup fails the probe. Remote cgroup paths
@@ -93,9 +99,74 @@ The systemd probe first attempts `PrivateUsers=yes`, `ProtectSystem=strict`,
 `ProtectHome=read-only`, and exact `ReadWritePaths`. If that attempt fails but a
 cooperative attempt passes, the result explicitly records that limitation. A
 mirrored backend start applies those properties to the supplied writable roots
-and its job root. Internal job launches currently use cooperative containment.
+and its job root. Agent launch uses mirrored containment when the stored probe
+proved support.
 Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
 hostile same-account isolation claims.
+
+## Turn-bound agent commands
+
+Explicit graph-repair tasks retain their existing validation-only policy.
+The staged client serves these keyed commands in ordinary Work and
+Experiment-loop turns, including their same-invocation correction turns:
+
+- `launch --key K --cwd <absolute-path> [--label <text>] -- <argv...>` returns
+  `{job_id, log_path, backend_id}`. The working directory must be inside the
+  turn's writable roots. Repeating the same keyed intent returns the same job id
+  and starts no additional job.
+- `job-status --key K <job_id>` refreshes a project-owned job and returns
+  `{status, exit_status, started_at, ended_at, log_tail}`. The command's log tail
+  reads at most 1 KiB so its replayable response fits the diagnostic receipt.
+- `cancel --key K <job_id>` records the task operation id as requester and calls
+  the backend. Repeating the same key is a no-op.
+
+Execution machine, host, project, operation id, and optional episode id come
+from the turn, never the command. A bad request answers `invalid`; a machine
+without a ready probe answers `unavailable` with its diagnostic and required
+action; success answers `ok`. Each call has a task event and diagnostic receipt.
+Commands do not apply a graph Patch.
+
+Idempotency is scoped to the task operation, verb, and key, including correction
+turns within that operation. The start receipt retains an argument digest, and
+the result receipt retains the response; both survive ordinary diagnostic
+retention. Reusing a key with different arguments is invalid. An interrupted
+call without a result stays unavailable with an uncertain-outcome diagnostic;
+replay never guesses that a missing response means nothing started.
+
+Broker authority is explicit and independent of episode identity. One live
+provider process tree binds each turn, with a fresh binding for correction;
+remote turns run the broker on their execution host. A validate-only identity
+cannot issue keyed commands. Auto-research retains its episode identity and
+per-request signatures, and stale processes cannot command a later Work turn.
+Task owners retain policy: child Work, the Auto-research root, Discuss, graph
+merge, Seed/Refresh, and Paper do not serve these compute verbs.
+
+## Job observers and settlement
+
+An external item in `watch.json` may be `{"job_id": "<id>"}` instead of the
+closed shell form. Experiment items may also carry their existing `group` label;
+shell and job items may coexist in one list. A stored job observer has no shell
+fields, and a stored shell observer has no job id.
+
+Arming requires a job in the same project and task lineage: the same origin
+operation, or the same episode for an Experiment-loop. A refreshed `exited` or
+`cancelled` job arms completed. An initially lost job rejects the handoff like
+an unobservable initial shell check. Polling uses `refresh_compute_job`, never an
+agent shell: `running` stays active, `exited` or `cancelled` completes, and `lost`
+degrades with its diagnostic instead of completing. Completion says the process
+ended, not that its computation succeeded.
+
+After reading the final watcher declaration, settlement refreshes jobs launched
+by that turn. Any still-running job missing a job observer is a correctable
+handoff defect naming every unobserved job id. It enters the existing correction
+round without spending an invocation; arming remains after settlement. Exited
+jobs need no observer, and a turn that launched nothing is unaffected.
+
+Each delivered job observer contributes `job_id`, `exit_status`, `started_at`,
+`ended_at`, `duration_seconds`, `log_path`, and `backend_id` to the Experiment
+watcher-state file or the generic Work wake message. Existing target, coalescing,
+admission, and Stop fences still own delivery. Stop and pause do not cancel jobs.
+Duration is end time minus start time, or null when either timestamp is absent.
 
 ## Durable state and startup
 

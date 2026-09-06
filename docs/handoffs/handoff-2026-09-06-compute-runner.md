@@ -6,8 +6,14 @@ Status: active, human-confirmed on 2026-09-06. PR A is implemented on
 state, probes, reconciliation, configuration, and storage/restore integration.
 Focused tests, Ruff, pre-commit, and a throwaway served-app startup check pass.
 Real systemd and launchd execution is unavailable in this sandbox; the full
-suite's existing watcher process checks cannot execute `ps` here. PRs B–E and
-the real-host acceptance drive remain. The decisions below are settled. Closure:
+suite's existing watcher process checks cannot execute `ps` here. PR B implements
+the Work and Experiment-loop broker channel, durable probes, compute verbs, job
+observers, settlement correction, and wake payload on
+`codex/compute-runner-channel`. Broker, fake-backend command/observer, settlement,
+migration, and restore regressions pass, as do Ruff, pre-commit, and a throwaway
+HTTP startup check. The focused and full suites fail only the two existing `ps`
+sandbox checks; Chromium console inspection is also sandbox-blocked. PRs C–E
+and the real-host acceptance drive remain. The decisions below are settled. Closure:
 all five PRs merged, the S136 drive passes on the team server with a real Codex
 Work turn, and this file is archived in the same change.
 

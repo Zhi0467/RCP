@@ -20,9 +20,12 @@ from rcp.agents.command_mailbox import (
 )
 from rcp.agents.command_protocol import (
     ApplyCommandRequest,
+    CancelCommandRequest,
     CommandResponse,
     EpisodeCommandRequest,
     InboxCommandRequest,
+    JobStatusCommandRequest,
+    LaunchCommandRequest,
     SpawnCommandRequest,
     StatusArguments,
     staged_command_broker_source,
@@ -515,6 +518,13 @@ async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> 
             "research.example",
         ),
         ("status", "--worker-id", "worker-1", "--episode-id", "episode-1"),
+        ("launch", "--cwd", "/tmp", "--", "true"),
+        ("launch", "--key", "k", "--cwd", "relative", "--", "true"),
+        ("launch", "--key", "k", "--cwd", "/tmp", "true"),
+        ("launch", "--key", "k", "--cwd", "/tmp", "--"),
+        ("launch", "--key", "k", "--cwd", "/tmp", "--host", "elsewhere", "--", "true"),
+        ("job-status", "job-1"),
+        ("cancel", "job-1"),
     ],
 )
 async def test_closed_cli_rejects_retry_launch_profile_and_ambiguous_status(
@@ -548,7 +558,16 @@ async def test_closed_cli_rejects_retry_launch_profile_and_ambiguous_status(
 
 
 @pytest.mark.asyncio
-async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("message", "--key", "once", "This must not be dispatched."),
+        ("launch", "--key", "once", "--cwd", "/tmp", "--", "true"),
+        ("job-status", "--key", "once", "job-1"),
+        ("cancel", "--key", "once", "job-1"),
+    ],
+)
+async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path, arguments) -> None:
     workspace = tmp_path / "stage"
     workspace.mkdir()
     staged = stage_command_mailbox(
@@ -571,19 +590,13 @@ async def test_non_campaign_credential_rejects_mutation_before_handler(tmp_path)
         serve_command_mailbox(staged=staged, handler=handler, stop=stop, poll_seconds=0.01)
     )
     await asyncio.sleep(0)
-    code, output = await _run_client(
-        staged,
-        "message",
-        "--key",
-        "message-once",
-        "This must not be dispatched.",
-    )
+    code, output = await _run_client(staged, *arguments)
     stop.set()
     await server
 
     assert code == 1
     assert json.loads(output)["status"] == "invalid"
-    assert "episode-bound credential" in output
+    assert "broker authority" in output
     assert not handled
 
 
@@ -655,13 +668,17 @@ async def test_campaign_broker_signature_cannot_authorize_a_modified_request(tmp
 
 
 @pytest.mark.asyncio
-async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path) -> None:
+@pytest.mark.parametrize("episode_id", [None, "episode"])
+async def test_detached_prior_turn_process_cannot_command_reused_stage(
+    tmp_path, episode_id
+) -> None:
     workspace = tmp_path / "reused-stage"
     workspace.mkdir()
     first = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        episode_id="episode",
+        episode_id=episode_id,
+        authority="broker",
         task_id="first-task",
         turn_id="first-turn",
         timeout_seconds=2,
@@ -700,7 +717,8 @@ async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path)
     second = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
-        episode_id="episode",
+        episode_id=episode_id,
+        authority="broker",
         task_id="second-task",
         turn_id="second-turn",
         timeout_seconds=2,
@@ -1197,3 +1215,104 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
     assert code == 2, output
     assert "invalid" not in output.lower()
     staged.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("episode_id", [None, "episode"])
+async def test_compute_verbs_use_turn_bound_broker_without_bearer_credential(
+    tmp_path, episode_id
+) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=episode_id,
+        task_id="work-task",
+        turn_id="work-turn",
+        authority="broker",
+        timeout_seconds=5,
+    )
+    assert staged.credential.identity.authority == "broker"
+    assert staged.credential_path is None
+    assert not list(tmp_path.glob("*.credential.json"))
+    with pytest.raises(RuntimeError, match="broker-only"):
+        staged.credential.document()
+    assert staged.invocation_gate is not None
+    seen = []
+
+    def handler(request, identity):
+        assert identity.episode_id == episode_id
+        assert identity.task_id == "work-task"
+        assert identity.authority == "broker"
+        seen.append(request)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            for arguments in (
+                (
+                    "launch",
+                    "--key",
+                    "launch-once",
+                    "--cwd",
+                    str(tmp_path),
+                    "--label",
+                    "A run",
+                    "--",
+                    "python3",
+                    "-c",
+                    "print('hello')",
+                    "",
+                ),
+                ("job-status", "--key", "status-once", "job-1"),
+                ("cancel", "--key", "cancel-once", "job-1"),
+            ):
+                code, output = await _run_client(staged, *arguments)
+                assert code == 0, output
+        finally:
+            stop.set()
+            await server
+    assert isinstance(seen[0], LaunchCommandRequest)
+    assert seen[0].idempotency_key == "launch-once"
+    assert seen[0].arguments.model_dump() == {
+        "cwd": str(tmp_path),
+        "label": "A run",
+        "argv": ["python3", "-c", "print('hello')", ""],
+    }
+    assert isinstance(seen[1], JobStatusCommandRequest)
+    assert isinstance(seen[2], CancelCommandRequest)
+    assert seen[1].arguments.job_id == seen[2].arguments.job_id == "job-1"
+    assert staged.credential.expired
+
+
+@pytest.mark.parametrize(
+    ("verb", "arguments"),
+    [
+        ("launch", {"cwd": "/tmp", "argv": ["true"]}),
+        ("job_status", {"job_id": "job-1"}),
+        ("cancel", {"job_id": "job-1"}),
+    ],
+)
+def test_compute_protocol_requires_a_nonblank_key(verb, arguments) -> None:
+    envelope = {
+        "version": 1,
+        "mailbox_id": "a" * 32,
+        "request_id": "b" * 32,
+        "credential": "c" * 64,
+        "verb": verb,
+        "arguments": arguments,
+    }
+    for key in (None, "", " "):
+        with pytest.raises(ValueError):
+            validate_command_request(json.dumps({**envelope, "idempotency_key": key}))
+    with pytest.raises(ValueError):
+        validate_command_request(json.dumps(envelope))

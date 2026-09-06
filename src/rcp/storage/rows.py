@@ -124,6 +124,7 @@ class RowMappingMixin:
         if graph_condition_json is None:
             data.pop("armed_revision", None)
             return WatcherRecord.model_validate(data)
+        data.pop("job_id", None)
         data.pop("check_command", None)
         data.pop("log_path", None)
         data.pop("cwd", None)
