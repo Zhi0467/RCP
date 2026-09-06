@@ -120,6 +120,8 @@ the initial graph rather than repeating existing issues. Losing a final relevant
 connection can introduce an issue too. ResearchQuestions and Hypotheses are not
 subject to the isolation warning. Advice neither proves scientific equivalence
 nor merges nodes; replay does not re-run these authoring checks.
+The non-canonical Sync preview publishes the same final admission messages as
+Sync would commit, while leaving canonical history and materialized files unchanged.
 
 `Patch.ops` is an ordered list of the strict discriminated `GraphOperation`
 union. The existing top-level `op` discriminator and persisted payload keys are
