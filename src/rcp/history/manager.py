@@ -1286,7 +1286,15 @@ class HistoryManager:
         transition_patch = prepared.patch.model_copy(
             update={"admission_messages": list(aggregate.messages)}
         )
-        return transition_patch, aggregate, prepared.projection.graph
+        candidate = prepared.projection.graph.model_copy(
+            update={
+                "validation_messages": [
+                    *current.state.validation_messages,
+                    *aggregate.messages,
+                ]
+            }
+        )
+        return transition_patch, aggregate, candidate
 
     def _stamp_attribution_for_admission(
         self,

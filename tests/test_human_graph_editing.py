@@ -235,3 +235,57 @@ def test_human_evidence_cannot_supply_compatibility_strength(manifest, tmp_path,
         assert response.status_code == 422, response.text
         assert "live-legacy-evidence-strength" in response.text
     assert history.load_patches() == before
+
+
+@pytest.mark.parametrize("connect", [False, True])
+def test_preview_and_sync_publish_same_final_quality_flags_without_preview_writes(
+    manifest, tmp_path, connect
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    history = app.state.service.history
+    base = f"/api/projects/{app.state.default_project_id}/sync"
+    initial = client.post(
+        base,
+        json={
+            "base_revision": history.state().revision,
+            "custom_nodes": [
+                {"id": "blk/old", "type": "blocker", "title": "Old", "description": "Missing."}
+            ],
+        },
+    )
+    assert initial.status_code == 200, initial.text
+    previous = initial.json()["validation_messages"]
+    assert previous
+    request = {
+        "base_revision": initial.json()["revision"],
+        "custom_nodes": [
+            {"id": "exp/check", "type": "experiment", "title": "Check", "objective": "Test."},
+            {
+                "id": "ev/result",
+                "type": "evidence",
+                "title": "Result",
+                "observation": "Measured.",
+                "origin": "internal_run",
+            },
+        ],
+        "added_edges": (
+            [{"source": "exp/check", "target": "ev/result", "relation": "produces"}]
+            if connect
+            else []
+        ),
+    }
+    before = {path: path.read_bytes() for path in history.root.rglob("*.json")}
+    preview = client.post(f"{base}/preview", json=request)
+    assert preview.status_code == 200, preview.text
+    assert {path: path.read_bytes() for path in history.root.rglob("*.json")} == before
+    assert history.state().revision == initial.json()["revision"]
+    messages = preview.json()["projection"]["graph"]["validation_messages"]
+    assert messages[: len(previous)] == previous
+    new = messages[len(previous) :]
+    assert {message["code"] for message in new} == (
+        set() if connect else {"isolated-operational-node", "internal-evidence-without-experiment"}
+    )
+    synced = client.post(base, json=request)
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["validation_messages"] == messages
