@@ -88,12 +88,14 @@ target is checked out in the shared checkout, merge there; otherwise the provide
 may switch to the target inside the worktree and must restore the worktree
 branch afterwards, including after aborting its own failed merge. A saved
 integration Resume/Retry may find only that operation's exact admitted target
-checked out in the worktree; ordinary turns still require the bound branch. RCP never
-merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
+checked out in the worktree; it reruns the same clean-checkout and target-existence
+preflight before admission and provider launch. Ordinary turns still require the
+bound branch. RCP never merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
 not an integration receipt.
 
 **Remove worktree** is explicit, refuses an active/paused turn or dirty worktree,
-shows commits ahead of the current starting branch and an explicit `origin`
+and serializes with fresh, Resume, Retry, and graph-repair task admission for that
+chat. It shows commits ahead of the current starting branch and an explicit `origin`
 branch lookup (unknown with a reason if unavailable),
 and removes only the checkout. The branch and unmerged commits remain. Binding
 removal has a durable intent and terminal tombstone; later turns in that chat

@@ -222,8 +222,11 @@ def test_inspect_allows_only_explicit_integration_continuation_target(repository
     assert run("inspect", binding=binding, allowed_branch="release")["starting_branch_exists"]
     with pytest.raises(ValueError, match="checked-out branch changed"):
         run("inspect", binding=binding, allowed_branch="research")
-    with pytest.raises(ValueError, match="checked-out branch changed"):
-        run("preflight", binding=binding, allowed_branch="release", target_branch="release")
+    assert run("preflight", binding=binding, allowed_branch="release", target_branch="release")[
+        "starting_branch_exists"
+    ]
+    with pytest.raises(ValueError, match="exact admitted integration target"):
+        run("preflight", binding=binding, allowed_branch="release", target_branch="research")
     with pytest.raises(ValueError, match="checked-out branch changed"):
         run("remove", binding=binding, allowed_branch="release")
 
