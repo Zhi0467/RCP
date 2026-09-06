@@ -128,7 +128,8 @@ ordinary graph, task, chat, or project-member actions.
 `rcp server compute probe --project <project_id> <machine_alias>` uses the
 installed-service control socket, entered as the service account, to run
 `probe_compute_backend` against the registered project manifest and store the
-`ComputeBackendProbe`. It prints the status label, backend id, containment,
+`ComputeBackendProbe`, returned inside `ServerControlComputeProbeResult` with
+service, project, and machine identity. It prints the status label, backend id, containment,
 diagnostic, and any required action; it exits 0 when ready and 1 otherwise.
 The probe executes inside the running service so local cgroup separation is
 checked against the server itself. This is the only compute CLI verb.

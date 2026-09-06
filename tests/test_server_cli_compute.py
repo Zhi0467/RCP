@@ -13,6 +13,7 @@ from rcp.api.app import create_app
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.compute import prepare_compute_probe_command
+from rcp.server_ops.control import ServerControlClient, ServerControlComputeProbeResult
 from rcp.server_runtime import ServerMetadata, published_server_metadata
 from rcp.storage import AppStore, ProjectRecord
 from tests.test_server_install import _temporary_layout
@@ -73,6 +74,16 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
             ["server", "compute", "probe", "--project", PROJECT_ID, "laptop"]
         )
         output = StringIO()
+        exchange = ServerControlClient._exchange
+        envelopes = []
+
+        def observe_exchange(client, request):
+            envelope = exchange(client, request)
+            if request.operation == "compute_backend_probe":
+                envelopes.append(envelope)
+            return envelope
+
+        monkeypatch.setattr(ServerControlClient, "_exchange", observe_exchange)
         with published_server_metadata(data_dir, metadata), TestClient(app):
             # The CLI must use the running service's existing store.
             monkeypatch.setattr(
@@ -87,6 +98,18 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
                 stream=output,
             )
         assert code == (0 if ready else 1), output.getvalue()
+        assert envelopes == [
+            ServerControlComputeProbeResult(
+                instance_id=metadata.instance_id,
+                pid=metadata.pid,
+                data_dir_id=metadata.data_dir_id,
+                space_id=store.space_id,
+                selector_kind="project",
+                selector_id=PROJECT_ID,
+                machine_alias="laptop",
+                probe=result,
+            )
+        ]
     assert calls == [(manifest.path, "laptop", data_dir)]
     assert store.compute_backend_probe(PROJECT_ID, "laptop") == result
     for text in (result.status_label, result.backend_id, result.containment, result.diagnostic):

@@ -23,7 +23,6 @@ from rcp.config import (
     load_manifest,
     validate_project_scope_update,
     write_agent_settings,
-    write_machine_compute,
     write_machine_provider_paths,
     write_project_scope,
 )
@@ -1482,9 +1481,8 @@ class HistoryManager:
                 skill_defaults,
                 default_auto_research_invocation_ceiling,
                 compute_connections,
+                machine_compute,
             )
-            for alias, compute in (machine_compute or {}).items():
-                self.manifest = write_machine_compute(self.manifest, alias, compute)
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
 

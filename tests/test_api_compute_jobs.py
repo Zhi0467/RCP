@@ -83,6 +83,44 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     assert store.compute_backend_probe(project_id, "laptop") is None
 
 
+@pytest.mark.parametrize("unknown_alias", [False, True])
+def test_settings_publish_agent_and_machine_compute_in_one_write(
+    compute_api, manifest, monkeypatch, unknown_alias
+):
+    import rcp.config as config
+
+    _, client, url = compute_api
+    with manifest.path.open("a") as stream:
+        stream.write('\n[[machines]]\nalias = "cluster"\nhost = "cluster.example"\n')
+    body = settings_body(client.get(url).json())
+    body["default_run_truth_scope"] = ["repo-a", "repo-b"]
+    updates = {"laptop": {"backend": "launchd"}, "cluster": {"backend": "slurm"}}
+    if unknown_alias:
+        updates["missing"] = {"backend": "slurm"}
+    before = manifest.path.read_bytes()
+    writes = []
+    atomic_write = config._atomic_write
+
+    def record_write(path, content):
+        writes.append(path)
+        atomic_write(path, content)
+
+    monkeypatch.setattr(config, "_atomic_write", record_write)
+    response = client.put(f"{url}/settings", json={**body, "machine_compute": updates})
+    if unknown_alias:
+        assert response.status_code == 422, response.text
+        assert "unknown machine" in response.text
+        assert writes == []
+        assert manifest.path.read_bytes() == before
+    else:
+        assert response.status_code == 200, response.text
+        assert writes == [manifest.path]
+        updated = load_manifest(manifest.path)
+        assert updated.agent.default_run_truth_scope == ["repo-a", "repo-b"]
+        assert updated.machine_map["laptop"].compute.backend == "launchd"
+        assert updated.machine_map["cluster"].compute.backend == "slurm"
+
+
 @pytest.mark.parametrize(
     "compute", [{"backend": "subprocess"}, {"jobs_root": "relative"}, {"slurm_account": "account"}]
 )
