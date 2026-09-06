@@ -70,6 +70,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "_legacy_campaigns_archive",
         "artifact_revision_candidates",
         "chat_session_contexts",
+        # Backend handles and job paths remain owned by the source machine.
+        "compute_jobs",
         "conversation_worktrees",
         "graph_watcher_reconciliation",
         "project_aliases",

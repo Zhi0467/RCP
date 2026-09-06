@@ -65,6 +65,7 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
     assert {
         "bootstrap-manifests",
         "chat-attachments",
+        "jobs",
         "paper-snapshots",
         "project-caches",
         "project-snapshots",
@@ -238,13 +239,14 @@ def test_app_data_inventory_is_closed_and_never_follows_unknown_roots(tmp_path: 
     (data_dir / "rcp.sqlite3").write_bytes(b"sqlite")
     (data_dir / "rcp.sqlite3-wal").write_bytes(b"wal")
     (data_dir / "project-snapshots").mkdir()
+    (data_dir / "jobs").mkdir()
     (data_dir / "project-sources").mkdir()
     (data_dir / "future-durable-root").mkdir()
 
     plan = inspect_app_data_capture_plan(data_dir)
 
     assert plan.database_path == str(data_dir / "rcp.sqlite3")
-    assert plan.excluded_entries == ("project-snapshots", "rcp.sqlite3-wal")
+    assert plan.excluded_entries == ("jobs", "project-snapshots", "rcp.sqlite3-wal")
     assert plan.captured_entries == ("project-sources",)
     assert plan.deferred_entries == ()
     assert plan.unclassified_entries == ("future-durable-root",)

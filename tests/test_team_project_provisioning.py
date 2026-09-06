@@ -1106,6 +1106,7 @@ def test_final_review_creates_exact_reserved_project_once(
             "host": "",
             "os_account": "rcp",
             "provider_paths": {"codex": "/usr/local/bin/codex"},
+            "compute": None,
         }
     ]
     assert manifest.repository_paths == {"paper": str(repository_path)}

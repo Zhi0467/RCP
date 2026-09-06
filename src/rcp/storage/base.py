@@ -42,6 +42,7 @@ class AppStoreBase:
         (6, "artifact_revision_candidates_v1"),
         (7, "space_run_projection_indexes_v1"),
         (8, "conversation_worktrees_v1"),
+        (9, "compute_jobs_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -65,6 +66,7 @@ class AppStoreBase:
             "team_bootstrap_codes",
             "team_invitations",
             "watchers",
+            "compute_jobs",
             "writing_sessions",
         }
     )
@@ -472,6 +474,12 @@ class AppStoreBase:
             version=8,
             name="conversation_worktrees_v1",
             migration=self._migrate_conversation_worktrees,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=9,
+            name="compute_jobs_v1",
+            migration=self._migrate_compute_jobs,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1898,6 +1906,7 @@ class AppStoreBase:
         # upgrade for stores whose version-5 migration already completed.
         self._migrate_artifact_revision_candidates(connection)
         self._migrate_conversation_worktrees(connection)
+        self._migrate_compute_jobs(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1916,6 +1925,45 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_compute_jobs(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS compute_jobs (
+                job_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                origin_operation_id TEXT NOT NULL,
+                episode_id TEXT,
+                execution_machine TEXT NOT NULL,
+                execution_host TEXT NOT NULL,
+                backend_id TEXT NOT NULL,
+                backend_handle TEXT NOT NULL,
+                job_root TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                argv TEXT NOT NULL,
+                log_path TEXT NOT NULL,
+                exit_path TEXT NOT NULL,
+                containment TEXT NOT NULL CHECK(containment IN ('mirrored', 'cooperative')),
+                status TEXT NOT NULL CHECK(status IN ('running', 'exited', 'cancelled', 'lost')),
+                exit_status INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                cancel_requested_by TEXT,
+                cancel_requested_at TEXT,
+                diagnostic TEXT
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS compute_jobs_status ON compute_jobs(status)")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS compute_jobs_project "
+            "ON compute_jobs(project_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS compute_jobs_origin ON compute_jobs(origin_operation_id)"
+        )
 
     @staticmethod
     def _migrate_conversation_worktrees(connection: sqlite3.Connection) -> None:

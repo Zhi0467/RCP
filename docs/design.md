@@ -178,6 +178,8 @@ winner by timestamp or silently implement around it.
 - [Providers and containment](specs/providers-and-containment.md) — run
   capabilities, provider launches, exact project write scopes, remote execution,
   ingestion, skills, and durable task receipts.
+- [Compute jobs](specs/compute-jobs.md) — backend profiles, durable job receipts,
+  machine configuration, probes, containment, and startup reconciliation.
 - [Conversations, episodes, and watchers](specs/conversations-episodes-and-watchers.md)
   — Discuss and Work context, Experiment control, native-session continuity,
   watcher delivery, Stop, and reporting.

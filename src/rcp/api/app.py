@@ -72,6 +72,7 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
+from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -1481,6 +1482,19 @@ def create_app(
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+                for project_id in {job.project_id for job in store.running_compute_jobs()}:
+                    try:
+                        service = await asyncio.to_thread(catalog.open, project_id)
+                        await asyncio.to_thread(
+                            reconcile_compute_jobs,
+                            store,
+                            service.manifest,
+                            project_id=project_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Could not reconcile compute jobs for project %s", project_id
+                        )
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()

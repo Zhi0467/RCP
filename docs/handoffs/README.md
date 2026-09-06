@@ -2,6 +2,12 @@
 
 Active:
 
+- [Compute runner](handoff-2026-09-06-compute-runner.md) — human-confirmed
+  2026-09-06; PR A foundation implemented on its branch, PRs B–E remain.
+  Agents hand long-running computation
+  to an OS-owned backend through the staged command client and are woken by a
+  job observer; five stacked PRs in the documented order.
+
 - [Live provider steering](handoff-2026-09-05-live-provider-steering.md) — Phase 2 implemented; local Codex API and browser-component receipts verified; full served-browser, Claude live and SSH verification open.
 
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)

@@ -8,6 +8,8 @@ from typing import Any, Literal
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
+from rcp.compute_jobs.backends import ComputeBackendId
+from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import (
     DEFAULT_PROVIDER,
@@ -23,10 +25,33 @@ DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 COMPUTE_SSH_TARGET = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}"
 )
-COMPUTE_CREDENTIAL_PATH = re.compile(
-    r"(?i)(?:\.ssh[/\\]|(?:^|[/\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:$|[\s,;])|"
-    r"identity[_ -]?file)"
-)
+
+
+class MachineComputeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backend: ComputeBackendId | None = None
+    jobs_root: str = ""
+    slurm_account: str = ""
+    slurm_partition: str = ""
+    slurm_submit_args: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_compute(self) -> MachineComputeConfig:
+        for value in (
+            self.jobs_root,
+            self.slurm_account,
+            self.slurm_partition,
+            *self.slurm_submit_args,
+        ):
+            validate_compute_metadata(value)
+        if self.jobs_root and not PurePosixPath(self.jobs_root).is_absolute():
+            raise ValueError("compute jobs_root must be absolute when configured")
+        if self.backend != "slurm" and (
+            self.slurm_account or self.slurm_partition or self.slurm_submit_args
+        ):
+            raise ValueError("Slurm fields require the slurm compute backend")
+        return self
 
 
 class MachineConfig(BaseModel):
@@ -34,6 +59,7 @@ class MachineConfig(BaseModel):
     host: str = ""
     os_account: str = ""
     provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
+    compute: MachineComputeConfig | None = None
 
     @model_validator(mode="after")
     def validate_host(self) -> MachineConfig:
@@ -657,6 +683,31 @@ def write_machine_provider_paths(
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     _apply_machine_provider_path_updates(document, provider_path_updates)
+    content = tomlkit.dumps(document)
+    Manifest.model_validate(tomlkit.parse(content).unwrap())
+    _atomic_write(manifest.path, content)
+    return load_manifest(manifest.path)
+
+
+def write_machine_compute(
+    manifest: Manifest,
+    alias: str,
+    compute: MachineComputeConfig | None,
+) -> Manifest:
+    document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
+    machine_tables = {
+        str(machine.get("alias")): machine for machine in document.get("machines", [])
+    }
+    if alias not in machine_tables:
+        raise ValueError(f"compute configuration uses unknown machine: {alias}")
+    machine = machine_tables[alias]
+    if compute is None:
+        machine.pop("compute", None)
+    else:
+        table = tomlkit.table()
+        for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
+            table.add(key, value)
+        machine["compute"] = table
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)
