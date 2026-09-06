@@ -273,7 +273,8 @@ Claude acknowledges only through a replayed user echo carrying
 the steer's UUID. RCP
 writes to Claude only while no `result` event has been observed, stops the
 process at the first `result`, and refuses a steer whose echo did not precede
-that result as completed before delivery. This completion fence prevents a
+that result as completed before delivery if the result arrives before the
+acknowledgment deadline. This completion fence prevents a
 racing input from starting a new Claude turn.
 
 A transport drop or process exit after a write began leaves an unacknowledged
