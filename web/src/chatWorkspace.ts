@@ -9,6 +9,7 @@ import type {
   ConversationMode,
   SkillDefaults,
   StartAgentTask,
+  WorktreeIntegrationOption,
 } from "./types";
 
 export type ChatKind = "node_chat" | "project_chat";
@@ -146,6 +147,8 @@ export interface ConversationTurnSubmission {
   attachmentClientId?: string | null;
   skills?: SkillDefaults;
   providerSkillNames?: string[];
+  worktree?: boolean;
+  worktreeIntegration?: WorktreeIntegrationOption["id"];
 }
 
 export function conversationTurnRequest(submission: ConversationTurnSubmission): AgentTaskRequest {
@@ -161,6 +164,10 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
     chat_id: submission.chatId,
     session_id: submission.sessionId,
     mode: submission.mode,
+    ...(submission.worktree ? { worktree: true } : {}),
+    ...(submission.worktreeIntegration
+      ? { worktree_integration: submission.worktreeIntegration }
+      : {}),
     active_compute_ids: submission.activeComputeIds ?? [],
     ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
     ...(submission.attachmentSetId && submission.attachmentClientId

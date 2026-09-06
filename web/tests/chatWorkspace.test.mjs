@@ -353,3 +353,36 @@ test("the shared conversation-turn owner rejects a blank message before dispatch
   );
   assert.equal(called, false);
 });
+
+test("worktree creation and integration preserve the ordinary conversation dispatch binding", async () => {
+  const submission = {
+    kind: "project_chat",
+    config: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
+    runTruthScope: ["repo"],
+    nodeId: null,
+    message: "Worktree instruction",
+    chatId: "chat-one",
+    sessionId: "native-session",
+    mode: "work",
+  };
+  const calls = [];
+  const start = async (kind, request) => {
+    calls.push({ kind, request });
+    return { operation_id: `task-${calls.length}` };
+  };
+  await startConversationTurn(start, { ...submission, worktree: true });
+  await startConversationTurn(start, { ...submission, worktreeIntegration: "starting_branch" });
+  assert.equal(calls[0].request.worktree, true);
+  assert.equal(calls[0].request.worktree_integration, undefined);
+  assert.equal(calls[1].request.worktree, undefined);
+  assert.equal(calls[1].request.worktree_integration, "starting_branch");
+  for (const { kind, request } of calls) {
+    assert.equal(kind, "project_chat");
+    assert.equal(request.session_id, "native-session");
+    assert.equal(request.chat_id, "chat-one");
+    assert.equal(request.run_on, "local");
+    assert.deepEqual(request.run_truth_scope, ["repo"]);
+    assert.equal(request.mode, "work");
+    assert.equal(request.writable_roots, undefined);
+  }
+});
