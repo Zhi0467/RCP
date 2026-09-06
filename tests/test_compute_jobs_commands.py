@@ -14,8 +14,8 @@ from rcp.agents.command_protocol import validate_command_request
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.compute_jobs import jobs
-from rcp.compute_jobs.backend_context import BackendContext
-from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.compute_jobs.backend_context import BackendContext, ComputeProbeStaleError
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.runs.tasks import compute_commands
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.storage import AgentTaskRecord, AppStore
@@ -182,10 +182,18 @@ def test_compute_command_launch_cancel_idempotency_survives_store_reopen(command
             "SELECT message FROM graph_run_events WHERE operation_id = ?", ("work-turn",)
         ).fetchall()
         receipts = connection.execute(
-            "SELECT payload_json FROM graph_run_receipts WHERE category = 'compute_command'"
+            "SELECT category FROM graph_run_receipts "
+            "WHERE operation_id = ? AND category LIKE 'compute%'",
+            ("work-turn",),
         ).fetchall()
-    assert len(events) == len(receipts) == 5
-    assert sum(json.loads(row[0])["replayed"] for row in receipts) == 3
+    assert len(events) == 5
+    assert sum("Replayed: True" in row[0] for row in events) == 3
+    assert sorted(row[0] for row in receipts) == [
+        "compute_command_result",
+        "compute_command_result",
+        "compute_command_started",
+        "compute_command_started",
+    ]
 
 
 def test_compute_launch_key_remains_durable_after_diagnostic_retention(commands):
@@ -226,7 +234,8 @@ def test_compute_status_refreshes_exit_and_rejects_other_project(commands):
     assert not commands.backend.cancels
 
 
-def test_compute_unavailable_probe_is_persisted_and_not_repeated(commands, monkeypatch):
+@pytest.mark.parametrize("stored", [False, True])
+def test_compute_not_ready_probe_is_rerun_at_launch_until_ready(commands, monkeypatch, stored):
     unavailable = commands.probe.model_copy(
         update={
             "ready": False,
@@ -236,18 +245,86 @@ def test_compute_unavailable_probe_is_persisted_and_not_repeated(commands, monke
             "status_tone": "error",
         }
     )
+    if stored:
+        commands.store.record_compute_backend_probe("project", unavailable)
+    results = [unavailable, commands.probe]
     calls = []
-    monkeypatch.setattr(
-        compute_commands, "probe_compute_backend", lambda *a, **kw: calls.append(1) or unavailable
-    )
-    for key in ("first", "second"):
-        response = commands.launch(key)
-        assert response.status == "unavailable"
-        assert response.message == "No user manager"
-        assert response.result["required_action"] == "Enable the user manager"
-    assert calls == [1]
+
+    def probe(*_args, **_kwargs):
+        calls.append(1)
+        return results[len(calls) - 1]
+
+    monkeypatch.setattr(compute_commands, "probe_compute_backend", probe)
+    first = commands.launch("first")
+    assert first.status == "unavailable"
+    assert first.message == "No user manager"
+    assert first.result["required_action"] == "Enable the user manager"
     assert AppStore(commands.store.path).compute_backend_probe("project", "laptop") == unavailable
     assert not commands.backend.starts
+    # The manager became available: the stored failure is re-run, not trusted forever.
+    second = commands.launch("second")
+    assert second.status == "ok"
+    assert calls == [1, 1]
+    assert (
+        AppStore(commands.store.path).compute_backend_probe("project", "laptop") == commands.probe
+    )
+    assert len(commands.backend.starts) == 1
+
+
+def test_compute_launch_reprobes_stale_backend_once(commands):
+    commands.store.record_compute_backend_probe(
+        "project", commands.probe.model_copy(update={"backend_id": "ssh_session"})
+    )
+    response = commands.launch()
+    assert response.status == "ok", response.message
+    assert response.result["backend_id"] == "launchd"
+    assert len(commands.backend.starts) == 1
+    assert len(commands.probe_calls) == 1
+    assert (
+        AppStore(commands.store.path).compute_backend_probe("project", "laptop") == commands.probe
+    )
+    assert commands.launch().result == response.result
+    assert len(commands.probe_calls) == 1
+    assert len(commands.backend.starts) == 1
+
+
+def test_compute_launch_does_not_loop_when_reprobe_is_also_stale(commands, monkeypatch):
+    commands.store.record_compute_backend_probe(
+        "project", commands.probe.model_copy(update={"backend_id": "ssh_session"})
+    )
+    monkeypatch.setattr(commands.backend, "id", "systemd_user")
+    response = commands.launch()
+    assert response.status == "invalid"
+    assert "does not match" in response.message
+    assert len(commands.probe_calls) == 1
+    assert not commands.backend.starts
+
+
+@pytest.mark.parametrize(
+    ("updates", "error"),
+    [
+        ({"backend_id": "ssh_session"}, ComputeProbeStaleError),
+        ({"execution_machine": "other"}, ComputeProbeStaleError),
+        ({"ready": False}, ValueError),
+    ],
+)
+def test_compute_launch_distinguishes_stale_probe_from_not_ready(commands, updates, error):
+    with pytest.raises(error) as raised:
+        jobs.launch_compute_job(
+            commands.store,
+            commands.handler.manifest,
+            ComputeLaunchRequest(cwd=str(commands.workspace), argv=["true"]),
+            data_dir=commands.handler.data_dir,
+            project_id="project",
+            origin_operation_id="work-turn",
+            episode_id=None,
+            execution_machine="laptop",
+            writable_roots=commands.handler.write_scope.writable_roots,
+            probe=commands.probe.model_copy(update=updates),
+        )
+    assert type(raised.value) is error
+    assert not commands.backend.starts
+    assert not commands.store.running_compute_jobs()
 
 
 @pytest.mark.parametrize("target", ["outside", "symlink", "protected", "missing"])
