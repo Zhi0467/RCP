@@ -4250,6 +4250,10 @@ mod tests {
 
     #[test]
     fn source_commit_extension_round_trips_without_changing_legacy_configuration() {
+        let protocol: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v3.json"
+        ))
+        .unwrap();
         let legacy = safe_transfer_payload()["source_configuration"].clone();
         let parsed: ProjectTransferSourceConfiguration =
             serde_json::from_value(legacy.clone()).unwrap();
@@ -4261,6 +4265,14 @@ mod tests {
             serde_json::from_value(included.clone()).unwrap();
         validate_source_configuration(&parsed).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), included);
+        assert_eq!(
+            protocol["native_transfer"]["repository_commit_field"],
+            "source_commit"
+        );
+        assert_eq!(
+            protocol["native_transfer"]["archive_codecs"],
+            serde_json::json!(["rcp-transfer-v1", "rcp-transfer-v2"])
+        );
         for invalid in ["A".repeat(40), "a".repeat(39), "g".repeat(40)] {
             included["repositories"][0]["source_commit"] = Value::String(invalid);
             let parsed = serde_json::from_value(included.clone()).unwrap();

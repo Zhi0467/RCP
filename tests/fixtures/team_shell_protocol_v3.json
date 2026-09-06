@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "protocol_version": 3,
+  "desktop_range": { "minimum": 3, "maximum": 3 },
+  "server_range": { "minimum": 1, "maximum": 3 },
+  "selection_header": "RCP-Team-Shell-Protocol",
+  "native_transfer": {
+    "repository_commit_field": "source_commit",
+    "archive_codecs": ["rcp-transfer-v1", "rcp-transfer-v2"]
+  }
+}

@@ -170,18 +170,26 @@ until the human explicitly reconnects. An unavailable or incompatible team
 connection leaves personal work usable and shows its cached cards as
 unavailable.
 
-The current protocol range is `[1, 2]`; a current desktop selects `2` with a
-current server and `1` with an older `[1, 1]` server. Protocol 1 keeps team
+The current desktop range is `[3, 3]` and server range is `[1, 3]`. The desktop
+selects `3` with a current server and refuses older servers before enrollment
+or transfer, instructing the member to update the server from `origin/main`
+containing protocol 3. Updated servers still accept older protocol-1/2 clients.
+Protocol 1 keeps team
 project cards non-deletable. Protocol 2 adds team deletion: cards may advertise
 `can_delete=true` together with the exact `delete_confirmation`, and a team DELETE
-is refused with the protocol-mismatch response unless the caller selected 2. A breaking
+is refused with the protocol-mismatch response unless the caller selected 2 or newer.
+Protocol 3 preserves that contract and adds native transfer relay support for
+optional reviewed `source_commit` fields and `rcp-transfer-v2` Git archives;
+legacy omitted-commit requests and v1 archives remain accepted. A breaking
 change adds a new immutable per-version contract before either end advertises
 it. Narrowing a range is explicit retirement, not an automatic current-plus-
 previous or time-based rule. The native handshake ends after
 health/source/space identity, enrollment or token exchange, returned member
 identity, bounded project cards, and HTTP-only browser-cookie installation. It
-does not include server operations, project provisioning or transfer, provider
-work, or the ordinary server-served Web/API surface.
+does not include server operations, provisioning policy, provider work, or the
+ordinary server-served Web/API surface. Native transfer relay wire compatibility
+is versioned here because the desktop, not the server-served Web app, sends it;
+this is not an operator-capability or per-feature discovery registry.
 
 Compatibility is negotiated live and is never durable connection authority.
 Registry version 3 removes the shipped `minimum_shell_version` field through an

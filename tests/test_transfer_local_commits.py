@@ -138,6 +138,9 @@ def test_frozen_backend_prepares_local_unpushed_commits(tmp_path):
 
 @pytest.mark.parametrize("include", [False, True])
 def test_source_create_binds_choice_and_preserves_legacy_wire(tmp_path, include):
+    protocol = json.loads(
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v3.json").read_text()
+    )["native_transfer"]
     app, store, _actor_value, project, repository, _base = _source(tmp_path)
     head = _commit(repository, "unpublished")
     request_id = str(uuid.uuid4())
@@ -152,6 +155,10 @@ def test_source_create_binds_choice_and_preserves_legacy_wire(tmp_path, include)
         assert response.status_code == 201, response.text
         configuration = response.json()["source_configuration"]
         repo = configuration["repositories"][0]
+        assert configuration["supported_archive_codecs"] == [
+            protocol["archive_codecs"][int(include)]
+        ]
+        assert (protocol["repository_commit_field"] in repo) == include
         if include:
             assert repo["source_commit"] == head
             assert configuration["supported_archive_codecs"] == ["rcp-transfer-v2"]

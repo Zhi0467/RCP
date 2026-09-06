@@ -36,8 +36,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
-const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 1;
-const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 2;
+// The native transfer relay now sends optional reviewed commits and v2 archives.
+// Older servers cannot decode that wire format, so refuse them before enrollment.
+const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 3;
+const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 3;
 const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
 const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
 const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
@@ -1708,13 +1710,18 @@ mod tests {
         assert_eq!(highest_common_protocol(1, 3, 2, 4), Some(3));
         assert_eq!(highest_common_protocol(2, 3, 4, 5), None);
 
-        let mut older_server = health();
-        older_server.team_shell_protocol = Some(TeamShellProtocolRange {
-            minimum: 1,
-            maximum: 1,
-        });
-        assert_eq!(select_team_shell_protocol(&older_server).unwrap(), 1);
-        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 2);
+        for maximum in [1, 2] {
+            let mut older_server = health();
+            older_server.team_shell_protocol = Some(TeamShellProtocolRange {
+                minimum: 1,
+                maximum,
+            });
+            let error = validate_health(&older_server, None).unwrap_err();
+            assert!(error.contains("Update the team server"));
+            assert!(error.contains(DESKTOP_SOURCE_COMMIT));
+            assert!(error.contains(installed_server_commit(&older_server)));
+        }
+        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 3);
 
         let mut stale_desktop = health();
         stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
@@ -1757,6 +1764,27 @@ mod tests {
                 {"method": "GET", "path": TEAM_PROJECT_CARDS_PATH},
             ])
         );
+    }
+
+    #[test]
+    fn protocol_three_fixture_matches_the_native_cutover() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v3.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["protocol_version"], 3);
+        assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
+        assert_eq!(
+            fixture["desktop_range"],
+            serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+            })
+        );
+        let mut server = health();
+        server.team_shell_protocol =
+            Some(serde_json::from_value(fixture["server_range"].clone()).unwrap());
+        assert_eq!(validate_health(&server, None).unwrap(), 3);
     }
 
     #[test]

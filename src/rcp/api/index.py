@@ -697,9 +697,9 @@ def delete_project(
     experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> dict[str, object]:
     selected_protocol = acknowledge_team_shell_protocol(request, response)
-    if store.space_kind == "team" and selected_protocol != 2:
+    if store.space_kind == "team" and (selected_protocol is None or selected_protocol < 2):
         raise team_shell_protocol_mismatch(
-            message="Team project deletion requires team-shell protocol 2.",
+            message="Team project deletion requires team-shell protocol 2 or newer.",
             action="Update and rebuild RCP desktop from current origin/main.",
         )
     try:
