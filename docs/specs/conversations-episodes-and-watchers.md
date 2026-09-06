@@ -289,8 +289,9 @@ standing predicate, new-node arrival, or relation predicate.
 
 Graph conditions evaluate at accepted revision boundaries and at startup, using
 the exact target's canonical transition order. A staged draft never fires them.
-Halted/degraded replay means not yet. A node removed after arming retires its
-condition.
+Halted/degraded replay means not yet for that target; other targets still
+reconcile, and their callbacks cannot clear a pending transient retry elsewhere.
+A node removed after arming retires its condition.
 
 Each condition stores its arming head. A node status already true at that head
 is immediately ready; Proposal resolution is prospective and requires the
@@ -304,8 +305,11 @@ delivery idempotent.
 
 ## External observation
 
-External checks run in a cold login shell with a hard timeout. Exit `0` means
-the named work is gone, `1` means still present, and any other result is
+External checks run in a cold login shell with a hard timeout. A timeout kills
+the check's process group on its execution machine, including shell children;
+it never cancels the separate external job being observed. SSH checks carry
+their own bounded timeout owner so a lost client cannot abandon the check.
+Exit `0` means the named work is gone, `1` means still present, and any other result is
 unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
 the error count. A degraded observation is never inferred complete or dead.
