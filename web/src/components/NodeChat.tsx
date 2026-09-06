@@ -2068,7 +2068,6 @@ export function NodeChat({
           <textarea
             ref={textareaRef}
             aria-label="Message"
-            placeholder={composerPlaceholder(mode)}
             aria-keyshortcuts="Shift+Tab"
             value={message}
             onChange={(event) => {
@@ -2518,10 +2517,6 @@ const MODE_HINTS: Record<ConversationMode, string> = {
   discuss: "Discuss: reads and answers only. Nothing is written to the repository or the graph.",
   work: "Work: may edit files in the run's write roots and propose a graph patch.",
 };
-
-function composerPlaceholder(mode: ConversationMode): string {
-  return mode === "discuss" ? "Ask about this research…" : "Describe the work to do…";
-}
 
 const MAX_CHAT_ATTACHMENTS = 8;
 const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;

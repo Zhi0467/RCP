@@ -118,8 +118,9 @@ caches never become canonical input or graph authority.
 The project index keeps project cards first and one distinct space-level
 **Runs** ledger below. It aggregates the current Experiment-loop parent selected
 by each Experiment's backend control with Auto-research parents across visible
-projects. **Needs Action** stays unfolded and mixes both modes in reverse
-chronological order; **Completed** folds by Experiment loop then Auto-research.
+projects. **Needs Action** and **In progress** each stay unfolded and mix both
+modes in reverse chronological order, under the same truthful split the project
+ledger uses; **Completed** folds by Experiment loop then Auto-research.
 The backend owns membership, lifecycle placement, health, project identity, and
 the exact Experiment route. The space ledger keeps completed parents for seven
 days, without deleting episode records or changing project Runs or History.
@@ -487,16 +488,18 @@ authority. Entering Chats closes node detail.
 
 Runs is the episode ledger. Its primary object is the durable Experiment-loop or
 Auto-research episode parent, never an invocation, graph node, or Blocker. It has
-two sections: **Needs Action** first, then **Completed**. Active, recovering,
-wrapping-up, failed, and otherwise actionable episodes stay prominent in Needs
-Action; completed and stopped history goes below. Auto-research placement reads
-the generic episode projection. Experiment-loop placement, health, and next step
-read the existing `ExperimentControlState` for the owning Experiment; generic
-episode lifecycle fields never override that specialized backend answer.
+three sections in order: **Needs Action**, **In progress**, then **Completed**.
+A section count must be truthful, so Needs Action holds only runs that have
+stopped advancing and stay stopped until a human acts; a run still moving on its
+own belongs to In progress however slowly it moves, and completed and stopped
+history goes below. Auto-research placement reads the generic episode
+projection. Experiment-loop placement, health, and next step read the existing
+`ExperimentControlState` for the owning Experiment; generic episode lifecycle
+fields never override that specialized backend answer.
 
-Needs Action is one unfolded reverse-chronological card list containing both
-episode modes. Completed groups episodes by mode in foldable lists, ordered
-**Experiment loop** then **Auto-research**. Seed/Refresh and ordinary task history
+Needs Action and In progress are each one unfolded reverse-chronological card
+list containing both episode modes. Completed groups episodes by mode in
+foldable lists, ordered **Experiment loop** then **Auto-research**. Seed/Refresh and ordinary task history
 remain in project History; Blocker judgment remains in Inbox.
 
 Experiment and Auto-research parents each expose one backend-decided health and

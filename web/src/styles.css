@@ -6241,13 +6241,12 @@ button.relation-map-node:hover {
   padding: 8px 9px;
   resize: none;
 }
+/* The message field reads as a field. Shape and ground mark where to type, so no
+   instructional placeholder copy is needed; it keeps the shared composer border. */
 .chat-composer textarea {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
   font-size: 14px;
   height: 72px;
-  padding: 8px 5px;
+  padding: 8px 9px;
 }
 
 /* Live input belongs to the running attempt; the ordinary composer remains a draft. */

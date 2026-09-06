@@ -10,16 +10,24 @@
       // Stamp the theme before first paint so a dark reader never sees a light flash.
       // The React hook owns it from mount on; this only has to agree with it.
       (function () {
+        // Storage and the OS preference are read independently: blocked storage
+        // must not cost a dark reader the preference this script exists to honour.
+        var choice = "system";
         try {
           var stored = localStorage.getItem("rcp:theme");
-          var choice = stored === "light" || stored === "dark" ? stored : "system";
-          var dark =
-            choice === "dark" ||
-            (choice === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.dataset.theme = dark ? "dark" : "light";
+          if (stored === "light" || stored === "dark") choice = stored;
         } catch (error) {
-          document.documentElement.dataset.theme = "light";
+          // An unremembered choice still resolves through the OS below.
         }
+        var dark = choice === "dark";
+        if (choice === "system") {
+          try {
+            dark = window.matchMedia("(prefers-color-scheme: dark)").matches === true;
+          } catch (error) {
+            dark = false;
+          }
+        }
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
       })();
     </script>
   </head>

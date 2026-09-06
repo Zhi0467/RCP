@@ -24,6 +24,12 @@ last_passed: 2026-08-24 — served an isolated demo project, staged a Decision
   membership and Experiment gate with a clean browser console and server log;
   the complete attention and task-surface behavior remains covered by the
   listed browser and regression checks
+last_checked: >-
+  2026-09-06 — the three-section Runs grammar replaced the two-section rule in
+  the projection and both ledgers. The listed web suites assert the new section
+  membership for every lifecycle in both surfaces. A served drive reading the
+  space Needs Action count against the same project's Overview answer has not
+  been repeated since the change.
 ---
 
 # Attention and run surfaces tell one truthful story
@@ -33,7 +39,10 @@ confirmed team-space design later adds project-membership invitations as a
 separate non-graph Inbox item. That addition does not widen the node/status
 predicates or change the three graph-attention tiles asserted here.
 
-Rewritten and confirmed by the human on 2026-08-08.
+Rewritten and confirmed by the human on 2026-08-08. The human confirmed the
+three-section Runs grammar on 2026-09-06, after the two-section rule made the
+space ledger count four in-flight Auto-research runs as work owed while the same
+project's Overview answered that nothing required human judgment.
 
 Human attention is awaiting a human act, not every unresolved condition in the
 research graph. Every attention count includes pending Hypothesis-status
@@ -79,9 +88,11 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
    confirm the Blocker remains in canonical detail/history but disappears from
    the active Research flow, no longer gates its Experiment, and any affected
    summary or next action is explicitly stale rather than shown as current.
-8. Open Runs with active and completed episodes of both modes, then project
-   History, then inspect a terminal task. Return to the space project index and
-   inspect its Runs ledger across projects.
+8. Open Runs with active, actionable, and completed episodes of both modes, then
+   project History, then inspect a terminal task. Return to the space project
+   index and inspect its Runs ledger across projects. Read the Needs Action
+   count on that ledger and the Overview answer for the same project at the same
+   moment, and confirm they agree.
 
 ## Assert
 
@@ -113,11 +124,15 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
   Experiment control, guidance validity, and head identify the same revision.
   The resolved Blocker and relations remain canonical, while active views omit
   it, only `open` gates, and stale guidance is never presented as current.
-- Runs has exactly **Needs Action** and **Completed**, in that order, and every
-  row is an Experiment-loop or Auto-research episode parent.
-- Needs Action mixes both episode modes in reverse chronological order and is
-  never folded as a section. Completed groups episodes in foldable lists ordered
-  **Experiment loop** then **Auto-research**.
+- Runs has exactly **Needs Action**, **In progress**, and **Completed**, in that
+  order, and every row is an Experiment-loop or Auto-research episode parent.
+  A run appears under Needs Action only when it has stopped advancing and stays
+  stopped until a human acts, so the Needs Action count never disagrees with the
+  Overview answer about the same project at the same moment. A run still moving
+  on its own is In progress.
+- Needs Action and In progress each mix both episode modes in reverse
+  chronological order and are never folded as sections. Completed groups
+  episodes in foldable lists ordered **Experiment loop** then **Auto-research**.
 - Each card leads with the owning Experiment name or Auto-research identity;
   start time is secondary metadata with no `Episode` prefix. Completed groups
   name the mode once, and collapsed cards have no muted recommendation or report
@@ -130,7 +145,8 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
   become Runs rows. They remain reachable in Inbox, project History, episode
   detail, and the Agent task inspector as applicable.
 - The space index Runs ledger mixes current Experiment-loop and Auto-research
-  parents under the same Needs Action and folded Completed grammar, carries the
+  parents under the same Needs Action, In progress, and folded Completed
+  grammar, and never counts a still-moving run as work owed. It carries the
   owning project and exact Experiment route, and uses backend lifecycle answers.
   Each Auto-research row likewise opens its exact durable episode, including a
   completed or non-leading parent, even when it is outside the project's bounded
