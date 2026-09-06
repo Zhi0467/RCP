@@ -17,6 +17,10 @@ class ComputeLaunchUncertainError(RuntimeError):
     """The backend may own a job; retain its launch intent for recovery."""
 
 
+class ComputeProbeStaleError(ValueError):
+    """The stored probe no longer matches the resolved execution backend."""
+
+
 class ComputeTransportError(RuntimeError):
     """SSH transport failed; the remote command's outcome is unknown."""
 

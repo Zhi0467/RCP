@@ -86,6 +86,8 @@ receives the result. SQLite's `compute_backend_probes` table retains the latest
 execution_machine)`. Agent launch reads that result; when none exists, it runs
 one probe and stores the result before deciding. A stored result that is not
 ready refuses launch with its diagnostic and required action.
+A stored probe whose backend no longer matches current resolution is re-run once
+at launch and replaced.
 Missing automatic resolution is `unavailable` with the action
 "configure a compute backend for this machine"; execution failures are `failed`
 with redacted single-line diagnostics and an action.
@@ -127,7 +129,8 @@ Experiment-loop turns, including their same-invocation correction turns:
 Execution machine, host, project, operation id, and optional episode id come
 from the turn, never the command. A bad request answers `invalid`; a machine
 without a ready probe answers `unavailable` with its diagnostic and required
-action; success answers `ok`. Each call has a task event and diagnostic receipt.
+action; success answers `ok`. Each call has a task event; each new keyed command
+has two protected diagnostic receipts, one for its start and one for its result.
 Commands do not apply a graph Patch.
 
 Idempotency is scoped to the task operation, verb, and key, including correction

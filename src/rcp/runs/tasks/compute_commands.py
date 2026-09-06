@@ -17,13 +17,14 @@ from rcp.agents.command_protocol import (
 )
 from rcp.agents.write_scope import ProjectWriteScope, _canonical_directories
 from rcp.background import AgentTaskExecution
+from rcp.compute_jobs.backend_context import ComputeProbeStaleError
 from rcp.compute_jobs.jobs import (
     cancel_compute_job,
     launch_compute_job,
     read_job_log_tail,
     refresh_compute_job,
 )
-from rcp.compute_jobs.models import ComputeLaunchRequest
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
@@ -129,20 +130,8 @@ class WorkComputeCommands:
             )
         store.record_agent_task_event(
             self.execution.operation_id,
-            f"Compute {request.verb}: {response.status}.",
+            f"Compute {request.verb}: {response.status}. Replayed: {bool(previous)}.",
             level="info" if response.status == "ok" else "warning",
-        )
-        store.record_agent_task_receipt(
-            self.execution.operation_id,
-            "compute_command",
-            {
-                "verb": request.verb,
-                "key": key,
-                "status": response.status,
-                "message": response.message,
-                "replayed": bool(previous),
-            },
-            tier="diagnostic",
         )
         return response
 
@@ -171,29 +160,13 @@ class WorkComputeCommands:
             if probe is None:
                 probe = probe_compute_backend(self.manifest, machine, data_dir=self.data_dir)
                 store.record_compute_backend_probe(self.write_scope.project_id, probe)
-            if not probe.ready:
-                return CommandResponse(
-                    request_id=request.request_id,
-                    status="unavailable",
-                    message=probe.diagnostic,
-                    result={
-                        "diagnostic": probe.diagnostic,
-                        "required_action": probe.required_action,
-                    },
-                )
-            job = launch_compute_job(
-                store,
-                self.manifest,
-                launch.model_copy(update={"cwd": str(cwd)}),
-                data_dir=self.data_dir,
-                project_id=self.write_scope.project_id,
-                origin_operation_id=self.execution.operation_id,
-                episode_id=self.episode_id,
-                execution_machine=machine,
-                writable_roots=self.write_scope.writable_roots,
-                probe=probe,
-            )
-            result = {"job_id": job.job_id, "log_path": job.log_path, "backend_id": job.backend_id}
+            launch = launch.model_copy(update={"cwd": str(cwd)})
+            try:
+                return self._launch(request, launch, probe)
+            except ComputeProbeStaleError:
+                probe = probe_compute_backend(self.manifest, machine, data_dir=self.data_dir)
+                store.record_compute_backend_probe(self.write_scope.project_id, probe)
+                return self._launch(request, launch, probe)
         else:
             assert isinstance(request, (JobStatusCommandRequest, CancelCommandRequest))
             job = store.compute_job(request.arguments.job_id)
@@ -223,6 +196,37 @@ class WorkComputeCommands:
                         max_bytes=COMPUTE_COMMAND_LOG_TAIL_MAX_BYTES,
                     ),
                 }
+        return CommandResponse(request_id=request.request_id, status="ok", result=result)
+
+    def _launch(
+        self,
+        request: LaunchCommandRequest,
+        launch: ComputeLaunchRequest,
+        probe: ComputeBackendProbe,
+    ) -> CommandResponse:
+        if not probe.ready:
+            return CommandResponse(
+                request_id=request.request_id,
+                status="unavailable",
+                message=probe.diagnostic,
+                result={
+                    "diagnostic": probe.diagnostic,
+                    "required_action": probe.required_action,
+                },
+            )
+        job = launch_compute_job(
+            self.execution.store,
+            self.manifest,
+            launch,
+            data_dir=self.data_dir,
+            project_id=self.write_scope.project_id,
+            origin_operation_id=self.execution.operation_id,
+            episode_id=self.episode_id,
+            execution_machine=self.write_scope.execution_machine,
+            writable_roots=self.write_scope.writable_roots,
+            probe=probe,
+        )
+        result = {"job_id": job.job_id, "log_path": job.log_path, "backend_id": job.backend_id}
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     def validate_handoff(self, observed_job_ids: set[str]) -> None:
