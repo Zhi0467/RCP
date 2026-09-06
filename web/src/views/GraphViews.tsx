@@ -43,6 +43,7 @@ import {
   type DagOntologyProjection,
 } from "../graphProjection";
 import {
+  DAG_ZOOM_MIN,
   fitDagToViewport,
   zoomDagAtPoint,
   type DagViewport,
@@ -239,6 +240,9 @@ export function DagView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
+  // The most zoomed-out scale this view has legitimately reached, so a gesture can
+  // always return to a fitted or remembered view. It only ever moves outward.
+  const gestureFloorRef = useRef(Math.min(DAG_ZOOM_MIN, zoom));
   const pendingZoomScrollRef = useRef<DagZoomResult | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const dragWatchdogRef = useRef<number | null>(null);
@@ -319,6 +323,7 @@ export function DagView({
         focalY: event.clientY - rect.top - scroller.clientTop,
         scrollLeft: pending?.scrollLeft ?? scroller.scrollLeft,
         scrollTop: pending?.scrollTop ?? scroller.scrollTop,
+        minZoom: gestureFloorRef.current,
       });
       if (next.zoom === zoomRef.current) return;
       pendingZoomScrollRef.current = next;
@@ -383,6 +388,7 @@ export function DagView({
       viewportHeight: scroller.clientHeight,
     });
     if (!next) return;
+    gestureFloorRef.current = Math.min(gestureFloorRef.current, next.zoom);
     viewportRef.current = next;
     if (next.zoom === zoomRef.current) {
       scroller.scrollLeft = next.scrollLeft;

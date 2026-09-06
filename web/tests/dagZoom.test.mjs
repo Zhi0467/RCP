@@ -117,3 +117,17 @@ test("the pinch floor is unchanged for an ordinary view", () => {
   const base = { zoom: 1, focalX: 400, focalY: 250, scrollLeft: 0, scrollTop: 0 };
   assert.equal(zoomDagAtPoint({ ...base, deltaY: 100_000 }).zoom, DAG_ZOOM_MIN);
 });
+
+test("a fitted view stays reachable after zooming in and back out", () => {
+  // The floor is the caller's stable fitted scale. Deriving it from the live
+  // zoom instead would promote each intermediate scale to the new floor, so
+  // sub-0.5 zoom would be one-way and Fit unreachable without pressing it again.
+  const fitted = 0.2;
+  const base = { focalX: 400, focalY: 250, scrollLeft: 0, scrollTop: 0, minZoom: fitted };
+
+  const inward = zoomDagAtPoint({ ...base, zoom: fitted, deltaY: -200 });
+  assert.ok(inward.zoom > fitted, "zooming in leaves the fitted scale");
+
+  const back = zoomDagAtPoint({ ...base, zoom: inward.zoom, deltaY: 100_000 });
+  assert.equal(back.zoom, fitted, "zooming out returns to the fitted scale");
+});

@@ -3,17 +3,6 @@ export const DAG_ZOOM_MIN = 0.5;
 export const DAG_FIT_ZOOM_MIN = 0.05;
 export const DAG_ZOOM_MAX = 2.5;
 
-/** The floor a gesture may drive to from where it currently is.
- *
- * Fit can leave the canvas below the gesture floor. Clamping such a view back up
- * to DAG_ZOOM_MIN would make a zoom-out gesture jump inward, so a view that is
- * already further out keeps its own scale as the floor: a gesture never reverses
- * the direction it was asked for.
- */
-function gestureFloor(zoom: number): number {
-  return Math.min(DAG_ZOOM_MIN, zoom);
-}
-
 export interface DagZoomResult {
   zoom: number;
   scrollLeft: number;
@@ -27,6 +16,13 @@ interface DagZoomInput extends DagZoomResult {
   deltaY: number;
   focalX: number;
   focalY: number;
+  /** How far out a gesture may go, from the caller's stable floor.
+   *
+   * Fit can leave the canvas below DAG_ZOOM_MIN. Deriving the floor from the
+   * live zoom instead would make every intermediate scale the new floor, so
+   * zooming in from a fitted view would ratchet and never return to it.
+   */
+  minZoom?: number;
 }
 
 export function zoomDagAtPoint({
@@ -36,8 +32,9 @@ export function zoomDagAtPoint({
   focalY,
   scrollLeft,
   scrollTop,
+  minZoom = DAG_ZOOM_MIN,
 }: DagZoomInput): DagZoomResult {
-  const nextZoom = clamp(zoom * Math.exp(-deltaY * 0.002), gestureFloor(zoom), DAG_ZOOM_MAX);
+  const nextZoom = clamp(zoom * Math.exp(-deltaY * 0.002), Math.min(minZoom, zoom), DAG_ZOOM_MAX);
   const ratio = nextZoom / zoom;
   return {
     zoom: nextZoom,
