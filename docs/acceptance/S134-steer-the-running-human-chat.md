@@ -51,8 +51,11 @@ not establish the served-app or SSH promises below.
 5. Run the equivalent mid-turn drive with Claude stream-json. Confirm the
    replayed user echo bearing the steer UUID establishes **Delivered**. Race
    input with completion: the first result ends the process, an input without
-   its earlier matching echo is **Refused** as completed before delivery, and
-   no second Claude result or new turn is produced.
+   its earlier matching echo is **Refused** as completed before delivery when
+   that result arrives before the acknowledgment deadline. If the deadline
+   expires first, the stored **Unknown** receipt remains unchanged even after
+   a later echo or result. Neither case resends the input, and no second Claude
+   result or new turn is produced.
 6. Repeat the app-server steer on an authorized SSH execution host using RCP's
    existing wrapper. Observe the matching acknowledgment, changed answer, and
    persisted delivered receipt. No independent provider daemon is started.
@@ -61,7 +64,8 @@ not establish the served-app or SSH promises below.
    Restore connectivity and reload the app: RCP does not resend the steer or
    start a replacement turn. Repeat for Claude without a replayed echo or
    observed result. A local process exit before acknowledgment follows the same
-   unknown rule; Claude's observed result uses the explicit refusal in step 5.
+   unknown rule; Claude's result observed before the acknowledgment deadline
+   uses the explicit refusal in step 5.
 8. Restart the disposable RCP app during an owned running turn. The existing
    interrupted-attempt recovery and retained scratch remain available through
    Pause, Resume, and Retry as applicable. A recovery attempt retains the

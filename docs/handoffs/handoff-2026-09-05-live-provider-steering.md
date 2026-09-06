@@ -66,8 +66,11 @@ because app-server remains experimental.
    `--replay-user-messages`, treat the replayed user echo carrying the steer's
    UUID as the acknowledgment, write a steer only while no `result` event has
    been observed, and stop the process at the first `result` so a message that
-   raced completion cannot start a new turn. A steer whose echo did not arrive
-   before that `result` is refused as completed before delivery.
+   raced completion cannot start a new turn. When that `result` arrives before
+   the acknowledgment deadline, a steer whose echo did not precede it is
+   refused as completed before delivery. If the deadline expires first, RCP
+   records unknown and cancels only the receipt waiter; a later echo or result
+   does not rewrite that receipt or cause a resend.
 5. **Record.** The steer is stored as the human's chat message, tagged with the
    task attempt and its receipt (invariant 11: it is a human message, not an
    answer). It carries no authority: it cannot upgrade Discuss to Work

@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents import AgentLauncher, AgentProcessControl
+from rcp.agents.steering import LiveProviderSteering
 from rcp.providers import ProviderTurnRequest, profile_for
 from tests.helpers import async_wait_until
 
@@ -129,6 +132,31 @@ def test_codex_steer_response_never_fails_or_retargets_turn(tmp_path: Path, resp
         turn.render_steer("turn", "late", "Late")
 
 
+@pytest.mark.asyncio
+async def test_cancelling_receipt_during_write_drain_releases_waiter_without_resend(tmp_path):
+    draining = asyncio.Event()
+    writes = []
+
+    async def drain():
+        draining.set()
+        await asyncio.Future()
+
+    process = SimpleNamespace(
+        returncode=None,
+        stdin=SimpleNamespace(is_closing=lambda: False, write=writes.append, drain=drain),
+    )
+    steering = LiveProviderSteering(process, _turn(tmp_path, "codex"), threading.Event())
+    task = asyncio.create_task(steering.send("turn", "message", "Steer"))
+    await asyncio.wait_for(draining.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not steering._pending
+    assert steering.state().can_steer
+    assert (await steering.send("turn", "message", "Steer")).status == "refused"
+    assert len(writes) == 1
+
+
 def _provider(tmp_path: Path, provider: str, behavior: str) -> tuple[Path, Path, Path]:
     executable = tmp_path / "provider"
     capture = tmp_path / "input.jsonl"
@@ -152,7 +180,11 @@ for line in sys.stdin:
         elif method == 'turn/start': emit({{'id':value['id'],'result':{{'turn':{{'id':'turn'}}}}}})
         elif method == 'turn/steer':
             if {behavior!r} == 'disconnect': raise SystemExit(3)
-            result = {{'result':{{'turnId':'turn'}}}} if {behavior!r} == 'delivered' else {{'error':{{'message':'no active turn to steer','code':-32600}}}}
+            if {behavior!r} == 'late-ack':
+                while not capture.with_suffix('.release').exists(): time.sleep(0.01)
+            if {behavior!r} == 'completed-before-refusal':
+                emit({{'method':'turn/completed','params':{{'threadId':'thread','turn':{{'id':'turn','status':'completed'}}}}}})
+            result = {{'result':{{'turnId':'turn'}}}} if {behavior!r} in ('delivered', 'late-ack') else {{'error':{{'message':'no active turn to steer','code':-32600}}}}
             emit({{'id':value['id'],**result}})
             emit({{'method':'item/completed','params':{{'item':{{'type':'agentMessage','text':'Final'}},'threadId':'thread','turnId':'turn'}}}})
             emit({{'method':'turn/completed','params':{{'threadId':'thread','turn':{{'id':'turn','status':'completed'}}}}}})
@@ -174,8 +206,15 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["codex", "claude"])
-@pytest.mark.parametrize("behavior", ["delivered", "refused", "disconnect"])
+@pytest.mark.parametrize(
+    "provider,behavior",
+    [
+        (provider, behavior)
+        for provider in ("codex", "claude")
+        for behavior in ("delivered", "refused", "disconnect")
+    ]
+    + [("codex", "completed-before-refusal"), ("codex", "late-ack")],
+)
 async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
     tmp_path: Path, provider: str, behavior: str
 ):
@@ -214,11 +253,25 @@ async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
         rejected = await asyncio.wrap_future(control.steer("stale", str(uuid.uuid4()), "Stale"))
         assert rejected.status == "refused"
         message_id = str(uuid.uuid4())
-        receipt = await asyncio.wait_for(
-            asyncio.wrap_future(control.steer(state.turn_id, message_id, "Steer")), 10
-        )
-        assert receipt.status == ("unknown" if behavior == "disconnect" else behavior)
+        future = control.steer(state.turn_id, message_id, "Steer")
+        if behavior == "late-ack":
+            await async_wait_until(lambda: message_id in capture.read_text())
+            # The HTTP deadline cancels this waiter, not the still-live process.
+            assert not future.done() and not task.done()
+            future.cancel()
+            duplicate = await asyncio.wrap_future(control.steer(state.turn_id, message_id, "Steer"))
+            assert duplicate.status == "refused"
+            assert control.steering_state().can_steer
+            capture.with_suffix(".release").touch()
+        else:
+            receipt = await asyncio.wait_for(asyncio.wrap_future(future), 10)
+            expected = {"disconnect": "unknown", "completed-before-refusal": "refused"}.get(
+                behavior, behavior
+            )
+            assert receipt.status == expected
         await asyncio.wait_for(task, 10)
+        if behavior == "late-ack":
+            assert future.cancelled()
         assert not control.steering_state().can_steer
         late = await asyncio.wrap_future(control.steer(state.turn_id, str(uuid.uuid4()), "Late"))
         assert late.status == "refused"

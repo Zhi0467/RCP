@@ -80,6 +80,9 @@ function installArtifactSelection(surface, publish) {
       )
         return;
       event.preventDefault();
+      // Preventing native selection also prevents focus entering an iframe.
+      // Keep Escape with the active drag instead of racing a parent clear message.
+      if (surface === doc) view.focus();
       areaGesture = true;
       drag = {
         id: event.pointerId,
@@ -182,7 +185,7 @@ function installArtifactSelection(surface, publish) {
           width: (right - left) / area.width,
           height: (bottom - top) / area.height,
         },
-        viewport: { width: area.width, height: area.height },
+        viewport: { width: Math.round(area.width), height: Math.round(area.height) },
         labels: bounded([...labels].join(" | "), 4096),
       });
     },

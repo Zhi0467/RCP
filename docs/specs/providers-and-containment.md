@@ -267,15 +267,21 @@ Delivery has three receipts: **delivered** means the provider acknowledged the
 input; **refused** names why delivery was rejected; **unknown** means the write
 began or may have begun but no acknowledgment established its outcome. Codex
 acknowledges through the matching `turn/steer` response and rejects a stale or
-completed turn. Claude acknowledges only through a replayed user echo carrying
+completed turn. Completion immediately fences new Codex input, but RCP drains
+matching responses before marking outstanding receipts unknown at stream shutdown.
+Claude acknowledges only through a replayed user echo carrying
 the steer's UUID. RCP
 writes to Claude only while no `result` event has been observed, stops the
 process at the first `result`, and refuses a steer whose echo did not precede
-that result as completed before delivery. This completion fence prevents a
+that result as completed before delivery if the result arrives before the
+acknowledgment deadline. This completion fence prevents a
 racing input from starting a new Claude turn.
 
 A transport drop or process exit after a write began leaves an unacknowledged
-steer unknown, except for Claude's explicit result fence above. The durable
+steer unknown, except for Claude's explicit result fence above. Waiting for a
+receipt is bounded by `PROVIDER_STEER_ACK_TIMEOUT_SECONDS` in `limits.py`; timeout
+stores unknown and cancels only the receipt waiter, not the running turn. Late
+responses do not rewrite that stored outcome or trigger a resend. The durable
 message reservation immediately precedes the external write; those two effects
 cannot commit atomically. If RCP restarts before the acknowledgment is recorded,
 the reservation remains unknown: delivery acknowledgment was not recorded, and
