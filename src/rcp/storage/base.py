@@ -41,6 +41,7 @@ class AppStoreBase:
         (5, "legacy_startup_schema_v1"),
         (6, "artifact_revision_candidates_v1"),
         (7, "space_run_projection_indexes_v1"),
+        (8, "conversation_worktrees_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -465,6 +466,12 @@ class AppStoreBase:
             version=7,
             name="space_run_projection_indexes_v1",
             migration=self._migrate_space_run_projection_indexes,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=8,
+            name="conversation_worktrees_v1",
+            migration=self._migrate_conversation_worktrees,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1890,6 +1897,7 @@ class AppStoreBase:
         # live database with that baseline. Version 6 records the one-way
         # upgrade for stores whose version-5 migration already completed.
         self._migrate_artifact_revision_candidates(connection)
+        self._migrate_conversation_worktrees(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1908,6 +1916,19 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_conversation_worktrees(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_worktrees (
+                project_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                binding_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, chat_id)
+            )
+            """
+        )
 
     @staticmethod
     def _migrate_space_run_projection_indexes(connection: sqlite3.Connection) -> None:

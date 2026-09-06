@@ -322,6 +322,12 @@ class ProjectStoreMixin:
                         f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                         (canonical_project_id, old_project_id),
                     )
+                connection.execute(
+                    "UPDATE conversation_worktrees "
+                    "SET binding_json = json_set(binding_json, '$.project_id', ?) "
+                    "WHERE project_id = ?",
+                    (canonical_project_id, canonical_project_id),
+                )
                 if alias is None:
                     connection.execute(
                         """
@@ -419,6 +425,9 @@ class ProjectStoreMixin:
                     ).rowcount,
                     "chat_session_contexts": connection.execute(
                         "DELETE FROM chat_session_contexts WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "conversation_worktrees": connection.execute(
+                        "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
                     "result_views": connection.execute(
                         "DELETE FROM result_views WHERE project_id = ?", (project_id,)
@@ -972,6 +981,12 @@ class ProjectStoreMixin:
             connection.execute(
                 "UPDATE chat_session_contexts SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE conversation_worktrees "
+                "SET project_id = ?, binding_json = json_set(binding_json, '$.project_id', ?) "
+                "WHERE project_id = ?",
+                (project_id, project_id, legacy_id),
             )
             connection.execute(
                 "UPDATE result_views SET project_id = ? WHERE project_id = ?",

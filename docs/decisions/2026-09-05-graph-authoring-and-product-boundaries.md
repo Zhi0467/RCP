@@ -12,8 +12,9 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   [watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
 - **Parallel work:** do not introduce an exclusive repository lease. Shared
   checkout tasks remain concurrent. Composer worktree selection and explicit
-  Git merge-back need their own design in [draft PR #48](https://github.com/Zhi0467/RCP/pull/48),
-  separate from RCP's research-graph branches.
+  Git integration landed separately in [PR #48](https://github.com/Zhi0467/RCP/pull/48).
+  Their [conversation contract](../specs/conversations-episodes-and-watchers.md)
+  remains separate from RCP's research-graph branches.
 - **Quality advice:** use programmatic nonblocking flags in the existing validator.
   Reject the separate mandatory scanner proposal S59, not optional graph-review
   skills. Do not pretend a deterministic rule can judge scientific meaning.

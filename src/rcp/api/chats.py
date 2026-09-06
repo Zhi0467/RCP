@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
@@ -8,13 +8,22 @@ from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
     get_project_service,
+    get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
+from rcp.conversation_worktrees import (
+    ConversationWorktreeResponse,
+    conversation_worktree_locks,
+    project_conversation_worktree,
+    remove_conversation_worktree,
+)
 from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
-from rcp.service import ChatSummaryPage, ChatTranscript
+from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
+from rcp.storage import AppStore
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -126,3 +135,69 @@ __all__ = [
     "router",
     "upload_chat_attachment",
 ]
+
+
+@router.get("/api/projects/{project_id}/chats/{chat_id}/worktree")
+def conversation_worktree_controls(
+    project_id: str,
+    chat_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: Annotated[AppStore, Depends(get_store)],
+    run_on: str | None = None,
+    inspect_removal: bool = False,
+    run_truth_scope: Annotated[list[str] | None, Query()] = None,
+    chat_scope: Literal["node", "project"] = "project",
+    node_id: str | None = None,
+) -> ConversationWorktreeResponse:
+    service = get_project_service(catalog, project_id)
+    try:
+        profile = service.resolve_agent_profile(
+            "node_chat" if chat_scope == "node" else "project_chat", run_on=run_on
+        )
+        return project_conversation_worktree(
+            service,
+            store,
+            project_id,
+            RunRequest(
+                chat_id=chat_id,
+                chat_scope=chat_scope,
+                node_id=node_id,
+                run_on=profile.run_on,
+                run_truth_scope=[] if run_truth_scope == [""] else run_truth_scope,
+            ),
+            inspect_removal=inspect_removal,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete(
+    "/api/projects/{project_id}/chats/{chat_id}/worktree",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def delete_conversation_worktree(
+    project_id: str,
+    chat_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> ConversationWorktreeResponse:
+    service = get_project_service(catalog, project_id)
+    try:
+        with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
+            binding = remove_conversation_worktree(service, store, project_id, chat_id)
+        return project_conversation_worktree(
+            service,
+            store,
+            project_id,
+            RunRequest(
+                chat_id=chat_id,
+                chat_scope=binding.chat_scope,
+                node_id=binding.node_id,
+                run_on=binding.machine,
+                run_truth_scope=[binding.repository_alias],
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

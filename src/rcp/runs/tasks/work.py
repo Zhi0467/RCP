@@ -29,6 +29,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
 from rcp.core.models import Patch
 from rcp.core.operations import CreateProposalsOperation
@@ -254,6 +255,18 @@ async def _stage_work_turn(
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         context = service.assemble_chat(request)
+        if execution is not None:
+            task = execution.store.agent_task(execution.operation_id)
+            if task is None:
+                raise ValueError("The conversation task binding is unavailable.")
+            context = conversation_worktree_context(
+                service,
+                execution.store,
+                task.project_id,
+                request,
+                context,
+                resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
+            )
         surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
         _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
@@ -1844,6 +1857,18 @@ async def _stream_work_graph_repair(
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)
         context = service.assemble_chat(request)
+        if execution is not None:
+            task = execution.store.agent_task(execution.operation_id)
+            if task is None:
+                raise ValueError("The conversation task binding is unavailable.")
+            context = conversation_worktree_context(
+                service,
+                execution.store,
+                task.project_id,
+                request,
+                context,
+                resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
+            )
         stage_name = _chat_stage_name(service, request, execution)
         local_stage: Path | None = None
         remote_stage: RemoteRunStage | None = None

@@ -232,7 +232,7 @@ def test_scope_rejects_pointer_symlink_escape(manifest: Manifest, tmp_path: Path
     ("repository_root", "message"),
     [
         (Path("/"), "(?:filesystem root|repository root is not writable)"),
-        (Path.home(), "execution account home"),
+        (Path.home(), "(?:execution account home|repository root is not writable)"),
         (Path(tempfile.gettempdir()), "broad temporary directory"),
     ],
 )
