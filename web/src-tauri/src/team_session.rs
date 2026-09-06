@@ -1207,7 +1207,7 @@ fn validate_protocol_echo_value(
         return Err(format!(
             "The team server did not confirm selected team-shell protocol {selected}. \
              RCP desktop source is {DESKTOP_SOURCE_COMMIT}; team server source is \
-             {server_commit}. Update the team server from current origin/main and reconnect."
+             {server_commit}. Have the server operator install a compatible promoted RCP release and reconnect."
         ));
     }
     Ok(())
@@ -1366,14 +1366,14 @@ fn select_team_shell_protocol(health: &TeamHealth) -> Result<u32, String> {
             "This team server does not advertise the required team-shell protocol range. \
              RCP desktop supports {TEAM_SHELL_PROTOCOL_MINIMUM} through \
              {TEAM_SHELL_PROTOCOL_MAXIMUM} at source {DESKTOP_SOURCE_COMMIT}; team server source \
-             is {server_commit}. Update the team server from current origin/main and reconnect."
+             is {server_commit}. Have the server operator install a compatible promoted RCP release and reconnect."
         ));
     };
     if server.minimum == 0 || server.minimum > server.maximum {
         return Err(format!(
             "This team server advertises an invalid team-shell protocol range {} through {}. \
              RCP desktop source is {DESKTOP_SOURCE_COMMIT}; team server source is \
-             {server_commit}. Update the team server from current origin/main and reconnect.",
+             {server_commit}. Have the server operator install a compatible promoted RCP release and reconnect.",
             server.minimum, server.maximum
         ));
     }
@@ -1386,7 +1386,7 @@ fn select_team_shell_protocol(health: &TeamHealth) -> Result<u32, String> {
         return Ok(selected);
     }
     let action = if server.maximum < TEAM_SHELL_PROTOCOL_MINIMUM {
-        "Update the team server from current origin/main"
+        "Have the server operator install a compatible promoted RCP release"
     } else {
         "Update and rebuild RCP desktop from current origin/main"
     };
@@ -1717,7 +1717,7 @@ mod tests {
                 maximum,
             });
             let error = validate_health(&older_server, None).unwrap_err();
-            assert!(error.contains("Update the team server"));
+            assert!(error.contains("promoted RCP release"));
             assert!(error.contains(DESKTOP_SOURCE_COMMIT));
             assert!(error.contains(installed_server_commit(&older_server)));
         }
@@ -1738,7 +1738,7 @@ mod tests {
         let error = validate_health(&stale_server, None).unwrap_err();
         assert!(error.contains(DESKTOP_SOURCE_COMMIT));
         assert!(error.contains(installed_server_commit(&stale_server)));
-        assert!(error.contains("Update the team server"));
+        assert!(error.contains("promoted RCP release"));
     }
 
     #[test]
@@ -1795,7 +1795,7 @@ mod tests {
             let error = validate_protocol_echo_value(echoed, 1, &server_commit).unwrap_err();
             assert!(error.contains(DESKTOP_SOURCE_COMMIT));
             assert!(error.contains(&server_commit));
-            assert!(error.contains("Update the team server"));
+            assert!(error.contains("promoted RCP release"));
         }
     }
 

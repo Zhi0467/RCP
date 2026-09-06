@@ -56,7 +56,10 @@ def acknowledge_team_shell_protocol(
     ):
         raise team_shell_protocol_mismatch(
             message="The selected team-shell protocol is not supported by this server.",
-            action="Update the RCP desktop or team server from current origin/main.",
+            action=(
+                "Update and rebuild RCP desktop from merged main, or have the server operator "
+                "install a compatible promoted RCP release."
+            ),
         )
     response.headers[TEAM_SHELL_PROTOCOL_HEADER] = raw
     return selected

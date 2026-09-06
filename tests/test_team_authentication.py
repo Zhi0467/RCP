@@ -751,7 +751,10 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
         "code": "team_shell_protocol_mismatch",
         "message": "The selected team-shell protocol is not supported by this server.",
         "server_protocol": {"minimum": 1, "maximum": 3},
-        "action": "Update the RCP desktop or team server from current origin/main.",
+        "action": (
+            "Update and rebuild RCP desktop from merged main, or have the server operator "
+            "install a compatible promoted RCP release."
+        ),
     }
 
     enrolled = client.post(
