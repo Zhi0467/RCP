@@ -20,7 +20,16 @@ from rcp.transport.ssh import ssh_arguments
 
 def _git(path: Path, *arguments: str) -> str:
     return subprocess.run(
-        ["git", "-C", str(path), *arguments],
+        [
+            "git",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "-C",
+            str(path),
+            *arguments,
+        ],
         check=True,
         capture_output=True,
         text=True,
