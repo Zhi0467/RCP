@@ -6,6 +6,7 @@ function installArtifactSelection(surface, publish) {
   const listen = Function.prototype.call.bind(EventTarget.prototype.addEventListener);
   let drag = null;
   let mark = null;
+  let anchor = null;
   let areaGesture = false;
   const utf8 = new TextEncoder();
   function bounded(value, limit) {
@@ -28,6 +29,7 @@ function installArtifactSelection(surface, publish) {
   function clear() {
     mark?.remove();
     mark = null;
+    anchor = null;
     endDrag();
   }
 
@@ -79,7 +81,13 @@ function installArtifactSelection(surface, publish) {
         return;
       event.preventDefault();
       areaGesture = true;
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, started: false };
+      drag = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        started: false,
+        element: event.target,
+      };
       capture.setPointerCapture(event.pointerId);
     },
     true,
@@ -96,6 +104,7 @@ function installArtifactSelection(surface, publish) {
       event.preventDefault();
       if (!drag.started) {
         drag.started = true;
+        anchor = null;
         mark?.remove();
         doc.getSelection()?.removeAllRanges();
         publish(null);
@@ -132,6 +141,7 @@ function installArtifactSelection(surface, publish) {
       const right = Math.min(area.left + area.width, Math.max(drag.x, event.clientX));
       const bottom = Math.min(area.top + area.height, Math.max(drag.y, event.clientY));
       const drawn = drag.started;
+      const element = drag.element;
       endDrag();
       if (!drawn) return;
       if (right - left < 4 || bottom - top < 4) {
@@ -144,6 +154,7 @@ function installArtifactSelection(surface, publish) {
         width: `${right - left}px`,
         height: `${bottom - top}px`,
       });
+      anchor = { element, bounds: element.getBoundingClientRect(), left, top };
       event.preventDefault();
       const labels = new Set();
       if (surface === doc) {
@@ -206,8 +217,17 @@ function installArtifactSelection(surface, publish) {
     view,
     "scroll",
     () => {
-      clear();
-      publish(null);
+      if (drag?.started) {
+        clear();
+        publish(null);
+      } else {
+        endDrag();
+        if (mark && anchor) {
+          const current = anchor.element.getBoundingClientRect();
+          mark.style.left = `${anchor.left + current.left - anchor.bounds.left}px`;
+          mark.style.top = `${anchor.top + current.top - anchor.bounds.top}px`;
+        }
+      }
     },
     true,
   );

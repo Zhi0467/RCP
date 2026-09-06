@@ -8,9 +8,9 @@ const script = await readFile(
   "utf8",
 );
 const browserType = process.env.RCP_PREVIEW_BROWSER === "webkit" ? webkit : chromium;
-const report = `<style>body{margin:24px;font:20px sans-serif}#figure{width:420px;height:210px;background:#edf2f5}p{padding:18px}</style>
+const report = `<style>body{margin:24px;min-height:1200px;font:20px sans-serif}#figure{width:420px;height:210px;overflow:auto;background:#edf2f5}p{padding:18px}</style>
   <p id="text">Reference scores improve, but the scientific limitation remains.</p>
-  <div id="figure"><svg width="420" height="210" aria-label="Validation scores"><rect x="30" y="30" width="80" height="120" fill="teal"/><text x="30" y="180">Validation</text></svg></div>
+  <div id="figure"><svg width="420" height="420" aria-label="Validation scores"><rect x="30" y="30" width="80" height="120" fill="teal"/><text x="30" y="180">Validation</text></svg></div>
   <button id="control" onclick="this.textContent='Changed'">Report control</button>
   <details><summary>Details</summary>Expanded content</details>`;
 
@@ -78,6 +78,33 @@ test("direct preview drags require confirmation, preserve text, and keep working
       await drag(page, origin, [origin[0] + 2, origin[1] + 2]);
       assert.equal(await pending.isVisible(), true, "clicks do not dismiss confirmation");
       assert.deepEqual(await outline.boundingBox(), originalOutline);
+      if (kind === "html") {
+        const content = page.frameLocator("iframe");
+        const artifactFrame = page.frames().find((frame) => frame.parentFrame());
+        const waitForTop = (top) =>
+          artifactFrame.waitForFunction(
+            (expected) =>
+              Math.abs(
+                document.querySelector('[data-rcp-selection="area"]').getBoundingClientRect().top -
+                  expected,
+              ) < 1,
+            top,
+          );
+        await content.locator("body").evaluate(() => window.scrollTo(0, 40));
+        await waitForTop(originalOutline.y - 40);
+        assert.equal(await pending.isVisible(), true, "page scroll preserves pending area");
+        await content.locator("body").evaluate(() => window.scrollTo(0, 0));
+        await waitForTop(originalOutline.y);
+        await content.locator("#figure").evaluate((figure) => {
+          figure.scrollTop = 40;
+        });
+        await waitForTop(originalOutline.y - 40);
+        assert.equal(await pending.isVisible(), true, "nested scroll preserves pending area");
+        await content.locator("#figure").evaluate((figure) => {
+          figure.scrollTop = 0;
+        });
+        await waitForTop(originalOutline.y);
+      }
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await outline.waitFor({ state: "detached" });
       assert.equal(await pending.isHidden(), true);
