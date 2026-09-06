@@ -42,7 +42,10 @@ class LiveProviderSteering:
             if pending is not None and not pending.done():
                 pending.set_result(receipt)
         if step.complete:
-            self.close()
+            # Completion fences new input, but app-server can still flush a
+            # matching steer response. Only stream shutdown settles the rest.
+            self._closed = True
+            self._state = ProviderSteeringState(False, "The provider turn is no longer running.")
 
     def close(self) -> None:
         self._closed = True
@@ -75,18 +78,18 @@ class LiveProviderSteering:
         self._pending[message_id] = pending
         self._sent.add(message_id)
         try:
-            # No await separates the active-turn check from write. A partial
-            # write is already uncertain and must never be retried.
-            stream.write(outgoing)
-            await asyncio.wait_for(stream.drain(), PROVIDER_STEER_WRITE_TIMEOUT_SECONDS)
-        except (OSError, RuntimeError, TimeoutError):
-            if not pending.done():
-                pending.set_result(
-                    ProviderSteerReceipt(
-                        "unknown", "The provider connection failed during delivery."
+            try:
+                # No await separates the active-turn check from write. A partial
+                # write is already uncertain and must never be retried.
+                stream.write(outgoing)
+                await asyncio.wait_for(stream.drain(), PROVIDER_STEER_WRITE_TIMEOUT_SECONDS)
+            except (OSError, RuntimeError, TimeoutError):
+                if not pending.done():
+                    pending.set_result(
+                        ProviderSteerReceipt(
+                            "unknown", "The provider connection failed during delivery."
+                        )
                     )
-                )
-        try:
             return await asyncio.shield(pending)
         finally:
             self._pending.pop(message_id, None)

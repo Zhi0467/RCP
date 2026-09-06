@@ -276,6 +276,26 @@ def test_unknown_reservation_survives_restart_and_overlapping_retry_without_rese
     assert len(run.receipts) == 1
 
 
+def test_unacknowledged_steer_times_out_without_resending_or_stopping_turn(
+    running_chat, monkeypatch
+):
+    run = running_chat
+    pending = run.defer()
+    monkeypatch.setattr("rcp.runs.steering.PROVIDER_STEER_ACK_TIMEOUT_SECONDS", 0.05)
+    body = _body()
+    response = run.client.post(run.url + "/steer", json=body)
+    assert response.status_code == 200
+    assert response.json()["steering"]["status"] == "unknown"
+    assert "timed out" in response.json()["steering"]["reason"]
+    assert pending.cancelled()
+    assert not run.client.get(run.url).json()["settled"]
+    duplicate = run.client.post(run.url + "/steer", json=body)
+    assert duplicate.json() == response.json()
+    assert len(run.receipts) == 1
+    run.finish()
+    assert run.client.post(run.url + "/steer", json=body).json() == response.json()
+
+
 def test_runtime_and_human_conversation_boundaries_come_from_backend(running_chat, monkeypatch):
     run = running_chat
     record = run.background.store.agent_task(run.operation_id)

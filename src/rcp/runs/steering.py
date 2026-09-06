@@ -5,6 +5,7 @@ from concurrent.futures import Future
 from datetime import UTC, datetime
 
 from rcp.background import BackgroundAgentTasks
+from rcp.limits import PROVIDER_STEER_ACK_TIMEOUT_SECONDS
 from rcp.providers import ProviderSteeringState, ProviderSteerReceipt, profile_for
 from rcp.runs.chat import _append_chat_records, _chat_path
 from rcp.runs.task_policy import load_stored_request
@@ -215,7 +216,14 @@ def finish_chat_steer(
         return _message(stored)
     assert stored.steering is not None
     try:
-        result = future.result()
+        result = future.result(timeout=PROVIDER_STEER_ACK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        # Cancel only the receipt waiter, not the provider turn. The durable
+        # reservation still prevents a retry from sending the message again.
+        future.cancel()
+        result = ProviderSteerReceipt(
+            "unknown", "Provider acknowledgment timed out; this message will not be resent."
+        )
     except Exception:
         result = ProviderSteerReceipt(
             "unknown", "Provider acknowledgment was lost; this message will not be resent."
