@@ -238,10 +238,10 @@ not its authority or type.
 
 ## Glossary presentation
 
-Glossary entries already in canonical history render as best-effort whole-term
-inline definitions in node prose, answers, and Proposal cards. There is no
-standalone Glossary surface or current creation/edit/delete path until the open
-authorship question is decided.
+Graph-writing agents add or revise thin project-wide definitions through
+`upsert_glossary` Patches. Canonical glossary entries render as best-effort
+whole-term inline definitions in node prose, answers, and Proposal cards. There
+is no standalone Glossary surface or human glossary editor.
 
 ## Verification contracts
 

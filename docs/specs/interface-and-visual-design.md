@@ -46,7 +46,8 @@ Group the header semantically — labeled **Sync / Ask** together, then icon-onl
 **History / Refresh** together. Do not space all four as unrelated peers.
 
 Glossary definitions appear inline where terms are read. Glossary has no
-navigation destination, and glossary authoring remains an open question.
+navigation destination. Graph-writing agents add or revise the definitions through
+`upsert_glossary` Patches.
 
 A previously opened project feels immediate even when canonical state is remote:
 render one rebuildable durable display snapshot first and refresh the
