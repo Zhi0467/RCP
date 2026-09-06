@@ -45,10 +45,10 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test ! -e /etc/rcp
           sudo apt-get update
-          sudo apt-get install --yes qemu-system-x86 qemu-utils cloud-image-utils openssh-client acl
-          if test -c /dev/kvm; then
-            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
-          fi
+          sudo apt-get install --yes qemu-system-x86 qemu-utils cloud-image-utils openssh-client
+          test -c /dev/kvm
+          test "$(stat -c %G /dev/kvm)" = kvm
+          sudo usermod --append --groups kvm "$(id -un)"
 
       - name: Preflight real guest support
         shell: bash
@@ -56,7 +56,7 @@ jobs:
           RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
         run: |
           set -euo pipefail
-          python3 -m tests.supervisor_reboot_live preflight --output "$RUNNER_TEMP/rcp-reboot-receipts"
+          sg kvm -c 'exec python3 -m tests.supervisor_reboot_live preflight --output "$RUNNER_TEMP/rcp-reboot-receipts"'
 
       - name: Build the qualification code
         shell: bash
@@ -80,16 +80,17 @@ jobs:
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test ! -e /etc/rcp
-          id
-          if test -c /dev/kvm; then
-            getfacl /dev/kvm
-            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
-            getfacl /dev/kvm
-          fi
-          uv run python -m tests.supervisor_reboot_live drive \
-            --ubuntu '${{ matrix.ubuntu }}' \
-            --bundles "$RUNNER_TEMP/rcp-reboot-bundles" \
-            --output "$RUNNER_TEMP/rcp-reboot-receipts"
+          export RCP_REBOOT_UBUNTU='${{ matrix.ubuntu }}'
+          sg kvm -c '
+            set -eu
+            test "$(id -gn)" = kvm
+            id
+            stat -c "%a %U %G %n" /dev/kvm
+            exec uv run python -m tests.supervisor_reboot_live drive \
+              --ubuntu "$RCP_REBOOT_UBUNTU" \
+              --bundles "$RUNNER_TEMP/rcp-reboot-bundles" \
+              --output "$RUNNER_TEMP/rcp-reboot-receipts"
+          '
 
       - name: Preserve qualification receipts and guest logs
         if: always()
