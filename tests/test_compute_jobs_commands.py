@@ -78,6 +78,7 @@ def commands(tmp_path, manifest, monkeypatch):
         def start(self, root, wrapper, request, context):
             handle = Path(root).name
             self.starts.append((request, tuple(context.writable_roots), context.containment))
+            self.protected_paths = context.protected_paths
             self.alive_handles.add(handle)
             (Path(root) / "started").write_text("100")
             (Path(root) / "log").write_text("compute output\n")
@@ -158,6 +159,10 @@ def test_compute_command_launch_cancel_idempotency_survives_store_reopen(command
     assert job.origin_operation_id == "work-turn"
     assert job.containment == "mirrored"
     assert commands.backend.starts[0][1] == (str(commands.workspace), job.job_root)
+    assert commands.backend.protected_paths == tuple(
+        commands.handler.write_scope.protected_write_paths
+    )
+    assert str(commands.protected) in commands.backend.protected_paths
     assert len(commands.probe_calls) == 1
 
     reopened = AppStore(commands.store.path)

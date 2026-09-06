@@ -1024,6 +1024,14 @@ class ProjectStoreMixin:
                 (project_id, legacy_id),
             )
             connection.execute(
+                "UPDATE compute_jobs SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE compute_backend_probes SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )

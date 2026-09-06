@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +28,7 @@ from rcp.watchers import (
 )
 
 from .test_compute_jobs_storage import job_record
+from .test_storage import _project
 from .test_watchers import _binding, _record, _task
 
 
@@ -143,6 +145,52 @@ def observer_environment(tmp_path, manifest, monkeypatch):
 
     monkeypatch.setattr("rcp.watchers.refresh_compute_job", refresh)
     return store, manifest, refreshed
+
+
+@pytest.mark.parametrize("migration", ["identity", "legacy_data"])
+def test_project_migration_preserves_compute_job_probe_and_observer(
+    observer_environment, migration
+):
+    store, manifest, refreshed = observer_environment
+    legacy_id = "project"
+    canonical_id = str(uuid.uuid4())
+    job = store.compute_job("job-1")
+    probe = ComputeBackendProbe(
+        execution_machine=job.execution_machine,
+        backend_id=job.backend_id,
+        state="ready",
+        ready=True,
+        diagnostic="Ready",
+        containment="mirrored",
+        status_label="Ready",
+        status_tone="ready",
+    )
+    store.record_compute_backend_probe(legacy_id, probe)
+    watcher = arm_watchers(store, [WatchSpec(job_id=job.job_id)], _binding(), manifest=manifest)[0]
+
+    if migration == "identity":
+        store.upsert_project(_project(legacy_id))
+        store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
+    else:
+        store.upsert_project(
+            _project(canonical_id).model_copy(update={"home_space_id": store.space_id})
+        )
+        store.migrate_legacy_project_data(legacy_id, canonical_id)
+
+    assert store.compute_jobs(legacy_id) == []
+    assert store.compute_jobs(canonical_id) == [job.model_copy(update={"project_id": canonical_id})]
+    assert store.compute_backend_probe(legacy_id, job.execution_machine) is None
+    assert store.compute_backend_probe(canonical_id, job.execution_machine) == probe
+    assert store.watcher(watcher.watcher_id).project_id == canonical_id
+
+    store.record_compute_job_refresh(job.job_id, status="exited", exit_status=0)
+    WatcherPoller(
+        store,
+        manifest_for_project=lambda _: manifest,
+        clock=lambda: store.watcher(watcher.watcher_id).next_check_at,
+    ).poll_once()
+    assert refreshed == [job.job_id, job.job_id]
+    assert store.watcher(watcher.watcher_id).status == "completed"
 
 
 @pytest.mark.parametrize(

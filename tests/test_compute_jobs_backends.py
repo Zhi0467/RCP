@@ -81,7 +81,12 @@ def test_runner_remote_quotes_and_resolves_target_uid():
 def test_systemd_commands_and_mirrored_roots():
     backend = COMPUTE_BACKENDS["systemd_user"]
     runner = Runner((0, "", ""), (0, "ActiveState=active\n", ""), (0, "", ""))
-    ctx = context(runner, containment="mirrored", writable_roots=("/work", "/space dir"))
+    ctx = context(
+        runner,
+        containment="mirrored",
+        writable_roots=("/work", "/space dir"),
+        protected_paths=("/work/.research", '/space dir/protected "state"\\path'),
+    )
     assert backend.start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx) == "rcp-job-abc"
     prefix = ["env", "XDG_RUNTIME_DIR=/run/user/501"]
     assert runner.calls[0][0] == [
@@ -107,6 +112,10 @@ def test_systemd_commands_and_mirrored_roots():
         'ReadWritePaths="/space dir"',
         "-p",
         'ReadWritePaths="/jobs/abc"',
+        "-p",
+        'ReadOnlyPaths="/work/.research"',
+        "-p",
+        'ReadOnlyPaths="/space dir/protected \\"state\\"\\\\path"',
         "--",
         "sh",
         "/jobs/abc/run.sh",
@@ -124,6 +133,18 @@ def test_systemd_commands_and_mirrored_roots():
     ]
     backend.cancel("rcp-job-abc", ctx)
     assert runner.calls[2][0] == [*prefix, "systemctl", "--user", "stop", "rcp-job-abc"]
+
+
+def test_systemd_cooperative_start_omits_protected_paths():
+    runner = Runner()
+    ctx = context(
+        runner,
+        containment="cooperative",
+        writable_roots=("/work",),
+        protected_paths=("/work/.research",),
+    )
+    COMPUTE_BACKENDS["systemd_user"].start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
+    assert not any(arg.startswith("ReadOnlyPaths=") for arg in runner.calls[0][0])
 
 
 @pytest.mark.parametrize(
