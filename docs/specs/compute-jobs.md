@@ -130,7 +130,9 @@ Experiment-loop turns, including their same-invocation correction turns:
 Execution machine, host, project, operation id, and optional episode id come
 from the turn, never the command. A bad request answers `invalid`; a machine
 without a ready probe answers `unavailable` with its diagnostic and required
-action; success answers `ok`. Each call has a task event; each new keyed command
+action; success answers `ok`. A broker turn's client waits up to the compute
+command timeout, which covers machine resolution, one probe, and a backend
+start in sequence, so a slow remote launch is not misreported as unavailable. Each call has a task event; each new keyed command
 has two protected diagnostic receipts, one for its start and one for its result.
 Commands do not apply a graph Patch.
 
