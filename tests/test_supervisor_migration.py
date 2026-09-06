@@ -414,3 +414,38 @@ def test_deployment_lock_preparation_rejects_unsafe_existing_files(tmp_path, uns
     with pytest.raises((SupervisorError, OSError)):
         migration.prepare_deployment_lock(directory)
     assert outside.read_bytes() == b"preserve"
+
+
+def test_install_retries_terminal_rolled_back_adoption(runtime, monkeypatch):
+    from contextlib import nullcontext
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rcp_supervisor import driver
+    from rcp_supervisor.events import EventEmitter
+
+    original_config = dict(runtime.config)
+    runtime.fail_probe = True
+    with pytest.raises(SupervisorError, match="candidate verification"):
+        migration.adopt(runtime, runtime.target)
+    journal = runtime.paths.supervisor / "adoption.json"
+    previous = json.loads(journal.read_text())
+    assert previous["phase"] == "rolled_back"
+    runtime.fail_probe = False
+    runtime.config = {**original_config, "schema_version": 2}
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(driver, "_root_directory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        driver, "store_for", lambda _: SimpleNamespace(locked=nullcontext, active=lambda: None)
+    )
+    monkeypatch.setattr(
+        driver, "followed_release", lambda _: SimpleNamespace(directory=runtime.paths.releases_root)
+    )
+    monkeypatch.setattr(driver, "_require_supervisor", lambda _: None)
+    monkeypatch.setattr(driver, "prepare_release", lambda *args: runtime.target)
+    emitter = EventEmitter("server install", stream=StringIO())
+    emitter.emit("running", "Install")
+    assert driver.install(SimpleNamespace(team_name="Team"), emitter, paths=runtime.paths) == 0
+    assert json.loads(journal.read_text())["phase"] == "committed"
+    archived = journal.with_name("adoption-" + previous["operation_id"] + ".json")
+    assert json.loads(archived.read_text()) == previous

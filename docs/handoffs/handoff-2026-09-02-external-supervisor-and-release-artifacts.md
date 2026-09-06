@@ -415,3 +415,15 @@ adoption has local recovery regressions but no actual old-source drive;
 installation from promoted GitHub assets is not exercised by the synthetic
 workflow; and no actual reboot has run, so S135 stays pending. No production
 update, restart, reboot, or app-data mutation occurred.
+
+A second read-only review of the pushed PR found and this PR fixed: a fresh-host
+restore that enabled the unit only after deployment, so a reboot during the
+restore never ran the recovery guard (the unit is now enabled before deployment
+and the startup guard still keeps an uninitialized rollback target stopped); a
+rolled-back adoption that blocked every later `server install` retry; the root
+runtime receipt surviving a failed durability sync; a failure inspection command
+that ran doctor as root, which the launcher refuses; unavailable-project restore
+proofs hashing rehearsal paths; the delegation client publishing success before
+the supervisor's stream and exit code were validated; and S95 plus the spec's
+restore prerequisite still describing the retired source install and an
+empty-only target.

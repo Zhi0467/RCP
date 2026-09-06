@@ -1133,10 +1133,14 @@ in code, and insufficient staging or destination capacity produces an explicit
 partial/failure outcome. Transfer uses its exact manifest size as the upload
 lease boundary rather than loading the archive into browser or process memory.
 
-Restore is a console workflow with integrity checks, replay verification, the
-installed server's displayed configured `RCP_DATA_DIR` in fresh/empty state,
-and an operator confirmation that the old copy of the space cannot resume
-serving. Restore defaults to the fixed root-only server identity and accepts
+Restore is a console workflow with integrity checks, replay verification, and
+operator confirmation of the installed server's displayed configured
+`RCP_DATA_DIR` and that the old copy of the space cannot resume serving; the
+target may be an initialized team or uninitialized.
+An initialized target gets a protected backup, closed admission, and a rollback
+checkpoint, and returns to serving its previous data on pre-selection failure;
+an uninitialized target stays stopped on that failure.
+Restore defaults to the fixed root-only server identity and accepts
 `--identity-file <absolute-path>` for an external identity or a fresh
 replacement host. The private file is read only for that run; raw identity text
 never enters argv, environment, progress, installed config, or restored data.

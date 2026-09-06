@@ -8,7 +8,7 @@ import signal
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from rcp.limits import (
     SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
@@ -67,7 +67,7 @@ def supervisor_argv(
     return argv
 
 
-def _lines(argv: list[str], *, timeout: float) -> Iterator[bytes]:
+def _lines(argv: list[str], *, timeout: float) -> Generator[bytes, None, int]:
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -127,6 +127,7 @@ def _lines(argv: list[str], *, timeout: float) -> Iterator[bytes]:
                     raise SupervisorUnavailable(
                         "The supervisor terminated unexpectedly; recover its durable operation before retrying."
                     )
+                return code
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -169,10 +170,33 @@ def execute_supervisor_command(
     expected_plan = emitter.events[0]
     if actual_plan.command != expected_plan.command or actual_plan.steps != expected_plan.steps:
         raise SupervisorUnavailable("The supervisor changed its reviewed operation plan.")
-    for line in lines:
+    terminal = None
+    while True:
+        try:
+            line = next(lines)
+        except StopIteration as stopped:
+            code = stopped.value
+            break
+        if terminal is not None:
+            raise SupervisorUnavailable("The supervisor returned output after its terminal event.")
         event = ServerStepEvent.model_validate_json(line)
         if event.command != request.command:
             raise SupervisorUnavailable("The supervisor returned another command's event.")
         if already_running and event.step.state == "running":
             continue
-        emitter.emit_step(event.step, timestamp=event.timestamp)
+        if event.step.state in {"failed", "operator_action_needed"} or (
+            event.step.state == "succeeded" and event.step.number == len(actual_plan.steps)
+        ):
+            terminal = event
+        else:
+            emitter.emit_step(event.step, timestamp=event.timestamp)
+    if terminal is None:
+        raise SupervisorUnavailable("The supervisor returned no terminal event.")
+    expected_codes = {
+        "succeeded": (0,),
+        "failed": (1, 77),
+        "operator_action_needed": (3,),
+    }
+    if code not in expected_codes[terminal.step.state]:
+        raise SupervisorUnavailable("The supervisor exit code disagreed with its terminal event.")
+    emitter.emit_step(terminal.step, timestamp=terminal.timestamp)

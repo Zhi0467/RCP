@@ -458,13 +458,13 @@ def _finish_candidate(runtime, record: dict) -> None:
         runtime.start_service()
 
 
-def recover(runtime) -> dict | None:
+def recover(runtime, *, for_install: bool = False) -> dict | None:
     """Recover while excluding backup writers; None defers to ordinary recovery."""
     with runtime.deployment_lock():
-        return _recover(runtime)
+        return _recover(runtime, for_install=for_install)
 
 
-def _recover(runtime) -> dict | None:
+def _recover(runtime, *, for_install: bool = False) -> dict | None:
     path = _journal(runtime)
     if not path.exists() and not path.is_symlink():
         return None
@@ -473,6 +473,9 @@ def _recover(runtime) -> dict | None:
         _retire_source_keys(runtime)
         return None
     if record["phase"] == "rolled_back":
+        if for_install:
+            # A completed rollback may be archived and retried by adopt.
+            return None
         _legacy_start(runtime, record["previous"])
         return record
     if record["phase"] == "candidate_chosen":

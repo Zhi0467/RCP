@@ -53,7 +53,7 @@ def test_terminal_keeps_one_live_line_and_expands_only_the_stop(color_terminal):
     assert "  deployment phase: candidate_probe" in body
     resume = f"sudo /usr/local/bin/rcp server update --confirm-target {CONFIRMATION}"
     assert f"  1. $ {resume} --machine-readable\n" in body
-    assert "  2. $ sudo /usr/local/bin/rcp server doctor\n" in body
+    assert "  2. $ sudo -u rcp -H /usr/local/bin/rcp server doctor\n" in body
     assert body.rstrip().endswith(f"Continue:\n  $ {resume}")
 
 
@@ -118,7 +118,7 @@ def test_failure_carries_exact_diagnostic_and_continue_commands(monkeypatch, cap
     assert step.resume_argv == resume
     assert [action.argv for action in step.actions] == [
         (*resume, "--machine-readable"),
-        ("sudo", "/usr/local/bin/rcp", "server", "doctor"),
+        ("sudo", "-u", "rcp", "-H", "/usr/local/bin/rcp", "server", "doctor"),
     ]
     assert {field.name: field.value for field in step.fields} == {
         "deployment_phase": "candidate_probe",
@@ -126,10 +126,16 @@ def test_failure_carries_exact_diagnostic_and_continue_commands(monkeypatch, cap
     }
 
 
-def test_a_failing_inspection_does_not_offer_itself_as_inspection():
+def test_failing_root_doctor_offers_service_account_inspection():
     actions, resume = failure_recovery(["server", "doctor"])
     assert resume == ["sudo", "/usr/local/bin/rcp", "server", "doctor"]
-    assert actions == [{"kind": "command", "argv": [*resume, "--machine-readable"]}]
+    assert actions == [
+        {"kind": "command", "argv": [*resume, "--machine-readable"]},
+        {
+            "kind": "command",
+            "argv": ["sudo", "-u", "rcp", "-H", "/usr/local/bin/rcp", "server", "doctor"],
+        },
+    ]
 
 
 def test_explicit_failure_recovery_is_not_overridden():

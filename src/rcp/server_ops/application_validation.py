@@ -475,15 +475,12 @@ def _prepare_overlay_project(
                 "The current release could not replay the captured canonical head."
             )
         expected_graph_sha256 = _canonical_sha256(expected_graph.model_dump(mode="json"))
-    overlay_state_location = (
-        str(row["state_location"]) if bool(row["state_remote"]) else str(manifest_path.parent)
-    )
     expected_card = {
         "id": str(row["project_id"]),
         "home_space_id": row["home_space_id"],
         "name": str(row["name"]),
-        "locator": str(manifest_path),
-        "state_location": overlay_state_location,
+        "locator": str(row["locator"]),
+        "state_location": str(row["state_location"]),
         "remote": bool(row["state_remote"]),
         "last_opened_at": row["last_opened_at"],
         "revision": row["revision"],
@@ -515,15 +512,12 @@ def _prepare_overlay_project(
 def _prepare_uncaptured_archive_overlay(row: sqlite3.Row, root: Path) -> RehearsalProjectOverlay:
     """Preserve the explicit protected-archive omission without opening any locator."""
     locator = root / "known-absent" / "manifest.toml"
-    state_location = (
-        str(row["state_location"]) if bool(row["state_remote"]) else str(locator.parent)
-    )
     card = {
         "id": str(row["project_id"]),
         "home_space_id": row["home_space_id"],
         "name": str(row["name"]),
-        "locator": str(locator),
-        "state_location": state_location,
+        "locator": str(row["locator"]),
+        "state_location": str(row["state_location"]),
         "remote": bool(row["state_remote"]),
         "last_opened_at": row["last_opened_at"],
         "revision": row["revision"],
@@ -955,7 +949,12 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                         )
                     )
                 else:
-                    card = cards[project.project_id]
+                    # Compare durable identities, not this rehearsal's copied paths.
+                    card = dict(cards[project.project_id])
+                    card.update(
+                        locator=project.original_locator,
+                        state_location=project.original_state_location,
+                    )
                     projection_sha256 = unavailable_card_projection_sha256(
                         card,
                         project.expected_card_sha256,

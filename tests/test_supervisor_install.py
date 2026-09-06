@@ -214,3 +214,49 @@ def test_verify_installed_identity_retains_import_stderr(tmp_path: Path) -> None
     diagnostic = log_path.read_text()
     assert diagnostic.startswith("prior install diagnostic\n")
     assert "ImportError: broken identity fixture" in diagnostic
+
+
+@pytest.mark.parametrize("failed_directory", ["target", "storage", "root"])
+def test_root_install_removes_receipt_after_publish_fsync_failure(
+    tmp_path, monkeypatch, failed_directory
+):
+    from types import SimpleNamespace
+
+    bundle = make_bundle(tmp_path / "bundle")
+    release = install.verify_release(bundle)
+    root = tmp_path / "supervisor"
+    root.mkdir()
+    target = root / "versions" / release.supervisor_version
+    failed = {"target": target, "storage": target.parent, "root": root}[failed_directory]
+    original_stat = Path.stat
+    original_fsync = os.fsync
+
+    def root_ancestor_stat(path, *args, **kwargs):
+        if path in root.parents:
+            return SimpleNamespace(st_uid=0, st_mode=0o755)
+        return original_stat(path, *args, **kwargs)
+
+    def fail_fsync(descriptor):
+        if (target / "installed.json").exists() and os.fstat(
+            descriptor
+        ).st_ino == failed.stat().st_ino:
+            raise OSError("EIO")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "stat", root_ancestor_stat)
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/usr/bin/true")
+    monkeypatch.setattr(install, "_require_directory", lambda _: None)
+    monkeypatch.setattr(install, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(install, "_require_root_python", lambda *args: None)
+    monkeypatch.setattr(install, "_verify_root_identity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(install, "_protect_venv_lock", lambda _: None)
+    monkeypatch.setattr(install, "_fsync_owned_tree", lambda _: None)
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="EIO"):
+        install.install_supervisor(bundle, root)
+    assert not (target / "installed.json").exists()
+    assert not (target / ".installed.json.tmp").exists()
+    assert (target / "install.log").exists()
+    with pytest.raises(SupervisorError, match="incomplete"):
+        install.install_supervisor(bundle, root)

@@ -232,7 +232,8 @@ def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsy
         calls.append("runtime")
         return SimpleNamespace(config={"schema_version": 3})
 
-    def recover(runtime):
+    def recover(runtime, *, for_install):
+        assert for_install
         assert calls == ["runtime", "lock"]
         assert not paths.selected.exists()
         calls.append("recover")
@@ -252,33 +253,40 @@ def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsy
 
 
 @pytest.mark.parametrize("succeeds", [False, True])
-def test_restore_enables_only_after_durable_activation(tmp_path, monkeypatch, succeeds):
+def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
+    tmp_path, monkeypatch, succeeds
+):
     from io import StringIO
 
     from rcp_supervisor.runtime import Paths
 
-    paths = Paths(data_dir=tmp_path)
+    paths = Paths(data_dir=tmp_path, supervisor=tmp_path / "supervisor")
     calls = []
     selected = {"build": 1}
     runtime = SimpleNamespace(
+        paths=paths,
         require_capability=lambda _: None,
         application=lambda *args: {"status": "uninitialized"},
         _systemctl=lambda action: calls.append(action),
     )
 
     class Coordinator:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             pass
 
         def deploy(self, previous, target, **kwargs):
             assert previous == target == selected
             assert kwargs == {"kind": "restore", "previous_uninitialized": True}
-            assert calls == []
+            assert calls == ["enable"]
             if not succeeds:
                 raise SupervisorError("activation failed")
             calls.append("committed")
             return {"phase": "committed"}
 
+        def recover(self, **kwargs):
+            return {"phase": "rolled_back"}
+
+    startup_recover = driver.recover
     monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(driver, "selected_pointer", lambda _: selected)
@@ -296,8 +304,10 @@ def test_restore_enables_only_after_durable_activation(tmp_path, monkeypatch, su
     emitter.emit("running", "Restore")
     if succeeds:
         assert driver.restore(arguments, emitter, paths=paths) == 0
-        assert calls == ["committed", "enable"]
+        assert calls == ["enable", "committed"]
     else:
         with pytest.raises(SupervisorError, match="activation failed"):
             driver.restore(arguments, emitter, paths=paths)
-        assert calls == []
+        assert calls == ["enable"]
+        with pytest.raises(SupervisorError, match="completed team initialization or restore"):
+            startup_recover(paths=paths, startup=True)

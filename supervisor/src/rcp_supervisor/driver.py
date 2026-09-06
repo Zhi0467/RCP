@@ -260,7 +260,7 @@ def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
         if os.path.lexists(paths.supervisor / "adoption.json"):
             from rcp_supervisor import migration
 
-            adoption = migration.recover(runtime)
+            adoption = migration.recover(runtime, for_install=True)
             runtime = SystemRuntime(paths, allow_legacy_config=True)
             if adoption is not None:
                 return _emit_adoption(adoption, emitter)
@@ -382,6 +382,7 @@ def restore(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
     )
     if inspection.get("status") not in {"initialized_team", "uninitialized"}:
         raise SupervisorError("The installed application did not prove its restore starting state.")
+    runtime._systemctl("enable")
     try:
         result = Coordinator(store_for(paths), runtime).deploy(
             selected,
@@ -392,7 +393,6 @@ def restore(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
     except RestoreOperatorAction as exc:
         emitter.emit("operator_action_needed", str(exc), **exc.details)
         return 3
-    runtime._systemctl("enable")
     emitter.emit(
         "succeeded",
         "The restored application passed fenced verification and is serving.",

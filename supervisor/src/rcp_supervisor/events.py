@@ -93,7 +93,7 @@ def failure_recovery(invocation: list[str]) -> tuple[list[dict], list[str]]:
     """
     resume = ["sudo", PUBLIC_WRAPPER, *invocation]
     actions = [{"kind": "command", "argv": [*resume, "--machine-readable"]}]
-    inspect = ["sudo", PUBLIC_WRAPPER, "server", "doctor"]
+    inspect = ["sudo", "-u", "rcp", "-H", PUBLIC_WRAPPER, "server", "doctor"]
     if inspect != resume:
         actions.append({"kind": "command", "argv": inspect})
     return actions, resume

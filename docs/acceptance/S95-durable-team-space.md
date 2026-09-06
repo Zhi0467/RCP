@@ -43,8 +43,9 @@ source reload.
 F1 through F6d are implemented as of 2026-09-01. The server CLI command and
 event contract, Linux service layout, idempotent installer and unit, private
 control socket, commit identity and `server doctor`, and the supervisor
-artifact/validation/checkpoint/cutover path have focused coverage. A first
-manual install on Ubuntu 22.04 x86-64 created the dedicated `rcp` account,
+artifact/validation/checkpoint/cutover path have focused coverage. Historical
+source-install evidence from that period: a first manual install on Ubuntu
+22.04 x86-64 created the dedicated `rcp` account,
 managed checkout, immutable release, and an initialized team space, then passed
 HTTP health and `server doctor`. This scenario remains pending because the
 mismatched-space refusal and the port-change reconnection have not been driven
@@ -52,24 +53,31 @@ end to end against a real saved desktop connection.
 
 ## Setup
 
-A supported Ubuntu test host on which a normal operator has a disposable
-bootstrap checkout, plus the separately installed managed source checkout,
-dedicated `rcp` account, non-reloading system service, private data directory,
-one initialized team space, one enrolled member, one central project checkout,
-and a saved desktop connection recording the expected `space_id`.
+A supported Ubuntu test host with the prerequisites in the
+[operator guide](../server.md), operator sudo access, and the RCP and supervisor
+wheel URLs from the same promoted release. No RCP source checkout is required.
+The drive establishes the dedicated `rcp` account, non-reloading system service,
+private data directory, and initialized team space; then enroll one member,
+prepare one central project checkout, and save a desktop connection recording
+the expected `space_id`.
 
 ## Drive
 
-1. Run the first install through the bootstrap checkout's absolute CLI path with
-   operator `sudo`. Confirm the fresh systemd unit is still stopped. Run the
-   printed `space init --team` command interactively as `rcp`, capture the
-   one-time code there, then enable/start the unit and inspect which steps ran as
+1. Set `RCP_WHEEL_URL` and `RCP_SUPERVISOR_WHEEL_URL` to those paired download
+   URLs and run
+   `sudo /usr/local/bin/uv tool run --from "$RCP_WHEEL_URL" --with "$RCP_SUPERVISOR_WHEEL_URL" rcp server install --team-name "My lab"`.
+   Confirm the fresh systemd unit is still stopped. Follow the wizard's
+   interactive `space init --team` step as `rcp`, capture the one-time code,
+   then continue to enable/start the unit and inspect which steps ran as
    root versus `rcp`. Inspect the account home, shell, unusable non-locking
    shadow value, groups, sudo policy, and global SSH configuration. Prove a
-   leading-`!` account lock is not used. Remove the bootstrap checkout.
-2. Run `rcp server doctor`. Read the service account, data path, source checkout
-   commit, running commit, upstream, reload mode, immutable installation id, and
-   optional source-fetch public fingerprint.
+   leading-`!` account lock is not used. Confirm no RCP source checkout or source
+   deploy key was installed.
+2. Run `sudo -u rcp -H /usr/local/bin/rcp server doctor`. Read the service
+   account, data path, reload mode, immutable installation id, and selected,
+   current, and running release identities. Verify the root-owned selected
+   receipt, `/etc/rcp/current`, and running release agree on the promoted build
+   and exact commit.
 3. Read the `space_id` after first initialization.
 4. Stop the system service and start it again. Read the `space_id` and member
    record.
@@ -96,24 +104,24 @@ and a saved desktop connection recording the expected `space_id`.
 
 - `space_id_is_generated_once_and_survives_restart`
 - `installation_id_is_stable_for_one_machine_install_and_distinct_from_space_and_member_ids`
-- `a_private_source_key_uses_the_installation_label_without_persisting_private_bytes`
+- `paired_promoted_wheels_bootstrap_without_an_rcp_source_checkout_or_source_deploy_key`
 - `space_id_survives_an_address_and_port_change`
 - `restart_preserves_members_and_token_hashes_without_re_enrollment`
 - `instance_id_changes_across_process_lifetimes`
 - `space_id_is_not_derived_from_the_data_directory_path`
 - `a_personal_space_also_mints_a_durable_space_id`
-- `doctor_reports_the_exact_checkout_and_running_commits`
+- `doctor_reports_selected_current_and_running_release_identities`
+- `the_root_selected_receipt_current_pointer_and_running_release_agree`
 - `the_rcp_account_has_a_fixed_home_real_shell_no_usable_password_and_no_broad_privilege`
 - `the_shadow_state_denies_passwords_without_blocking_public_key_ssh`
 - `install_does_not_enable_password_ssh_or_edit_global_sshd_config`
 - `direct_rcp_ssh_is_key_only_and_optional_while_named_operator_sudo_still_works`
 - `the_only_members_last_token_cannot_be_revoked_without_an_atomic_replacement`
-- `the_operator_bootstrap_checkout_never_becomes_the_managed_checkout`
-- `root_performs_only_os_installation_and_managed_source_steps_run_as_rcp`
+- `root_owns_supervisor_and_operator_runtimes_while_application_installation_runs_as_rcp`
 - `fresh_install_initializes_interactively_as_rcp_before_first_service_start`
 - `the_bootstrap_code_never_enters_a_service_log`
 - `initialization_never_opens_sqlite_beside_the_running_service`
-- `the_team_service_runs_from_source_without_reload`
+- `the_team_service_runs_from_the_verified_promoted_release_without_reload`
 - `an_unexpected_space_id_blocks_mutations_until_the_human_reconnects`
 - `an_unexpected_space_id_still_permits_reading_what_the_client_cached`
 - `data_runtime_credentials_and_server_local_checkouts_are_owned_only_by_rcp`

@@ -7,10 +7,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
+from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
 
+from rcp.api import create_app
 from rcp.server_ops.backup import _write_deterministic_archive, build_archive_manifest
 from rcp.server_ops.backup_project_files import BackupProjectFileCapturePublication
-from rcp.server_ops.deployment import ApplicationProof, prepare
+from rcp.server_ops.deployment import (
+    ApplicationProof,
+    ValidateRequest,
+    prepare,
+    validate,
+    verify_live_application,
+)
+from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_ops.restore import RestorePrepareRequest, RestoreRefused, prepare_restore
 from tests.test_application_deployment import captured, socket_root  # noqa: F401
 
@@ -104,7 +114,10 @@ def _confirm(value, review, output):
     )
 
 
-def test_restore_preserves_uncaptured_project_as_visible_unavailable(restore_request, tmp_path):
+@pytest.mark.parametrize("verification", ["candidate", "live"])
+def test_restore_preserves_uncaptured_project_as_visible_unavailable(
+    restore_request, tmp_path, verification
+):
     import tarfile
 
     from rcp.server_ops.backup_models import BackupArchiveManifest, BackupProjectCapture
@@ -148,6 +161,38 @@ def test_restore_preserves_uncaptured_project_as_visible_unavailable(restore_req
     assert record.error.startswith("Not captured by the replacement archive:")
     proof = ApplicationProof.model_validate_json(Path(result["proof_path"]).read_bytes())
     assert proof.read_model.projects[0].status == "not_replay_verified"
+
+    if verification == "candidate":
+        checked = validate(
+            ValidateRequest(
+                version=1,
+                proof_path=result["proof_path"],
+                proof_sha256=result["proof_sha256"],
+                output_dir=str(tmp_path / "different-candidate-directory"),
+            )
+        )
+        assert checked["status"] == "verified"
+        result.update(checked)
+    checkpoint = create_checkpoint(
+        tmp_path / "replacement",
+        tuple(SnapshotRoot(Path(r["live"]), Path(r["payload"])) for r in result["roots"]),
+        boundary_sha256=result["boundary_sha256"],
+    )
+    restore_checkpoint(checkpoint)
+    app = create_app(
+        data_dir=Path(value["data_dir"]),
+        maintenance_identity=MaintenanceIdentity(str(uuid.uuid4()), result["boundary_sha256"]),
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 503
+        digest = verify_live_application(
+            Path(result["proof_path"]),
+            proof_sha256=result["proof_sha256"],
+            background=app.state.background_tasks,
+            catalog=app.state.catalog,
+            store=AppStore(Path(value["data_dir"]) / "rcp.sqlite3"),
+        )
+        assert len(digest) == 64
 
 
 def test_restore_refuses_wrong_recorded_transition(restore_request, tmp_path):

@@ -429,17 +429,13 @@ def _prepare_root_environment(
         output.flush()
         os.fsync(output.fileno())
     os.replace(temporary, target / "installed.json")
-    descriptor = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    for directory in (target.parent, supervisor_root):
-        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        for directory in (target, target.parent, supervisor_root):
+            _fsync_directory(directory)
+    except OSError:
+        # A receipt whose durability is unproven must not survive as success.
+        (target / "installed.json").unlink(missing_ok=True)
+        raise
     return venv
 
 

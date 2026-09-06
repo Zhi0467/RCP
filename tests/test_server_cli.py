@@ -1218,3 +1218,122 @@ def test_outer_wizard_refuses_to_run_mutually_exclusive_restore_actions():
     )
     assert code == SERVER_CLI_EXIT_OPERATOR_ACTION
     assert "exactly one" in output.getvalue()
+
+
+@pytest.mark.parametrize("trailing, child_exit", [("invalid\n", 0), ("", 1), ("", 42)])
+def test_supervisor_success_waits_for_valid_stream_and_exit(monkeypatch, trailing, child_exit):
+    from rcp.server_ops import supervisor_client
+
+    output = StringIO()
+    identity = CallerIdentity(uid=0, username="root", host="lab.example")
+
+    def handler(request, caller):
+        prepared = _successful_command(request, caller)
+        events = [prepared.plan.model_dump_json()]
+        for state in ("running", "succeeded"):
+            events.append(
+                ServerStepEvent(
+                    command=request.command,
+                    timestamp=NOW,
+                    step=_machine_step(request.command, state=state, identity=caller),
+                ).model_dump_json()
+            )
+        payload = "\n".join(events) + "\n" + trailing
+        monkeypatch.setattr(
+            supervisor_client,
+            "supervisor_argv",
+            lambda *a: [
+                sys.executable,
+                "-c",
+                f"import sys; sys.stdout.write({payload!r}); sys.exit({child_exit})",
+            ],
+        )
+        return PreparedServerCommand(
+            plan=prepared.plan,
+            execute=lambda emitter, _input: supervisor_client.execute_supervisor_command(
+                request, emitter
+            ),
+        )
+
+    code = run_server_command(
+        _parse("server", "update", "--machine-readable"),
+        handler=handler,
+        identity=identity,
+        stream=output,
+    )
+    assert code == SERVER_CLI_EXIT_FAILED
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert events[-1]["step"]["state"] == "failed"
+    assert all(event.get("step", {}).get("state") != "succeeded" for event in events)
+
+
+@pytest.mark.parametrize(
+    "state, child_exit, expected_exit",
+    [
+        ("succeeded", 0, 0),
+        ("failed", 1, 1),
+        ("operator_action_needed", 3, 3),
+        ("failed", 0, 1),
+        ("operator_action_needed", 0, 1),
+    ],
+)
+def test_supervisor_terminal_event_agrees_with_exit(monkeypatch, state, child_exit, expected_exit):
+    from rcp.server_ops import supervisor_client
+
+    output = StringIO()
+    if state == "operator_action_needed":
+        execution = _operator_execution()
+        plan, final = execution.events
+        argv = ("server", "project", "provision", REQUEST_ID)
+        identity = CallerIdentity(uid=501, username="rcp", host="lab.example")
+    else:
+        argv = ("server", "update")
+        identity = CallerIdentity(uid=0, username="root", host="lab.example")
+        plan = ServerPlanEvent(
+            command="server update",
+            timestamp=NOW,
+            steps=(_machine_step("server update", state="pending", identity=identity),),
+        )
+        final = ServerStepEvent(
+            command=plan.command,
+            timestamp=NOW,
+            step=_machine_step(plan.command, state=state, identity=identity),
+        )
+    events = [plan]
+    if state != "operator_action_needed":
+        events.append(
+            ServerStepEvent(
+                command=plan.command,
+                timestamp=NOW,
+                step=_machine_step(plan.command, state="running", identity=identity),
+            )
+        )
+    events.append(final)
+    payload = "\n".join(event.model_dump_json() for event in events) + "\n"
+    monkeypatch.setattr(
+        supervisor_client,
+        "supervisor_argv",
+        lambda *a: [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.write({payload!r}); sys.exit({child_exit})",
+        ],
+    )
+
+    def handler(request, _caller):
+        return PreparedServerCommand(
+            plan=plan,
+            execute=lambda emitter, _input: supervisor_client.execute_supervisor_command(
+                request, emitter
+            ),
+        )
+
+    code = run_server_command(
+        _parse(*argv, "--machine-readable"),
+        handler=handler,
+        identity=identity,
+        stream=output,
+    )
+    assert code == expected_exit
+    observed = json.loads(output.getvalue().splitlines()[-1])["step"]["state"]
+    assert observed == ("failed" if child_exit != expected_exit else state)
