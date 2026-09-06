@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import venv
 from pathlib import Path
@@ -184,7 +185,7 @@ def test_install_removes_receipt_after_publish_fsync_failure(
 
     monkeypatch.setattr(install, "_run", run)
     monkeypatch.setattr(install, "_verify_installed_identity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(install, "_protect_venv_lock", lambda *args: None)
+    monkeypatch.setattr(install, "_protect_uv_lock", lambda *args: None)
     monkeypatch.setattr(install, "_fsync_owned_tree", lambda *args: None)
     monkeypatch.setattr(install, "_fsync_directory", fail_fsync)
     with pytest.raises(SupervisorError, match="retained.*EIO"):
@@ -250,7 +251,7 @@ def test_root_install_removes_receipt_after_publish_fsync_failure(
     monkeypatch.setattr(install, "_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(install, "_require_root_python", lambda *args: None)
     monkeypatch.setattr(install, "_verify_root_identity", lambda *args, **kwargs: None)
-    monkeypatch.setattr(install, "_protect_venv_lock", lambda _: None)
+    monkeypatch.setattr(install, "_protect_uv_lock", lambda _: None)
     monkeypatch.setattr(install, "_fsync_owned_tree", lambda _: None)
     monkeypatch.setattr(os, "fsync", fail_fsync)
     with pytest.raises(OSError, match="EIO"):
@@ -260,3 +261,48 @@ def test_root_install_removes_receipt_after_publish_fsync_failure(
     assert (target / "install.log").exists()
     with pytest.raises(SupervisorError, match="incomplete"):
         install.install_supervisor(bundle, root)
+
+
+def test_managed_python_lock_is_protected_before_runtime_durability_check(tmp_path):
+    root = tmp_path / "python"
+    root.mkdir(mode=0o755)
+    lock = root / ".lock"
+    lock.touch()
+    lock.chmod(0o777)
+    runtime = root / "cpython/bin/python"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"managed runtime")
+    runtime.chmod(0o755)
+    with pytest.raises(SupervisorError, match="unsafe file metadata"):
+        install._fsync_owned_tree(root)
+    install._protect_uv_lock(root)
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+    install._fsync_owned_tree(root)
+    assert runtime.read_bytes() == b"managed runtime"
+    runtime.chmod(0o777)
+    with pytest.raises(SupervisorError, match="unsafe file metadata"):
+        install._fsync_owned_tree(root)
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "nonempty"])
+def test_uv_lock_protection_refuses_unsafe_entries_without_modifying_them(tmp_path, unsafe):
+    other = tmp_path / "other"
+    other.touch()
+    other.chmod(0o666)
+    directory = tmp_path / "python"
+    directory.mkdir()
+    lock = directory / ".lock"
+    if unsafe == "symlink":
+        lock.symlink_to(other)
+    elif unsafe == "hardlink":
+        os.link(other, lock)
+    else:
+        lock.write_bytes(b"not a uv lock")
+        lock.chmod(0o666)
+    before = stat.S_IMODE(other.stat().st_mode)
+    with pytest.raises((SupervisorError, OSError)):
+        install._protect_uv_lock(directory)
+    assert stat.S_IMODE(other.stat().st_mode) == before
+    if unsafe == "nonempty":
+        assert lock.read_bytes() == b"not a uv lock"
+        assert stat.S_IMODE(lock.stat().st_mode) == 0o666

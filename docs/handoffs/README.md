@@ -13,15 +13,10 @@ Active:
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
 
-- [External supervisor and release artifacts](handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-  — contract and build/release workflows implemented; public-source transition
-  cleanup remains. Moves server
-  update and restore out of the application into a Python supervisor that
-  installs promoted release artifacts from `stable`, with one CI build per
-  merge and human promotion. The private CLI connection remains for existing
-  non-deployment operations, as confirmed on 2026-09-05. The supervisor package is not implemented.
-  The first-lab closure gate is satisfied; finish Phase 2 cleanup, then dispatch
-  Phases 3–6 in the documented short-PR order.
+- [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
+  — production adoption, promoted release, complete backup, and doctor are
+  verified. The separate controller fix and unfinished Ubuntu reboot/restore
+  cases remain; the original deployment handoff is archived.
 
 The [team-space/server handoff is closed](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md):
 the backed-up CoT project was transferred and verified through the desktop on

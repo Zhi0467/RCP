@@ -14,8 +14,16 @@ invariants: [6, 7, 8, 9]
 last_checked: >-
   2026-09-06 — human confirmed automatic recovery and an actual reboot proof.
   The supervisor implementation and disposable Ubuntu reboot harness are coded.
-  Local regression and fixture checks pass; the actual Ubuntu 22.04/24.04 reboot
-  drives have not run. Process-crash tests do not satisfy this scenario.
+  Hosted run 34056860042 passed 16 online update/reboot recovery cases on each
+  Ubuntu version, including checkpoint rollback and guarded startup ordering.
+  The repeated-rollback case reached its second intended pause, then the
+  controller timed out waiting for cloud-init instead of driving the next reboot.
+  Restore, offline update recovery, and accepted-work cases remain unqualified.
+  Both separate source-adoption/offline-reboot jobs passed. Rerun 34061040236
+  at merged PR #77 passed both adoption jobs again; Ubuntu 22.04 exposed baseline
+  startup racing the first update, while Ubuntu 24.04 was canceled after nine
+  verified recovery cases. The baseline readiness correction still requires
+  a hosted rerun. This scenario remains pending.
 ---
 
 # A reboot cannot bypass deployment recovery
@@ -66,6 +74,7 @@ storage migration. No drive uses the lab server's live data directory.
 - `post_activation_recovery_preserves_subsequently_accepted_work`
 
 Record the guest versions, release identities, boot IDs, injected boundaries,
-systemd ordering, and data-verification results in the active supervisor handoff.
+systemd ordering, and data-verification results in the
+[active qualification handoff](../handoffs/handoff-2026-09-06-disposable-supervisor-qualification.md).
 Leave this scenario pending until the real reboot drives pass on both Ubuntu
 versions; process-restart and fake-service tests are necessary supporting checks.

@@ -156,6 +156,7 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
         )
         guest.save_baseline()
         for case in scenarios():
+            print(f"Starting {case.name}", flush=True)
             initial_boot = guest.reset()
             case_file = output / "case.json"
             write_receipt(case_file, asdict(case))
@@ -223,6 +224,7 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
             )
             receipt["cases"].append(case_receipt)
             write_receipt(output / "qualification.json", receipt)
+            print(f"Verified {case.name}", flush=True)
         receipt["status"] = "passed"
         receipt["actual_reboot_proven"] = True
     except Exception as exc:
@@ -232,6 +234,11 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
     finally:
         try:
             if guest.process is not None and guest.process.poll() is None:
+                if receipt["status"] == "failed":
+                    try:
+                        receipt["failure_inventory"] = command("diagnostics", timeout=75)
+                    except Exception as diagnostic_error:
+                        receipt["diagnostic_collection_error"] = type(diagnostic_error).__name__
                 guest.collect(
                     "systemd.log",
                     [

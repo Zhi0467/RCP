@@ -59,10 +59,27 @@ def drive(ubuntu: str, bundles: Path, adoption: Path, output: Path) -> None:
     finally:
         try:
             if guest.process is not None and guest.process.poll() is None:
-                guest.collect(
-                    "systemd.log",
-                    ["sudo", "-n", "journalctl", "-u", "rcp.service", "--no-pager"],
-                )
+                if receipt["status"] == "failed":
+                    try:
+                        receipt["partial_evidence"] = json.loads(
+                            guest.ssh(
+                                ["sudo", "-n", "python3", script, "diagnostics"], timeout=60
+                            ).stdout
+                        )
+                    except Exception as diagnostic_error:
+                        # Do not replace the drive failure or publish raw output.
+                        receipt["diagnostic_collection_error"] = type(diagnostic_error).__name__
+                try:
+                    guest.collect(
+                        "systemd.log",
+                        ["sudo", "-n", "journalctl", "-u", "rcp.service", "--no-pager"],
+                    )
+                except Exception as collection_error:
+                    receipt["systemd_collection_error"] = type(collection_error).__name__
+                    if receipt["status"] != "failed":
+                        receipt["status"] = "failed"
+                        receipt["error"] = "Systemd receipt collection failed."
+                        raise
         finally:
             guest.power_off()
             write_receipt(output / "qualification.json", receipt)

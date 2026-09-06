@@ -59,6 +59,12 @@ and checks are in the
 Unreachable-SSH qualification was explicitly skipped, not passed. This subset
 does not complete the other fixtures below.
 
+The 2026-09-06 supervised production backup protected both existing projects
+with zero omissions, passed encrypted archive readback, and retained the active
+backup timer. See the [redacted deployment receipt](../archive/handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md#production-closeout-2026-09-06).
+No new concurrent-work, unreachable-host, manual archive-decryption, or restore
+drive was performed in that production subset; this scenario remains pending.
+
 An earlier design had the server delay dispatch and delay applying results for
 the duration of each capture. With canonical history on remote machines that
 window is minutes, every night. It is also unnecessary: both halves of the

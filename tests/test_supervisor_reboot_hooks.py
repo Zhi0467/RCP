@@ -109,6 +109,11 @@ def test_bootstrap_checks_production_doctor_before_qualification_dropin(tmp_path
     def run(argv, **kwargs):
         if argv[-1] == "setup":
             calls.append("setup")
+            return SimpleNamespace(stdout='{"status": "installed"}')
+        if argv[-1] == "setup-data":
+            assert argv == [guest.SUPERVISOR_PYTHON, str(guest.SCRIPT), "setup-data"]
+            assert not bootstrap.exists()
+            calls.append("installed setup")
             return SimpleNamespace(stdout='{"status": "ready"}')
         if argv == ["systemctl", "daemon-reload"]:
             assert (dropin / "qualification.conf").is_file()
@@ -124,7 +129,7 @@ def test_bootstrap_checks_production_doctor_before_qualification_dropin(tmp_path
     monkeypatch.setattr(guest, "run", run)
     monkeypatch.setattr(guest, "service", service)
     assert guest.bootstrap()["temporary_bootstrap_removed"] is True
-    assert calls == ["setup", "doctor", "dropin"]
+    assert calls == ["setup", "installed setup", "doctor", "dropin"]
 
 
 def test_fresh_restore_preparation_stops_and_disables_unit(tmp_path, monkeypatch):
@@ -148,11 +153,38 @@ def test_fresh_restore_preparation_stops_and_disables_unit(tmp_path, monkeypatch
         guest, "write_json", lambda path, value, **kwargs: path.write_text(json.dumps(value))
     )
     commands = []
+    monkeypatch.setattr(guest, "wait_health", lambda: commands.append("healthy"))
     monkeypatch.setattr(guest, "run", lambda argv: commands.append(argv))
     assert guest.prepare_case(plan) == {"status": "prepared"}
     assert commands == [
+        "healthy",
         ["systemctl", "stop", "rcp.service"],
         ["systemctl", "disable", "rcp.service"],
     ]
     assert not list(data.iterdir())
     assert (state / "fresh-original-data/old").read_text() == "retained"
+
+
+@pytest.mark.parametrize("kind", ["update", "restore", "fresh_restore", "invalid"])
+def test_case_does_not_arm_faults_before_baseline_application_is_healthy(
+    tmp_path, monkeypatch, kind
+):
+    plan = tmp_path / "source.json"
+    plan.write_text(json.dumps({"kind": kind}))
+    state = tmp_path / "state"
+    state.mkdir()
+    retained = state / "events.jsonl"
+    retained.write_text("baseline startup still running\n")
+    armed = tmp_path / "armed.json"
+    monkeypatch.setattr(guest, "STATE", state)
+    monkeypatch.setattr(guest, "PLAN", armed)
+
+    def unavailable():
+        raise RuntimeError("The guest application never returned healthy HTTP.")
+
+    monkeypatch.setattr(guest, "wait_health", unavailable)
+    with pytest.raises(RuntimeError, match="never returned healthy"):
+        guest.prepare_case(plan)
+    assert not armed.exists()
+    assert not (state / "state.json").exists()
+    assert retained.read_text() == "baseline startup still running\n"

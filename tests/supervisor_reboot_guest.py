@@ -239,8 +239,11 @@ def bootstrap() -> dict:
         ["uv", "pip", "install", "--python", str(python), "--no-deps", str(supervisor_wheel)],
         timeout=600,
     )
-    result = json.loads(run([str(python), str(SCRIPT), "setup"], timeout=1200).stdout)
+    run([str(python), str(SCRIPT), "setup"], timeout=1200)
     shutil.rmtree(python.parent.parent)
+    # Service-account children must use the installed interpreter. The temporary
+    # root bootstrap may resolve into /root's private managed-Python directory.
+    result = json.loads(run([SUPERVISOR_PYTHON, str(SCRIPT), "setup-data"], timeout=1200).stdout)
     service(["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"])
     dropin = Path("/etc/systemd/system/rcp.service.d")
     dropin.mkdir()
@@ -289,7 +292,6 @@ def release_receipt(bundle: Path) -> dict:
 
 def setup() -> dict:
     from rcp_supervisor.releases import verify_release
-    from rcp_supervisor.runtime import SystemRuntime
 
     from rcp.server_ops.config import create_installed_server_config, write_installed_server_config
     from rcp.server_ops.install import LinuxInstallMachine
@@ -307,6 +309,13 @@ def setup() -> dict:
     STATE.mkdir(mode=0o700)
     os.chown(STATE, account.pw_uid, account.pw_gid)
     machine.converge_supervisor_integration()
+    return {"status": "installed"}
+
+
+def setup_data() -> dict:
+    from rcp_supervisor.runtime import SystemRuntime
+
+    account = pwd.getpwnam("rcp")
     first = json.loads(
         run([SUPERVISOR_PYTHON, str(SCRIPT), "qualified-install"], timeout=600).stdout
     )
@@ -474,6 +483,10 @@ def prepare_restore_request(archive: Path, base: dict) -> None:
 def prepare_case(source: Path) -> dict:
     from rcp_supervisor.runtime import Paths
 
+    # Baseline reset observes SSH before systemd necessarily finishes RCP startup.
+    # Wait before arming faults; interrupted recovery boots must remain observable
+    # while their startup guard is deliberately paused.
+    wait_health()
     plan = read_json(source)
     write_json(PLAN, plan)
     PLAN.chmod(0o644)
@@ -659,6 +672,33 @@ def rename_space(name: str) -> dict:
     return value
 
 
+def backup_inventory(data_dir: Path) -> dict:
+    """Read current typed omissions after failure; never export data or credentials."""
+    from datetime import UTC, datetime
+
+    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
+    from rcp.server_ops.backup_models import inspect_app_data_capture_plan
+    from rcp.storage import AppStore
+
+    plan = inspect_app_data_capture_plan(data_dir)
+    store = AppStore.open_read_only(data_dir / "rcp.sqlite3")
+    projects = [
+        inspect_snapshot_project_inventory(
+            store, project, data_dir=data_dir, captured_at=datetime.now(UTC)
+        )
+        for project in store.projects()
+    ]
+    return {
+        "observation": "current_inventory_after_failure",
+        "app_data_complete": plan.complete,
+        "unclassified_app_data": list(plan.unclassified_entries),
+        "deferred_app_data": list(plan.deferred_entries),
+        "projects": [
+            {"status": project.status, "reason": project.unavailable_reason} for project in projects
+        ],
+    }
+
+
 def accept_work() -> dict:
     value = rename_space("Work accepted after activation")
     write_json(STATE / "accepted.json", value, service_owned=True)
@@ -812,12 +852,15 @@ def verify_case() -> dict:
 def main() -> int:
     action, *arguments = sys.argv[1:]
     require_guest(
-        root=action not in ("install-release", "prepare-data", "application", "filesystem")
+        root=action
+        not in ("install-release", "prepare-data", "application", "filesystem", "backup-inventory")
     )
     if action == "bootstrap":
         result = bootstrap()
     elif action == "setup":
         result = setup()
+    elif action == "setup-data":
+        result = setup_data()
     elif action == "install-release":
         from rcp_supervisor.install import install_release
 
@@ -887,6 +930,22 @@ def main() -> int:
         )
     elif action == "accept-work":
         result = accept_work()
+    elif action == "backup-inventory":
+        result = backup_inventory(Path("/home/rcp/rcp-server/data"))
+    elif action == "diagnostics":
+        from rcp_supervisor.launch import read_selected_receipt
+
+        selected = read_selected_receipt()
+        result = json.loads(
+            service(
+                [
+                    str(Path(selected["release_directory"]) / ".venv/bin/python"),
+                    str(SCRIPT),
+                    "backup-inventory",
+                ],
+                timeout=60,
+            ).stdout
+        )
     elif action == "verify-case":
         result = verify_case()
     else:

@@ -192,7 +192,7 @@ def install_release(bundle: Path, releases_root: Path) -> Path:
             or not resolved_python.parent.parent.name.startswith("cpython-3.12")
         ):
             raise SupervisorError("The application Python is not its managed 3.12 runtime.")
-        _protect_venv_lock(target / ".venv")
+        _protect_uv_lock(target / ".venv")
         _fsync_owned_tree(resolved_python.parent.parent)
         _fsync_owned_tree(target)
         receipt = {
@@ -419,7 +419,8 @@ def _prepare_root_environment(
             )
     _require_root_python(python, supervisor_root)
     _verify_root_identity(python, package, version, cwd=target)
-    _protect_venv_lock(venv)
+    _protect_uv_lock(venv)
+    _protect_uv_lock(supervisor_root / "python")
     _fsync_owned_tree(supervisor_root / "python")
     _fsync_owned_tree(target)
     temporary = target / ".installed.json.tmp"
@@ -481,7 +482,9 @@ def _fsync_owned_tree(root: Path, *, uid: int | None = None) -> None:
             if stat.S_ISLNK(info.st_mode):
                 continue
             if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o022:
-                raise SupervisorError("Prepared runtime contains unsafe file metadata.")
+                raise SupervisorError(
+                    f"Prepared runtime contains unsafe file metadata: {path.relative_to(root)}."
+                )
             size += info.st_size
             if size > MAX_CHECKPOINT_BYTES:
                 raise SupervisorError("Prepared runtime exceeds its size bound.")
@@ -500,17 +503,22 @@ def _fsync_owned_tree(root: Path, *, uid: int | None = None) -> None:
             os.close(descriptor)
 
 
-def _protect_venv_lock(venv: Path) -> None:
-    # uv creates this empty coordination file with permissive mode independent
-    # of umask. Once its final installer process has exited, retain it privately.
-    path = venv / ".lock"
+def _protect_uv_lock(directory: Path) -> None:
+    # uv uses this empty, permissive lock in virtual environments and the
+    # managed-Python directory. Its final process has exited before this call.
+    path = directory / ".lock"
     if not path.exists() and not path.is_symlink():
         return
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
-            raise SupervisorError("The prepared environment lock has unsafe metadata.")
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or info.st_size != 0
+        ):
+            raise SupervisorError("The prepared uv lock has unsafe metadata.")
         os.fchmod(descriptor, 0o600)
     finally:
         os.close(descriptor)

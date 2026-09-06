@@ -14,6 +14,7 @@ import json
 import os
 import pwd
 import shutil
+import subprocess
 import sys
 import tarfile
 import urllib.request
@@ -288,7 +289,6 @@ def historical_setup() -> dict:
         ],
         timeout=300,
     )
-    guest.run(["systemctl", "disable", "--now", "rcp-backup.timer"])
     receipt = {
         "source_commit": SOURCE_COMMIT,
         "source_version": rcp.__version__,
@@ -359,6 +359,7 @@ def paired_bootstrap() -> dict:
     install.LinuxInstallMachine = ObservedMachine
     releases.fetch_release = lambda *_args, **_kwargs: fixture_release()
     stream = io.StringIO()
+    refusal = None
     previous = sys.argv
     sys.argv = [
         "rcp",
@@ -374,16 +375,28 @@ def paired_bootstrap() -> dict:
                 app_cli.main()
             except SystemExit as exc:
                 if exc.code not in (None, 0):
-                    raise RuntimeError("The paired-wheel bootstrap CLI refused adoption.") from exc
+                    refusal = exc
     finally:
         sys.argv = previous
-    # Keep complete operator output only inside this private disposable guest.
-    guest.write_json(
-        guest.STATE / "bootstrap-events.json",
-        {"events": [json.loads(line) for line in stream.getvalue().splitlines()]},
-    )
-    record = guest.read_json(Path("/etc/rcp/supervisor/adoption.json"))
-    assert record["phase"] == "committed"
+        # Preserve parsed events privately even when the CLI exits with failure.
+        # A truncated/non-JSON line must never replace the original exception or
+        # become a public diagnostic that could contain terminal secrets.
+        events = []
+        for line in stream.getvalue().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        guest.write_json(guest.STATE / "bootstrap-events.json", {"events": events})
+    if refusal is not None:
+        diagnostic = bootstrap_failure(events, refusal.code)
+        guest.write_json(guest.STATE / "bootstrap-failure.json", diagnostic)
+        raise RuntimeError(
+            "The paired-wheel bootstrap CLI refused adoption: " + diagnostic["message"]
+        ) from refusal
+    record_adopted_selection()
     wrapper = Path("/usr/local/bin/rcp-supervisor")
     install._install_root_file(
         wrapper,
@@ -392,6 +405,171 @@ def paired_bootstrap() -> dict:
         replace_existing=True,
     )
     return {"status": "adopted"}
+
+
+def bootstrap_failure(events: list[dict], exit_code: object) -> dict:
+    """Export only the failed step's declared message, never its fields/actions."""
+    result = {
+        "exit_code": exit_code if type(exit_code) is int else 1,
+        "message": "No failed step message was emitted; inspect the private guest events.",
+    }
+    for event in reversed(events):
+        step = event.get("step")
+        if not isinstance(step, dict) or step.get("state") != "failed":
+            continue
+        message = step.get("message")
+        if isinstance(message, str) and message.strip():
+            result["message"] = message[:4000]
+            phase = step.get("phase")
+            if isinstance(phase, str):
+                result["phase"] = phase[:128]
+            break
+    return result
+
+
+def record_adopted_selection() -> None:
+    """Retain the completed selection even if a later qualification check fails."""
+    from rcp_supervisor import migration
+    from rcp_supervisor.operations import _read
+    from rcp_supervisor.runtime import SystemRuntime
+
+    runtime = SystemRuntime()
+    selected = runtime.selected_release()
+    record = migration._validate(runtime, _read(runtime.paths.supervisor / "adoption.json"))
+    assert record["phase"] == "committed" and record["previous"]["commit"] == SOURCE_COMMIT
+    assert record["target"] == selected == guest.release_receipt(guest.ROOT / "bundles/base")
+    assert record["raw_checkpoint"] and record["checkpoint"] and record["protected_backup"]
+    guest.write_json(
+        guest.STATE / "adopted-selection.json",
+        {
+            "phase": record["phase"],
+            "operation_id": record["operation_id"],
+            "source_commit": SOURCE_COMMIT,
+            "selected_release": selected,
+        },
+    )
+
+
+def doctor_diagnostic(output: str, exit_code: int) -> dict:
+    """Keep only the doctor's bounded public status and problem summary."""
+    result = {"exit_code": exit_code, "state": "unavailable"}
+    if len(output) > 128 * 1024:
+        return result
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("command") != "server doctor":
+            continue
+        step = event.get("step")
+        if (
+            event.get("version") != 1
+            or event.get("event") != "step"
+            or not isinstance(step, dict)
+            or step.get("phase") != "server_doctor"
+            or step.get("state") not in ("succeeded", "failed")
+            or not isinstance(step.get("fields"), list)
+        ):
+            continue
+        result = {"exit_code": exit_code, "state": step["state"]}
+        for field in step["fields"]:
+            if not isinstance(field, dict):
+                continue
+            name, value = field.get("name"), field.get("value")
+            limit = 2000 if name == "problems" else 128
+            if (
+                isinstance(name, str)
+                and name
+                in {
+                    "overall_state",
+                    "backup_status",
+                    "backup_timer_active_state",
+                    "backup_timer_unit_file_state",
+                    "problems",
+                }
+                and isinstance(value, str)
+                and 0 < len(value) <= limit
+                and value.isprintable()
+            ):
+                result[name] = value
+    return result
+
+
+def verify_doctor() -> dict:
+    try:
+        result = guest.service(["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"])
+    except subprocess.CalledProcessError as exc:
+        guest.write_json(
+            guest.STATE / "doctor.json", doctor_diagnostic(exc.stdout or "", exc.returncode)
+        )
+        raise
+    diagnostic = doctor_diagnostic(result.stdout, result.returncode)
+    guest.write_json(guest.STATE / "doctor.json", diagnostic)
+    assert diagnostic["state"] == "succeeded" and diagnostic.get("problems") == "none"
+    return diagnostic
+
+
+def diagnostics() -> dict:
+    """Read safe partial receipts with system Python even if bootstrap failed."""
+    result = {"historical_install_completed": False}
+    historical = guest.STATE / "historical.json"
+    if historical.exists():
+        document = guest.read_json(historical)
+        result["historical_install"] = {
+            name: document[name]
+            for name in (
+                "source_commit",
+                "source_version",
+                "installation_id",
+                "space_id",
+                "service_uid",
+                "service_pid",
+            )
+        }
+        result["historical_install_completed"] = True
+    failure = guest.STATE / "bootstrap-failure.json"
+    if failure.exists():
+        document = guest.read_json(failure)
+        result["bootstrap_failure"] = {
+            name: document[name] for name in ("exit_code", "phase", "message") if name in document
+        }
+    selection = guest.STATE / "adopted-selection.json"
+    if selection.exists():
+        document = guest.read_json(selection)
+        result["adopted_selection"] = {
+            name: document[name] for name in ("phase", "operation_id", "source_commit")
+        }
+        result["adopted_selection"]["selected_release"] = {
+            name: document["selected_release"][name]
+            for name in (
+                "version",
+                "release_tag",
+                "version_string",
+                "build",
+                "commit",
+                "manifest_sha256",
+                "release_directory",
+                "supervisor_version",
+            )
+        }
+    doctor = guest.STATE / "doctor.json"
+    if doctor.exists():
+        document = guest.read_json(doctor)
+        result["doctor"] = {
+            name: document[name]
+            for name in (
+                "exit_code",
+                "state",
+                "overall_state",
+                "backup_status",
+                "backup_timer_active_state",
+                "backup_timer_unit_file_state",
+                "problems",
+            )
+            if name in document
+        }
+    return result
 
 
 def supervisor(arguments: list[str]) -> int:
@@ -538,7 +716,7 @@ def verify() -> dict:
         assert root.stat().st_uid == account.pw_uid
         assert all(path.lstat().st_uid == account.pw_uid for path in root.rglob("*"))
     installed = guest.verify_installation()
-    guest.service(["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"])
+    doctor = verify_doctor()
     assert Path("/etc/rcp/current").lstat().st_uid == 0
     assert (
         "ExecStartPre=+/usr/local/bin/rcp-supervisor recover --startup"
@@ -581,6 +759,7 @@ def verify() -> dict:
         "stage_and_attachment_preserved": True,
         "source_integration_preserved_until_guard": True,
         "protected_backup": backup,
+        "doctor": doctor,
         "service_uid": account.pw_uid,
         "service_pid": installed["service_pid"],
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
@@ -606,6 +785,7 @@ def main() -> int:
         "paired-bootstrap": paired_bootstrap,
         "verify": verify,
         "verify-backup": verify_backup,
+        "diagnostics": diagnostics,
     }
     result = actions[action]()
     print(json.dumps(result))

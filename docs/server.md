@@ -625,11 +625,11 @@ application records. Process-interruption tests alone do not establish reboot or
 power-loss recovery. Never point these fixtures at real lab data or a production
 host.
 
-Two operational promises are not covered by that workflow and remain open gates
-in the deployment handoff: installing from promoted GitHub release assets rather
-than synthetic bundles, and fresh-host restore that reconstructs project
-checkouts and deploy keys through GitHub. The fixture restore reuses an existing
-local Git checkout and proves neither.
+Installation from promoted GitHub release assets remains a separate production
+drive in the deployment handoff. The fixture restore reuses an existing local
+Git checkout, so it does not prove fresh-host checkout and deploy-key
+reconstruction through GitHub. Full machine-loss reconstruction qualification is
+outside this deployment drive; operators may repair those connections manually.
 
 ## Current implementation boundary
 
