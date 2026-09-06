@@ -5,6 +5,7 @@ import pytest
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Edge, GraphState, Patch
 from rcp.core.validation import validate_patch
+from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history import HistoryManager
 
 
@@ -44,6 +45,7 @@ def _state(*nodes: dict, edges: list[dict] | None = None) -> GraphState:
 def _flags(state: GraphState, patch: Patch):
     report = validate_patch(state, patch, ["repo-a"])
     assert not report.rejected, report.messages
+    flag_introduced_quality_issues(state, apply_valid_patch(state, patch), report, patch.revision)
     return report.flags
 
 
@@ -183,7 +185,7 @@ def test_identical_titles_normalize_whitespace_and_case_and_report_one_new_group
     patch = _patch(
         {
             "op": "update_nodes",
-            "nodes": [{"id": "exp/third", "changes": {"title": " shared\n TITLE "}}],
+            "nodes": [{"id": "exp/third", "changes": {"title": " ｓｈａｒｅｄ\n TITLE "}}],
         }
     )
     flags = _flags(state, patch)
@@ -274,3 +276,36 @@ def test_rejected_partial_graph_and_historical_replay_get_no_new_advice() -> Non
     )
     assert not replay.rejected
     assert not replay.flags
+
+
+def test_quality_runs_once_per_transition_and_never_during_replay(manifest, monkeypatch) -> None:
+    import rcp.history.manager as manager_module
+
+    calls = []
+
+    def record(initial, candidate, report, revision):
+        calls.append((initial.revision, candidate.revision))
+        flag_introduced_quality_issues(initial, candidate, report, revision)
+
+    monkeypatch.setattr(manager_module, "flag_introduced_quality_issues", record)
+    history = HistoryManager(manifest)
+    history.append_batch(
+        [
+            Patch(
+                kind="approval",
+                author="human",
+                summary="Create an experiment.",
+                ops=[{"op": "create_nodes", "nodes": [_experiment()]}],
+            ),
+            Patch(
+                kind="approval",
+                author="human",
+                summary="Create its evidence.",
+                ops=[{"op": "create_nodes", "nodes": [_evidence()]}],
+            ),
+        ]
+    )
+    assert len(calls) == 1
+    history.materialize()
+    history.current_materialization()
+    assert len(calls) == 1

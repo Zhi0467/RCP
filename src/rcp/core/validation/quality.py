@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from rcp.core.models import Evidence, Experiment, GraphState
+from rcp.core.validation.nodes import normalize_authoring_text
 from rcp.core.validation.report import ValidationReport
 
 
@@ -14,21 +15,6 @@ def flag_introduced_quality_issues(
     report: ValidationReport,
     revision: int | None,
 ) -> None:
-    # Atomic transitions may contain several separately validated source Patches.
-    # Replace their intermediate advice with advice about the complete result.
-    report.messages = [
-        message
-        for message in report.messages
-        if not (
-            message.level == "flag"
-            and message.code
-            in {
-                "internal-evidence-without-experiment",
-                "isolated-operational-node",
-                "identical-node-title",
-            }
-        )
-    ]
     # A rejected Patch has only a partially staged graph, not a valid candidate.
     if report.rejected:
         return
@@ -66,7 +52,7 @@ def flag_introduced_quality_issues(
                 revision,
                 related_node_ids=[node_id],
             )
-        title = _normalized_title(node.title)
+        title = normalize_authoring_text(node.title)
         if title:
             titles[(node.type, title)].append(node_id)
 
@@ -75,7 +61,9 @@ def flag_introduced_quality_issues(
             continue
         previous = [initial_state.nodes.get(node_id) for node_id in node_ids]
         previous_titles = {
-            (node.type, _normalized_title(node.title)) for node in previous if node is not None
+            (node.type, normalize_authoring_text(node.title))
+            for node in previous
+            if node is not None
         }
         if (
             all(node is not None for node in previous)
@@ -90,10 +78,6 @@ def flag_introduced_quality_issues(
             revision,
             related_node_ids=node_ids,
         )
-
-
-def _normalized_title(title: str) -> str:
-    return " ".join(title.split()).casefold()
 
 
 def _connections(state: GraphState) -> tuple[set[str], set[str]]:

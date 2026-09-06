@@ -109,7 +109,8 @@ of the Patch, so branch authoring does not mutate main before its normal merge.
 Admission also emits nonblocking quality flags for newly introduced internal-run
 Evidence without a producing Experiment, isolated operational nodes (Experiment,
 Evidence, Decision, Blocker), and identical normalized titles on same-type nodes.
-Checks use the complete candidate graph, including later edges, and compare with
+Checks run once in the admission transition manager, after all source Patches
+and generated effects. They use the complete candidate graph and compare with
 the initial graph rather than repeating existing issues. Losing a final relevant
 connection can introduce an issue too. ResearchQuestions and Hypotheses are not
 subject to the isolation warning. Advice neither proves scientific equivalence
