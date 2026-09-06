@@ -110,6 +110,7 @@ import type {
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
+  WorktreeIntegrationOption,
 } from "../types";
 import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
@@ -124,6 +125,7 @@ import {
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { LiveSteering } from "./LiveSteering";
+import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
   project: ProjectSnapshot;
@@ -451,6 +453,16 @@ export function NodeChat({
   );
   const [scope, setScope] = useState(() =>
     reconcileChatRunScope([], runScope, project.project_truth_scope, true),
+  );
+  const worktree = useConversationWorktree(
+    project.id,
+    chatId,
+    node ? "node" : "project",
+    node?.id ?? null,
+    config.run_on,
+    scope,
+    relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
+    !readOnly,
   );
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");
@@ -1194,6 +1206,14 @@ export function NodeChat({
 
   const send = async () => {
     if (readOnly) return;
+    if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
+      setSubmitError(
+        worktree.error ??
+          worktree.state?.unavailable_reason ??
+          "Worktree eligibility has not been confirmed.",
+      );
+      return;
+    }
     const draftMessage = message;
     const text = assembleChatTurn(message, annotations);
     if (!annotationsComplete) {
@@ -1240,7 +1260,9 @@ export function NodeChat({
         attachmentClientId: readyAttachments.length ? attachmentClientId : null,
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
+        worktree: mode === "work" && worktree.chosen,
       });
+      worktree.refresh();
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
@@ -1258,6 +1280,40 @@ export function NodeChat({
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const integrateWorktree = async (option: WorktreeIntegrationOption) => {
+    if (
+      readOnly ||
+      relatedActive ||
+      pausedAttempt ||
+      submitting ||
+      reviewPending ||
+      repairingTaskId
+    )
+      return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await startConversationTurn(onStartTask, {
+        kind: surface,
+        config,
+        runTruthScope: scope,
+        nodeId: node?.id ?? null,
+        message: option.label,
+        chatId,
+        sessionId,
+        mode: "work",
+        activeComputeIds: computeState.ids,
+        worktreeIntegration: option.id,
+      });
+      selectMode("work");
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+      worktree.refresh();
     }
   };
 
@@ -1834,6 +1890,20 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
+          <WorktreeControls
+            key={`${project.id}:${chatId}`}
+            state={worktree.state}
+            error={worktree.error}
+            chosen={worktree.chosen}
+            disabled={Boolean(
+              relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+            )}
+            onChoose={worktree.choose}
+            onIntegrate={integrateWorktree}
+            onRemove={worktree.remove}
+            onPreviewRemove={worktree.previewRemoval}
+            onRefresh={worktree.refresh}
+          />
           {computeConnections.length > 0 && (
             <div className="chat-compute-picker">
               <button

@@ -1682,6 +1682,8 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  worktree?: boolean;
+  worktree_integration?: WorktreeIntegrationOption["id"] | null;
   provider?: ProviderId | null;
   model?: string | null;
   reasoning?: string | null;
@@ -1713,6 +1715,45 @@ export interface AgentTaskRequest {
   resolved_skill_packages?: SkillReference[] | null;
   active_compute_ids?: string[];
   [key: string]: unknown;
+}
+
+export interface ConversationWorktreeBinding {
+  project_id: string;
+  chat_scope: "node" | "project";
+  node_id: string | null;
+  repository_alias: string;
+  machine: string;
+  execution_host: string;
+  shared_path: string;
+  worktree_path: string;
+  git_common_dir: string;
+  branch: string;
+  starting_branch: string;
+  starting_commit: string;
+  chat_id: string;
+  status: { readonly __conversationWorktreeStatus: unique symbol };
+}
+
+export interface WorktreeIntegrationOption {
+  id: "pull_request" | "starting_branch" | "default_branch";
+  label: string;
+  target_branch: string | null;
+  enabled: boolean;
+  reason: string | null;
+}
+
+export interface ConversationWorktreeState {
+  show_chooser: boolean;
+  can_choose: boolean;
+  unavailable_reason: string | null;
+  binding: ConversationWorktreeBinding | null;
+  integration_options: WorktreeIntegrationOption[];
+  can_remove: boolean;
+  remove_reason: string | null;
+  ahead_count: number | null;
+  remote_branch_exists: boolean | null;
+  remote_branch_evidence: string | null;
+  dirty_worktree: string[];
 }
 
 export type SkillKind = "skill" | "workflow";

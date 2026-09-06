@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents.context import RepositoryPointer
 from rcp.config import Manifest, RepositoryConfig
+from rcp.core.models import ConversationWorktreeBinding
 from rcp.providers import AgentCapability
 from rcp.transport.run_stage import RemoteRunStage
 
@@ -51,6 +52,7 @@ class ProjectWriteScope(BaseModel):
     stage_root: str = Field(min_length=1)
     workspace_root: str = Field(min_length=1)
     repositories: list[WritableRepositoryRoot] = Field(default_factory=list)
+    git_metadata_roots: list[str] = Field(default_factory=list)
     protected_write_paths: list[str] = Field(default_factory=list)
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -71,6 +73,10 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("write-scope repository roots must be absolute")
         if len(paths) != len(set(paths)):
             raise ValueError("write-scope repository roots must be exact and unique")
+        if self.git_metadata_roots != sorted(set(self.git_metadata_roots)):
+            raise ValueError("Git metadata roots must be sorted and unique")
+        if any(not PurePosixPath(item).is_absolute() for item in self.git_metadata_roots):
+            raise ValueError("Git metadata roots must be absolute")
         if self.protected_write_paths != sorted(set(self.protected_write_paths)):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
@@ -92,6 +98,7 @@ class ProjectWriteScope(BaseModel):
         workspace_root: str,
         repositories: list[WritableRepositoryRoot],
         protected_write_paths: list[str],
+        git_metadata_roots: list[str] | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
             "schema_generation": 1,
@@ -110,6 +117,8 @@ class ProjectWriteScope(BaseModel):
             ],
             "protected_write_paths": sorted(set(protected_write_paths)),
         }
+        if git_metadata_roots:
+            payload["git_metadata_roots"] = sorted(set(git_metadata_roots))
         return cls.model_validate({**payload, "fingerprint": _scope_fingerprint(payload)})
 
     @property
@@ -118,10 +127,17 @@ class ProjectWriteScope(BaseModel):
 
     @property
     def writable_roots(self) -> list[str]:
-        return list(dict.fromkeys([self.workspace_root, *self.repository_roots]))
+        return list(
+            dict.fromkeys([self.workspace_root, *self.repository_roots, *self.git_metadata_roots])
+        )
 
     def _fingerprint_payload(self) -> dict[str, object]:
-        return self.model_dump(mode="json", exclude={"fingerprint"})
+        # Retain every existing unbound scope fingerprint across this additive
+        # field: only worktree scopes carry Git metadata outside their checkout.
+        excluded = {"fingerprint"}
+        if not self.git_metadata_roots:
+            excluded.add("git_metadata_roots")
+        return self.model_dump(mode="json", exclude=excluded)
 
 
 def resolve_project_write_scope(
@@ -138,6 +154,8 @@ def resolve_project_write_scope(
     app_data_dir: Path | None,
     repository_inventory: list[RegisteredRepositoryRoot],
     additional_protected_write_paths: list[str] | None = None,
+    conversation_worktree: ConversationWorktreeBinding | None = None,
+    include_shared_checkout: bool = False,
 ) -> ProjectWriteScope:
     """Resolve and verify one exact Work-like scope on its execution machine."""
 
@@ -173,6 +191,24 @@ def resolve_project_write_scope(
         for alias in aliases
         if manifest.repository_map[alias].machine == execution_machine
     ]
+    binding = conversation_worktree
+    if include_shared_checkout and binding is None:
+        raise ValueError("shared checkout integration requires a conversation worktree binding")
+    if binding is not None:
+        if capability != "work_auto":
+            raise ValueError("conversation worktrees require ordinary Work capability")
+        if binding.status != "ready":
+            raise ValueError("conversation worktree is not ready")
+        if (
+            binding.project_id != project_id
+            or binding.machine != execution_machine
+            or binding.execution_host != machine.host
+        ):
+            raise ValueError(
+                "conversation worktree belongs to a different project or execution host"
+            )
+        if aliases != [binding.repository_alias] or len(eligible) != 1:
+            raise ValueError("conversation worktree requires its exact single repository run scope")
     explicit_protected = list(additional_protected_write_paths or [])
     declared_paths: list[str] = [stage_root, workspace_root, *explicit_protected]
     for repository in eligible:
@@ -192,6 +228,8 @@ def resolve_project_write_scope(
                 f"repository {repository.alias!r} does not match its project execution machine"
             )
         declared_paths.extend([repository.path, pointer.path])
+    if binding is not None:
+        declared_paths.extend([binding.shared_path, binding.worktree_path, binding.git_common_dir])
 
     canonical, account_home = _canonical_directories(
         declared_paths,
@@ -222,7 +260,20 @@ def resolve_project_write_scope(
         pointer = pointers[repository.alias]
         registered_root = canonical[repository.path]
         pointer_root = canonical[pointer.path]
-        if registered_root != pointer_root:
+        if binding is not None:
+            if registered_root != binding.shared_path:
+                raise ValueError(
+                    "conversation worktree no longer matches its registered shared root"
+                )
+            if canonical[binding.worktree_path] != binding.worktree_path:
+                raise ValueError("conversation worktree moved or its path was retargeted")
+            if canonical[binding.git_common_dir] != binding.git_common_dir:
+                raise ValueError("conversation Git metadata moved or its path was retargeted")
+            if pointer_root != binding.worktree_path:
+                raise ValueError("repository pointer does not match its conversation worktree")
+            if path_semantics.overlaps(registered_root, pointer_root):
+                raise ValueError("conversation worktree must be outside the shared checkout")
+        elif registered_root != pointer_root:
             raise ValueError(
                 f"repository {repository.alias!r} no longer matches its registered project root"
             )
@@ -242,29 +293,34 @@ def resolve_project_write_scope(
             raise ValueError(
                 f"repository {repository.alias!r} changed while its ownership was verified"
             )
-        _reject_broad_repository_root(
-            registered_root,
-            account_home=account_home,
-            app_data_dir=app_data_dir if remote_stage is None else None,
-            path_semantics=path_semantics,
-        )
-        _reject_repository_ownership_overlap(
-            repository=repository,
-            project_id=project_id,
-            admitted_owners={
-                (project_id, item.alias, item.machine, item.path) for item in eligible
-            },
-            registered_root=registered_root,
-            inventory=execution_inventory,
-            canonical_inventory=canonical_inventory,
-            path_semantics=path_semantics,
-        )
-        repository_roots.append(
-            WritableRepositoryRoot(
-                alias=repository.alias,
-                machine=repository.machine,
-                path=registered_root,
+        roots = [pointer_root]
+        if include_shared_checkout:
+            roots.append(registered_root)
+        # Keep the registered checkout's catalog protections even when only the
+        # conversation's worktree is admitted for writes.
+        for root in dict.fromkeys(
+            [registered_root, *roots, *([binding.git_common_dir] if binding else [])]
+        ):
+            _reject_broad_repository_root(
+                root,
+                account_home=account_home,
+                app_data_dir=app_data_dir if remote_stage is None else None,
+                path_semantics=path_semantics,
             )
+            _reject_repository_ownership_overlap(
+                repository=repository,
+                project_id=project_id,
+                admitted_owners={
+                    (project_id, item.alias, item.machine, item.path) for item in eligible
+                },
+                registered_root=root,
+                inventory=execution_inventory,
+                canonical_inventory=canonical_inventory,
+                path_semantics=path_semantics,
+            )
+        repository_roots.extend(
+            WritableRepositoryRoot(alias=repository.alias, machine=repository.machine, path=root)
+            for root in roots
         )
 
     state_repository = manifest.repository_map[manifest.state.repository]
@@ -293,6 +349,7 @@ def resolve_project_write_scope(
         stage_root=canonical_stage,
         workspace_root=canonical_workspace,
         repositories=repository_roots,
+        git_metadata_roots=[binding.git_common_dir] if binding else [],
         protected_write_paths=protected,
     )
 

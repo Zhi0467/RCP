@@ -844,6 +844,14 @@ class RunRequest(BaseModel):
     chat_id: str | None = None
     session_id: str | None = None
     mode: ConversationMode = "discuss"
+    worktree: bool = Field(default=False, exclude_if=lambda value: not value)
+    worktree_integration: Literal["pull_request", "starting_branch", "default_branch"] | None = (
+        Field(default=None, exclude_if=lambda value: value is None)
+    )
+    # Server-resolved integration branch, never accepted from HTTP clients.
+    worktree_integration_target: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     result_view: ResultViewRequest | None = Field(
         default=None,
         exclude_if=lambda value: value is None,

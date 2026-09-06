@@ -551,6 +551,16 @@ keeps its immutable Discuss/Work label; progress stays inline under the triggeri
 message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run.
 
+The composer shows **Work in a worktree** before the first Work turn. The backend
+projects eligibility and the reason a zero/multiple-repository or wrong-machine
+scope cannot bind. A bound chat shows the real branch and path, an **Integrate**
+menu with backend-resolved branch names and refusal reasons, and an explicit
+**Remove worktree** confirmation with ahead and remote-branch evidence. These
+controls dispatch the ordinary task API with a worktree choice or integration
+choice; RCP supplies the integration instruction and target. Unsent drafts remain
+intact when an integration turn is dispatched. A removed binding remains visible
+and cannot silently become a shared-checkout chat.
+
 ### Paper, Settings, and History
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
