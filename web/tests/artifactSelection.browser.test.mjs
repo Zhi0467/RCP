@@ -8,6 +8,14 @@ const script = await readFile(
   "utf8",
 );
 const browserType = process.env.RCP_PREVIEW_BROWSER === "webkit" ? webkit : chromium;
+const renderer = await readFile(new URL("../../src/rcp/artifacts.py", import.meta.url), "utf8");
+// Execute the actual renderer bridge, not a parallel implementation of its gates.
+const bootstrap = renderer.match(
+  /\+ _selection_script\(\)\s*\+ """([\s\S]*?)\}\)\(\);<\/script>"""/,
+)[1];
+const wrapper = renderer.match(
+  /wrapper_script = """<script>\(\(\)=>\{([\s\S]*?)\}\)\(\);<\/script>"""/,
+)[1];
 const report = `<style>body{margin:24px;min-height:1200px;font:20px sans-serif}#figure{width:420px;height:210px;overflow:auto;background:#edf2f5}p{padding:18px}</style>
   <p id="text">Reference scores improve, but the scientific limitation remains.</p>
   <div id="figure"><svg width="420" height="420" aria-label="Validation scores"><rect x="30" y="30" width="80" height="120" fill="teal"/><text x="30" y="180">Validation</text></svg></div>
@@ -20,6 +28,68 @@ async function drag(page, from, to) {
   await page.mouse.move(...to, { steps: 8 });
   await page.mouse.up();
 }
+
+test("only a confirmation-shell parent can enable HTML selection across opaque frames", async () => {
+  const browser = await browserType.launch();
+  try {
+    for (const selectable of [false, true]) {
+      const page = await browser.newPage({ viewport: { width: 1040, height: 760 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.setContent(`<style>body{margin:0}iframe{width:700px;height:600px;border:0}aside{position:absolute;left:720px;top:0}</style>
+        <iframe sandbox="allow-scripts"></iframe><aside><section id="pending" hidden><div class="excerpt"></div><button data-confirm>Comment</button><button data-cancel>Cancel</button></section></aside>`);
+      await page.addScriptTag({ content: script });
+      await page.evaluate((enabled) => {
+        if (!enabled) return;
+        const frame = document.querySelector("iframe");
+        const offer = installSelectionConfirmation(
+          document.querySelector("#pending"),
+          () => {},
+          () => {
+            frame.contentWindow.postMessage({ type: "rcp-artifact-selection-clear" }, "*");
+          },
+        );
+        window.addEventListener("message", (event) => {
+          if (event.source === frame.contentWindow && event.data?.type === "rcp-artifact-selection")
+            offer(event.data.selection);
+        });
+        frame.addEventListener("load", () => {
+          frame.contentWindow.postMessage({ type: "rcp-artifact-selection-enable" }, "*");
+        });
+      }, selectable);
+      // An artifact's ordinary window messages cannot opt itself in, even if it
+      // knows the message names. The trusted bootstrap alone owns the private port.
+      const inner = `<script>(()=>{${script}\n${bootstrap}})();</script>
+        <script>parent.postMessage({type:'rcp-artifact-selection-enable'},'*');parent.postMessage({kind:'rcp-artifact-selection-enable'},'*');</script>${report}`;
+      const escaped = inner
+        .replaceAll("&", "&amp;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("<", "&lt;");
+      await page.locator("iframe").evaluate((frame, source) => {
+        frame.srcdoc = source;
+      }, `<style>body{margin:0}iframe{width:100%;height:600px;border:0}</style><script>(()=>{${wrapper}})();</script><iframe id="artifact" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`);
+      const artifact = page.frameLocator("iframe").frameLocator("iframe");
+      await artifact.locator("#figure").waitFor();
+      await drag(page, [40, 160], [330, 300]);
+      const outline = artifact.locator('[data-rcp-selection="area"]');
+      if (selectable) {
+        await page.locator("#pending").waitFor({ state: "visible" });
+        assert.equal(await outline.count(), 1);
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+        await outline.waitFor({ state: "detached" });
+      } else {
+        assert.equal(await outline.count(), 0);
+        assert.equal(await page.locator("#pending").isVisible(), false);
+        await artifact.locator("#control").click();
+        assert.equal(await artifact.locator("#control").textContent(), "Changed");
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
 
 test("direct preview drags require confirmation, preserve text, and keep working after cancel", async () => {
   const browser = await browserType.launch();

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import unescape
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,10 @@ def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None
     assert "new TextEncoder()" in document
     assert "type:'rcp-artifact-selection'" in document
     assert "installArtifactSelection(document" in document
+    assert "event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection" in unescape(
+        document
+    )
+    assert "window.parent===window || event.source!==window.parent" in document
     assert "value.kind!=='rcp-reference'" in document
     assert "artifact.contentWindow?.postMessage" not in document
     assert "rcp-artifact-box-start" not in document

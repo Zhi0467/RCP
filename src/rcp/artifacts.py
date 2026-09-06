@@ -380,9 +380,11 @@ listen(window,'click',(event)=>{
   event.preventDefault(); event.stopImmediatePropagation();
   send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
 },true);
-const clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}));
+let clearSelection=null;
 listen(privatePort,'message',(event)=>{
-  if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection();
+  if(event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection)
+    clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}));
+  if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection?.();
 });
 portStart(privatePort);
 parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
@@ -413,6 +415,7 @@ const parentPost=window.parent.postMessage.bind(window.parent);
 const openWindow=window.open.bind(window);
 const URLConstructor=URL;
 let artifactPort=null;
+let selectionEnabled=false;
 listen(window,'message',(event)=>{
   const value=event.data;
   const frame=artifact();
@@ -435,9 +438,15 @@ listen(window,'message',(event)=>{
     } catch {}
   });
   portStart(artifactPort);
+  if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
 },true);
 listen(window,'message',(event)=>{
-  if(event.source===window.parent && event.data?.type==='rcp-artifact-selection-clear' && artifactPort)
+  if(window.parent===window || event.source!==window.parent) return;
+  if(event.data?.type==='rcp-artifact-selection-enable'){
+    selectionEnabled=true;
+    if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  }
+  if(event.data?.type==='rcp-artifact-selection-clear' && artifactPort)
     portPost(artifactPort,{kind:'rcp-artifact-selection-clear'});
 });
 })();</script>"""
@@ -608,6 +617,11 @@ window.addEventListener('message',(event)=>{{if(!frame||event.source!==frame.con
   if(raw.kind==='text'&&typeof raw.text==='string') offerSelection({{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}});
   else if(raw.kind==='box'&&raw.rect&&raw.viewport) offerSelection({{kind:'box',rect:raw.rect,viewport:raw.viewport,labels:bounded(raw.labels,4096),comment:''}});
 }});
+if(frame){{
+  const enableSelection=()=>frame.contentWindow?.postMessage({{type:'rcp-artifact-selection-enable'}},'*');
+  frame.addEventListener('load',enableSelection);
+  enableSelection();
+}}
 if(boxLayer) clearImageSelection=installArtifactSelection(boxLayer,offerSelection);
 add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent='The originating chat is unavailable.';return;}}const payload={{type:'rcp-artifact-context',version:1,project_id:config.projectId,chat_id:config.chatId,operation_id:config.operationId,artifact_id:config.artifactId,artifact_name:config.artifactName,media_type:config.mediaType,selections}};
   payload.source=config.source;payload.episode_id=config.episodeId;const key=`rcp:artifact-context:${{encodeURIComponent(config.projectId)}}:${{encodeURIComponent(config.chatId)}}`;localStorage.setItem(key,JSON.stringify(payload));
