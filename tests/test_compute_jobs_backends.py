@@ -324,11 +324,11 @@ def test_cancellation_is_idempotent_for_gone_jobs(backend_id, response):
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
-def test_facility_probes_redact_and_report_failure(backend_id):
-    runner = Runner((1, "", "token=secret-value\nbackend denied access"))
+@pytest.mark.parametrize("returncode", [1, 255])
+def test_facility_probes_redact_and_report_failure(backend_id, returncode):
+    runner = Runner((returncode, "", "token=secret-value\nbackend denied access"))
     ctx = context(runner)
-    if backend_id == "ssh_session":
-        ctx.execution_host = "worker"
+    ctx.execution_host = "worker"
     probe = COMPUTE_BACKENDS[backend_id].probe(ctx)
     assert probe.state == "failed"
     assert not probe.ready
@@ -338,14 +338,51 @@ def test_facility_probes_redact_and_report_failure(backend_id):
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
-def test_backend_transport_failure_is_unknown(backend_id):
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("status", 10), OSError("no ssh")])
+def test_backend_transport_failure_propagates(backend_id, error):
     def unavailable(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        raise error
 
     ctx = context(unavailable)
-    if backend_id == "ssh_session":
-        ctx.execution_host = "worker"
+    ctx.execution_host = "worker"
+    with pytest.raises(type(error)):
+        COMPUTE_BACKENDS[backend_id].alive("42", ctx)
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_backend_ssh_exit_255_raises_transport_error(backend_id):
+    ctx = context(Runner((255, "", "connection dropped")))
+    ctx.execution_host = "worker"
+    with pytest.raises(ComputeTransportError, match="connection dropped"):
+        COMPUTE_BACKENDS[backend_id].alive("42", ctx)
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_backend_nontransport_failure_is_unknown(backend_id):
+    ctx = context(Runner((1, "", "observation failed")))
+    ctx.execution_host = "worker"
     assert COMPUTE_BACKENDS[backend_id].alive("42", ctx) is None
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_cancel_ssh_exit_255_raises_transport_error(backend_id):
+    ctx = context(Runner((255, "", "connection dropped")))
+    ctx.execution_host = "worker"
+    with pytest.raises(ComputeTransportError, match="connection dropped"):
+        COMPUTE_BACKENDS[backend_id].cancel("42", ctx)
+
+
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("remote", [False, True])
+def test_runner_exit_255_is_transport_failure_only_over_ssh(check, remote):
+    ctx = context(Runner((255, "", "command failed")))
+    ctx.execution_host = "worker" if remote else ""
+    if remote or check:
+        with pytest.raises(ComputeTransportError if remote else RuntimeError) as error:
+            ctx.run(["command"], check=check)
+        assert isinstance(error.value, ComputeTransportError) is remote
+    else:
+        assert ctx.run(["command"], check=check).returncode == 255
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])

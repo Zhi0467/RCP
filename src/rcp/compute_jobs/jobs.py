@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
+    ComputeTransportError,
     recorded_job_context,
     resolve_context,
 )
@@ -116,7 +118,7 @@ def refresh_compute_job(
             alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
             if alive is None:
                 raise RuntimeError("compute backend could not determine whether the job is alive")
-        except Exception as exc:
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
             if unavailable_hosts is not None:
                 unavailable_hosts[record.execution_host] = safe_compute_diagnostic(str(exc))
             raise

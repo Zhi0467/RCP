@@ -65,7 +65,9 @@ class SlurmBackend:
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(["squeue", "-h", "-o", "%A"])
-        except (OSError, subprocess.SubprocessError):
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
+            raise
+        except subprocess.SubprocessError:
             return None
         if result.returncode:
             return None

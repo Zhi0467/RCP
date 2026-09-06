@@ -525,8 +525,48 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     assert all(command[1] == "-c" for command in calls)
 
 
+@pytest.mark.parametrize("failure", ["unregistered", "unknown", "invalid handle"])
+def test_reconcile_row_failure_does_not_skip_other_jobs(
+    launch_environment, tmp_path, manifest, monkeypatch, failure
+):
+    store, backend, launch = launch_environment
+    backend.id = "unregistered" if failure == "unregistered" else "launchd"
+    bad = launch()
+    backend.id = "launchd"
+    valid = [launch() for _ in range(3)]
+    calls = []
+
+    def observe(handle, context):
+        calls.append(handle)
+        if failure != "unregistered" and len(calls) == 1:
+            if failure == "invalid handle":
+                raise ValueError("invalid handle")
+            return None
+        return False
+
+    monkeypatch.setattr(backend, "alive", observe)
+    assert store.running_compute_jobs()[0].job_id == bad.job_id
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    bad = store.compute_job(bad.job_id)
+    assert bad.status == "running"
+    assert ("could not determine" if failure == "unknown" else failure) in bad.diagnostic
+    assert len(calls) == (3 if failure == "unregistered" else 4)
+    for record in valid:
+        refreshed = store.compute_job(record.job_id)
+        assert refreshed.status == "exited"
+        assert refreshed.diagnostic is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ComputeTransportError("connection dropped"),
+        subprocess.TimeoutExpired("backend status", 10),
+        OSError("transport could not be started"),
+    ],
+)
 def test_reconcile_contacts_unreachable_host_once_per_pass(
-    launch_environment, tmp_path, manifest, monkeypatch
+    launch_environment, tmp_path, manifest, monkeypatch, error
 ):
     store, backend, launch = launch_environment
     records = [launch() for _ in range(4)]
@@ -536,7 +576,7 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
         calls.append(handle)
         if len(calls) > 1:
             pytest.fail("reconciliation retried an unreachable host")
-        raise subprocess.TimeoutExpired("backend status", 10)
+        raise error
 
     monkeypatch.setattr(backend, "alive", unreachable)
     reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
@@ -544,7 +584,7 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
     refreshed = [store.compute_job(record.job_id) for record in records]
     assert all(record.status == "running" for record in refreshed)
     assert all(record.diagnostic == refreshed[0].diagnostic for record in refreshed)
-    assert "timed out" in refreshed[0].diagnostic
+    assert refreshed[0].diagnostic == str(error)
 
     backend.is_alive = False
     monkeypatch.setattr(backend, "alive", lambda *_: False)

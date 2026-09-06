@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from rcp.compute_jobs.backend_context import (
     BackendContext,
     ComputeLaunchUncertainError,
+    ComputeTransportError,
     facility_probe,
 )
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
@@ -79,7 +80,9 @@ class SystemdUserBackend:
             result = context.run(
                 self.command(context, "systemctl", "show", "-p", "ActiveState", handle)
             )
-        except (OSError, RuntimeError, subprocess.SubprocessError):
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
+            raise
+        except (RuntimeError, subprocess.SubprocessError):
             return None
         if result.returncode:
             return False if "could not be found" in result.stderr.casefold() else None

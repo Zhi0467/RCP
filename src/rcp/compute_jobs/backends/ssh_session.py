@@ -62,7 +62,9 @@ class SSHSessionBackend:
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(_command("alive", handle))
-        except (OSError, subprocess.SubprocessError):
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
+            raise
+        except subprocess.SubprocessError:
             return None
         if result.returncode:
             return None

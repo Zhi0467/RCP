@@ -111,7 +111,9 @@ handle, paths, argv, containment, lifecycle, timestamps, cancellation attributio
 and diagnostics. Reconciliation runs in background maintenance after startup;
 failures are logged and never block startup. After a backend is unreachable, the
 same diagnostic is recorded on remaining rows for that execution host in the
-pass without contacting it again. Reconciliation uses the saved backend and
+pass without contacting it again. Only transport failures (SSH exit 255, a timeout,
+or an unstartable transport) mark a host unavailable for the rest of a pass; other
+observation failures stay with their row. Reconciliation uses the saved backend and
 execution identity rather than retargeting old jobs after configuration changes.
 
 Alive remains `running`. Unknown also remains `running`, with a diagnostic even
