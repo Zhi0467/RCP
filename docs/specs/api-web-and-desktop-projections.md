@@ -86,7 +86,20 @@ cancellation requester and timestamp, and diagnostic.
 admission and Stop's named human identity, records that user's id, and calls the
 compute owner. Repeating Cancel for a terminal row returns it unchanged with 200;
 a missing or foreign-project job returns 404. These APIs add no background poller.
-Web compute settings and job controls are the separate D2 change.
+Settings stages per-machine compute blocks alongside provider paths and sends
+only changed aliases through the existing Save. Each machine exposes Automatic
+or a registry backend, jobs root, and Slurm-only account, partition, and submit
+arguments. Unsaved machine edits mask the stored result and require Save before
+Probe. The probe response replaces the displayed result; absent probes are pending.
+
+Chat and Experiment run detail load project jobs on mount and on existing watcher
+refreshes, with no new timer. Job observers match records by `job_id` and show
+label or id, literal status, exit status, backend, diagnostics, and cancellation
+requester/time. Shell observers retain their existing presentation. The job status
+is opaque in `web/src/types.ts`; display conversion does not decide lifecycle.
+The current record lacks a backend-owned `can_cancel` projection. Web Cancel
+availability remains pending that field; the client API supports the existing
+Cancel route without deriving availability from status.
 
 ## Atomic client project snapshots
 

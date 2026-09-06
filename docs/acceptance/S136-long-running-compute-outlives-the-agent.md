@@ -20,7 +20,9 @@ last_checked: >-
   2026-09-06 — human confirmed the compute-runner journey. PR B implements
   Work and Experiment-loop command and observer paths. The real team-server
   drive, web controls, and prompt instructions remain pending. PR D1 implements
-  backend operator surfaces, human Cancel API, and episode-start gating.
+  backend operator surfaces, human Cancel API, and episode-start gating. D2 adds
+  Settings compute blocks/probes and job readouts; web Cancel still needs the
+  backend availability projection. Browser and real-host drives remain pending.
 ---
 
 # Long-running compute outlives the agent and wakes it

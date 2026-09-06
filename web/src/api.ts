@@ -1,4 +1,6 @@
 import type {
+  ComputeBackendProbe,
+  ComputeJobRecord,
   ChatAttachmentDescriptor,
   ChatMessage,
   SteerRequest,
@@ -368,4 +370,19 @@ export function steerChatTurn(
     { method: "POST", body: JSON.stringify(request) },
     { retryIdentity: false },
   );
+}
+
+export function probeMachineCompute(apiBase: string, alias: string): Promise<ComputeBackendProbe> {
+  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/probe`, { method: "POST" });
+}
+
+export function listComputeJobs(
+  apiBase: string,
+  signal?: AbortSignal,
+): Promise<ComputeJobRecord[]> {
+  return api(`${apiBase}/compute-jobs`, { signal });
+}
+
+export function cancelComputeJob(apiBase: string, jobId: string): Promise<ComputeJobRecord> {
+  return api(`${apiBase}/compute-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
 }

@@ -347,3 +347,31 @@ test("settings compare keeps list order, which the researcher chose", () => {
     settingsFingerprint({ scope: ["b", "a"] }),
   );
 });
+
+test("machine compute edits stage, restore, and save only changed aliases", async () => {
+  const { machineComputeFrom, machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const slurm = {
+    backend: "slurm",
+    jobs_root: "/jobs",
+    slurm_account: "lab",
+    slurm_partition: "gpu",
+    slurm_submit_args: ["--nodes=2"],
+  };
+  const saved = machineComputeFrom([
+    { alias: "local", compute: null },
+    { alias: "cluster", compute: slurm },
+  ]);
+  assert.equal(machineComputeUpdates(saved, saved), undefined);
+  assert.deepEqual(machineComputeUpdates(saved, { ...saved, cluster: null }), { cluster: null });
+  const draft = { version: 4, scope: ["repo"], profiles: {}, machineCompute: saved };
+  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        ...draft,
+        machineCompute: { cluster: { ...slurm, slurm_submit_args: "--nodes=2" } },
+      }),
+    ),
+    null,
+  );
+});

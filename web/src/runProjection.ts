@@ -55,7 +55,7 @@ export function watcherIsActive(watcher: WatcherRecord): boolean {
 }
 
 export function isExternalWatcherRecord(watcher: WatcherRecord): watcher is ExternalWatcherRecord {
-  return "check_command" in watcher;
+  return "job_id" in watcher || "check_command" in watcher;
 }
 
 export function isGraphWatcherRecord(watcher: WatcherRecord): watcher is GraphWatcherRecord {

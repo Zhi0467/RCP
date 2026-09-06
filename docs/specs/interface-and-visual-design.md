@@ -167,6 +167,22 @@ with a concise save-first label until the metadata is saved. A compute-settings
 save also invalidates older in-flight readiness responses, so a late old-target
 success cannot replace the empty state left by a failed new-target probe.
 
+Settings groups provider executables and a **Compute runner** block under each
+machine. The block offers **Automatic** or a registered backend, **Jobs root**,
+and account, partition, and submit arguments only for Slurm. Submit arguments
+use one argument per line. **Reset compute** stages removal of the optional block;
+the normal Settings **Save** publishes it. Probes share compute connections' label,
+tone, and pending presentation. Editing the block masks the stored result and
+requires Save before Probe; probe and save cannot overlap.
+
+Chat and Experiment watcher rows distinguish RCP job observers from shell
+observers. A job row carries its label or id, status, exit status, and backend,
+with Cancel requester and timestamp when recorded. Missing list entries retain
+the job id and show **Job details unavailable**. Shell observers keep their log
+and check presentation. **Stop watching** retains its existing meaning and never
+cancels compute. The human **Cancel** control is pending a backend availability
+projection; the browser does not infer it from job status.
+
 ## Paper
 
 The editor/coach split is human-resizable, and the editor begins with authored

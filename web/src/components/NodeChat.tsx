@@ -1,3 +1,5 @@
+import { ComputeJobRow } from "./ComputeJobRow";
+import { useComputeJobs } from "../hooks/useComputeJobs";
 import {
   AlertTriangle,
   ChevronUp,
@@ -202,6 +204,8 @@ interface KeyboardChatAnnotationComposer {
 
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
+const EMPTY_WATCHERS: WatcherRecord[] = [];
+
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -369,7 +373,7 @@ export function NodeChat({
   conversationTitle,
   runScope,
   tasks,
-  watchers = [],
+  watchers = EMPTY_WATCHERS,
   historyMessages = [],
   chatId,
   presentation = "floating",
@@ -692,6 +696,7 @@ export function NodeChat({
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const computeJobs = useComputeJobs(apiBase, watchers);
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
@@ -1549,14 +1554,21 @@ export function NodeChat({
       </div>
       {liveWatchers.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
+          {computeJobs.error && <span role="alert">Compute jobs: {computeJobs.error}</span>}
           {liveWatchers.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
-                <strong>
-                  {external ? fileName(watcher.log_path) : graphConditionLabel(watcher.condition)}
-                </strong>
+                {external && watcher.job_id ? (
+                  <ComputeJobRow jobId={watcher.job_id} jobs={computeJobs.jobs} />
+                ) : (
+                  <strong>
+                    {external
+                      ? fileName(watcher.log_path ?? "")
+                      : graphConditionLabel(watcher.condition)}
+                  </strong>
+                )}
                 <time dateTime={observedAt ?? undefined}>
                   {observedAt
                     ? `${external ? "Checked" : "Evaluated"} ${new Date(observedAt).toLocaleString()}`

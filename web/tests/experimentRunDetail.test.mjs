@@ -1411,3 +1411,39 @@ test("grouped watchers show truthful operational counts and preserve member prov
   assert.match(html, /Cancelled superseded external job/);
   assert.doesNotMatch(html, /Stop watching/);
 });
+
+test("job rows match the observer id and show job facts without shell fields", async () => {
+  const { ComputeJobRow } = await server.ssrLoadModule("/src/components/ComputeJobRow.tsx");
+  const { isExternalWatcherRecord } = await server.ssrLoadModule("/src/runProjection.ts");
+  const watcher = { job_id: "job-1", check_command: null, log_path: null, cwd: null };
+  assert.equal(isExternalWatcherRecord(watcher), true);
+  assert.equal(isExternalWatcherRecord({ condition: { node_id: "experiment" } }), false);
+  const html = renderToStaticMarkup(
+    React.createElement(ComputeJobRow, {
+      jobId: watcher.job_id,
+      jobs: [
+        { job_id: "unrelated", label: "Wrong job" },
+        {
+          job_id: "job-1",
+          label: "Training",
+          status: "cancelled",
+          exit_status: 143,
+          backend_id: "slurm",
+          cancel_requested_by: "human-1",
+          cancel_requested_at: "2026-09-06T10:00:00Z",
+        },
+      ],
+    }),
+  );
+  assert.match(html, /Training/);
+  assert.match(html, /cancelled/);
+  assert.match(html, /Exit status 143/);
+  assert.match(html, /slurm/);
+  assert.match(html, /Cancel requested by human-1/);
+  assert.doesNotMatch(html, /Wrong job|Check command|Working directory/);
+  const missing = renderToStaticMarkup(
+    React.createElement(ComputeJobRow, { jobId: "missing-job", jobs: [] }),
+  );
+  assert.match(missing, /missing-job/);
+  assert.match(missing, /Job details unavailable/);
+});
