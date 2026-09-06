@@ -4,6 +4,9 @@ status: pending
 tier: live
 driver: pytest + ssh + real Codex
 covered_by:
+  - tests/test_api_compute_jobs.py
+  - tests/test_api_compute_admission.py
+  - tests/test_server_cli_compute.py
   - tests/test_compute_jobs_commands.py
   - tests/test_compute_jobs_settlement.py
   - tests/test_compute_jobs_observers.py
@@ -18,11 +21,10 @@ covered_by:
 invariants: [4, 4b, 5, 8, 9, 10g]
 last_checked: >-
   2026-09-06 — human confirmed the compute-runner journey. PR B implements
-  Work and Experiment-loop command and observer paths; PR C adds Auto-research
-  child Work launch, budgeted same-session watcher wake, waiting state, and
-  Stop fencing; PR E teaches the launch and job observer handoff in Work,
-  Experiment-loop, and child Work prompts. The real team-server drive and
-  operator surfaces remain pending.
+  Work and Experiment-loop command and observer paths. PR C adds child Work
+  continuation; D1 and D2 add operator APIs and web controls; E adds prompt
+  instructions. The combined branches and real team-server drive still need
+  verification. The user has requested a simpler single-watcher contract.
 ---
 
 # Long-running compute outlives the agent and wakes it

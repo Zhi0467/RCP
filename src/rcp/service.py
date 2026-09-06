@@ -34,6 +34,7 @@ from rcp.config import (
     AgentSurface,
     AgentSurfaceConfig,
     ComputeConnectionConfig,
+    MachineComputeConfig,
     MachineConfig,
     Manifest,
     ResolvedComputeContext,
@@ -1025,6 +1026,8 @@ class ProjectSettingsRequest(BaseModel):
     # Partial by machine and provider. Omission preserves every recorded path;
     # an empty string explicitly clears one provider's record.
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
+    # Omitted machines are preserved; null removes one machine compute block.
+    machine_compute: dict[str, MachineComputeConfig | None] | None = None
     # Omission preserves the manifest for older clients; an empty list removes
     # all project compute resources.
     compute_connections: list[ComputeConnectionConfig] | None = Field(
@@ -1656,6 +1659,7 @@ class ProjectService:
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
             request.compute_connections,
+            request.machine_compute,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]

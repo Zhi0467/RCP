@@ -447,3 +447,54 @@ def _temporary_layout(tmp_path: Path) -> ServerLayout:
         systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
         service_unit_name="rcp.service",
     )
+
+
+def test_install_enables_and_verifies_linger_on_every_convergence(monkeypatch, tmp_path) -> None:
+    machine = server_install.LinuxInstallMachine(_temporary_layout(tmp_path))
+    calls = []
+    account = SimpleNamespace(pw_name="rcp", pw_uid=701, pw_gid=702)
+    monkeypatch.setattr(machine, "_converge_account", lambda: calls.append("account") or account)
+    monkeypatch.setattr(server_install, "_converge_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(machine, "_validate_service_tooling", lambda: None)
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "Linger=yes\n", "")
+
+    monkeypatch.setattr(server_install, "_run_process", run)
+    machine.converge_account_and_layout()
+    machine.converge_account_and_layout()
+    assert (
+        calls
+        == [
+            "account",
+            ("loginctl", "enable-linger", "rcp"),
+            ("loginctl", "show-user", "rcp", "--property=Linger"),
+        ]
+        * 2
+    )
+
+
+@pytest.mark.parametrize("failure", ["enable-linger", "show-user", "readback"])
+def test_install_refuses_linger_failure_with_command_and_diagnostic(
+    monkeypatch, tmp_path, failure
+) -> None:
+    machine = server_install.LinuxInstallMachine(_temporary_layout(tmp_path))
+    monkeypatch.setattr(
+        machine, "_converge_account", lambda: SimpleNamespace(pw_name="rcp", pw_uid=701, pw_gid=702)
+    )
+
+    def run(argv, **_kwargs):
+        if argv[1] == failure:
+            return subprocess.CompletedProcess(argv, 1, "", "login manager refused access\n")
+        return subprocess.CompletedProcess(argv, 0, "Linger=no\n", "")
+
+    monkeypatch.setattr(server_install, "_run_process", run)
+    with pytest.raises(InstallRefused) as error:
+        machine.converge_account_and_layout()
+    if failure == "readback":
+        assert "loginctl show-user rcp --property=Linger" in str(error.value)
+        assert "Linger=no" in str(error.value)
+    else:
+        assert f"loginctl {failure} rcp" in str(error.value)
+        assert "login manager refused access" in str(error.value)

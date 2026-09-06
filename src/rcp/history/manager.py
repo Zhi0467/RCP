@@ -18,6 +18,7 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurfaceConfig,
     ComputeConnectionConfig,
+    MachineComputeConfig,
     Manifest,
     load_manifest,
     validate_project_scope_update,
@@ -1461,6 +1462,7 @@ class HistoryManager:
         skill_defaults: SkillDefaults | None = None,
         default_auto_research_invocation_ceiling: int | None = None,
         compute_connections: list[ComputeConnectionConfig] | None = None,
+        machine_compute: dict[str, MachineComputeConfig | None] | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -1468,6 +1470,9 @@ class HistoryManager:
             self.require_writable(current.state)
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
+            unknown = set(machine_compute or {}) - self.manifest.machine_map.keys()
+            if unknown:
+                raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
             self.manifest = write_agent_settings(
                 self.manifest,
                 default_run_truth_scope,
@@ -1476,6 +1481,7 @@ class HistoryManager:
                 skill_defaults,
                 default_auto_research_invocation_ceiling,
                 compute_connections,
+                machine_compute,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest

@@ -45,6 +45,7 @@ class AppStoreBase:
         (9, "compute_jobs_v1"),
         (10, "compute_job_observers_v1"),
         (11, "child_work_watchers_v1"),
+        (12, "compute_job_labels_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -494,6 +495,12 @@ class AppStoreBase:
             version=11,
             name="child_work_watchers_v1",
             migration=self._migrate_child_work_watchers,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=12,
+            name="compute_job_labels_v1",
+            migration=self._migrate_compute_job_labels,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1923,6 +1930,7 @@ class AppStoreBase:
         self._migrate_compute_jobs(connection)
         self._migrate_compute_job_observers(connection)
         self._migrate_child_work_watchers(connection)
+        self._migrate_compute_job_labels(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1941,6 +1949,12 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_compute_job_labels(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_jobs)")}
+        if "label" not in columns:
+            connection.execute("ALTER TABLE compute_jobs ADD COLUMN label TEXT")
 
     @classmethod
     def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:

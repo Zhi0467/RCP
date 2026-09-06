@@ -89,7 +89,7 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
     manifest, tmp_path, monkeypatch, commands, state
 ):
     data_dir = tmp_path / "owner-data"
-    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir, compute_ready=False)
     append_fixture_patch(app.state.service, seed_patch())
     request = RunRequest(
         chat_scope="project",
@@ -137,7 +137,7 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     manifest, tmp_path, monkeypatch, commands, rewrite_patch
 ):
     data_dir = tmp_path / "experiment-data"
-    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    app = create_named_app(str(manifest.path), data_dir=data_dir, compute_ready=False)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     append_fixture_patch(service, _experiment_patch())

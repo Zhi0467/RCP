@@ -95,7 +95,7 @@ def test_compute_jobs_migration_upgrades_version_eight_without_changing_records(
     identity = previous.space_id
     with previous.connection() as connection:
         connection.execute("DROP TABLE compute_jobs")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 9")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 9")
     upgraded = AppStore(path)
     assert upgraded.space_id == identity
     assert upgraded.storage_schema_ledger_head() == upgraded.storage_schema_registry_head()
@@ -135,3 +135,17 @@ def test_restore_rejects_unrelated_table_using_job_paths(tmp_path) -> None:
         connection.execute("CREATE TABLE unexpected (exit_path TEXT)")
         with pytest.raises(CandidateRehearsalRefused, match="unexpectedly owns"):
             _validate_path_column_inventory(connection)
+
+
+def test_compute_job_label_migration_preserves_existing_rows(tmp_path) -> None:
+    path = tmp_path / "app.sqlite"
+    store = AppStore(path)
+    store.create_compute_job(job_record())
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE compute_jobs DROP COLUMN label")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 11")
+    upgraded = AppStore(path)
+    assert upgraded.compute_job("job-1") == job_record(label=None)
+    labelled = job_record("labelled", label="Training run")
+    upgraded.create_compute_job(labelled)
+    assert AppStore(path).compute_job("labelled") == labelled

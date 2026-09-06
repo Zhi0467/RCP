@@ -6,7 +6,7 @@ import pytest
 
 from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
-from rcp.config import MachineComputeConfig, MachineConfig, load_manifest, write_machine_compute
+from rcp.config import MachineComputeConfig, MachineConfig, load_manifest, write_agent_settings
 from rcp.limits import COMPUTE_JOB_DIAGNOSTIC_MAX_CHARS, COMPUTE_JOB_LABEL_MAX_CHARS
 
 
@@ -44,6 +44,7 @@ def test_old_machine_and_manifest_have_no_compute_block(manifest) -> None:
 
 
 def test_machine_compute_writer_round_trip_preserves_other_configuration(manifest) -> None:
+    manifest = write_agent_settings(manifest, manifest.agent.default_run_truth_scope, {})
     before = manifest.model_dump(mode="json")
     config = MachineComputeConfig(
         backend="slurm",
@@ -52,20 +53,29 @@ def test_machine_compute_writer_round_trip_preserves_other_configuration(manifes
         slurm_partition="gpu",
         slurm_submit_args=["--time=00:01:00", "--cpus-per-task=2"],
     )
-    updated = write_machine_compute(manifest, "laptop", config)
+    updated = write_agent_settings(
+        manifest, manifest.agent.default_run_truth_scope, {}, machine_compute={"laptop": config}
+    )
     assert updated.machine_map["laptop"].compute == config
     after = updated.model_dump(mode="json")
     after["machines"][0]["compute"] = None
     assert after == before
     assert "[machines.compute]" in manifest.path.read_text()
-    restored = write_machine_compute(updated, "laptop", None)
+    restored = write_agent_settings(
+        updated, updated.agent.default_run_truth_scope, {}, machine_compute={"laptop": None}
+    )
     assert restored.model_dump(mode="json") == before
 
 
 def test_machine_compute_writer_rejects_unknown_machine_before_writing(manifest) -> None:
     original = manifest.path.read_bytes()
     with pytest.raises(ValueError, match="unknown machine"):
-        write_machine_compute(manifest, "missing", MachineComputeConfig())
+        write_agent_settings(
+            manifest,
+            manifest.agent.default_run_truth_scope,
+            {},
+            machine_compute={"missing": MachineComputeConfig()},
+        )
     assert manifest.path.read_bytes() == original
 
 

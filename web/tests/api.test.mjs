@@ -561,3 +561,26 @@ test("steering never retries after identity refusal or a disconnected response",
     globalThis.fetch = originalFetch;
   }
 });
+
+test("compute routes preserve backend responses and encode machine and job identifiers", async () => {
+  const { probeMachineCompute, listComputeJobs, cancelComputeJob } = await import("../src/api.ts");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const response = { job_id: "job/1", status: "opaque", cancel_requested_by: "human-1" };
+  globalThis.fetch = async (path, init) => {
+    requests.push([path, init.method ?? "GET"]);
+    return new Response(JSON.stringify(response), { status: 200 });
+  };
+  try {
+    assert.deepEqual(await probeMachineCompute("/api/projects/project-1", "machine/1"), response);
+    assert.deepEqual(await listComputeJobs("/api/projects/project-1"), response);
+    assert.deepEqual(await cancelComputeJob("/api/projects/project-1", "job/1"), response);
+    assert.deepEqual(requests, [
+      ["/api/projects/project-1/machines/machine%2F1/compute/probe", "POST"],
+      ["/api/projects/project-1/compute-jobs", "GET"],
+      ["/api/projects/project-1/compute-jobs/job%2F1/cancel", "POST"],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

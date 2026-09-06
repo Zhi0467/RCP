@@ -42,6 +42,9 @@ repositories. After creating the service account, it uses system-wide `uv` as
 release installation. The operator does not provision files inside a
 not-yet-existing account. The operator guide supplies tested prerequisite
 commands for both Ubuntu releases.
+Install runs `loginctl enable-linger <account>` after converging the service
+account and verifies `loginctl show-user <account> --property=Linger`; command
+failure or a value other than `Linger=yes` fails installation.
 Other Linux distributions and architectures remain unverified.
 
 Ordinary service-owned content is grouped below `/home/rcp/rcp-server/`: the
@@ -119,6 +122,17 @@ backup configuration and capture, restore, member removal, release update, and s
 The same command implementation emits either interactive terminal guidance or
 structured progress for the desktop shell. RCP does not add CLI mirrors of
 ordinary graph, task, chat, or project-member actions.
+
+### Compute backend probe
+
+`rcp server compute probe --project <project_id> <machine_alias>` uses the
+installed-service control socket, entered as the service account, to run
+`probe_compute_backend` against the registered project manifest and store the
+`ComputeBackendProbe`, returned inside `ServerControlComputeProbeResult` with
+service, project, and machine identity. It prints the status label, backend id, containment,
+diagnostic, and any required action; it exits 0 when ready and 1 otherwise.
+The probe executes inside the running service so local cgroup separation is
+checked against the server itself. This is the only compute CLI verb.
 
 ### Package identity and offline storage migration
 
@@ -1273,8 +1287,10 @@ Provider-native login remains separate from data restoration.
 The private installed-service control socket retains probe, provider plan/check,
 project provisioning and transfer operations, online SQLite capture, and member
 removal. Protocol version 10 adds root-authenticated maintenance enter/status,
-verify and release. It contains no update or restore coordinator. Legacy source
-adoption is an explicit stopped-data path and does not pretend an older process
+verify and release. Protocol version 11 adds the compute backend probe while
+retaining versions 8, 9, and 10; older clients do not receive the new operation
+in their advertised operation list. It contains no update or restore coordinator.
+Legacy source adoption is an explicit stopped-data path and does not pretend an older process
 supports this maintenance protocol.
 
 `rcp server project provision <request-id>` publishes one complete plan, advances one

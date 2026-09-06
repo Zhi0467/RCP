@@ -608,6 +608,7 @@ def write_agent_settings(
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
     compute_connections: list[ComputeConnectionConfig] | None = None,
+    machine_compute: dict[str, MachineComputeConfig | None] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -655,6 +656,7 @@ def write_agent_settings(
             del document["paper"]
 
     _apply_machine_provider_path_updates(document, provider_path_updates or {})
+    _apply_machine_compute_updates(document, machine_compute or {})
     if compute_connections is not None:
         document.pop("compute_connections", None)
         if compute_connections:
@@ -689,29 +691,27 @@ def write_machine_provider_paths(
     return load_manifest(manifest.path)
 
 
-def write_machine_compute(
-    manifest: Manifest,
-    alias: str,
-    compute: MachineComputeConfig | None,
-) -> Manifest:
-    document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
+def _apply_machine_compute_updates(
+    document: tomlkit.TOMLDocument,
+    updates: dict[str, MachineComputeConfig | None],
+) -> None:
+    if not updates:
+        return
     machine_tables = {
         str(machine.get("alias")): machine for machine in document.get("machines", [])
     }
-    if alias not in machine_tables:
-        raise ValueError(f"compute configuration uses unknown machine: {alias}")
-    machine = machine_tables[alias]
-    if compute is None:
-        machine.pop("compute", None)
-    else:
-        table = tomlkit.table()
-        for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
-            table.add(key, value)
-        machine["compute"] = table
-    content = tomlkit.dumps(document)
-    Manifest.model_validate(tomlkit.parse(content).unwrap())
-    _atomic_write(manifest.path, content)
-    return load_manifest(manifest.path)
+    unknown = set(updates) - set(machine_tables)
+    if unknown:
+        raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
+    for alias, compute in updates.items():
+        machine = machine_tables[alias]
+        if compute is None:
+            machine.pop("compute", None)
+        else:
+            table = tomlkit.table()
+            for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
+                table.add(key, value)
+            machine["compute"] = table
 
 
 def _apply_machine_provider_path_updates(

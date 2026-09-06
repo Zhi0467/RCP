@@ -10619,6 +10619,33 @@ button.relation-map-node:hover {
   padding: 0 8px;
   width: 100%;
 }
+.machine-compute {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0 0;
+  min-width: 0;
+  padding: 8px 0 0;
+}
+.machine-compute legend {
+  font: 750 11px var(--mono);
+  padding: 0 8px;
+}
+.machine-compute .compute-connection-fields {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.machine-compute textarea {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  font: 11px var(--mono);
+  min-height: 62px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
+}
+.machine-compute .compute-probe {
+  display: flex;
+  flex-wrap: wrap;
+}
 .compute-probe-list {
   border-top: 1px solid var(--line);
   display: grid;

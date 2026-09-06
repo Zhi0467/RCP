@@ -1381,6 +1381,7 @@ function ExperimentEpisodeCard({
       {expanded && (
         <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           <ExperimentRunDetail
+            apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
             run={run}
             runBusy={runBusy}
             runDisabled={mutationsDisabled}

@@ -103,7 +103,10 @@ def launch_environment(tmp_path, manifest, monkeypatch):
         return jobs.launch_compute_job(
             store,
             manifest,
-            request or ComputeLaunchRequest(argv=["printf", "hello world"], cwd=str(tmp_path)),
+            request
+            or ComputeLaunchRequest(
+                argv=["printf", "hello world"], cwd=str(tmp_path), label="Training"
+            ),
             data_dir=tmp_path / "data",
             project_id="project",
             origin_operation_id="turn",
@@ -119,6 +122,7 @@ def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, ma
     store, backend, launch = launch_environment
     record = launch()
     assert record.status == "running"
+    assert record.label == "Training"
     assert store.compute_job(record.job_id) == record
     root = Path(record.job_root)
     assert root.parent == tmp_path / "data" / "jobs"

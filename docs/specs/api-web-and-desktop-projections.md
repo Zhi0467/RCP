@@ -65,6 +65,42 @@ episode. A branch id alone never grants lookup. Task, watcher, episode, and
 Experiment detail APIs preserve exact `main` versus `branch:<id>` target
 identity.
 
+## Compute setup and job APIs
+
+Project machine entries expose the manifest `compute` block and a live
+`compute_probe`, serialized as `ComputeBackendProbe` or null. The latter is
+read from storage even when the graph snapshot is cached. Settings updates
+accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
+removes a block, omission preserves it. Validation and TOML persistence belong
+to the machine configuration owner. A changed block invalidates its stored probe.
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` uses
+project write admission, stores a fresh probe, and returns that same model with
+its backend-owned label and tone.
+
+`GET /api/projects/{project_id}/compute-jobs` refreshes running project jobs,
+then returns the bounded newest-first list of `ComputeJobRecord` rows, each
+with a backend-owned `can_cancel` that the web layer never derives. Fields
+include job id, optional label, status, exit status, created/start/end timestamps,
+backend id, execution machine, log path, origin operation id, episode id,
+cancellation requester and timestamp, and diagnostic.
+`POST /api/projects/{project_id}/compute-jobs/{job_id}/cancel` uses project write
+admission and Stop's named human identity, records that user's id, and calls the
+compute owner. Repeating Cancel for a terminal row returns it unchanged with 200;
+a missing or foreign-project job returns 404. These APIs add no background poller.
+Settings stages per-machine compute blocks alongside provider paths and sends
+only changed aliases through the existing Save. Each machine exposes Automatic
+or a registry backend, jobs root, and Slurm-only account, partition, and submit
+arguments. Unsaved machine edits mask the stored result and require Save before
+Probe. The probe response replaces the displayed result; absent probes are pending.
+
+Chat and Experiment run detail load project jobs on mount and on existing watcher
+refreshes, with no new timer. Job observers match records by `job_id` and show
+label or id, literal status, exit status, backend, diagnostics, and cancellation
+requester/time. Shell observers retain their existing presentation. The job status
+is opaque in `web/src/types.ts`; display conversion does not decide lifecycle.
+Each row carries a backend-owned `can_cancel`; the Cancel control follows it,
+calls the cancel route, and replaces the row from the response.
+
 ## Atomic client project snapshots
 
 The Web client stores a bounded project snapshot keyed by project id and exact

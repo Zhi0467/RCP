@@ -33,6 +33,7 @@ from rcp.api.experiments import stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
 from rcp.artifacts import AgentArtifactDescriptor, artifact_viewer_document, html_preview_document
 from rcp.background import BackgroundAgentTasks
+from rcp.compute_jobs.admission import ComputeBackendNotReady, require_episode_compute_backend
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
@@ -138,6 +139,8 @@ def start_episode(
     service = get_project_service(catalog, project_id)
     try:
         start_request = _resolved_auto_research_start_request(service, body)
+        assert start_request.run_on is not None
+        require_episode_compute_backend(store, project_id, service.manifest, start_request.run_on)
         service.history.require_writable()
         graph_base_head = service.history.head_ref()
         episode, _ = start_auto_research(
@@ -157,6 +160,8 @@ def start_episode(
             episode,
             branch_summary=_branch_summary(store, catalog),
         )
+    except ComputeBackendNotReady as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         live = any(
             episode.mode == "auto_research"
@@ -306,6 +311,8 @@ def reauthorize_episode(
                 starting_instruction=state.starting_instruction,
             ),
         )
+        assert start_request.run_on is not None
+        require_episode_compute_backend(store, project_id, service.manifest, start_request.run_on)
         graph_base_head = service.history.head_ref()
         fresh, _ = start_auto_research(
             background_tasks,
@@ -318,6 +325,8 @@ def reauthorize_episode(
                 catalog=catalog,
             ),
         )
+    except ComputeBackendNotReady as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return serialize_episode(

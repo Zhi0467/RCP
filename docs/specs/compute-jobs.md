@@ -3,10 +3,8 @@
 RCP owns launch and durable observation; the execution machine's process owner
 owns the computation. Work, Experiment-loop, and Auto-research child Work turns
 can launch, inspect, and cancel jobs through the staged command client, then hand
-observation to RCP. Prompts teach `launch`, a job observer, and at most one
-same-turn status check before finishing; backend rejection requires a setup
-Blocker with the response diagnostic and required action. Setup surfaces and
-human Cancel controls remain in the [compute runner handoff](../handoffs/handoff-2026-09-06-compute-runner.md).
+observation to RCP. Setup, web controls, and prompts are implemented across the
+integrated PRs; the real-host acceptance drive remains pending.
 
 ## Backend profiles
 
@@ -121,6 +119,40 @@ Mirrored containment also marks the turn's protected write paths read-only insid
 the writable roots; cooperative backends cannot.
 Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
 hostile same-account isolation claims.
+
+## Setup and human control
+
+Install enables and verifies linger for the service account. The installed-service
+CLI `rcp server compute probe --project <project_id> <machine_alias>` and
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` run the
+same backend probe under the service account and store its result. The CLI
+prints label, backend id, containment, diagnostic, and required action, returning
+0 only when ready and 1 otherwise. The API returns `ComputeBackendProbe` directly.
+
+Project settings accept `machine_compute`, a partial map from machine alias to
+`MachineComputeConfig`: omission preserves a machine and null removes its block;
+an unset backend selects automatic resolution. Writes use the manifest writer.
+Changing a compute block deletes that machine's stored probe before publication,
+so the next probe or launch verifies the new settings. An unchanged block keeps
+its probe. Project machine entries carry `compute` and the live stored
+`compute_probe` (or null), including on cached project reads.
+
+`GET /api/projects/{project_id}/compute-jobs` refreshes running project rows on
+read, then returns `ComputeJobRecord` rows newest first with the existing list
+limit. Records include the optional launch label; pre-label records have null.
+No new polling worker is added. Human
+`POST /api/projects/{project_id}/compute-jobs/{job_id}/cancel` requires project
+write admission and the same named human identity as Stop. It records the human's
+user id and the first cancellation timestamp, calls the backend, and returns the
+row; terminal cancellation is an unchanged 200 response. Jobs from another
+project are not visible through either route. Stop and pause never cancel jobs.
+
+Experiment-loop and Auto-research human episode starts require a ready stored
+probe for the resolved execution machine. When absent, admission runs and stores
+one first. A failed or unavailable probe refuses with 422 naming the machine,
+diagnostic, and required action, before reserving an episode. Ordinary human
+Work is not gated. The concrete request admission owns this check; shared
+background execution does not.
 
 ## Turn-bound agent commands
 

@@ -1,3 +1,5 @@
+import { ComputeJobRow } from "./ComputeJobRow";
+import { useComputeJobs } from "../hooks/useComputeJobs";
 import {
   AlertTriangle,
   ChevronUp,
@@ -84,6 +86,8 @@ import {
   visibleChatWatchers,
   watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
+  retainedChatJobObservers,
+  watcherIsActive,
 } from "../runProjection";
 import {
   downloadDesktopArtifact,
@@ -201,6 +205,8 @@ interface KeyboardChatAnnotationComposer {
 }
 
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
+
+const EMPTY_WATCHERS: WatcherRecord[] = [];
 
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
@@ -369,7 +375,7 @@ export function NodeChat({
   conversationTitle,
   runScope,
   tasks,
-  watchers = [],
+  watchers = EMPTY_WATCHERS,
   historyMessages = [],
   chatId,
   presentation = "floating",
@@ -692,6 +698,11 @@ export function NodeChat({
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const computeJobs = useComputeJobs(apiBase, watchers);
+  const watcherRows = useMemo(
+    () => [...liveWatchers, ...retainedChatJobObservers(watchers, chatId, computeJobs.jobs)],
+    [chatId, computeJobs.jobs, liveWatchers, watchers],
+  );
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
@@ -1483,15 +1494,15 @@ export function NodeChat({
     }
   };
 
-  const watcherToggle = liveWatchers.length > 0 && (
+  const watcherToggle = watcherRows.length > 0 && (
     <button
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
       type="button"
       aria-expanded={watchersOpen}
-      aria-label={`${liveWatchers.length} active watcher${liveWatchers.length === 1 ? "" : "s"}`}
+      aria-label={`${watcherRows.length} active watcher${watcherRows.length === 1 ? "" : "s"}`}
       onClick={() => setWatchersOpen((open) => !open)}
     >
-      <RadioTower size={12} /> {liveWatchers.length}
+      <RadioTower size={12} /> {watcherRows.length}
     </button>
   );
 
@@ -1547,16 +1558,28 @@ export function NodeChat({
           </div>
         )}
       </div>
-      {liveWatchers.length > 0 && watchersOpen && (
+      {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
-          {liveWatchers.map((watcher) => {
+          {computeJobs.error && <span role="alert">Compute jobs: {computeJobs.error}</span>}
+          {watcherRows.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
-                <strong>
-                  {external ? fileName(watcher.log_path) : graphConditionLabel(watcher.condition)}
-                </strong>
+                {external && watcher.job_id ? (
+                  <ComputeJobRow
+                    jobId={watcher.job_id}
+                    jobs={computeJobs.jobs}
+                    onCancel={computeJobs.cancel}
+                    cancelling={computeJobs.cancelling}
+                  />
+                ) : (
+                  <strong>
+                    {external
+                      ? fileName(watcher.log_path ?? "")
+                      : graphConditionLabel(watcher.condition)}
+                  </strong>
+                )}
                 <time dateTime={observedAt ?? undefined}>
                   {observedAt
                     ? `${external ? "Checked" : "Evaluated"} ${new Date(observedAt).toLocaleString()}`
@@ -1565,15 +1588,18 @@ export function NodeChat({
                       : "Not evaluated yet"}
                 </time>
                 {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-                {!readOnly && onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => onStopWatcher(watcher.watcher_id)}
-                  >
-                    Stop watching
-                  </button>
-                )}
+                {!readOnly &&
+                  onStopWatcher &&
+                  watcherIsActive(watcher) &&
+                  watcherIsIndividuallyStoppable(watcher) && (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() => onStopWatcher(watcher.watcher_id)}
+                    >
+                      Stop watching
+                    </button>
+                  )}
               </div>
             );
           })}

@@ -11,6 +11,8 @@ from typing import Any, TypeVar
 from pydantic import TypeAdapter
 
 from rcp.api import create_app
+from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.history import HistoryManager
@@ -54,15 +56,33 @@ _RCP_OWNED_ITEM_FIELDS = {
 }
 
 
-def create_named_app(*args: Any, **kwargs: Any):
-    """Create an app whose personal test owner has accepted the write precondition."""
+def create_named_app(*args: Any, compute_ready: bool = True, **kwargs: Any):
+    """Create a named test app with compute readiness independent of the test host."""
 
     app = create_app(*args, **kwargs)
+    store = app.state.background_tasks.store
     if app.state.space_kind == "personal":
-        store = app.state.background_tasks.store
         owner = store.local_owner
         if owner is not None and owner.display_name is None:
             store.rename_space_user(owner.user_id, "Test researcher")
+    if compute_ready and app.state.default_project_id is not None:
+        project = store.project(app.state.default_project_id)
+        assert project is not None
+        for machine in load_manifest(project.locator).machines:
+            if store.compute_backend_probe(app.state.default_project_id, machine.alias) is None:
+                store.record_compute_backend_probe(
+                    app.state.default_project_id,
+                    ComputeBackendProbe(
+                        execution_machine=machine.alias,
+                        backend_id="systemd_user",
+                        state="ready",
+                        ready=True,
+                        diagnostic="Test compute backend is ready.",
+                        containment="cooperative",
+                        status_label="Ready",
+                        status_tone="ready",
+                    ),
+                )
     return app
 
 

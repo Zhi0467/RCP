@@ -1,4 +1,11 @@
-import type { AgentTask, ChatMessage, ComputeConnection, ComputeConnectionProbe } from "./types";
+import type {
+  AgentTask,
+  ChatMessage,
+  ComputeConnection,
+  ComputeConnectionProbe,
+  ComputeBackendProbe,
+  ComputeJobRecord,
+} from "./types";
 
 export function reconcileActiveComputeIds(
   ids: readonly string[],
@@ -40,7 +47,9 @@ export function latestPersistedComputeIds(
   return reconcileActiveComputeIds(candidates.at(-1)?.ids ?? [], connections);
 }
 
-export function computeProbePresentation(probe: ComputeConnectionProbe | undefined): {
+export function computeProbePresentation(
+  probe: ComputeConnectionProbe | ComputeBackendProbe | null | undefined,
+): {
   label: string;
   tone: "ready" | "error" | "pending";
 } {
@@ -51,4 +60,18 @@ export function computeProbePresentation(probe: ComputeConnectionProbe | undefin
 function comparableTime(value: string): number {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+/** Display persisted job facts without interpreting its lifecycle. */
+export function computeJobPresentation(job: ComputeJobRecord) {
+  return {
+    label: job.label || job.job_id,
+    status: String(job.status),
+    backend: job.backend_id,
+    exitStatus:
+      job.exit_status === null ? "Exit status unavailable" : `Exit status ${job.exit_status}`,
+    cancellation: job.cancel_requested_by
+      ? `Cancel requested by ${job.cancel_requested_by}${job.cancel_requested_at ? ` · ${job.cancel_requested_at}` : ""}`
+      : null,
+  };
 }

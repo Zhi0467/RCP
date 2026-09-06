@@ -2299,6 +2299,13 @@ class ProjectCatalog:
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
         prior_compute_key = compute_probe_cache_key(service.manifest)
+        for alias, compute in (request.machine_compute or {}).items():
+            machine = service.manifest.machine_map.get(alias)
+            if machine is None:
+                raise ValueError(f"compute configuration uses unknown machine: {alias}")
+            if machine.compute != compute:
+                # Fail closed even if manifest publication fails partway through.
+                self.store.delete_compute_backend_probe(project_id, alias)
         service.update_settings(request)
         if compute_probe_cache_key(service.manifest) != prior_compute_key:
             with self._services_lock:
@@ -2438,6 +2445,15 @@ class ProjectDisplayCache:
         if fresh:
             self._catalog.mark_snapshot_fresh(payload)
         self._complete_live_control(project_id, payload)
+        payload["machines"] = [
+            {
+                **machine,
+                "compute": machine.get("compute"),
+                "compute_probe": (probe.model_dump(mode="json") if probe is not None else None),
+            }
+            for machine in payload["machines"]
+            for probe in [self._store.compute_backend_probe(payload["id"], machine["alias"])]
+        ]
         return payload
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:

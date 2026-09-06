@@ -8,6 +8,7 @@ import {
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isGraphWatcherRecord,
+  retainedChatJobObservers,
   visibleChatWatchers,
   watcherIsActive,
   watcherIsIndividuallyStoppable,
@@ -403,6 +404,47 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   assert.deepEqual(
     visibleChatWatchers(watchers, "project-chat", null).map((item) => item.watcher_id),
     [],
+  );
+});
+
+test("a stopped job observer stays listed only while its job remains cancellable", () => {
+  const jobObserver = (id, status) =>
+    watcher(id, null, null, status, {
+      chat_id: "work-chat",
+      check_command: null,
+      log_path: null,
+      cwd: null,
+      job_id: `job-${id}`,
+      continuation: {
+        ...watcher("seed", null, null, "active").continuation,
+        patch_kind: "work",
+        control_node_id: null,
+        control_episode_id: null,
+      },
+    });
+  const stoppedRunning = jobObserver("stopped-running", "stopped");
+  const stoppedExited = jobObserver("stopped-exited", "stopped");
+  const activeRunning = jobObserver("active-running", "active");
+  const otherChat = { ...jobObserver("other-chat", "stopped"), chat_id: "another-chat" };
+  const stoppedShell = watcher("stopped-shell", null, null, "stopped", {
+    chat_id: "work-chat",
+    continuation: stoppedRunning.continuation,
+  });
+  const jobs = [
+    { job_id: "job-stopped-running", can_cancel: true },
+    { job_id: "job-stopped-exited", can_cancel: false },
+    { job_id: "job-active-running", can_cancel: true },
+    { job_id: "job-other-chat", can_cancel: true },
+  ];
+  const watchers = [stoppedRunning, stoppedExited, activeRunning, otherChat, stoppedShell];
+  assert.deepEqual(
+    retainedChatJobObservers(watchers, "work-chat", jobs).map((item) => item.watcher_id),
+    ["stopped-running"],
+  );
+  assert.deepEqual(retainedChatJobObservers(watchers, "work-chat", []), []);
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "work-chat", null).map((item) => item.watcher_id),
+    ["active-running"],
   );
 });
 

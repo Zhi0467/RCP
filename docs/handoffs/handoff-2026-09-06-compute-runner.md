@@ -1,32 +1,12 @@
 # Compute runner handoff
 
 Date: 2026-09-06
-Status: active, human-confirmed on 2026-09-06. PR A is implemented on
-`codex/compute-runner-foundation`: backend profiles, durable receipts and job
-state, probes, reconciliation, configuration, and storage/restore integration.
-Focused tests, Ruff, pre-commit, and a throwaway served-app startup check pass.
-Real systemd and launchd execution is unavailable in this sandbox; the full
-suite's existing watcher process checks cannot execute `ps` here. PR B implements
-the Work and Experiment-loop broker channel, durable probes, compute verbs, job
-observers, settlement correction, and wake payload on
-`codex/compute-runner-channel`. Broker, fake-backend command/observer, settlement,
-migration, and restore regressions pass, as do Ruff, pre-commit, and a throwaway
-HTTP startup check. The focused and full suites fail only the two existing `ps`
-sandbox checks; Chromium console inspection is also sandbox-blocked. PR C implements
-child Work compute verbs, watcher settlement and same-session continuation,
-derived waiting state, guarded finish, root status, and child watcher Stop fences
-on `codex/compute-runner-child-wake`. Child mailbox, correction, same-session wake,
-budget/Stop/exhaustion, migration, and restore regressions pass, as do Ruff,
-pre-commit, and a throwaway HTTP startup check. The focused suite fails only the
-two known watcher `ps` permission tests. The full suite also hits the two-second
-remote-stage probe wait in `test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles`;
-that test and the complete episode API test file pass separately. Chromium console
-inspection remains sandbox-blocked. PR E implements Work, Experiment-loop, and
-child Work launch/job-observer prompts on `codex/compute-runner-prompts`, including
-bounded status checks and setup-failure Blockers. PR D and the real-host acceptance
-drive remain. The decisions below are settled. Closure:
-all five PRs merged, the S136 drive passes on the team server with a real Codex
-Work turn, and this file is archived in the same change.
+Status: active integration on `codex/compute-runner-simplify`. PRs A, B, C,
+D1, D2, and E are combined locally; their combined verification and the real
+team-server drive remain. On 2026-09-06 the user superseded the scheduler-wrapper
+and second watcher contract: scheduler submission stays agent-owned, Slurm
+integration is readiness only, and helper-launched jobs use ordinary shell
+watchers. The implementation below is the predecessor plan being replaced.
 
 ## What this is
 
@@ -157,11 +137,14 @@ previous branch until that branch merges.
 - **C `codex/compute-runner-child-wake`.** Child Work gets the three verbs and
   its watcher continuation together: route state, wake, budget spend, Stop
   fence, finish guard, root status. No child can launch before its wake exists.
-- **D `codex/compute-runner-setup`.** Install linger. Server CLI probe. API for
-  machine probe, job list, and Cancel. Settings backend block and probe status.
-  Job rows with Cancel in chat and Runs. Episode-start gating. Web types and
-  spec updates.
-- **E `codex/compute-runner-prompts` — implemented.** Work, Experiment-loop, and child Work
+- **D1 `codex/compute-runner-setup`.** Implemented: install linger, server CLI
+  probe, machine compute settings API, probe API, job list and human Cancel API,
+  episode-start gating, and specs. No web changes.
+- **D2 `codex/compute-runner-ui`.** Implemented: web types, Settings compute block
+  and probe status, job rows in chat and Runs, and the human Cancel control that
+  follows the backend-owned `can_cancel`; job status stays opaque in the browser.
+- **E `codex/compute-runner-prompts`.** Work, Experiment-loop, and child Work
+
   prompts: use `launch`, one bounded status check at most, finish; `unavailable`
   is a Blocker naming the setup failure, never a cue to run attached; remove the
   local-PID example; child Work reports back when it cannot finish; rewrite the
