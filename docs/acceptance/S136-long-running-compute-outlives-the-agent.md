@@ -9,15 +9,20 @@ covered_by:
   - tests/test_compute_jobs_observers.py
   - tests/test_compute_jobs.py
   - tests/test_compute_jobs_probe.py
+  - tests/test_auto_research_child_work_compute.py
+  - tests/test_auto_research_child_work_watchers.py
+  - tests/test_auto_research_child_work_watchers_storage.py
   - tests/test_staged_command_client.py
   - tests/test_watchers.py
   - tests/test_acceptance_experiment_watchers.py
 invariants: [4, 4b, 5, 8, 9, 10g]
 last_checked: >-
   2026-09-06 — human confirmed the compute-runner journey. PR B implements
-  Work and Experiment-loop command and observer paths. The real team-server
-  drive and operator surfaces remain pending. PR E teaches the launch and job
-  observer handoff in Work, Experiment-loop, and child Work prompts.
+  Work and Experiment-loop command and observer paths; PR C adds Auto-research
+  child Work launch, budgeted same-session watcher wake, waiting state, and
+  Stop fencing; PR E teaches the launch and job observer handoff in Work,
+  Experiment-loop, and child Work prompts. The real team-server drive and
+  operator surfaces remain pending.
 ---
 
 # Long-running compute outlives the agent and wakes it
@@ -50,17 +55,22 @@ project data or stops unrelated work.
    an Experiment-loop turn. Inspect its watcher-state file and verify the wake
    uses the same episode, native session, and graph target and spends one
    permitted invocation.
-5. Omit the observer for a still-running launched job. Verify settlement names
+5. Repeat the launch, provider exit, RCP restart, and completion journey from
+   an Auto-research child Work turn. Verify the root Work reports the waiting
+   child as a finish blocker while the job runs, the wake continues the same
+   child session and spends one permitted invocation, and Stop on the root
+   fences the wake while the job stays alive.
+6. Omit the observer for a still-running launched job. Verify settlement names
    the unobserved job id and corrects the handoff in the same session without
    spending another invocation or relaunching the job. A job already exited
    needs no observer.
-6. Select a machine with no passing backend probe. Verify `launch` answers
+7. Select a machine with no passing backend probe. Verify `launch` answers
    `unavailable` with the probe diagnostic and required action, and the agent
    stops with a Blocker instead of polling or launching attached computation.
-7. Human Cancel a running job. Verify cancellation attribution, idempotent
+8. Human Cancel a running job. Verify cancellation attribution, idempotent
    repeated Cancel, and observer completion with the cancelled status. Verify
    Stop and pause leave a separate running job alive.
-8. Make a job disappear without an exit receipt. Verify its observer degrades
+9. Make a job disappear without an exit receipt. Verify its observer degrades
    with the job diagnostic and does not produce a completion wake.
 
 ## Assert
@@ -70,6 +80,7 @@ project data or stops unrelated work.
 - `work_wake_is_attributed_coalesced_and_not_duplicated`
 - `experiment_wake_preserves_episode_session_target_and_budget`
 - `both_wake_kinds_carry_job_exit_timing_log_and_backend`
+- `child_work_wake_is_budgeted_waits_the_root_and_is_fenced_by_stop`
 - `unobserved_running_job_is_corrected_without_relaunch_or_invocation_spend`
 - `unavailable_backend_produces_a_setup_blocker_without_polling`
 - `human_cancel_is_attributed_idempotent_and_completes_the_observer`
