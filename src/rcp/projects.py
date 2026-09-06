@@ -258,7 +258,6 @@ def inspect_backup_project_registration(
                     resolved_central_root=machine.resolved_central_root,
                 )
                 for machine in request.machines
-                if machine.resolved_central_root is not None
             ),
             repositories=tuple(
                 BackupRecoveryRepository(

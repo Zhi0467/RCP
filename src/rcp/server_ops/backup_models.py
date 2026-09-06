@@ -818,7 +818,7 @@ class BackupRecoveryMachine(_StrictBackupModel):
     location: Literal["local", "ssh"]
     host: str
     os_account: str
-    resolved_central_root: str
+    resolved_central_root: str | None
 
     @field_validator("alias")
     @classmethod
@@ -843,7 +843,9 @@ class BackupRecoveryMachine(_StrictBackupModel):
 
     @field_validator("resolved_central_root")
     @classmethod
-    def validate_root(cls, value: str) -> str:
+    def validate_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _absolute_path(value, label="backup recovery central root")
 
     @model_validator(mode="after")
@@ -955,6 +957,8 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
             ):
                 raise ValueError("backup recovery checkout differs from canonical configuration")
             machine = machine_map[repository.machine_alias]
+            if machine.resolved_central_root is None:
+                raise ValueError("backup recovery repository owner has no resolved central root")
             expected = (
                 PurePosixPath(machine.resolved_central_root)
                 / self.project_id
