@@ -1,16 +1,15 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active. Phases 0 and 1 and the Phase 2 public-origin transition are
-merged. The remaining Phase 2 cleanup and Phase 3–5 implementation are collected
-in one supervisor integration PR: independent deployment and restore journals,
-closed admission, generic checkpoints, boot recovery, artifact installation,
-source adoption, operator delegation, and removal of the old deployment owners.
-The disposable reboot harness is implemented. The integration closeout of
-2026-09-06 below finished the supervisor's terminal wizard and failure
-breakpoints, fixed every confirmed finding of the final integration review, and
-passed the full local baselines. Actual Ubuntu reboot qualification, human
-promotion, and the Phase 6 production drive remain outstanding.
+Status: active. Phases 0 and 1, the Phase 2 public-origin transition, and the
+remaining Phase 2–5 supervisor implementation are merged through PR #65.
+Independent deployment and restore journals, closed admission, generic
+checkpoints, automatic boot recovery, artifact installation, source adoption,
+operator delegation, and retirement of the old deployment owners are implemented.
+The disposable reboot and historical-source adoption harnesses are implemented;
+drive-found fixes use subsequent PRs. Actual Ubuntu qualification, fresh-host
+GitHub checkout/key reconstruction evidence, human promotion, and the Phase 6
+production drive remain outstanding.
 
 Human clarification, 2026-09-06: finish the remaining coding in one PR, then drive
 the system; bugs found by that drive belong in subsequent PRs. Earlier phases
@@ -94,7 +93,23 @@ boot or recovery was proved. The workflow now grants the hosted runner membershi
 in the device's existing `kvm` group and enters that group for both preflight and
 the complete drive. This replaces the transient ACL grants; QEMU remains
 unprivileged, and all disposable-host and changed-boot gates remain required.
-A successful hosted rerun is still needed to verify this correction.
+Run [34051609679](https://github.com/Zhi0467/RCP/actions/runs/34051609679)
+at `f943744` then booted both requested Ubuntu guests. Their first boot IDs were
+`49fdf4dc-1752-4a3f-858a-e31c6b40dbfb` (22.04) and `e4318aa1-5987-4a8e-bd1c-fcce218d6de2` (24.04).
+The application bootstrap command failed before any recovery case; its stderr
+was not retained by the prior controller. The harness now preserves bounded
+guest stderr. Initial guest boot is proved; changed-boot recovery is not.
+
+The workflow also packages exact historical source `203ad6a` and a bounded
+Node.js 24/npm runtime for a separate pristine guest. It runs the historical
+installer, paired-wheel adoption, complete protected archive decryption/inventory
+verification, and an offline reboot using the shipped startup guard. Receipts
+keep the source identity, selected wheel identity, protected archive hashes,
+changed boot IDs, preserved team/project/canonical data, and service ownership.
+These additions are implementation and local test evidence until their hosted
+run succeeds. Fresh-host GitHub checkout and replacement deploy-key evidence
+remains a separate external gate; reusing the existing synthetic checkout does
+not prove it.
 
 ## Phases
 

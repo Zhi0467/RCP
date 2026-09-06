@@ -98,12 +98,21 @@ def write_receipt(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
 
 
-def payload(workspace: Path, bundles: Path, destination: Path) -> None:
+def payload(
+    workspace: Path, bundles: Path, destination: Path, *, adoption: Path | None = None
+) -> None:
     with tarfile.open(destination, "w:gz") as archive:
         for name in ("base", "target", "build-receipt.json"):
             archive.add(bundles / name, arcname=f"bundles/{name}")
         for name in ("__init__.py", "supervisor_reboot_guest.py", "supervisor_reboot_data.py"):
             archive.add(workspace / "tests" / name, arcname=f"tests/{name}")
+        if adoption is not None:
+            for name in ("historical-source.bundle", "node-runtime.tar.gz", "package-receipt.json"):
+                archive.add(adoption / name, arcname=f"adoption/{name}")
+            archive.add(
+                workspace / "tests/supervisor_adoption_guest.py",
+                arcname="tests/supervisor_adoption_guest.py",
+            )
         uv = shutil.which("uv")
         if uv is None:
             raise RuntimeError("uv disappeared after the qualification build.")
@@ -141,23 +150,7 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
 
     try:
         guest.start()
-        guest.copy(upload, "/home/qualifier/payload.tar.gz")
-        guest.ssh(["sudo", "-n", "mkdir", "-m", "0755", GUEST_ROOT])
-        guest.ssh(
-            [
-                "sudo",
-                "-n",
-                "tar",
-                "--extract",
-                "--gzip",
-                "--file",
-                "/home/qualifier/payload.tar.gz",
-                "--directory",
-                GUEST_ROOT,
-                "--no-same-owner",
-                "--no-same-permissions",
-            ]
-        )
+        guest.install_payload(upload)
         receipt["bootstrap"] = json.loads(
             guest.ssh(["sudo", "-n", "python3", guest_script, "bootstrap"], timeout=1800).stdout
         )

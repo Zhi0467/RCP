@@ -50,9 +50,14 @@ def require_guest(*, root: bool = True) -> None:
 
 
 def run(argv: list[str], *, timeout: int = 120, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        argv, check=True, capture_output=True, text=True, timeout=timeout, **kwargs
-    )
+    try:
+        return subprocess.run(
+            argv, check=True, capture_output=True, text=True, timeout=timeout, **kwargs
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            print("Guest command stderr:\n" + exc.stderr[-8000:], file=sys.stderr)
+        raise
 
 
 def write_json(path: Path, value: dict, *, service_owned: bool = False) -> None:
