@@ -402,6 +402,58 @@ def test_launch_retains_root_when_acceptance_is_uncertain(
     assert store.running_compute_jobs() == []
 
 
+def test_launch_receipt_write_failure_still_records_the_accepted_job(
+    launch_environment, tmp_path, monkeypatch
+):
+    store, backend, launch = launch_environment
+    real_write = jobs.write_job_file
+
+    def failing_write(context, path, text):
+        if path.endswith("launch.json"):
+            raise OSError("connection dropped")
+        return real_write(context, path, text)
+
+    monkeypatch.setattr(jobs, "write_job_file", failing_write)
+    record = launch()
+    stored = store.compute_job(record.job_id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.backend_handle == record.backend_handle
+    assert "Launch receipt not written" in stored.diagnostic
+
+
+def test_gone_job_with_malformed_started_receipt_still_exits(
+    launch_environment, tmp_path, manifest
+):
+    store, backend, launch = launch_environment
+    record = launch()
+    Path(record.job_root, "started").write_text("nope")
+    Path(record.exit_path).write_text("0 1757000000")
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    assert result.status == "exited"
+    assert result.exit_status == 0
+
+
+def test_local_backend_oserror_is_not_a_host_outage(
+    launch_environment, tmp_path, manifest, monkeypatch
+):
+    store, backend, launch = launch_environment
+    records = [launch() for _ in range(3)]
+    calls = []
+
+    def alive(handle, context):
+        calls.append(handle)
+        if len(calls) == 1:
+            raise FileNotFoundError("squeue")
+        return False
+
+    monkeypatch.setattr(backend, "alive", alive)
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    assert len(calls) == 3
+    statuses = sorted(store.compute_job(record.job_id).status for record in records)
+    assert statuses == ["exited", "exited", "running"]
+
+
 def test_uncertain_launch_retains_intent(launch_environment, tmp_path):
     from rcp.compute_jobs.backend_context import ComputeLaunchUncertainError
 
@@ -559,11 +611,8 @@ def test_reconcile_row_failure_does_not_skip_other_jobs(
 
 @pytest.mark.parametrize(
     "error",
-    [
-        ComputeTransportError("connection dropped"),
-        subprocess.TimeoutExpired("backend status", 10),
-        OSError("transport could not be started"),
-    ],
+    # A local OSError is row-specific; see test_local_backend_oserror_is_not_a_host_outage.
+    [ComputeTransportError("connection dropped"), subprocess.TimeoutExpired("backend status", 10)],
 )
 def test_reconcile_contacts_unreachable_host_once_per_pass(
     launch_environment, tmp_path, manifest, monkeypatch, error
