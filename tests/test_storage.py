@@ -68,6 +68,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (8, "conversation_worktrees_v1"),
         (9, "compute_jobs_v1"),
         (10, "compute_job_observers_v1"),
+        (11, "child_work_watchers_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -222,7 +223,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
         )
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (7,), (8,), (9,), (10,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (7,), (8,), (9,), (10,), (11,)]
 
     reopened = AppStore(path)
 

@@ -2222,6 +2222,7 @@ AutoResearchFinishDisposition = Literal["blocked", "completed"]
 AutoResearchCommandFileKind = Literal["apply", "instruction", "goal"]
 AutoResearchFinishBlockerKind = Literal[
     "spawned_work",
+    "waiting_work",
     "experiment_episode",
     "experiment_replacement",
     "lifecycle_notice",
@@ -3132,6 +3133,7 @@ class WatcherDeliveryRecord(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation

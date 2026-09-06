@@ -265,12 +265,14 @@ may claim retained compatible completion as invocation one.
 
 ## Watcher resources
 
-Conversation and Experiment watcher targets are separate exact resources, not a
-client-chosen mode field.
+Conversation, Experiment, and Auto-research child Work watcher targets are
+separate exact resources, not a client-chosen mode field.
 
 - A conversation `watch.json` wakes that same conversation.
 - An Experiment watcher resource is keyed by project, exact graph target,
   Experiment node, and compatible episode, and wakes that bounded episode.
+- A child Work watcher retains the parent episode and child route worker id and
+  wakes that same route and native session, never the Auto-research root.
 
 A branch watcher can never wake a main task, and a main watcher can never spend
 a branch episode. Watcher selection, staging, atomic claim, task creation, and
@@ -328,9 +330,9 @@ never completion. These states report operational liveness, not scientific
 success. The [compute jobs spec](compute-jobs.md) owns launch and cancellation.
 
 For each delivered job observer, the Experiment watcher-state file and generic
-Work wake message carry `job_id`, `exit_status`, `started_at`, `ended_at`,
-`duration_seconds`, `log_path`, and `backend_id`. Shell observers retain their
-existing log-path payload. Both use the same durable coalescing and claim path.
+Work wake message, including child Work, carry `job_id`, `exit_status`,
+`started_at`, `ended_at`, `duration_seconds`, `log_path`, and `backend_id`. Shell
+observers retain their existing log-path payload. Both use the same durable coalescing and claim path.
 
 Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is
@@ -345,11 +347,20 @@ legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
 
-At Work and Experiment-loop settlement, RCP also refreshes every job launched
-by the turn. A still-running job absent from the declared job observers is a
-correctable handoff defect listing the unobserved job ids. The same correction
+At Work, child Work, and Experiment-loop settlement, RCP also refreshes every
+job launched by the turn. A still-running job absent from the declared job
+observers is a correctable handoff defect listing the unobserved job ids. The same correction
 round repairs it without another invocation; jobs already exited need no
-observer, and a turn that launched nothing is unaffected.
+observer, and a turn that launched nothing is unaffected. Child Work uses the
+ordinary Work reader, validator, and arming path for its final `watch.json`.
+
+A child watcher claim creates one continuation and spends one parent B unit
+atomically. It requires a running parent, a route without a Stop fence, and a
+succeeded current child task. A repeated delivery cannot create a second wake;
+exhausted B leaves the completion pending. A succeeded child with an armed,
+undelivered watcher is waiting, which blocks the root's guarded finish. Episode
+Stop and the root's child `stop` verb retire the child's watchers within their
+admission fence. They never cancel the observed jobs.
 
 ## Watcher maintenance authority
 

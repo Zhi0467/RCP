@@ -396,8 +396,6 @@ async def _stage_work_turn(
                 execution, service.manifest, write_scope, remote_stage, request.control_episode_id
             )
             if execution is not None
-            and execution.store.auto_research_child_work_for_operation(execution.operation_id)
-            is None
             else None
         )
         validator_lifecycle = _start_work_validator_mailbox(
@@ -1037,6 +1035,9 @@ async def _validate_watch_deliverable(
             )
         specs = ordinary_handoff.external
         graph_conditions = ordinary_handoff.graph
+        child_route = turn.execution.store.auto_research_child_work_for_operation(
+            turn.execution.operation_id
+        )
         binding = WatcherBinding(
             project_id=origin_task.project_id,
             origin_operation_id=turn.execution.operation_id,
@@ -1044,6 +1045,7 @@ async def _validate_watch_deliverable(
             chat_id=turn.request.chat_id or "",
             node_id=turn.request.node_id,
             episode_id=origin_task.episode_id,
+            worker_id=child_route.worker_id if child_route is not None else None,
             graph_target=origin_task.graph_target,
             execution_host=turn.execution_host,
             continuation=_watcher_continuation(turn, staged),

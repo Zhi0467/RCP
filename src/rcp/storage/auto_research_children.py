@@ -552,16 +552,44 @@ class AutoResearchChildrenStoreMixin:
         worker_id: str,
         message_ids: list[str],
     ) -> AgentTaskRecord | None:
-        """Spend B and bind one exact worker-mail prefix to an ordinary Work continuation."""
+        """Spend B and claim one exact worker-mail prefix on its saved route."""
 
-        if not worker_id or not message_ids or len(message_ids) != len(set(message_ids)):
-            raise ValueError("a child Work message wake needs one worker and unique messages")
+        return self._create_auto_research_child_work_wake_task(
+            record, worker_id=worker_id, message_ids=message_ids, watcher_ids=[]
+        )
+
+    def create_auto_research_child_work_watcher_wake_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        worker_id: str,
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Claim child observations, spend B, and bind their saved Work continuation."""
+
+        return self._create_auto_research_child_work_wake_task(
+            record, worker_id=worker_id, message_ids=[], watcher_ids=watcher_ids
+        )
+
+    def _create_auto_research_child_work_wake_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        worker_id: str,
+        message_ids: list[str],
+        watcher_ids: list[str],
+    ) -> AgentTaskRecord | None:
+        """Claim child mail or watchers and spend B on the same saved Work route."""
+
+        ids = watcher_ids or message_ids
+        if not worker_id or not ids or len(ids) != len(set(ids)) or (message_ids and watcher_ids):
+            raise ValueError("a child Work wake needs one worker and unique pending delivery ids")
         if len(message_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
             raise ValueError(
                 "a child Work message wake may claim at most "
                 f"{AUTO_RESEARCH_MAIL_MAX_MESSAGES} messages"
             )
-        placeholders = ",".join("?" for _ in message_ids)
+        placeholders = ",".join("?" for _ in ids)
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -576,38 +604,68 @@ class AutoResearchChildrenStoreMixin:
                 self._validate_auto_research_parent_admission(episode)
                 if route.stop_requested_at is not None:
                     raise EpisodeNotRunning("the child Work route is stopping")
-                messages = connection.execute(
-                    f"""
-                    SELECT message_id, episode_id, recipient_task_id,
-                           delivered_at, delivery_operation_id
-                    FROM auto_research_messages
-                    WHERE message_id IN ({placeholders})
-                    """,
-                    message_ids,
-                ).fetchall()
-                if {str(item["message_id"]) for item in messages} != set(message_ids):
-                    raise ValueError("child Work mail delivery names a missing message")
-                if any(
-                    item["episode_id"] != route.episode_id or item["recipient_task_id"] != worker_id
-                    for item in messages
-                ):
-                    raise ValueError("child Work mail delivery crosses an episode or worker")
-                if any(
-                    item["delivered_at"] is not None or item["delivery_operation_id"] is not None
-                    for item in messages
-                ):
-                    return None
-                pending_prefix = connection.execute(
-                    """
-                    SELECT message_id FROM auto_research_messages
-                    WHERE episode_id = ? AND recipient_task_id = ?
-                      AND delivered_at IS NULL AND delivery_operation_id IS NULL
-                    ORDER BY created_at, message_id LIMIT ?
-                    """,
-                    (route.episode_id, worker_id, len(message_ids)),
-                ).fetchall()
-                if [str(item["message_id"]) for item in pending_prefix] != message_ids:
-                    return None
+                if watcher_ids:
+                    rows = connection.execute(
+                        f"""
+                        SELECT * FROM watchers WHERE watcher_id IN ({placeholders})
+                          AND status IN ('completed', 'degraded') AND notified = 0
+                          AND notification_operation_id IS NULL
+                        """,
+                        watcher_ids,
+                    ).fetchall()
+                    if {str(row["watcher_id"]) for row in rows} != set(watcher_ids):
+                        return None
+                    watchers = [self._watcher_record(row) for row in rows]
+                    self._validate_watcher_notification_members(connection, watchers)
+                    for watcher in watchers:
+                        self._validate_watcher_notification_scope(connection, record, [watcher])
+                    if any(
+                        item.worker_id != worker_id
+                        or item.episode_id != route.episode_id
+                        or item.project_id != route.project_id
+                        or item.graph_target != record.graph_target
+                        or item.chat_id != record.request.get("chat_id")
+                        or item.node_id != record.request.get("node_id")
+                        for item in watchers
+                    ):
+                        raise ValueError(
+                            "child Work watcher wake crosses its route or graph target"
+                        )
+                else:
+                    messages = connection.execute(
+                        f"""
+                        SELECT message_id, episode_id, recipient_task_id,
+                               delivered_at, delivery_operation_id
+                        FROM auto_research_messages
+                        WHERE message_id IN ({placeholders})
+                        """,
+                        message_ids,
+                    ).fetchall()
+                    if {str(item["message_id"]) for item in messages} != set(message_ids):
+                        raise ValueError("child Work mail delivery names a missing message")
+                    if any(
+                        item["episode_id"] != route.episode_id
+                        or item["recipient_task_id"] != worker_id
+                        for item in messages
+                    ):
+                        raise ValueError("child Work mail delivery crosses an episode or worker")
+                    if any(
+                        item["delivered_at"] is not None
+                        or item["delivery_operation_id"] is not None
+                        for item in messages
+                    ):
+                        return None
+                    pending_prefix = connection.execute(
+                        """
+                        SELECT message_id FROM auto_research_messages
+                        WHERE episode_id = ? AND recipient_task_id = ?
+                          AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                        ORDER BY created_at, message_id LIMIT ?
+                        """,
+                        (route.episode_id, worker_id, len(message_ids)),
+                    ).fetchall()
+                    if [str(item["message_id"]) for item in pending_prefix] != message_ids:
+                        return None
                 current_row = connection.execute(
                     "SELECT * FROM graph_runs WHERE operation_id = ?",
                     (route.current_operation_id,),
@@ -629,6 +687,14 @@ class AutoResearchChildrenStoreMixin:
                     "mode",
                     "patch_kind",
                 )
+                if watcher_ids:
+                    # The watcher pins resolved provider defaults, while the original
+                    # request may retain null model/reasoning; its policy was checked above.
+                    pinned_request_fields = tuple(
+                        field
+                        for field in pinned_request_fields
+                        if field not in {"model", "reasoning"}
+                    )
                 if (
                     record.status != "queued"
                     or not record.visible
@@ -647,8 +713,11 @@ class AutoResearchChildrenStoreMixin:
                     or record.request.get("trigger") != "orchestrator"
                     or record.request.get("mode") != "work"
                     or record.request.get("patch_kind") != "work"
-                    or record.request.get("message") is not None
-                    or record.request.get("watcher_ids") not in (None, [])
+                    or (not watcher_ids and record.request.get("message") is not None)
+                    or (watcher_ids and not isinstance(record.request.get("message"), str))
+                    or (watcher_ids and record.request.get("watcher_ids") != watcher_ids)
+                    or (not watcher_ids and record.request.get("watcher_ids") not in (None, []))
+                    or record.graph_target != current.graph_target
                     or record.request.get("result_view") is not None
                     or any(
                         record.request.get(field) != current.request.get(field)
@@ -656,7 +725,7 @@ class AutoResearchChildrenStoreMixin:
                     )
                 ):
                     raise ValueError(
-                        "child Work mail wake must preserve its exact saved Work session and scope"
+                        "child Work wake must preserve its exact saved Work session and scope"
                     )
                 if self._has_active_chat_overlap(connection, record):
                     return None
@@ -664,7 +733,11 @@ class AutoResearchChildrenStoreMixin:
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
-                self._insert_agent_task(connection, record, continuation_cause="message_wake")
+                self._insert_agent_task(
+                    connection,
+                    record,
+                    continuation_cause="watcher_wake" if watcher_ids else "message_wake",
+                )
                 connection.execute(
                     """
                     INSERT INTO auto_research_child_work_attempts (
@@ -716,20 +789,33 @@ class AutoResearchChildrenStoreMixin:
                     ),
                 ).rowcount
                 if budget_changed != 1 or route_changed != 1:
-                    raise ValueError("child Work mail admission changed during its transaction")
-                claimed = connection.execute(
-                    f"""
-                    UPDATE auto_research_messages
-                    SET delivered_at = ?, delivery_operation_id = ?
-                    WHERE message_id IN ({placeholders})
-                      AND delivered_at IS NULL AND delivery_operation_id IS NULL
-                    """,
-                    (record.created_at, record.operation_id, *message_ids),
-                ).rowcount
-                if claimed != len(message_ids):
-                    raise ValueError("child Work mail changed during its delivery claim")
+                    raise ValueError("child Work wake admission changed during its transaction")
+                if watcher_ids:
+                    claimed = connection.execute(
+                        f"""
+                        UPDATE watchers SET notified = 1, notification_operation_id = ?
+                        WHERE watcher_id IN ({placeholders}) AND notified = 0
+                          AND notification_operation_id IS NULL
+                          AND status IN ('completed', 'degraded')
+                        """,
+                        (record.operation_id, *watcher_ids),
+                    ).rowcount
+                    if claimed != len(watcher_ids):
+                        raise ValueError("child Work watchers changed during their delivery claim")
+                else:
+                    claimed = connection.execute(
+                        f"""
+                        UPDATE auto_research_messages
+                        SET delivered_at = ?, delivery_operation_id = ?
+                        WHERE message_id IN ({placeholders})
+                          AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                        """,
+                        (record.created_at, record.operation_id, *message_ids),
+                    ).rowcount
+                    if claimed != len(message_ids):
+                        raise ValueError("child Work mail changed during its delivery claim")
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Could not create the child Work message wake task.") from exc
+            raise ValueError("Could not create the child Work wake task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
@@ -769,6 +855,35 @@ class AutoResearchChildrenStoreMixin:
             ).fetchall()
         return [self._child_work_record(row) for row in rows]
 
+    def auto_research_waiting_child_work_ids(self, episode_id: str) -> set[str]:
+        """Derive sleeping child routes from their current task and undelivered observers."""
+
+        with self.connection() as connection:
+            return self._auto_research_waiting_child_work_ids(connection, episode_id)
+
+    @staticmethod
+    def _auto_research_waiting_child_work_ids(
+        connection: sqlite3.Connection, episode_id: str
+    ) -> set[str]:
+        rows = connection.execute(
+            """
+            SELECT route.worker_id FROM auto_research_child_work AS route
+            JOIN graph_runs AS run ON run.operation_id = route.current_operation_id
+            WHERE route.episode_id = ? AND run.status = 'succeeded'
+              AND route.stop_requested_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM watchers AS watcher
+                  WHERE watcher.worker_id = route.worker_id
+                    AND watcher.episode_id = route.episode_id
+                    AND watcher.status IN ('active', 'degraded', 'completed')
+                    AND watcher.notified = 0
+                    AND watcher.notification_operation_id IS NULL
+              )
+            """,
+            (episode_id,),
+        ).fetchall()
+        return {str(row["worker_id"]) for row in rows}
+
     def request_auto_research_child_work_stop(
         self,
         worker_id: str,
@@ -789,6 +904,18 @@ class AutoResearchChildrenStoreMixin:
                 WHERE worker_id = ?
                 """,
                 (now, now, worker_id),
+            )
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = 'stopped', notified = 1, next_check_at = NULL,
+                    stopped_by = COALESCE(stopped_by, 'loop'),
+                    stop_reason = COALESCE(stop_reason, 'Auto-research child Work stopped.'),
+                    stopped_at = COALESCE(stopped_at, ?)
+                WHERE worker_id = ? AND status IN ('active', 'degraded', 'completed')
+                  AND notified = 0
+                """,
+                (now, worker_id),
             )
         stored = self.auto_research_child_work(worker_id)
         assert stored is not None
@@ -2045,6 +2172,17 @@ class AutoResearchChildrenStoreMixin:
                 action=f"stop --key <key> {row['worker_id']}",
             )
             for row in workers
+        )
+        blockers.extend(
+            AutoResearchFinishBlocker(
+                kind="waiting_work",
+                blocker_id=worker_id,
+                state="waiting",
+                action=f"stop --key <key> {worker_id}",
+            )
+            for worker_id in sorted(
+                self._auto_research_waiting_child_work_ids(connection, episode_id)
+            )
         )
         experiments = connection.execute(
             """

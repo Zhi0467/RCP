@@ -12,8 +12,16 @@ observers, settlement correction, and wake payload on
 `codex/compute-runner-channel`. Broker, fake-backend command/observer, settlement,
 migration, and restore regressions pass, as do Ruff, pre-commit, and a throwaway
 HTTP startup check. The focused and full suites fail only the two existing `ps`
-sandbox checks; Chromium console inspection is also sandbox-blocked. PRs C–E
-and the real-host acceptance drive remain. The decisions below are settled. Closure:
+sandbox checks; Chromium console inspection is also sandbox-blocked. PR C implements
+child Work compute verbs, watcher settlement and same-session continuation,
+derived waiting state, guarded finish, root status, and child watcher Stop fences
+on `codex/compute-runner-child-wake`. Child mailbox, correction, same-session wake,
+budget/Stop/exhaustion, migration, and restore regressions pass, as do Ruff,
+pre-commit, and a throwaway HTTP startup check. The focused suite fails only the
+two known watcher `ps` permission tests. The full suite also hits the two-second
+remote-stage probe wait in `test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles`;
+that test and the complete episode API test file pass separately. Chromium console
+inspection remains sandbox-blocked. PRs D–E and the real-host acceptance drive remain. The decisions below are settled. Closure:
 all five PRs merged, the S136 drive passes on the team server with a real Codex
 Work turn, and this file is archived in the same change.
 

@@ -99,7 +99,7 @@ def test_job_observer_migration_preserves_old_shell_rows_and_indexes(tmp_path):
         sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'watchers'"
         ).fetchone()[0]
-        sql = sql.replace(", job_id TEXT", "")
+        sql = sql.replace(", job_id TEXT", "").replace(", worker_id TEXT", "")
         for column in ("check_command", "log_path", "cwd"):
             sql = sql.replace(f"{column} TEXT", f"{column} TEXT NOT NULL")
         indexes = [
@@ -113,7 +113,9 @@ def test_job_observer_migration_preserves_old_shell_rows_and_indexes(tmp_path):
         for statement in indexes:
             connection.execute(statement)
         connection.execute("DROP TABLE compute_backend_probes")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 10")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (10, 11)"
+        )
     upgraded = AppStore(store.path)
     assert upgraded.watcher(shell.watcher_id) == expected
     with upgraded.connection() as connection:

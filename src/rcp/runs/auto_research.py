@@ -335,6 +335,7 @@ def project_auto_research_episode(
     episode = _auto_research_episode(store, episode_id)
     meter = store.episode_budget_meter(episode_id)
     work_routes = store.auto_research_child_works(episode_id)
+    waiting_work = store.auto_research_waiting_child_work_ids(episode_id)
     work: list[dict[str, object]] = []
     for route in work_routes[-16:]:
         current = store.agent_task(route.current_operation_id)
@@ -343,7 +344,11 @@ def project_auto_research_episode(
                 "worker_id": route.worker_id,
                 "control_node_id": route.control_node_id,
                 "current_operation_id": route.current_operation_id,
-                "status": current.status if current is not None else "missing",
+                "status": "waiting"
+                if route.worker_id in waiting_work
+                else current.status
+                if current is not None
+                else "missing",
                 "attempt": current.attempt if current is not None else None,
                 "stop_requested": route.stop_requested_at is not None,
             }

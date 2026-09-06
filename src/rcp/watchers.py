@@ -155,6 +155,7 @@ class WatcherBinding(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation
@@ -1366,6 +1367,7 @@ def arm_watchers(
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
                 episode_id=binding.episode_id,
+                worker_id=binding.worker_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
                 job_id=spec.job_id,
@@ -1403,6 +1405,7 @@ def arm_watchers(
                     chat_id=binding.chat_id,
                     node_id=binding.node_id,
                     episode_id=binding.episode_id,
+                    worker_id=binding.worker_id,
                     graph_target=binding.graph_target,
                     execution_host=binding.execution_host,
                     condition=condition,

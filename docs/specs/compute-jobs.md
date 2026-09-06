@@ -1,9 +1,9 @@
 # Compute jobs
 
 RCP owns launch and durable observation; the execution machine's process owner
-owns the computation. Work and Experiment-loop turns can launch, inspect, and
-cancel jobs through the staged command client, then hand observation to RCP.
-Child Work continuation, setup surfaces, human Cancel controls, and agent prompt
+owns the computation. Work, Experiment-loop, and Auto-research child Work turns
+can launch, inspect, and cancel jobs through the staged command client, then hand
+observation to RCP. Setup surfaces, human Cancel controls, and agent prompt
 instructions remain in the [compute runner handoff](../handoffs/handoff-2026-09-06-compute-runner.md).
 
 ## Backend profiles
@@ -111,8 +111,9 @@ hostile same-account isolation claims.
 ## Turn-bound agent commands
 
 Explicit graph-repair tasks retain their existing validation-only policy.
-The staged client serves these keyed commands in ordinary Work and
-Experiment-loop turns, including their same-invocation correction turns:
+The staged client serves these keyed commands in ordinary Work, Experiment-loop,
+and Auto-research child Work turns, including their same-invocation correction
+turns:
 
 - `launch --key K --cwd <absolute-path> [--label <text>] -- <argv...>` returns
   `{job_id, log_path, backend_id}`. The working directory must be inside the
@@ -142,8 +143,9 @@ provider process tree binds each turn, with a fresh binding for correction;
 remote turns run the broker on their execution host. A validate-only identity
 cannot issue keyed commands. Auto-research retains its episode identity and
 per-request signatures, and stale processes cannot command a later Work turn.
-Task owners retain policy: child Work, the Auto-research root, Discuss, graph
-merge, Seed/Refresh, and Paper do not serve these compute verbs.
+Task owners retain policy: the Auto-research root, Discuss, graph merge,
+Seed/Refresh, and Paper do not serve these compute verbs. Child Work reuses the
+Work handler with its own current operation and parent episode identity.
 
 ## Job observers and settlement
 
@@ -168,7 +170,9 @@ jobs need no observer, and a turn that launched nothing is unaffected.
 
 Each delivered job observer contributes `job_id`, `exit_status`, `started_at`,
 `ended_at`, `duration_seconds`, `log_path`, and `backend_id` to the Experiment
-watcher-state file or the generic Work wake message. Existing target, coalescing,
+watcher-state file or the Work wake message, including a child Work wake. A child
+watcher wakes its own route and native session, spends one parent B unit, and
+leaves completion pending when no B remains. Existing target, coalescing,
 admission, and Stop fences still own delivery. Stop and pause do not cancel jobs.
 Duration is end time minus start time, or null when either timestamp is absent.
 

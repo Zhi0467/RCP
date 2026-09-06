@@ -44,6 +44,7 @@ class AppStoreBase:
         (8, "conversation_worktrees_v1"),
         (9, "compute_jobs_v1"),
         (10, "compute_job_observers_v1"),
+        (11, "child_work_watchers_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -487,6 +488,12 @@ class AppStoreBase:
             version=10,
             name="compute_job_observers_v1",
             migration=self._migrate_compute_job_observers,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=11,
+            name="child_work_watchers_v1",
+            migration=self._migrate_child_work_watchers,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1915,6 +1922,7 @@ class AppStoreBase:
         self._migrate_conversation_worktrees(connection)
         self._migrate_compute_jobs(connection)
         self._migrate_compute_job_observers(connection)
+        self._migrate_child_work_watchers(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1933,6 +1941,26 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "watchers", "worker_id", "TEXT")
+        connection.execute(
+            """
+            UPDATE watchers
+            SET (worker_id, episode_id) = (
+                SELECT route.worker_id, route.episode_id
+                FROM auto_research_child_work AS route
+                JOIN auto_research_child_work_attempts AS attempt
+                  ON attempt.worker_id = route.worker_id
+                WHERE attempt.operation_id = watchers.origin_operation_id
+            )
+            WHERE worker_id IS NULL AND EXISTS (
+                SELECT 1 FROM auto_research_child_work_attempts AS attempt
+                WHERE attempt.operation_id = watchers.origin_operation_id
+            )
+            """
+        )
 
     @classmethod
     def _migrate_compute_job_observers(cls, connection: sqlite3.Connection) -> None:
