@@ -108,13 +108,13 @@ def test_compute_job_list_refreshes_running_project_rows_and_orders(compute_api,
     store.create_compute_job(job_record("other", project_id="another-project"))
     calls = []
 
-    def refresh(store, manifest, job_id, *, data_dir):
+    def refresh(store, manifest, job_id, *, data_dir, **_reconcile_kwargs):
         calls.append(job_id)
         return store.record_compute_job_refresh(
             job_id, status="exited", exit_status=0, ended_at=store.now()
         )
 
-    monkeypatch.setattr("rcp.api.project_state.refresh_compute_job", refresh)
+    monkeypatch.setattr("rcp.compute_jobs.reconcile.refresh_compute_job", refresh)
     response = client.get(f"{url}/compute-jobs")
     assert response.status_code == 200
     assert calls == ["older"]
