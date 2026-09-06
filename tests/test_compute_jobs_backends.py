@@ -397,7 +397,11 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
 
     root = tmp_path / "abc"
     root.mkdir()
-    with pytest.raises(subprocess.TimeoutExpired):
+    # A collected systemd unit may already have run, so its receipts are retained.
+    expected = (
+        ComputeLaunchUncertainError if backend_id == "systemd_user" else subprocess.TimeoutExpired
+    )
+    with pytest.raises(expected):
         COMPUTE_BACKENDS[backend_id].start(
             str(root), str(root / "run.sh"), request(), context(runner)
         )

@@ -64,7 +64,7 @@ class SystemdUserBackend:
         command.extend(["--", "sh", wrapper_path])
         try:
             context.run(command, timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, check=True)
-        except (OSError, RuntimeError, subprocess.SubprocessError):
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             # A timeout can occur after the manager accepted the unit.
             try:
                 self.cancel(handle, context)
@@ -72,6 +72,11 @@ class SystemdUserBackend:
                 raise ComputeLaunchUncertainError(
                     "Compute launch failed and stopping the possible job could not be confirmed"
                 ) from cleanup_error
+            if isinstance(exc, subprocess.TimeoutExpired):
+                # A short unit may already have run and been collected; keep its receipts.
+                raise ComputeLaunchUncertainError(
+                    "Compute launch timed out after the manager may have run the unit"
+                ) from exc
             raise
         return handle
 

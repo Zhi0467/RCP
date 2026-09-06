@@ -23,7 +23,11 @@ helpers are stdlib-only source modules.
   the leader exists its start time must match; a recycled leader PID reads as
   gone and is never signalled. Once the leader is absent or a zombie, liveness
   is any process whose group and session are both the leader PID. Cancellation
-  terminates that group, escalating from SIGTERM to SIGKILL.
+  terminates that group, escalating from SIGTERM to SIGKILL. A command that
+  daemonizes itself (`setsid` or a double fork) leaves that group and escapes
+  observation and Cancel; this backend is for hosts without a user manager, and
+  where one exists the `systemd_user` backend tracks every descendant through
+  its cgroup.
 - `slurm` submits through `sbatch --parsable`, with machine-owned account,
   partition, and extra submission arguments. Liveness tests membership in the
   whole `squeue -h -o %A` active set; a scheduler command failure is unknown,
