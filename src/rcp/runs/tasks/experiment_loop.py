@@ -552,6 +552,15 @@ def _compose_resume_prompt(
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -765,6 +774,15 @@ def _compose_retry_prompt(
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         diagnostics_path=retry_diagnostics_path,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,

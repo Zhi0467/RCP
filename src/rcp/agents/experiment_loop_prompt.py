@@ -570,6 +570,7 @@ def experiment_loop_continuation_contract(
     watch_path: str,
     output_schema_path: str,
     validator_command: str,
+    launch_command: str | None = None,
     diagnostics_path: str | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
@@ -625,6 +626,7 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
 - {_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
+{_compute_launch_rules(launch_command) if launch_command else ""}
 """
 
 

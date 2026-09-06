@@ -1493,3 +1493,27 @@ def test_compute_context_changes_render_as_a_concise_named_delta() -> None:
         }
     }
     assert _chat_context_delta(updated, updated) is None
+
+
+@pytest.mark.parametrize(
+    "diagnostic", [None, "Running compute jobs require job observers in watch.json: job-a, job-b"]
+)
+def test_watch_correction_uses_main_observer_forms(diagnostic):
+    contract = PromptFactory.continuation_task_contract(
+        original_contract_path="/inputs/original.md",
+        mode="watch_correction",
+        watch_path="/stage/watch.json",
+        diagnostics_path="/inputs/diagnostics.json",
+        watcher_diagnostic=diagnostic,
+    )
+    main = _work_contract(watch_path="/stage/watch.json")
+    for form in (
+        'For RCP-launched jobs, each `external` item is exactly `{"job_id": "<id>"}`.',
+        "For external work RCP did not launch, use exactly `check_command`, `log_path`, and `cwd`",
+    ):
+        assert form in contract
+        assert form in main
+    assert "add a job observer for each named job id" in contract
+    if diagnostic:
+        assert diagnostic in contract
+        assert "job-a, job-b" in contract

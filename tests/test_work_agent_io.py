@@ -5,9 +5,12 @@ import json
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import rcp.runs.tasks.auto_research_child_work as child_module
+import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
@@ -495,3 +498,115 @@ async def test_validator_cleanup_finishes_under_caller_cancellation_without_remo
     _assert_command_state_removed(staged)
     for name, content in handoffs.items():
         assert (workspace / name).read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner", "continuation"),
+    [
+        (work_module, "resume"),
+        (work_module, "retry"),
+        (work_module, "message_wake"),
+        (loop_module, "resume"),
+        (loop_module, "retry"),
+        (loop_module, "watcher_wake"),
+        (child_module, "resume"),
+        (child_module, "retry"),
+        (child_module, "message_wake"),
+        (child_module, "watcher_wake"),
+    ],
+)
+async def test_operational_continuation_renders_current_launch_client(
+    manifest, tmp_path, monkeypatch, owner, continuation
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = _request()
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="current-launch-turn",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    previous_stage = tmp_path / "previous-stage"
+    previous_stage.mkdir()
+    previous = stage_patch_validation_mailbox(
+        local_stage=previous_stage,
+        remote_stage=None,
+        task_id="previous-turn",
+        turn_id="previous-turn:work",
+        timeout_seconds=30,
+        authority="broker",
+    )
+    launch_args = (
+        "launch",
+        "--key",
+        "<idempotency-key>",
+        "--cwd",
+        "<working-directory>",
+        "--",
+        "<argv...>",
+    )
+    previous_command = previous.client_command(*launch_args)
+    original = previous_stage / "original.md"
+    original.write_text(previous_command)
+    previous.cleanup()
+    monkeypatch.setattr(owner, "_parent_task_contract_path", lambda *_args: str(original))
+    turn, staged = await work_module._stage_work_turn(
+        service,
+        work_module._resolve_work_execution(service, request, execution),
+        tmp_path / "data",
+        execution,
+    )
+    try:
+        execution.continuation = continuation
+        execution.retry_feedback = ("The previous invocation was interrupted.",)
+        turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
+        if owner is child_module:
+            composed = child_module._compose_child_prompt(
+                turn, staged, SimpleNamespace(worker_id="child-1"), mail_path="/inputs/mail.json"
+            )
+        elif owner is loop_module:
+            turn.request = turn.request.model_copy(
+                update={
+                    "patch_kind": "experiment_loop",
+                    "control_node_id": "exp/one",
+                    "control_invocation": 1,
+                    "control_invocation_ceiling": 3,
+                }
+            )
+            prepared = SimpleNamespace(
+                loop_control_path="/inputs/loop-control.json",
+                watcher_state_path="/inputs/watcher-state.json",
+                context_replacement=None,
+                wake_episode=SimpleNamespace(last_graph_result="applied", last_watcher_ids=[]),
+            )
+            monkeypatch.setattr(
+                owner, "_experiment_session_contract_path", lambda _turn: str(original)
+            )
+            compose = getattr(
+                owner,
+                "_compose_wake_prompt"
+                if continuation == "watcher_wake"
+                else f"_compose_{continuation}_prompt",
+            )
+            composed = compose(turn, staged, prepared)
+        else:
+            compose = getattr(
+                owner,
+                "_compose_fresh_prompt"
+                if continuation == "message_wake"
+                else f"_compose_{continuation}_prompt",
+            )
+            composed = compose(turn, staged)
+        contract = Path(composed.contract_path).read_text()
+        if owner is work_module and continuation == "message_wake":
+            tooling = list((turn.local_stage / "inputs").glob("task-*-launch.md"))
+            assert len(tooling) == 1
+            assert tooling[0].name in composed.prompt
+            contract = tooling[0].read_text()
+        assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
+        assert previous_command not in contract
+    finally:
+        await turn.validator_lifecycle.close()

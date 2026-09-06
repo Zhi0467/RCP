@@ -548,6 +548,15 @@ def _compose_resume_prompt(
         mode="resume",
         patch_path=turn.patch_inputs.patch_path,
         validator_command=turn.patch_inputs.validator_command,
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -767,6 +776,15 @@ def _compose_retry_prompt(
         watch_path=turn.patch_inputs.watch_path,
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
         skill_pointers=staged.skill_pointers if resumed_retry else None,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1116,11 +1134,13 @@ def _watch_correction_contract(
     turn: WorkTurn,
     composed: _ComposedWorkPrompt,
     diagnostics_path: str,
+    watcher_diagnostic: str,
 ) -> str:
     return PromptFactory.continuation_task_contract(
         original_contract_path=composed.base_contract_path,
         mode="watch_correction",
         diagnostics_path=diagnostics_path,
+        watcher_diagnostic=watcher_diagnostic,
         watch_path=turn.patch_inputs.watch_path,
     )
 
@@ -1441,6 +1461,7 @@ async def _settle_watch_deliverable(
                 turn,
                 composed,
                 diagnostics_path,
+                failure.message,
             )
             correction_path, correction_prompt = _stage_task_contract(
                 turn.local_stage,

@@ -98,6 +98,12 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 elif state == "malformed":
                     (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
             elif self.job_id and len(self.calls) == 2:
+                correction = Path(prompt.splitlines()[1]).read_text()
+                assert '"job_id"' in correction
+                assert "`check_command`, `log_path`, and `cwd`" in correction
+                if state == "running":
+                    assert self.job_id in correction
+                    assert "add a job observer for each named job id" in correction
                 (workspace / "watch.json").write_text(
                     json.dumps({"external": [{"job_id": self.job_id}], "graph": []})
                 )
