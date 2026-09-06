@@ -120,4 +120,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S130](S130-browse-ssh-repository-folders.md) | Browse a remote repository path without giving RCP credentials | implemented | pytest + browser + fake ssh |
 | [S131](S131-browser-agents-operate-rcp-through-webmcp.md) | Let a browser agent operate RCP without creating a second authority plane | implemented | browser |
 | [S132](S132-child-experiments-appear-in-runs.md) | A dispatched child Experiment appears in Runs | pending | pytest + browser |
-| [S133](S133-steer-the-running-human-chat.md) | Steer the running human chat with a durable delivery receipt | blocked-external | pytest + api + browser + ssh |
+| [S133](S134-steer-the-running-human-chat.md) | Steer the running human chat with a durable delivery receipt | blocked-external | pytest + api + browser + ssh |

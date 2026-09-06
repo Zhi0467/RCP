@@ -306,7 +306,7 @@ after cleanup.
 
 ## Acceptance
 
-[S133](../acceptance/S133-steer-the-running-human-chat.md) is the single new,
+[S133](../acceptance/S134-steer-the-running-human-chat.md) is the single new,
 human-confirmed acceptance scenario. It covers app-server locally and over SSH,
 completion refusal, unknown delivery with no resend, exec disabled state,
 durable human receipts, Claude completion fencing, and unchanged restart

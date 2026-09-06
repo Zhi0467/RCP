@@ -1,5 +1,5 @@
 ---
-id: S133-steer-the-running-human-chat
+id: S134-steer-the-running-human-chat
 status: blocked-external
 tier: remote
 driver: pytest + api + browser + ssh
