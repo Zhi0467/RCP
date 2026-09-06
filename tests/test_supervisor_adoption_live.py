@@ -100,3 +100,70 @@ def test_adoption_failure_preserves_completed_evidence_and_stops_only_owned_gues
     assert receipt["source_payload"] == {"source_commit": "historical"}
     assert receipt["boot_ids"] == ["5d974c98-d926-48f5-872c-4bdc3d9203b6"]
     assert stopped == [True]
+
+
+@pytest.mark.parametrize("collection_fails", [False, True])
+def test_failed_adoption_collects_safe_historical_evidence_before_guest_shutdown(
+    tmp_path, monkeypatch, collection_fails
+):
+    from types import SimpleNamespace
+
+    bundles = tmp_path / "bundles"
+    bundles.mkdir()
+    (bundles / "build-receipt.json").write_text("{}")
+    adoption = tmp_path / "adoption"
+    adoption.mkdir()
+    (adoption / "package-receipt.json").write_text("{}")
+    calls = []
+    partial = {
+        "historical_install_completed": True,
+        "historical_install": {"source_commit": "historical", "service_pid": 123},
+        "bootstrap_failure": {"exit_code": 1, "phase": "bootstrap", "message": "concrete failure"},
+    }
+
+    class Guest:
+        process = SimpleNamespace(poll=lambda: None)
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return "5d974c98-d926-48f5-872c-4bdc3d9203b6"
+
+        def install_payload(self, source):
+            pass
+
+        def ssh(self, argv, **kwargs):
+            if argv[-1] == "bootstrap":
+                raise RuntimeError("original adoption failure")
+            assert argv[:3] == ["sudo", "-n", "python3"]
+            assert argv[-1] == "diagnostics"
+            calls.append("diagnostics")
+            if collection_fails:
+                raise ValueError("private diagnostic output")
+            return SimpleNamespace(stdout=json.dumps(partial))
+
+        def collect(self, *args):
+            calls.append("systemd")
+            if collection_fails:
+                raise OSError("private collection output")
+
+        def power_off(self):
+            calls.append("stopped")
+
+    monkeypatch.setattr(live, "Guest", Guest)
+    monkeypatch.setattr(live, "preflight", lambda *_: {"accelerator": "kvm"})
+    monkeypatch.setattr(live, "download_image", lambda *_: (tmp_path / "image", "digest"))
+    monkeypatch.setattr(live, "payload", lambda *_args, **_kwargs: None)
+    with pytest.raises(RuntimeError, match="original adoption failure"):
+        live.drive("24.04", bundles, adoption, tmp_path)
+    text = (tmp_path / "qualification.json").read_text()
+    receipt = json.loads(text)
+    assert receipt["status"] == "failed" and receipt["actual_reboot_proven"] is False
+    assert calls == ["diagnostics", "systemd", "stopped"]
+    assert "private " not in text
+    if collection_fails:
+        assert receipt["diagnostic_collection_error"] == "ValueError"
+        assert receipt["systemd_collection_error"] == "OSError"
+    else:
+        assert receipt["partial_evidence"] == partial

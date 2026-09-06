@@ -359,6 +359,7 @@ def paired_bootstrap() -> dict:
     install.LinuxInstallMachine = ObservedMachine
     releases.fetch_release = lambda *_args, **_kwargs: fixture_release()
     stream = io.StringIO()
+    refusal = None
     previous = sys.argv
     sys.argv = [
         "rcp",
@@ -374,14 +375,27 @@ def paired_bootstrap() -> dict:
                 app_cli.main()
             except SystemExit as exc:
                 if exc.code not in (None, 0):
-                    raise RuntimeError("The paired-wheel bootstrap CLI refused adoption.") from exc
+                    refusal = exc
     finally:
         sys.argv = previous
-    # Keep complete operator output only inside this private disposable guest.
-    guest.write_json(
-        guest.STATE / "bootstrap-events.json",
-        {"events": [json.loads(line) for line in stream.getvalue().splitlines()]},
-    )
+        # Preserve parsed events privately even when the CLI exits with failure.
+        # A truncated/non-JSON line must never replace the original exception or
+        # become a public diagnostic that could contain terminal secrets.
+        events = []
+        for line in stream.getvalue().splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        guest.write_json(guest.STATE / "bootstrap-events.json", {"events": events})
+    if refusal is not None:
+        diagnostic = bootstrap_failure(events, refusal.code)
+        guest.write_json(guest.STATE / "bootstrap-failure.json", diagnostic)
+        raise RuntimeError(
+            "The paired-wheel bootstrap CLI refused adoption: " + diagnostic["message"]
+        ) from refusal
     record = guest.read_json(Path("/etc/rcp/supervisor/adoption.json"))
     assert record["phase"] == "committed"
     wrapper = Path("/usr/local/bin/rcp-supervisor")
@@ -392,6 +406,53 @@ def paired_bootstrap() -> dict:
         replace_existing=True,
     )
     return {"status": "adopted"}
+
+
+def bootstrap_failure(events: list[dict], exit_code: object) -> dict:
+    """Export only the failed step's declared message, never its fields/actions."""
+    result = {
+        "exit_code": exit_code if type(exit_code) is int else 1,
+        "message": "No failed step message was emitted; inspect the private guest events.",
+    }
+    for event in reversed(events):
+        step = event.get("step")
+        if not isinstance(step, dict) or step.get("state") != "failed":
+            continue
+        message = step.get("message")
+        if isinstance(message, str) and message.strip():
+            result["message"] = message[:4000]
+            phase = step.get("phase")
+            if isinstance(phase, str):
+                result["phase"] = phase[:128]
+            break
+    return result
+
+
+def diagnostics() -> dict:
+    """Read safe partial receipts with system Python even if bootstrap failed."""
+    result = {"historical_install_completed": False}
+    historical = guest.STATE / "historical.json"
+    if historical.exists():
+        document = guest.read_json(historical)
+        result["historical_install"] = {
+            name: document[name]
+            for name in (
+                "source_commit",
+                "source_version",
+                "installation_id",
+                "space_id",
+                "service_uid",
+                "service_pid",
+            )
+        }
+        result["historical_install_completed"] = True
+    failure = guest.STATE / "bootstrap-failure.json"
+    if failure.exists():
+        document = guest.read_json(failure)
+        result["bootstrap_failure"] = {
+            name: document[name] for name in ("exit_code", "phase", "message") if name in document
+        }
+    return result
 
 
 def supervisor(arguments: list[str]) -> int:
@@ -606,6 +667,7 @@ def main() -> int:
         "paired-bootstrap": paired_bootstrap,
         "verify": verify,
         "verify-backup": verify_backup,
+        "diagnostics": diagnostics,
     }
     result = actions[action]()
     print(json.dumps(result))

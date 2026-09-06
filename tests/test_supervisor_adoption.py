@@ -153,3 +153,79 @@ def test_bootstrap_checks_disposable_marker_before_any_host_mutation(monkeypatch
     )
     with pytest.raises(RuntimeError, match="disposable"):
         adoption.bootstrap()
+
+
+def test_failed_bootstrap_retains_private_events_and_exports_only_failed_message(
+    tmp_path, monkeypatch, capsys
+):
+    import sys
+
+    from rcp_supervisor import releases
+
+    from rcp import __main__ as app_cli
+    from rcp.server_ops import install
+
+    secret = "private-operator-field-must-not-be-exported"
+    message = "The selected supervisor runtime could not be prepared."
+    failed = {
+        "event": "step",
+        "step": {
+            "state": "failed",
+            "phase": "bootstrap",
+            "message": message,
+            "fields": [{"name": "private", "value": secret}],
+            "actions": [{"argv": [secret]}],
+        },
+    }
+
+    def fail():
+        print(json.dumps(failed))
+        print("truncated non-JSON terminal output " + secret)
+        raise SystemExit(1)
+
+    monkeypatch.setattr(adoption.guest, "STATE", tmp_path)
+    monkeypatch.setattr(app_cli, "main", fail)
+    # paired_bootstrap installs observation hooks in these process-local owners.
+    monkeypatch.setattr(install, "LinuxInstallMachine", install.LinuxInstallMachine)
+    monkeypatch.setattr(releases, "fetch_release", releases.fetch_release)
+    original_argv = sys.argv
+    with pytest.raises(RuntimeError, match=message) as failure:
+        adoption.paired_bootstrap()
+    assert sys.argv is original_argv
+    events = tmp_path / "bootstrap-events.json"
+    assert json.loads(events.read_text()) == {"events": [failed]}
+    assert events.stat().st_mode & 0o777 == 0o600
+    diagnostic = adoption.diagnostics()
+    assert diagnostic == {
+        "historical_install_completed": False,
+        "bootstrap_failure": {"exit_code": 1, "phase": "bootstrap", "message": message},
+    }
+    public = json.dumps(diagnostic) + str(failure.value) + capsys.readouterr().out
+    assert secret not in public
+
+
+def test_partial_diagnostics_export_only_completed_historical_receipt_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(adoption.guest, "STATE", tmp_path)
+    historical = {
+        "source_commit": adoption.SOURCE_COMMIT,
+        "source_version": "0.3.4",
+        "installation_id": "synthetic-installation",
+        "space_id": "synthetic-space",
+        "service_uid": 1001,
+        "service_pid": 123,
+    }
+    (tmp_path / "historical.json").write_text(json.dumps({**historical, "token": "private-token"}))
+    assert adoption.diagnostics() == {
+        "historical_install_completed": True,
+        "historical_install": historical,
+    }
+
+
+def test_missing_failed_step_message_never_exports_raw_exit_text_or_event_fields():
+    diagnostic = adoption.bootstrap_failure(
+        [{"step": {"state": "failed", "fields": ["private-field"]}}],
+        "private-exit-value",
+    )
+    assert diagnostic["exit_code"] == 1
+    assert diagnostic["message"].startswith("No failed step message was emitted")
+    assert "private-" not in json.dumps(diagnostic)
