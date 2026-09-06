@@ -49,6 +49,7 @@ from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
+from rcp.transport import StateUnavailable
 
 from .episode_branches import (
     ensure_auto_research_graph_target,
@@ -437,6 +438,38 @@ def content_episode_report(
     )
 
 
+@router.post(
+    "/api/projects/{project_id}/episodes/{episode_id}/report/save",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def save_episode_report(
+    project_id: str,
+    episode_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, str]:
+    """Save a repository copy without changing the captured episode report."""
+
+    episode = _episode_for_http(store, catalog, project_id, episode_id)
+    report = None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Episode report not found")
+    service = get_project_service(catalog, project_id)
+    project_name = catalog.card(project_id)["name"]
+    if not isinstance(project_name, str):
+        raise HTTPException(status_code=503, detail="Episode report save unavailable")
+    try:
+        filename = service.history.workspace.keep_artifact(
+            source_name="episode-report.html",
+            project_name=project_name,
+            data=report.html.encode("utf-8"),
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Episode report save unavailable") from exc
+    return {"path": f"artifacts/{filename}"}
+
+
 @router.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
 @router.head("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
 def preview_episode_report(
@@ -511,6 +544,10 @@ def _episode_report_viewer_response(
         descriptor=descriptor,
         source="episode_report",
         episode_id=episode_id,
+        save_url=(
+            f"/api/projects/{quote(project_id, safe='')}/episodes/"
+            f"{quote(episode_id, safe='')}/report/save"
+        ),
     )
     return Response(
         b"" if head else document,

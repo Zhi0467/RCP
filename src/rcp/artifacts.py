@@ -504,6 +504,7 @@ def artifact_viewer_document(
     descriptor: AgentArtifactDescriptor,
     source: Literal["task", "episode_report"] = "task",
     episode_id: str | None = None,
+    save_url: str | None = None,
 ) -> tuple[str, str]:
     """Build the common task-artifact shell around one isolated preview."""
 
@@ -513,6 +514,7 @@ def artifact_viewer_document(
     config = {
         "previewUrl": preview_url,
         "keepUrl": keep_url,
+        "saveUrl": save_url,
         "projectId": project_id,
         "chatId": chat_id,
         "chatAvailable": chat_id is not None,
@@ -590,7 +592,7 @@ textarea{{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px s
 .add{{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}}.add:hover{{background:var(--accent);color:white}}
 .notice{{margin-top:10px;color:var(--accent);font-size:12px}}@media(max-width:760px){{main{{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}}.canvas{{border-right:0;border-bottom:1px solid var(--rule)}}aside{{max-height:42vh}}}}
 </style></head><body>
-<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span>{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
+<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"report" if source == "episode_report" else "kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span>{'<button id="save" type="button">Save copy</button>' if save_url else ""}{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
 <main><div class="canvas">{preview_markup}</div>
 <aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
 <script>(()=>{{
@@ -629,6 +631,7 @@ add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent
   notice.textContent='Added to the originating chat draft.';
 }});
 const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{{keep.disabled=true;notice.textContent='';try{{const response=await fetch(config.keepUrl,{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}}catch(error){{keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}}}});
+const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{{save.disabled=true;notice.textContent='';try{{const response=await fetch(config.saveUrl,{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${{result.path}}`;}}catch(error){{notice.textContent=error instanceof Error?error.message:String(error);}}finally{{save.disabled=false;}}}});
 }})();</script></body></html>"""
     csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
