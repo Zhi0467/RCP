@@ -1,22 +1,20 @@
 # Worktree execution handoff
 
 Date: 2026-09-05
-Status: implemented in this worktree and uncommitted, per the human's revised
-Git instruction. Durable chat binding, local/shipped-remote Git operations,
-Work/Discuss path resolution, exact provider write scopes, continuation and
-restart recovery, integration preflights/instructions, explicit removal, UI,
-regression tests, four spec updates, and acceptance S133 are implemented. Local
-HTTP/Git verification proved binding/restart, isolated fixture edits, dirty
-refusals, clean preflights, operator-executed local push/merges, and removal that
-retains unmerged commits. Real provider turns were launched but could not execute
-commands (`sandbox_apply: Operation not permitted`); Chromium could not launch
-under this sandbox. Provider-driven edits/Discuss reads/integration outcomes,
-browser interaction/console inspection, and real Pause/Resume/Retry therefore
-remain unverified. SSH and GitHub `gh pr create` are explicit unexercised gaps,
-as required by the brief. S133 remains blocked-external. The settled decisions
-below remain the contract; implementation choices and check receipts follow.
-No commits or pushes were made; the human will commit the ordered groups in the
-scratch commit plan. Keep this handoff active and unarchived as instructed.
+Status: active, human-confirmed on 2026-09-05; implementation committed on the PR
+branch on 2026-09-05. Durable chat binding, local and shipped-remote Git
+operations, Work/Discuss path resolution, exact provider write scopes,
+continuation and restart recovery, integration preflights and instructions,
+explicit removal, UI, regression tests, four spec updates, and acceptance S133
+are implemented. Local HTTP and Git verification proved binding and restart,
+isolated fixture edits, dirty refusals, clean preflights, operator-executed local
+push and merges, and removal that retains unmerged commits. Real provider turns
+were launched but could not execute commands inside the implementing session's
+nested sandbox, and Chromium could not launch there, so provider-driven edits,
+Discuss reads, integration outcomes, browser interaction, and real
+Pause/Resume/Retry remain unverified. SSH and GitHub `gh pr create` are explicit
+unexercised gaps. S133 remains blocked-external. The settled decisions below
+remain the contract; implementation choices and check receipts follow.
 
 ## What this is
 
@@ -162,12 +160,9 @@ task completion as acceptance success.
 
 ## Verification receipts (2026-09-05 local date)
 
-All paths below are under
-`/private/tmp/claude-501/-Users-zhiwang-research-RCP/24a19e4a-5908-4790-90c1-1740a6637057/scratchpad/codex-runs`
-(`$SCRATCH`). Repository source baseline is
-`043aff4a7b3b7ecb5aea1cdb67a3d31953aaf1d5`. There are no implementation commit
-SHAs: the revised instruction prohibits repository Git writes. The ordered file
-inventory and proposed messages are in `$SCRATCH/worktree-commit-plan.md`.
+Receipts below were captured in the implementing session's disposable scratch
+directory, which is not retained; the quoted results are the record. Repository
+source baseline was `043aff4`.
 
 ### Checks
 
