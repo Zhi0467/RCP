@@ -9,12 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from rcp.compute_jobs.backend_context import resolve_context
 from rcp.compute_jobs.probe import (
     _cgroup_isolated,
-    cached_compute_backend_probe,
     probe_compute_backend,
 )
-from rcp.compute_jobs.resolution import resolve_context
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 
@@ -40,8 +39,6 @@ class ProbeRunner:
             out = self.os_name
         elif command == ["id", "-u"]:
             out = "501"
-        elif command[0] == "tee":
-            Path(command[1]).write_text(kwargs["input"])
         elif command[:2] == ["launchctl", "bootstrap"]:
             self.root = Path(command[-1]).parent
             self.polls = 0
@@ -133,15 +130,13 @@ def test_explicit_backend_must_support_execution_machine(manifest, tmp_path, bac
     assert runner.commands == [["uname", "-s"], ["id", "-u"]]
 
 
-def test_probe_cache_binds_machine_configuration_and_job_root(manifest, tmp_path):
-    probe_compute_backend(manifest, "laptop", ProbeRunner(), data_dir=tmp_path)
-    cached = cached_compute_backend_probe(manifest, "laptop", data_dir=tmp_path)
-    assert cached.ready
-    cached.ready = False
-    assert cached_compute_backend_probe(manifest, "laptop", data_dir=tmp_path).ready
-    assert cached_compute_backend_probe(manifest, "laptop", data_dir=tmp_path / "other") is None
-    manifest.machines[0].compute = MachineComputeConfig(backend="slurm")
-    assert cached_compute_backend_probe(manifest, "laptop", data_dir=tmp_path) is None
+def test_probe_returns_fresh_observation(manifest, tmp_path):
+    first = probe_compute_backend(manifest, "laptop", ProbeRunner(), data_dir=tmp_path)
+    second = probe_compute_backend(
+        manifest, "laptop", ProbeRunner(exit_status=1), data_dir=tmp_path
+    )
+    assert first.ready
+    assert not second.ready
 
 
 def test_systemd_probe_records_explicit_cooperative_fallback(manifest, tmp_path, monkeypatch):

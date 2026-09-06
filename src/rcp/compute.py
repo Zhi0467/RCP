@@ -9,9 +9,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import AGENT_EXECUTION_PROFILES, ComputeConnectionConfig, Manifest
 from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
-from rcp.server_ops.models import redact_server_text
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
@@ -49,8 +49,7 @@ _PROBE_PRESENTATION: dict[str, tuple[str, Literal["ready", "error"]]] = {
 
 
 def _safe_probe_diagnostic(value: object) -> str:
-    redacted = redact_server_text(str(value or "Compute probe failed."))
-    return " ".join(redacted.split())[:600] or "Compute probe failed."
+    return safe_compute_diagnostic(str(value or "Compute probe failed.")) or "Compute probe failed."
 
 
 def _probe_one(

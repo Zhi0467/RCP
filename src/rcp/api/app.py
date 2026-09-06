@@ -1490,6 +1490,7 @@ def create_app(
                             store,
                             service.manifest,
                             project_id=project_id,
+                            data_dir=app_data,
                         )
                     except Exception:
                         logger.exception(

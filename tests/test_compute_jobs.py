@@ -8,7 +8,7 @@ import pytest
 
 from rcp.compute_jobs import jobs
 from rcp.compute_jobs.backend_context import BackendContext
-from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
+from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.storage import AppStore
@@ -54,7 +54,7 @@ def test_wrapper_records_failed_cd(tmp_path):
 
 @pytest.fixture
 def launch_environment(tmp_path, manifest, monkeypatch):
-    store = AppStore(tmp_path / "data" / "rcp.sqlite3")
+    store = AppStore(tmp_path / "database" / "rcp.sqlite3")
     machine = next(machine for machine in manifest.machines if not machine.host)
     context = BackendContext(execution_host="", execution_machine=machine.alias, compute=None)
 
@@ -66,6 +66,8 @@ def launch_environment(tmp_path, manifest, monkeypatch):
         cancelled = 0
 
         def start(self, root, wrapper, request, context):
+            assert (Path(root) / "command.json").is_file()
+            assert not (Path(root) / "launch.json").exists()
             if self.failure:
                 raise RuntimeError("launch refused")
             subprocess.run(["sh", wrapper], check=True)
@@ -81,26 +83,13 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "launchd", backend)
-    monkeypatch.setattr(
-        jobs,
-        "cached_compute_backend_probe",
-        lambda *a, **k: ComputeBackendProbe(
-            execution_machine=machine.alias,
-            backend_id=backend.id,
-            state="ready",
-            ready=True,
-            diagnostic="Passed",
-            containment="cooperative",
-            status_label="Ready",
-            status_tone="ready",
-        ),
-    )
 
     def launch():
         return jobs.launch_compute_job(
             store,
             manifest,
             ComputeLaunchRequest(argv=["printf", "hello world"], cwd=str(tmp_path)),
+            data_dir=tmp_path / "data",
             project_id="project",
             origin_operation_id="turn",
             episode_id=None,
@@ -111,66 +100,89 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     return store, backend, launch
 
 
-def test_launch_receipt_refresh_and_bounded_log(launch_environment, manifest):
+def test_launch_receipt_refresh_and_bounded_log(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     assert record.status == "running"
     assert store.compute_job(record.job_id) == record
     root = Path(record.job_root)
-    assert root.parent == store.path.parent / "jobs"
+    assert root.parent == tmp_path / "data" / "jobs"
     assert json.loads((root / "command.json").read_text())["origin_operation_id"] == "turn"
     assert json.loads((root / "launch.json").read_text())["backend_handle"] == record.backend_handle
-    assert jobs.read_job_log_tail(store, manifest, record.job_id, max_bytes=5) == "world"
-    result = jobs.refresh_compute_job(store, manifest, record.job_id)
+    assert (
+        jobs.read_job_log_tail(
+            store, manifest, record.job_id, data_dir=tmp_path / "data", max_bytes=5
+        )
+        == "world"
+    )
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "exited" and result.exit_status == 0
     assert result.started_at and result.ended_at
-    assert jobs.refresh_compute_job(store, manifest, record.job_id) == result
+    assert (
+        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+        == result
+    )
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_reconcile_missing_exit(launch_environment, manifest, cancelled):
+def test_reconcile_missing_exit(launch_environment, tmp_path, manifest, cancelled):
     store, backend, launch = launch_environment
     record = launch()
     Path(record.exit_path).unlink()
     if cancelled:
         store.request_compute_job_cancel(record.job_id, "human")
-    reconcile_compute_jobs(store, manifest, project_id="project")
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == ("cancelled" if cancelled else "lost")
     assert bool(result.diagnostic) is not cancelled
 
 
-def test_unknown_backend_stays_running_even_with_exit(launch_environment, manifest):
+def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     backend.unknown = True
-    reconcile_compute_jobs(store, manifest, project_id="project")
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == "running"
     assert "could not determine" in result.diagnostic
 
 
-def test_cancel_records_first_requester_and_is_idempotent(launch_environment, manifest):
+def test_cancel_records_first_requester_and_is_idempotent(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     backend.is_alive = True
-    result = jobs.cancel_compute_job(store, manifest, record.job_id, "human-one")
+    result = jobs.cancel_compute_job(
+        store, manifest, record.job_id, "human-one", data_dir=tmp_path / "data"
+    )
     assert result.status == "cancelled"
-    again = jobs.cancel_compute_job(store, manifest, record.job_id, "human-two")
+    again = jobs.cancel_compute_job(
+        store, manifest, record.job_id, "human-two", data_dir=tmp_path / "data"
+    )
     assert again.cancel_requested_by == "human-one"
     assert backend.cancelled == 1
 
 
-def test_failed_start_removes_root(launch_environment):
+def test_launch_without_backend_names_machine_and_setup_action(
+    launch_environment, tmp_path, monkeypatch
+):
+    store, backend, launch = launch_environment
+    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (None, None))
+    with pytest.raises(RuntimeError, match="laptop.*configure a compute backend"):
+        launch()
+    assert not (tmp_path / "data" / "jobs").exists()
+    assert store.running_compute_jobs() == []
+
+
+def test_failed_start_removes_root(launch_environment, tmp_path):
     store, backend, launch = launch_environment
     backend.failure = True
     with pytest.raises(RuntimeError, match="launch refused"):
         launch()
-    assert list((store.path.parent / "jobs").iterdir()) == []
+    assert list((tmp_path / "data" / "jobs").iterdir()) == []
     assert store.running_compute_jobs() == []
 
 
-def test_insert_failure_retains_backend_receipt(launch_environment, monkeypatch):
+def test_insert_failure_retains_backend_receipt(launch_environment, tmp_path, monkeypatch):
     store, backend, launch = launch_environment
 
     def fail(record):
@@ -179,21 +191,21 @@ def test_insert_failure_retains_backend_receipt(launch_environment, monkeypatch)
     monkeypatch.setattr(store, "create_compute_job", fail)
     with pytest.raises(RuntimeError, match="database unavailable"):
         launch()
-    roots = list((store.path.parent / "jobs").iterdir())
+    roots = list((tmp_path / "data" / "jobs").iterdir())
     assert len(roots) == 1
     assert json.loads((roots[0] / "launch.json").read_text())["backend_handle"] == "rcp-job-test"
 
 
-def test_machine_identity_change_is_unobservable(launch_environment, manifest):
+def test_machine_identity_change_is_unobservable(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     manifest.machine_map[record.execution_machine].host = "other-host"
-    result = jobs.refresh_compute_job(store, manifest, record.job_id)
+    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "running"
     assert "no longer configured" in result.diagnostic
 
 
-def test_uncertain_launch_retains_intent(launch_environment):
+def test_uncertain_launch_retains_intent(launch_environment, tmp_path):
     from rcp.compute_jobs.backend_context import ComputeLaunchUncertainError
 
     store, backend, launch = launch_environment
@@ -204,9 +216,10 @@ def test_uncertain_launch_retains_intent(launch_environment):
     backend.start = uncertain
     with pytest.raises(ComputeLaunchUncertainError):
         launch()
-    roots = list((store.path.parent / "jobs").iterdir())
+    roots = list((tmp_path / "data" / "jobs").iterdir())
     assert len(roots) == 1
-    assert json.loads((roots[0] / "launch.json").read_text())["backend_handle"] == ""
+    assert json.loads((roots[0] / "command.json").read_text())["origin_operation_id"] == "turn"
+    assert not (roots[0] / "launch.json").exists()
 
 
 @pytest.mark.parametrize("fenced", [True, False])

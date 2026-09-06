@@ -62,9 +62,10 @@ It atomically publishes `exit` as `<status> <epoch>`; scheduler accounting is no
 an exit-status source. On Linux it captures its cgroup for probe verification.
 `command.json` preserves argv, cwd, optional label, and requester lineage.
 
-`launch.json` first records intent, then the backend handle before SQLite insert.
-Thus an interrupted start/insert leaves inspectable evidence in the durable job
-root. A successful launch returns only after the running row and handle exist.
+`command.json` is the pre-start intent receipt. After the backend starts,
+`launch.json` records the backend handle before SQLite insert. An interrupted
+start/insert leaves inspectable evidence in the durable job root. A successful
+launch returns only after the running row and handle exist.
 A known failed start removes its root; an ambiguous submission timeout or a
 failed post-start receipt or database write
 retains evidence for operator repair. Automatic orphan-directory adoption is not
@@ -74,11 +75,13 @@ implemented. Log-tail reads have a fixed byte ceiling.
 
 A probe resolves the execution machine, checks its facility, launches a bounded
 trivial job through the real backend, observes it alive, and requires an exit of
-zero and the `rcp-probe` log marker. Results are cached by machine alias and bound
-to machine configuration and the local data directory. An internal launch needs
-a passing probe. Missing automatic resolution is `unavailable` with the action
+zero and the `rcp-probe` log marker. The caller supplies the data directory and
+receives the result. Missing automatic resolution is `unavailable` with the action
 "configure a compute backend for this machine"; execution failures are `failed`
 with redacted single-line diagnostics and an action.
+
+Launch resolves the backend directly. If none resolves, it raises a `RuntimeError`
+naming the machine and asking to configure a compute backend.
 
 On local Linux, the job's captured cgroup must differ from the RCP process's
 `/proc/self/cgroup`; a shared service cgroup fails the probe. Remote cgroup paths
@@ -89,9 +92,9 @@ survival of a future machine reboot, account logout, or scheduler outage.
 The systemd probe first attempts `PrivateUsers=yes`, `ProtectSystem=strict`,
 `ProtectHome=read-only`, and exact `ReadWritePaths`. If that attempt fails but a
 cooperative attempt passes, the result explicitly records that limitation. A
-mirrored launch applies the proven properties to the caller's writable roots
-and its job root. Other backends are cooperative-only. These are accidental-write
-guardrails for cooperative users, without read secrecy, network confinement, or
+mirrored backend start applies those properties to the supplied writable roots
+and its job root. Internal job launches currently use cooperative containment.
+Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
 hostile same-account isolation claims.
 
 ## Durable state and startup

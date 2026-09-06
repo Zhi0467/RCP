@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from pathlib import PurePosixPath
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 
-from rcp.compute_jobs.backend_context import ComputeLaunchUncertainError
+from rcp.compute_jobs.backend_context import (
+    ComputeLaunchUncertainError,
+    recorded_job_context,
+    resolve_context,
+)
 from rcp.compute_jobs.backends import COMPUTE_BACKENDS
 from rcp.compute_jobs.files import (
     prepare_job_root,
@@ -16,10 +21,7 @@ from rcp.compute_jobs.files import (
     write_job_file,
 )
 from rcp.compute_jobs.models import ComputeJobRecord, ComputeLaunchRequest
-from rcp.compute_jobs.probe import cached_compute_backend_probe, probe_compute_backend
-from rcp.compute_jobs.resolution import recorded_job_context, resolve_context
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.compute_jobs.timestamps import epoch_timestamp
 from rcp.config import Manifest
 from rcp.limits import COMPUTE_JOB_LOG_TAIL_MAX_BYTES
 from rcp.storage import AppStore
@@ -32,6 +34,7 @@ def launch_compute_job(
     manifest: Manifest,
     request: ComputeLaunchRequest,
     *,
+    data_dir: Path,
     project_id: str,
     origin_operation_id: str,
     episode_id: str | None,
@@ -41,17 +44,14 @@ def launch_compute_job(
     request = ComputeLaunchRequest.model_validate(request.model_dump())
     if any(not PurePosixPath(root).is_absolute() for root in writable_roots):
         raise ValueError("compute writable roots must be absolute")
-    probe = cached_compute_backend_probe(manifest, execution_machine, data_dir=store.path.parent)
-    if probe is None:
-        probe = probe_compute_backend(manifest, execution_machine, data_dir=store.path.parent)
-    if not probe.ready:
-        raise RuntimeError(probe.required_action or probe.diagnostic)
     context, backend = resolve_context(manifest, execution_machine)
-    if backend is None or backend.id != probe.backend_id:
-        raise RuntimeError("compute backend changed since its passing probe; probe again")
-    context.containment = probe.containment
+    if backend is None:
+        raise RuntimeError(
+            f"No compute backend is available for machine {execution_machine!r}; "
+            "configure a compute backend for this machine."
+        )
     job_id = uuid.uuid4().hex
-    root = PurePosixPath(resolve_jobs_root(context, store.path.parent)) / job_id
+    root = PurePosixPath(resolve_jobs_root(context, data_dir)) / job_id
     context.writable_roots = tuple(dict.fromkeys((*writable_roots, str(root))))
     record = ComputeJobRecord(
         job_id=job_id,
@@ -67,7 +67,7 @@ def launch_compute_job(
         argv=request.argv,
         log_path=str(root / "log"),
         exit_path=str(root / "exit"),
-        containment=probe.containment,
+        containment=context.containment,
         status="running",
         created_at=store.now(),
     )
@@ -80,9 +80,6 @@ def launch_compute_job(
         episode_id=episode_id,
     )
     try:
-        # Intent plus backend-owned identity makes the start/SQLite crash window
-        # inspectable. A completed receipt survives an insert failure for repair.
-        write_job_file(context, str(root / "launch.json"), record.model_dump_json())
         handle = backend.start(str(root), str(root / "run.sh"), request, context)
     except ComputeLaunchUncertainError:
         # Acceptance is unknown; the launch intent must survive for inspection.
@@ -100,7 +97,9 @@ def launch_compute_job(
     return store.create_compute_job(record)
 
 
-def refresh_compute_job(store: AppStore, manifest: Manifest, job_id: str) -> ComputeJobRecord:
+def refresh_compute_job(
+    store: AppStore, manifest: Manifest, job_id: str, *, data_dir: Path
+) -> ComputeJobRecord:
     record = store.compute_job(job_id)
     if record is None:
         raise KeyError(job_id)
@@ -148,6 +147,8 @@ def cancel_compute_job(
     manifest: Manifest,
     job_id: str,
     requested_by: str,
+    *,
+    data_dir: Path,
 ) -> ComputeJobRecord:
     record = store.request_compute_job_cancel(job_id, requested_by)
     if record.status != "running":
@@ -161,7 +162,7 @@ def cancel_compute_job(
             status="running",
             diagnostic=safe_compute_diagnostic(str(exc)),
         )
-    return refresh_compute_job(store, manifest, job_id)
+    return refresh_compute_job(store, manifest, job_id, data_dir=data_dir)
 
 
 def read_job_log_tail(
@@ -169,9 +170,14 @@ def read_job_log_tail(
     manifest: Manifest,
     job_id: str,
     *,
+    data_dir: Path,
     max_bytes: int = COMPUTE_JOB_LOG_TAIL_MAX_BYTES,
 ) -> str:
     record = store.compute_job(job_id)
     if record is None:
         raise KeyError(job_id)
     return read_job_file(recorded_job_context(manifest, record), record.log_path, max_bytes) or ""
+
+
+def epoch_timestamp(value: str) -> str:
+    return datetime.fromtimestamp(int(value), tz=UTC).isoformat()

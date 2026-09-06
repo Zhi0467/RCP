@@ -10,6 +10,7 @@ from rcp.compute_jobs.backend_context import (
     BackendContext,
     ComputeBackendProfile,
     ComputeLaunchUncertainError,
+    resolve_context,
 )
 from rcp.compute_jobs.files import (
     prepare_job_root,
@@ -18,16 +19,12 @@ from rcp.compute_jobs.files import (
     resolve_jobs_root,
 )
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
-from rcp.compute_jobs.resolution import resolve_context
 from rcp.config import Manifest
 from rcp.limits import (
     COMPUTE_JOB_POLL_INTERVAL_SECONDS,
     COMPUTE_PROBE_JOB_SECONDS,
     COMPUTE_PROBE_TIMEOUT_SECONDS,
 )
-
-# A machine never inherits a result recorded for another host or configuration.
-_PROBES: dict[str, tuple[tuple[str, str], ComputeBackendProbe]] = {}
 
 
 class _CgroupIsolationError(RuntimeError):
@@ -36,31 +33,6 @@ class _CgroupIsolationError(RuntimeError):
 
 class _ProbeCleanupError(RuntimeError):
     """A failed cancellation must not launch a second probe."""
-
-
-def _data_dir(data_dir: Path | None) -> Path:
-    if data_dir is None:
-        from rcp.api.app import default_data_dir
-
-        data_dir = default_data_dir()
-    return data_dir.resolve()
-
-
-def _cache_key(manifest: Manifest, alias: str, data_dir: Path) -> tuple[str, str]:
-    machine = manifest.machine_map[alias]
-    return machine.model_dump_json(), str(data_dir) if not machine.host else ""
-
-
-def cached_compute_backend_probe(
-    manifest: Manifest,
-    machine_alias: str,
-    *,
-    data_dir: Path | None = None,
-) -> ComputeBackendProbe | None:
-    cached = _PROBES.get(machine_alias)
-    if cached is None or cached[0] != _cache_key(manifest, machine_alias, _data_dir(data_dir)):
-        return None
-    return cached[1].model_copy(deep=True)
 
 
 def _result(
@@ -185,10 +157,9 @@ def probe_compute_backend(
     machine_alias: str,
     runner=subprocess.run,
     *,
-    data_dir: Path | None = None,
+    data_dir: Path,
 ) -> ComputeBackendProbe:
     """Exercise the actual owner, wrapper, liveness, exit file, and job log."""
-    resolved_data_dir = _data_dir(data_dir)
     backend_id = ""
     try:
         context, profile = resolve_context(manifest, machine_alias, runner)
@@ -209,18 +180,18 @@ def probe_compute_backend(
                 if profile.id == "systemd_user":
                     try:
                         isolated = _run_probe_job(
-                            replace(context, containment="mirrored"), profile, resolved_data_dir
+                            replace(context, containment="mirrored"), profile, data_dir
                         )
                     except _ProbeCleanupError:
                         raise
                     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                         diagnostic = f"Mirrored containment probe failed: {exc}. " + diagnostic
-                        isolated = _run_probe_job(context, profile, resolved_data_dir)
+                        isolated = _run_probe_job(context, profile, data_dir)
                         diagnostic += " Cooperative containment only."
                     else:
                         containment = "mirrored"
                 else:
-                    isolated = _run_probe_job(context, profile, resolved_data_dir)
+                    isolated = _run_probe_job(context, profile, data_dir)
                 result = _result(
                     machine_alias,
                     backend_id,
@@ -237,6 +208,4 @@ def probe_compute_backend(
             str(exc),
             cgroup_isolated=False if isinstance(exc, _CgroupIsolationError) else None,
         )
-    if machine_alias in manifest.machine_map:
-        _PROBES[machine_alias] = (_cache_key(manifest, machine_alias, resolved_data_dir), result)
-    return result.model_copy(deep=True)
+    return result

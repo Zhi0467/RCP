@@ -31,6 +31,8 @@ class LaunchdBackend:
         request: ComputeLaunchRequest,
         context: BackendContext,
     ) -> str:
+        from rcp.compute_jobs.files import write_job_file
+
         handle = f"rcp-job-{PurePosixPath(job_root).name}"
         plist = plistlib.dumps(
             {
@@ -44,7 +46,7 @@ class LaunchdBackend:
             }
         ).decode()
         path = f"{job_root}/job.plist"
-        context.run(["tee", path], input=plist, check=True)
+        write_job_file(context, path, plist)
         try:
             context.run(
                 ["launchctl", "bootstrap", f"gui/{context.target_uid()}", path],

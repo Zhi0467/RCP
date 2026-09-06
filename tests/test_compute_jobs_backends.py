@@ -143,24 +143,25 @@ def test_backend_observation_states(backend_id, response, expected):
     assert COMPUTE_BACKENDS[backend_id].alive("42", context(Runner(response))) is expected
 
 
-def test_launchd_plist_and_commands():
+def test_launchd_plist_and_commands(tmp_path):
     backend = COMPUTE_BACKENDS["launchd"]
     runner = Runner()
     ctx = context(runner)
-    assert backend.start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx) == "rcp-job-abc"
-    assert runner.calls[0][0] == ["tee", "/jobs/abc/job.plist"]
-    assert plistlib.loads(runner.calls[0][1]["input"].encode()) == {
+    root = str(tmp_path / "abc")
+    Path(root).mkdir()
+    assert backend.start(root, f"{root}/run.sh", request(), ctx) == "rcp-job-abc"
+    assert plistlib.loads((Path(root) / "job.plist").read_bytes()) == {
         "Label": "rcp-job-abc",
-        "ProgramArguments": ["/bin/sh", "/jobs/abc/run.sh"],
+        "ProgramArguments": ["/bin/sh", f"{root}/run.sh"],
         "RunAtLoad": True,
         "KeepAlive": False,
         "WorkingDirectory": "/work",
-        "StandardOutPath": "/jobs/abc/log",
-        "StandardErrorPath": "/jobs/abc/log",
+        "StandardOutPath": f"{root}/log",
+        "StandardErrorPath": f"{root}/log",
     }
-    assert runner.calls[1][0] == ["launchctl", "bootstrap", "gui/501", "/jobs/abc/job.plist"]
+    assert runner.calls[0][0] == ["launchctl", "bootstrap", "gui/501", f"{root}/job.plist"]
     backend.cancel("rcp-job-abc", ctx)
-    assert runner.calls[2][0] == ["launchctl", "bootout", "gui/501/rcp-job-abc"]
+    assert runner.calls[1][0] == ["launchctl", "bootout", "gui/501/rcp-job-abc"]
 
 
 def test_slurm_exact_commands():
@@ -287,7 +288,7 @@ def test_backend_transport_failure_is_unknown(backend_id):
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
-def test_uncertain_start_stops_the_stable_unit(backend_id):
+def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
     calls = []
 
     def runner(command, **kwargs):
@@ -296,9 +297,11 @@ def test_uncertain_start_stops_the_stable_unit(backend_id):
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return subprocess.CompletedProcess(command, 0, "", "")
 
+    root = tmp_path / "abc"
+    root.mkdir()
     with pytest.raises(subprocess.TimeoutExpired):
         COMPUTE_BACKENDS[backend_id].start(
-            "/jobs/abc", "/jobs/abc/run.sh", request(), context(runner)
+            str(root), str(root / "run.sh"), request(), context(runner)
         )
     assert calls[-1] == (
         ["env", "XDG_RUNTIME_DIR=/run/user/501", "systemctl", "--user", "stop", "rcp-job-abc"]
@@ -308,16 +311,16 @@ def test_uncertain_start_stops_the_stable_unit(backend_id):
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
-def test_unconfirmed_launch_reports_uncertain_acceptance(backend_id):
+def test_unconfirmed_launch_reports_uncertain_acceptance(backend_id, tmp_path):
     from rcp.compute_jobs.backend_context import ComputeLaunchUncertainError
 
     def runner(command, **kwargs):
-        if command[0] == "tee":
-            return subprocess.CompletedProcess(command, 0, "", "")
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     ctx = context(runner)
     if backend_id == "ssh_session":
         ctx.execution_host = "worker"
+    root = tmp_path / "abc"
+    root.mkdir()
     with pytest.raises(ComputeLaunchUncertainError):
-        COMPUTE_BACKENDS[backend_id].start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
+        COMPUTE_BACKENDS[backend_id].start(str(root), str(root / "run.sh"), request(), ctx)
