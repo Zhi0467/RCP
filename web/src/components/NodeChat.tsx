@@ -1494,15 +1494,15 @@ export function NodeChat({
     }
   };
 
-  const watcherToggle = liveWatchers.length > 0 && (
+  const watcherToggle = watcherRows.length > 0 && (
     <button
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
       type="button"
       aria-expanded={watchersOpen}
-      aria-label={`${liveWatchers.length} active watcher${liveWatchers.length === 1 ? "" : "s"}`}
+      aria-label={`${watcherRows.length} active watcher${watcherRows.length === 1 ? "" : "s"}`}
       onClick={() => setWatchersOpen((open) => !open)}
     >
-      <RadioTower size={12} /> {liveWatchers.length}
+      <RadioTower size={12} /> {watcherRows.length}
     </button>
   );
 
