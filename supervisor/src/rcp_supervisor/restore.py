@@ -76,6 +76,7 @@ def _directory(path: Path, gid: int) -> None:
     if not os.path.lexists(path):
         path.mkdir(mode=0o710)
         os.chown(path, 0, gid)
+        path.chmod(0o710)
         _sync(path.parent)
     info = path.lstat()
     if (
