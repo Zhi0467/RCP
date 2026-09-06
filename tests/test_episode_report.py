@@ -14,6 +14,7 @@ from rcp.api.episodes import serialize_episode
 from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Experiment, GraphState
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.skill_registry import official_registry
@@ -87,12 +88,14 @@ def test_auto_research_reconciliation_keeps_terminal_wrapup_immutable(
 ) -> None:
     episode = SimpleNamespace(
         mode="auto_research",
+        project_id="project",
+        graph_target=GraphTargetRef(),
         stop_requested_at=None,
         wrapup_state=wrapup_state,
     )
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
-        episode_tasks=lambda *_args, **_kwargs: [],
+        unsettled_graph_target_tasks=lambda *_args: [],
     )
     background = SimpleNamespace()
     monkeypatch.setattr(
@@ -117,12 +120,14 @@ def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuildi
 ) -> None:
     episode = SimpleNamespace(
         mode="auto_research",
+        project_id="project",
+        graph_target=GraphTargetRef(),
         stop_requested_at=None,
         wrapup_state=wrapup_state,
     )
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
-        episode_tasks=lambda *_args, **_kwargs: [],
+        unsettled_graph_target_tasks=lambda *_args: [],
     )
     started: list[str] = []
     background = SimpleNamespace()
@@ -148,13 +153,15 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
 ) -> None:
     episode = SimpleNamespace(
         mode="auto_research",
+        project_id="project",
+        graph_target=GraphTargetRef(),
         stop_requested_at=None,
         wrapup_state="pending",
     )
     receipts: list[tuple[object, ...]] = []
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
-        episode_tasks=lambda *_args, **_kwargs: [],
+        unsettled_graph_target_tasks=lambda *_args: [],
         record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
     )
 

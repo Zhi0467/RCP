@@ -506,11 +506,12 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
             )
         ],
         run_truth_scope=["repo-a"],
-        graph_path="/x/graph.json",
-        research_md_path="/x/research.md",
+        graph_path=str(remote.research_dir / "graph.json"),
+        research_md_path=str(remote.research_dir / "research.md"),
         introduction_path=None,
-        glossary_path="/x/glossary.json",
-        coverage_path="/x/coverage.json",
+        glossary_path=str(remote.research_dir / "glossary.json"),
+        coverage_path=str(remote.research_dir / "coverage.json"),
+        facts_dir=str(remote.research_dir / "facts"),
     )
     service = SimpleNamespace(manifest=remote)
 

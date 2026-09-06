@@ -41,7 +41,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.task_policy import task_graph_capable
 from rcp.service import ProjectService, RunRequest
-from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, EpisodeRecord
+from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 if TYPE_CHECKING:
@@ -306,14 +306,12 @@ def _active_branch_writer_task_ids(
         raise ValueError("The Auto-research branch lost its episode binding.")
     return [
         item.operation_id
-        for item in execution.store.graph_target_tasks(
+        for item in execution.store.unsettled_graph_target_tasks(
             target.project_id,
             target.graph_target,
-            include_hidden=True,
         )
         if item.operation_id != exclude_operation_id
         and item.kind != "branch_merge"
-        and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
         and task_graph_capable(item.kind, item.request)
     ]
 

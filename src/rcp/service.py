@@ -2471,7 +2471,7 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        assembler = ContextAssembler(self.manifest)
+        assembler = ContextAssembler(self.manifest, graph_root=self.history.root)
         source_roots = assembler.source_roots(execution_machine.alias)
         source_errors = preflight_provider_roots(source_roots, execution_machine)
         imported = imported_source_inventory or self.imported_source_inventory(
@@ -2582,7 +2582,7 @@ class ProjectService:
             for alias in selected
             if alias in self.manifest.repository_map
         }
-        return ContextAssembler(self.manifest).chat_context(
+        return ContextAssembler(self.manifest, graph_root=self.history.root).chat_context(
             state,
             node_id=request.node_id if request.chat_scope == "node" else None,
             run_truth_scope=request.run_truth_scope,

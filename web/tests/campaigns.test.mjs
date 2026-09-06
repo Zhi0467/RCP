@@ -394,6 +394,7 @@ function withGraphBranch(overrides = {}) {
       base_head: baseHead,
       head: branchHead,
       merge_eligible: true,
+      merge_requires_end: false,
       merge_state: "unmerged",
       latest_successful_merge: null,
       active_merge_task_id: null,
@@ -432,6 +433,13 @@ test("an ineligible or running branch has no merge action, while another busy ac
   assert.match(running, /Merge running/);
   assert.doesNotMatch(running, />Merge to main</);
   assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
+});
+
+test("a paused episode explicitly ends when its branch is merged", () => {
+  const html = renderEpisodes([withGraphBranch({ merge_requires_end: true })]);
+
+  assert.match(html, />End and merge to main</);
+  assert.doesNotMatch(html, />Merge to main</);
 });
 
 test("merged and failed branch summaries stay visible without branch-management controls", () => {

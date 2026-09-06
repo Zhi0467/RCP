@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from rcp.core.models import AuthorizedHuman
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.task_policy import resolved_dispatch_authority, task_graph_capable
-from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord
+from rcp.storage import AgentTaskRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -40,20 +40,20 @@ def start_branch_merge(
         or episode.graph_target.branch_id != episode.episode_id
     ):
         raise ValueError("branch merge requires its exact Auto-research episode branch")
-    if episode.ending is None or not tasks.store.auto_research_is_quiescent(episode.episode_id):
+    end_paused = tasks.store.auto_research_can_end_for_merge(episode.episode_id)
+    if not end_paused and (
+        episode.ending is None or not tasks.store.auto_research_is_quiescent(episode.episode_id)
+    ):
         raise ValueError("the Auto-research branch is not ended and quiescent")
     active_branch_writers = [
         item
-        for item in tasks.store.graph_target_tasks(
+        for item in tasks.store.unsettled_graph_target_tasks(
             project_id,
             episode.graph_target,
-            include_hidden=True,
         )
-        if item.kind != "branch_merge"
-        and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
-        and task_graph_capable(item.kind, item.request)
+        if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
     ]
-    if active_branch_writers:
+    if active_branch_writers and not end_paused:
         raise ValueError("the Auto-research branch still has an active graph writer")
     if not authorized_by.display_name.strip():
         raise ValueError("branch merge requires a named human authorizer snapshot")

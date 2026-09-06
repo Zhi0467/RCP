@@ -98,6 +98,13 @@ carry the exact graph target. Main and branch transition-event consumers keep
 independent target watermarks. A conversation or native session already bound to
 a branch cannot be resumed as main, and vice versa.
 
+Agent graph and synthesis file pointers resolve inside that same branch,
+including on a remote execution machine. Shared project inputs such as the
+human paper introduction remain at their project-owned paths. A child
+Experiment's Patch retains its own episode id; branch admission checks the
+canonical task's exact graph target rather than equating child provenance with
+the parent branch id.
+
 A branch Patch advances only branch graph, control, guidance, and events. It
 does not change main revision, main materialization, main control, or ordinary
 main watchers. Human Sync, ordinary Work, and unrelated project work may keep
@@ -200,16 +207,27 @@ A branch remains writable while its episode accepts graph work. It is eligible
 to merge when:
 
 - the episode has a durable completed, exhausted, stopped, failed, or
-  human-pause ending; and
-- no task that can append a branch Patch is active.
+  human-pause ending and no unsettled branch writer; or
+- its current orchestrator is paused and every unsettled branch turn is a
+  paused Auto-research turn owned by that same episode.
+
+The second case exposes **End and merge to main**. Human dispatch atomically
+ends the paused episode, retires its paused recovery and watchers, and admits
+the merge. Resume and Retry cannot reopen the episode, including if the merge
+fails; the human may retry the merge. Retained stages and Patch history remain
+intact. A queued, running, or pausing writer still blocks this action, as does an
+unsettled child Work or Experiment with its own lifecycle. An active orchestrator
+waiting for mail or watchers is not a paused episode.
 
 Eligibility and merge state derive from canonical branch head, episode state,
-task state, and successful receipts. The branch is never deleted. A newer branch
+task state, and successful receipts. Recovered or explicitly abandoned historical
+attempts do not count as active writers. Unresolved paused turns must settle or
+be ended by the explicit action above. The branch is never deleted. A newer branch
 head after a prior receipt may be merged again; a head already covered by a
 successful receipt cannot.
 
-Only a human project member can dispatch **Merge to main**, from the exact
-Auto-research episode detail. Active/nonquiescent, already-merged,
+Only a human project member can dispatch **Merge to main** or **End and merge
+to main**, from the exact Auto-research episode detail. Active/nonquiescent, already-merged,
 cross-project/cross-episode, or concurrently merging requests fail closed. The
 merge task does not spend the concluded episode budget.
 

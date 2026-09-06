@@ -354,7 +354,11 @@ export function AutoResearchEpisodeCard({
                     ) : (
                       <Network size={12} />
                     )}
-                    {mergeBusy ? "Starting merge…" : "Merge to main"}
+                    {mergeBusy
+                      ? "Starting merge…"
+                      : episode.graph_branch.merge_requires_end
+                        ? "End and merge to main"
+                        : "Merge to main"}
                   </button>
                 )}
             </section>
