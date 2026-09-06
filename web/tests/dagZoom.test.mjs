@@ -98,3 +98,36 @@ test("fit reports nothing to frame instead of guessing", () => {
   assert.equal(fitDagToViewport({ nodes: [], viewportWidth: 800, viewportHeight: 500 }), null);
   assert.equal(fitDagToViewport({ nodes: wideGraph, viewportWidth: 0, viewportHeight: 500 }), null);
 });
+
+test("a gesture never reverses the direction it was asked for", () => {
+  // Fit can leave the canvas below the pinch floor. A zoom-out from there used
+  // to be clamped back up to DAG_ZOOM_MIN, jumping inward instead of outward.
+  const fitted = 0.2;
+  const base = { zoom: fitted, focalX: 400, focalY: 250, scrollLeft: 0, scrollTop: 0 };
+
+  const out = zoomDagAtPoint({ ...base, deltaY: 200 });
+  assert.ok(out.zoom <= fitted, `zooming out went inward to ${out.zoom}`);
+
+  const inward = zoomDagAtPoint({ ...base, deltaY: -200 });
+  assert.ok(inward.zoom > fitted, "zooming in still zooms in from a fitted view");
+  assert.ok(inward.zoom <= DAG_ZOOM_MAX);
+});
+
+test("the pinch floor is unchanged for an ordinary view", () => {
+  const base = { zoom: 1, focalX: 400, focalY: 250, scrollLeft: 0, scrollTop: 0 };
+  assert.equal(zoomDagAtPoint({ ...base, deltaY: 100_000 }).zoom, DAG_ZOOM_MIN);
+});
+
+test("a fitted view stays reachable after zooming in and back out", () => {
+  // The floor is the caller's stable fitted scale. Deriving it from the live
+  // zoom instead would promote each intermediate scale to the new floor, so
+  // sub-0.5 zoom would be one-way and Fit unreachable without pressing it again.
+  const fitted = 0.2;
+  const base = { focalX: 400, focalY: 250, scrollLeft: 0, scrollTop: 0, minZoom: fitted };
+
+  const inward = zoomDagAtPoint({ ...base, zoom: fitted, deltaY: -200 });
+  assert.ok(inward.zoom > fitted, "zooming in leaves the fitted scale");
+
+  const back = zoomDagAtPoint({ ...base, zoom: inward.zoom, deltaY: 100_000 });
+  assert.equal(back.zoom, fitted, "zooming out returns to the fitted scale");
+});

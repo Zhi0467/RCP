@@ -169,7 +169,9 @@ export const GraphEditingControls = memo(function GraphEditingControls({
       <NewCustomNode
         ontology={graph.ontology}
         nodePrefixes={options?.node_prefixes ?? null}
-        disabled={mutationsDisabled}
+        // A node id is derived from the backend prefixes, so without them the
+        // form could be filled in but never staged. Keep it closed instead.
+        disabled={mutationsDisabled || !options}
         existingNodeIds={existingNodeIds}
         onStage={onStageCustomNode}
       />
@@ -177,8 +179,8 @@ export const GraphEditingControls = memo(function GraphEditingControls({
         <p className="inline-failure" role="alert">
           <AlertTriangle size={13} aria-hidden="true" />
           <span>
-            Connections and node prefixes are unavailable, so new nodes fall back to free entry.{" "}
-            {error}
+            Connections and node prefixes are unavailable, so connecting nodes and creating new ones
+            stay unavailable until this loads. {error}
           </span>
           <button
             className="button secondary compact"
