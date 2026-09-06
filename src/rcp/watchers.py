@@ -44,6 +44,8 @@ from rcp.storage import (
     WatcherStopRequest,
 )
 from rcp.transport.ssh import ssh_arguments
+from rcp.transport.state import _remote_script
+from rcp.transport.watcher_process import run_check_process, watcher_shell_command
 
 if TYPE_CHECKING:
     from rcp.runs.transition_event_reconciliation import AcceptedGraphBoundary
@@ -932,149 +934,126 @@ class WatcherDelivery:
         source: str,
         retry_generation: WatcherRetryGeneration | None = None,
     ) -> None:
-        """Reconcile canonical graph conditions without changing the trigger's verdict."""
+        """Reconcile canonical conditions independently for each graph target."""
 
         if not self._retry.generation_is_current(retry_generation):
             return
+        retry_needed = False
         try:
             with self._retry.lock_for(project_id):
-                active_records = self._store.active_graph_watchers(project_id)
-                if active_records:
-                    targets = {
-                        record.graph_target.key: record.graph_target for record in active_records
-                    }
-                    if graph_target is not None:
-                        targets = (
-                            {graph_target.key: graph_target} if graph_target.key in targets else {}
-                        )
-                    for target in targets.values():
-                        service = self._graph_project_service(project_id, target)
-                        replay, boundaries = service.history.accepted_boundary_states()
-                        if not self._retry.generation_is_current(retry_generation):
-                            return
-                        if replay.state.replay_status != "complete":
-                            raise _GraphWatcherReplayDegraded(
-                                f"{target.key} graph replay is degraded at revision "
-                                f"{replay.state.revision}"
-                            )
-
-                        # Captured task/sync state is only an arrival signal. The
-                        # target-local durable head selects the not-yet-consumed
-                        # accepted boundaries; main and branch revisions never
-                        # consume one another's watcher events.
-                        consumed_head = self._store.graph_watcher_reconciliation_head(
+                records = self._store.active_graph_watchers(project_id)
+                targets = {record.graph_target.key: record.graph_target for record in records}
+                if graph_target is not None:
+                    targets = (
+                        {graph_target.key: graph_target} if graph_target.key in targets else {}
+                    )
+                for target in targets.values():
+                    if not self._retry.generation_is_current(retry_generation):
+                        return
+                    try:
+                        self._reconcile_graph_wake_target(project_id, target, retry_generation)
+                    except Exception as exc:
+                        retry_needed |= self._graph_reconciliation_retryable(exc)
+                        self._logger.warning(
+                            "Could not reconcile graph conditions after %s for project %s "
+                            "target %s: %s",
+                            source,
                             project_id,
-                            target,
+                            target.key,
+                            exc,
                         )
-                        if (
-                            consumed_head is not None
-                            and consumed_head.revision > replay.state.revision
-                        ):
-                            raise _GraphWatcherReplayDegraded(
-                                f"{target.key} graph is behind its consumed watcher head "
-                                f"{consumed_head.revision} at revision {replay.state.revision}"
-                            )
-                        trace_reader = getattr(
-                            service.history, "transition_trace_at_revision", None
-                        )
-                        from rcp.runs.transition_event_reconciliation import (
-                            AcceptedGraphBoundary,
-                        )
-
-                        accepted_boundaries: list[AcceptedGraphBoundary] = []
-                        for boundary in boundaries:
-                            if (
-                                consumed_head is not None
-                                and boundary.revision < consumed_head.revision
-                            ):
-                                continue
-                            trace = (
-                                trace_reader(boundary.revision) if callable(trace_reader) else None
-                            )
-                            if trace is not None and trace.pre_head.target != target:
-                                raise _GraphWatcherReplayDegraded(
-                                    "accepted transition target does not match its history view"
-                                )
-                            lifecycle_events = (
-                                tuple(trace.lifecycle_events) if trace is not None else ()
-                            )
-                            accepted_boundaries.append(
-                                AcceptedGraphBoundary(
-                                    target=target,
-                                    revision=boundary.revision,
-                                    transition_id=(
-                                        trace.transition_id if trace is not None else None
-                                    ),
-                                    state=boundary,
-                                    lifecycle_events=lifecycle_events,
-                                )
-                            )
-                        if not self._retry.generation_is_current(retry_generation):
-                            return
-                        self._reconcile_graph_boundaries(
-                            self._store,
-                            project_id,
-                            accepted_boundaries,
-                            current_head=GraphHeadRef(
-                                target=target,
-                                revision=replay.state.revision,
-                            ),
-                        )
-        except _GraphWatcherReplayDegraded as exc:
-            if not self._retry.run_for_generation(
-                retry_generation,
-                lambda: self._retry.clear(project_id),
-            ):
-                return
-            self._logger.warning(
-                "Could not reconcile graph conditions after %s for project %s: %s",
-                source,
-                project_id,
-                exc,
-            )
-            self.deliver_ready_graph_wake_groups(
-                project_id,
-                source=f"{source} degraded graph replay",
-                retry_generation=retry_generation,
-            )
-            return
         except Exception as exc:
-            if (
-                isinstance(exc, OSError)
-                or self._state_unavailable(exc)
-                or _retryable_sqlite_error(exc)
-            ):
-                if not self._retry.run_for_generation(
-                    retry_generation,
-                    lambda: self._retry.schedule(project_id),
-                ):
-                    return
-            elif not self._retry.run_for_generation(
-                retry_generation,
-                lambda: self._retry.clear(project_id),
-            ):
-                return
+            retry_needed |= self._graph_reconciliation_retryable(exc)
             self._logger.warning(
                 "Could not reconcile graph conditions after %s for project %s: %s",
                 source,
                 project_id,
                 exc,
             )
-            self.deliver_ready_graph_wake_groups(
-                project_id,
-                source=f"{source} graph evaluation failure",
-                retry_generation=retry_generation,
-            )
-            return
-        if not self._retry.run_for_generation(
-            retry_generation,
-            lambda: self._retry.clear(project_id),
+        # A successful target-specific signal cannot clear another target's
+        # pending retry. Only a pass over all targets can retire that work.
+        if retry_needed:
+            if not self._retry.run_for_generation(
+                retry_generation, lambda: self._retry.schedule(project_id)
+            ):
+                return
+        elif graph_target is None and not self._retry.run_for_generation(
+            retry_generation, lambda: self._retry.clear(project_id)
         ):
             return
         self.deliver_ready_graph_wake_groups(
             project_id,
             source=source,
             retry_generation=retry_generation,
+        )
+
+    def _graph_reconciliation_retryable(self, exc: Exception) -> bool:
+        return (
+            isinstance(exc, OSError) or self._state_unavailable(exc) or _retryable_sqlite_error(exc)
+        )
+
+    def _reconcile_graph_wake_target(
+        self,
+        project_id: str,
+        target: GraphTargetRef,
+        retry_generation: WatcherRetryGeneration | None,
+    ) -> None:
+        service = self._graph_project_service(project_id, target)
+        replay, boundaries = service.history.accepted_boundary_states()
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        if replay.state.replay_status != "complete":
+            raise _GraphWatcherReplayDegraded(
+                f"{target.key} graph replay is degraded at revision {replay.state.revision}"
+            )
+
+        # Captured task/sync state is only an arrival signal. The
+        # target-local durable head selects the not-yet-consumed
+        # accepted boundaries; main and branch revisions never
+        # consume one another's watcher events.
+        consumed_head = self._store.graph_watcher_reconciliation_head(
+            project_id,
+            target,
+        )
+        if consumed_head is not None and consumed_head.revision > replay.state.revision:
+            raise _GraphWatcherReplayDegraded(
+                f"{target.key} graph is behind its consumed watcher head "
+                f"{consumed_head.revision} at revision {replay.state.revision}"
+            )
+        trace_reader = getattr(service.history, "transition_trace_at_revision", None)
+        from rcp.runs.transition_event_reconciliation import (
+            AcceptedGraphBoundary,
+        )
+
+        accepted_boundaries: list[AcceptedGraphBoundary] = []
+        for boundary in boundaries:
+            if consumed_head is not None and boundary.revision < consumed_head.revision:
+                continue
+            trace = trace_reader(boundary.revision) if callable(trace_reader) else None
+            if trace is not None and trace.pre_head.target != target:
+                raise _GraphWatcherReplayDegraded(
+                    "accepted transition target does not match its history view"
+                )
+            lifecycle_events = tuple(trace.lifecycle_events) if trace is not None else ()
+            accepted_boundaries.append(
+                AcceptedGraphBoundary(
+                    target=target,
+                    revision=boundary.revision,
+                    transition_id=(trace.transition_id if trace is not None else None),
+                    state=boundary,
+                    lifecycle_events=lifecycle_events,
+                )
+            )
+        if not self._retry.generation_is_current(retry_generation):
+            return
+        self._reconcile_graph_boundaries(
+            self._store,
+            project_id,
+            accepted_boundaries,
+            current_head=GraphHeadRef(
+                target=target,
+                revision=replay.state.revision,
+            ),
         )
 
     def deliver_ready_graph_wake_groups(
@@ -1156,24 +1135,25 @@ def run_watcher_check(
     """Ask a watcher from a fresh login shell without interpreting its command."""
 
     if execution_host:
-        payload = f"cd {shlex.quote(spec.cwd)} && {spec.check_command}"
         command = ssh_arguments(
             execution_host,
-            shlex.join(["bash", "-lic", payload]),
+            shlex.join(
+                [
+                    "python3",
+                    "-c",
+                    _remote_script("watcher_process.py"),
+                    spec.cwd,
+                    str(timeout),
+                    spec.check_command,
+                ]
+            ),
         )
         cwd = None
     else:
-        command = ["bash", "-lic", spec.check_command]
+        command = watcher_shell_command(spec.check_command, spec.cwd)
         cwd = spec.cwd
     try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        result = run_check_process(command, cwd=cwd, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         detail = _process_error_output(exc.stderr, exc.stdout)
         message = f"check timed out after {timeout:g} seconds"
