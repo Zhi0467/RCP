@@ -115,6 +115,7 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
 
     workspace = Path(__file__).resolve().parents[1]
     supported = preflight(output, os.environ.get("RCP_REBOOT_DISPOSABLE", ""))
+    write_receipt(output / "drive-preflight.json", {"status": "supported", **supported})
     image, digest = download_image(output, ubuntu)
     upload = output / "payload.tar.gz"
     payload(workspace, bundles, upload)
@@ -281,7 +282,8 @@ def main() -> int:
             drive(arguments.ubuntu, arguments.bundles, arguments.output)
     except QualificationUnavailable as exc:
         write_receipt(
-            arguments.output / "preflight.json",
+            arguments.output
+            / ("preflight.json" if arguments.command == "preflight" else "drive-preflight.json"),
             {
                 "status": "qualification-unavailable",
                 "reason": str(exc),

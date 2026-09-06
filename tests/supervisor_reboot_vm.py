@@ -85,10 +85,6 @@ def preflight(directory: Path, confirmation: str) -> dict:
     missing = [name for name in required if shutil.which(name) is None]
     if missing:
         raise QualificationUnavailable(f"Runner prerequisites are missing: {', '.join(missing)}.")
-    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
-        raise QualificationUnavailable(
-            "Usable /dev/kvm is unavailable; no emulation-only fallback qualifies."
-        )
     memory = re.search(
         r"^MemAvailable:\s+(\d+) kB$", Path("/proc/meminfo").read_text(), re.MULTILINE
     )
@@ -115,8 +111,10 @@ def preflight(directory: Path, confirmation: str) -> dict:
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        diagnostic = getattr(exc, "stderr", None)
+        detail = diagnostic.strip()[:2000] if isinstance(diagnostic, str) else str(exc)
         raise QualificationUnavailable(
-            "QEMU could not initialize KVM; real reboot qualification is unavailable."
+            "QEMU could not initialize KVM; real reboot qualification is unavailable. " + detail
         ) from exc
     return {
         "accelerator": "kvm",

@@ -73,7 +73,8 @@ When those hold, archive this handoff.
 
 ## Remaining gates
 
-1. Complete this integration PR's local checks and PR CI, then human merge.
+1. Integration PR #65 merged as `94f37f4`; PR and merged-main CI passed, and
+   `build/460` published all five assets. Drive-found fixes use separate PRs.
 2. Drive `.github/workflows/supervisor-recovery-live.yml` on disposable hosted
    Ubuntu 22.04/24.04. It preflights QEMU/KVM and refuses qualification when the
    environment cannot prove real reboots. Exercise source adoption and fresh-host
@@ -427,3 +428,20 @@ proofs hashing rehearsal paths; the delegation client publishing success before
 the supervisor's stream and exit code were validated; and S95 plus the spec's
 restore prerequisite still describing the retired source install and an
 empty-only target.
+
+### First disposable qualification attempt, 2026-09-06
+
+[Run 34048821544](https://github.com/Zhi0467/RCP/actions/runs/34048821544)
+executed the Ubuntu 22.04/24.04 matrix from merged `94f37f4`. Both initial
+preflights successfully initialized QEMU with KVM and built the synthetic
+bundles. Both drive steps then refused at Python's advisory `/dev/kvm` access
+check before creating a guest. No reboot, update, restore, or adoption was
+proved. The original preflight receipt was overwritten by the later refusal;
+the successful first probe remains established by each workflow step's exit.
+
+The follow-up makes the actual bounded QEMU KVM initialization the access gate,
+retains its error output on refusal, and saves initial and drive preflights as
+separate receipts. This does not establish why the two original preflights
+disagreed; the corrected workflow must still run successfully on both hosts.
+No emulation fallback or relaxed reboot requirement is introduced. Production
+was inspected read-only and remains on its previous healthy source release.
