@@ -139,14 +139,11 @@ def graph_branch_summary_from_snapshot(
     latest_task = merge_tasks[-1] if merge_tasks else None
     active_branch_writers = [
         item
-        for item in store.graph_target_tasks(
+        for item in store.unsettled_graph_target_tasks(
             episode.project_id,
             episode.graph_target,
-            include_hidden=True,
         )
-        if item.kind != "branch_merge"
-        and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
-        and task_graph_capable(item.kind, item.request)
+        if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
     ]
     if active_task is not None:
         merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"] = "running"

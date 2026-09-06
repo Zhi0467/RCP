@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -25,12 +26,17 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
-from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research import (
+    AutoResearchRunRequest,
+    AutoResearchStartRequest,
+    auto_research_completion_signal,
+)
 from rcp.runs.auto_research_admission import (
     reconcile_reserved_auto_research_roots,
     reserve_auto_research,
 )
 from rcp.runs.branch_merge import branch_merge_id
+from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.setup import ProjectSetupRequest
@@ -50,7 +56,9 @@ from .helpers import (
     authorized_human,
     create_named_app,
     wait_for_task,
+    wait_until,
 )
+from .test_episode_report import _ReportLauncher
 
 BranchChange = Literal["none", "evidence", "status", "bookkeeping"]
 
@@ -805,6 +813,134 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     assert not any(
         task.kind == "branch_merge" for task in harness.store.agent_tasks(harness.project_id)
     )
+
+
+@pytest.mark.parametrize("ending", ["stopped", "human_pause", "completed", "exhausted", "failed"])
+@pytest.mark.parametrize("retirement", ["recovered", "abandoned"])
+def test_ended_branch_merges_after_a_paused_attempt_is_retired(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+    retirement: str,
+) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
+    store = harness.store
+    root = harness.root
+    store.mark_agent_task_running(root.operation_id)
+    store.request_agent_task_pause(root.operation_id)
+    store.pause_agent_task(root.operation_id, detail="Paused before the provider finished.")
+    if retirement == "recovered":
+        recovered = store.create_auto_research_recovery_task(
+            root.model_copy(
+                update={
+                    "operation_id": str(uuid.uuid4()),
+                    "parent_operation_id": root.operation_id,
+                    "attempt": root.attempt + 1,
+                    "created_at": store.now(),
+                    "updated_at": store.now(),
+                }
+            ),
+            continuation_cause="retry",
+        )
+        store.complete_agent_task(recovered.operation_id, applied_revision=None, result={})
+    else:
+        store.abandon_auto_research_recovery(
+            root.operation_id, diagnostic="The retained provider context is unavailable."
+        )
+    if ending == "stopped":
+        store.mark_episode_stop_skipped(harness.episode.episode_id)
+    else:
+        store.end_episode_without_report(harness.episode.episode_id, ending=ending)
+    assert store.agent_task(root.operation_id).status == "paused"
+    assert store.auto_research_is_quiescent(harness.episode.episode_id)
+    assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
+    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
+
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    )
+
+    assert response.status_code == 202, response.text
+    operation_id = response.json()["graph_branch"]["active_merge_task_id"]
+    wait_for_task(store, operation_id, expect="succeeded")
+    assert launcher.calls == 1
+    assert "ev/branch-result" in harness.service.history.state().nodes
+    assert harness.branch.merge_receipts()[-1].provenance.merge_task_id == operation_id
+
+
+def test_ended_branch_still_refuses_an_unresolved_paused_writer(manifest, tmp_path: Path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
+    store = harness.store
+    store.mark_agent_task_running(harness.root.operation_id)
+    store.pause_agent_task(harness.root.operation_id, detail="Still owns an unfinished turn.")
+    store.end_episode_without_report(harness.episode.episode_id, ending="human_pause")
+
+    assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is False
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    )
+    assert response.status_code == 409
+    assert [
+        task.operation_id
+        for task in store.unsettled_graph_target_tasks(
+            harness.project_id, harness.episode.graph_target
+        )
+    ] == [harness.root.operation_id]
+
+
+def test_recovered_paused_turn_finishes_report_and_unlocks_branch_merge(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
+    store = harness.store
+    root = harness.root
+    stage = tmp_path / "retained-orchestrator-stage"
+    stage.mkdir()
+    store.mark_agent_task_running(root.operation_id)
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="native-session", stage_root=str(stage)
+    )
+    store.pause_agent_task(root.operation_id, detail="Paused before recovery.")
+    recovered = store.create_auto_research_recovery_task(
+        root.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
+                "parent_operation_id": root.operation_id,
+                "attempt": root.attempt + 1,
+                "native_session_id": "native-session",
+                "stage_root": str(stage),
+                "request": {**root.request, "session_id": "native-session"},
+                "created_at": store.now(),
+                "updated_at": store.now(),
+            }
+        )
+    )
+    store.complete_agent_task(recovered.operation_id, applied_revision=None, result={})
+    launcher = _ReportLauncher(["valid"])
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
+    auto_research_completion_signal(store, harness.episode.episode_id)
+
+    EpisodeReconciler(
+        store, harness.app.state.background_tasks, logger=logging.getLogger(__name__)
+    ).reconcile_auto_research_episode(harness.episode.episode_id, source="recovered turn")
+
+    episode = wait_until(
+        lambda: (
+            episode
+            if (episode := store.episode(harness.episode.episode_id)).wrapup_state == "ready"
+            else None
+        ),
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="Recovered paused turn did not complete its report.",
+    )
+    assert episode.status == "completed"
+    assert episode.ending == "completed"
+    assert launcher.calls == 1
+    assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
 
 
 def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(

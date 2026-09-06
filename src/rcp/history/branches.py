@@ -865,8 +865,11 @@ class BranchHistoryManager:
     def _require_prepared_branch_patch(self, patch: Patch) -> None:
         if patch.transition is not None and patch.transition.pre_head.target != self.graph_target:
             raise ValueError("prepared branch Patch names a different graph target")
-        if self.parent.require_attribution and patch.episode_id != self._metadata.episode_id:
-            raise ValueError("branch Patch attribution does not match its owning episode")
+        # Admission already checks the canonical task's exact Apply target and
+        # stamps its episode provenance. A child Experiment owns its own episode,
+        # while its graph target belongs to the parent Auto-research episode.
+        if self.parent.require_attribution and patch.episode_id is None:
+            raise ValueError("branch Patches require canonical episode attribution")
 
     def _require_receipt_identity(self, receipt: BranchMergeReceipt) -> None:
         provenance = receipt.provenance

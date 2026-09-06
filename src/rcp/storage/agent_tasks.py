@@ -226,17 +226,12 @@ class AgentTaskStoreMixin:
                     not in {"needs_action", "completed", "stopped", "failed"}
                 ):
                     raise ValueError("only an ended Auto-research branch is merge eligible")
-                active_writer = connection.execute(
-                    """
-                    SELECT operation_id FROM graph_runs
-                    WHERE project_id = ? AND graph_target_json = ?
-                      AND kind NOT IN ('branch_merge', 'episode_report')
-                      AND status IN ('queued', 'running', 'pausing', 'paused')
-                    LIMIT 1
-                    """,
-                    (record.project_id, record.graph_target.model_dump_json()),
-                ).fetchone()
-                if active_writer is not None:
+                if any(
+                    task.kind not in {"branch_merge", "episode_report"}
+                    for task in self._unsettled_graph_target_tasks_in_connection(
+                        connection, record.project_id, record.graph_target
+                    )
+                ):
                     raise ValueError("the graph branch still has an active writer")
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
         except sqlite3.IntegrityError as exc:
@@ -1392,6 +1387,55 @@ class AgentTaskStoreMixin:
                     int(include_hidden),
                 ),
             ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def unsettled_graph_target_tasks(
+        self,
+        project_id: str,
+        graph_target: GraphTargetRef,
+    ) -> list[AgentTaskRecord]:
+        """Return live tasks and recoverable paused leaves on one exact target."""
+
+        with self.connection() as connection:
+            return self._unsettled_graph_target_tasks_in_connection(
+                connection, project_id, graph_target
+            )
+
+    def _unsettled_graph_target_tasks_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        graph_target: GraphTargetRef,
+    ) -> list[AgentTaskRecord]:
+        rows = connection.execute(
+            """
+            SELECT run.* FROM graph_runs AS run
+            WHERE run.project_id = ? AND run.graph_target_json = ?
+              AND (
+                run.status IN ('queued', 'running', 'pausing')
+                OR (
+                  run.status = 'paused'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM graph_runs AS child
+                    WHERE child.parent_operation_id = run.operation_id
+                      AND child.episode_id = run.episode_id
+                      AND child.attempt = run.attempt + 1
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM graph_run_receipts AS receipt
+                    WHERE receipt.operation_id = run.operation_id
+                      AND receipt.category IN (
+                        'auto_research_recovery_abandoned',
+                        'experiment_recovery_abandoned',
+                        'auto_research_orchestrator_failure'
+                      )
+                  )
+                )
+              )
+            ORDER BY run.created_at, run.operation_id
+            """,
+            (project_id, graph_target.model_dump_json()),
+        ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
     def episode_tasks(

@@ -27,7 +27,7 @@ from rcp.runs.experiment_loop import (
     experiment_loop_wrapup_spec,
 )
 from rcp.service import RunRequest
-from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -50,9 +50,14 @@ class EpisodeReconciler:
     def _has_unsettled_visible_episode_task(self, episode_id: str) -> bool:
         """Whether already-admitted visible work still owns an unfinished turn."""
 
+        episode = self.store.episode(episode_id)
+        if episode is None:
+            return False
         return any(
-            task.visible and task.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
-            for task in self.store.episode_tasks(episode_id, include_hidden=True)
+            task.visible and task.episode_id == episode_id
+            for task in self.store.unsettled_graph_target_tasks(
+                episode.project_id, episode.graph_target
+            )
         )
 
     def reconcile_auto_research_wrapup(

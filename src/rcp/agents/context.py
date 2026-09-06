@@ -89,8 +89,9 @@ class ChatContext(BaseModel):
 
 
 class ContextAssembler:
-    def __init__(self, manifest: Manifest) -> None:
+    def __init__(self, manifest: Manifest, *, graph_root: Path | None = None) -> None:
         self.manifest = manifest
+        self.graph_root = graph_root if graph_root is not None else manifest.research_dir
 
     def assemble(
         self,
@@ -122,8 +123,8 @@ class ContextAssembler:
                     path=item.path,
                 )
             )
-        root = self.manifest.research_dir
-        introduction = root / "paper" / "introduction.md"
+        root = self.graph_root
+        introduction = self.manifest.research_dir / "paper" / "introduction.md"
         return RunContext(
             project_name=self.manifest.name,
             run_truth_scope=selected,
@@ -136,7 +137,7 @@ class ContextAssembler:
             introduction_path=str(introduction) if introduction.exists() else None,
             glossary_path=str(root / "glossary.json"),
             coverage_path=str(root / "coverage.json"),
-            facts_dir=str(root / "facts"),
+            facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
             ontology_extensions=_has_ontology_extensions(state),
             source_errors=source_errors or [],
@@ -175,8 +176,8 @@ class ContextAssembler:
             for item in self.manifest.repositories
             if item.alias in selected_set
         ]
-        root = self.manifest.research_dir
-        introduction = root / "paper" / "introduction.md"
+        root = self.graph_root
+        introduction = self.manifest.research_dir / "paper" / "introduction.md"
         return ChatContext(
             project_name=self.manifest.name,
             run_truth_scope=selected,
@@ -186,7 +187,7 @@ class ContextAssembler:
             introduction_path=str(introduction) if introduction.exists() else None,
             glossary_path=str(root / "glossary.json"),
             coverage_path=str(root / "coverage.json"),
-            facts_dir=str(root / "facts"),
+            facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
             ontology_extensions=_has_ontology_extensions(state),
             graph_revision=state.revision,
