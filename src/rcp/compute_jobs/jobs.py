@@ -107,7 +107,12 @@ def launch_compute_job(
 
 
 def refresh_compute_job(
-    store: AppStore, manifest: Manifest, job_id: str, *, data_dir: Path
+    store: AppStore,
+    manifest: Manifest,
+    job_id: str,
+    *,
+    data_dir: Path,
+    unavailable_hosts: dict[str, str] | None = None,
 ) -> ComputeJobRecord:
     record = store.compute_job(job_id)
     if record is None:
@@ -116,9 +121,14 @@ def refresh_compute_job(
         return record
     try:
         context = recorded_job_context(manifest, record)
-        alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
-        if alive is None:
-            raise RuntimeError("compute backend could not determine whether the job is alive")
+        try:
+            alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
+            if alive is None:
+                raise RuntimeError("compute backend could not determine whether the job is alive")
+        except Exception as exc:
+            if unavailable_hosts is not None:
+                unavailable_hosts[record.execution_host] = safe_compute_diagnostic(str(exc))
+            raise
         started = read_job_file(context, str(PurePosixPath(record.job_root) / "started"))
         started_at = epoch_timestamp(started.strip()) if started else record.started_at
         if alive:

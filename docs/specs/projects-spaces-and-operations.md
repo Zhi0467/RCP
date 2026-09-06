@@ -297,9 +297,10 @@ project and path but does not restore the registration or report deletion as
 failed; any leftover app files are inert.
 
 Queued, running, or pausing tasks; non-terminal episodes; unfinished project
-transfers; active watchers; and degraded or completed watchers with an undelivered
-notification block deletion. The human must use the existing Pause,
-Stop, or stop-watching action and wait for work to settle. Deletion never edits
+transfers; running compute jobs; active watchers; and degraded or completed
+watchers with an undelivered notification block deletion. The human must use
+the existing Pause, Stop, or stop-watching action and wait for work to settle.
+Running compute jobs must be cancelled or finish first. Deletion never edits
 the underlying research repositories or canonical state repository. For a team
 project, it also leaves the server-managed checkout and Git deploy key in place.
 Removing either is a separate operator deprovisioning action. The backend

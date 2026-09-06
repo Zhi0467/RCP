@@ -39,6 +39,7 @@ def launch(job_root: str, wrapper: str) -> str:
     with (root / "log").open("ab") as log:
         process = subprocess.Popen(
             ["sh", wrapper],
+            cwd=root,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,

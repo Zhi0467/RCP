@@ -17,6 +17,10 @@ class ComputeLaunchUncertainError(RuntimeError):
     """The backend may own a job; retain its launch intent for recovery."""
 
 
+class ComputeTransportError(RuntimeError):
+    """SSH transport failed; the remote command's outcome is unknown."""
+
+
 @dataclass
 class BackendContext:
     execution_host: str
@@ -43,9 +47,10 @@ class BackendContext:
         )
         result = self.runner(command, capture_output=True, text=True, timeout=timeout, input=input)
         if check and result.returncode:
-            raise RuntimeError(
-                result.stderr.strip() or result.stdout.strip() or "Compute command failed"
-            )
+            diagnostic = result.stderr.strip() or result.stdout.strip() or "Compute command failed"
+            if self.execution_host and result.returncode == 255:
+                raise ComputeTransportError(diagnostic)
+            raise RuntimeError(diagnostic)
         return result
 
     def target_uid(self) -> str:
@@ -158,11 +163,9 @@ def resolve_context(
 
 def recorded_job_context(manifest: Manifest, record: ComputeJobRecord) -> BackendContext:
     machine = manifest.machine_map.get(record.execution_machine)
-    if machine is None or machine.host != record.execution_host:
-        raise ValueError("recorded compute execution machine is no longer configured")
     return BackendContext(
         execution_host=record.execution_host,
         execution_machine=record.execution_machine,
-        compute=machine.compute,
+        compute=machine.compute if machine and machine.host == record.execution_host else None,
         containment=record.containment,
     )

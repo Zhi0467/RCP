@@ -475,3 +475,52 @@ def test_registration_waits_until_project_deletion_cleanup_finishes(
 
     restored = catalog.register(str(manifest.path))
     assert restored.project_id == record.project_id
+
+
+@pytest.mark.parametrize("status", ["running", "exited", "cancelled", "lost"])
+def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest, tmp_path, status):
+    from fastapi.testclient import TestClient
+
+    from rcp.api.app import create_app
+    from rcp.storage import ProjectActiveTaskConflict
+    from tests.test_compute_jobs_storage import job_record
+
+    data_dir = tmp_path / "app-data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    roots = [data_dir / "jobs" / f"job-{index}" for index in range(2)]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "log").write_text("preserve compute output")
+        store.create_compute_job(
+            job_record(
+                root.name,
+                project_id=project_id,
+                job_root=str(root),
+                log_path=str(root / "log"),
+                exit_path=str(root / "exit"),
+                status=status,
+            )
+        )
+    other = store.create_compute_job(job_record("other", project_id="other-project"))
+    client = TestClient(app)
+    if status == "running":
+        with pytest.raises(ProjectActiveTaskConflict, match="2 running compute job"):
+            store.delete_project_records(project_id)
+        response = client.delete(f"/api/projects/{project_id}")
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "This project has 2 running compute job(s). "
+            "Cancel or wait for those jobs first before deleting this project."
+        )
+        assert store.project(project_id) is not None
+        assert len(store.compute_jobs(project_id)) == 2
+    else:
+        response = client.delete(f"/api/projects/{project_id}")
+        assert response.status_code == 200
+        assert response.json()["database_records"]["compute_jobs"] == 2
+        assert store.project(project_id) is None
+        assert store.compute_jobs(project_id) == []
+    assert store.compute_job(other.job_id) == other
+    assert all((root / "log").read_text() == "preserve compute output" for root in roots)
