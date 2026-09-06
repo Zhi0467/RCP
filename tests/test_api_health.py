@@ -85,7 +85,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
-        "team_shell_protocol": {"minimum": 1, "maximum": 2},
+        "team_shell_protocol": {"minimum": 1, "maximum": 3},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -157,6 +157,17 @@ def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
         {"method": "POST", "path": "/api/team/session/exchange"},
         {"method": "GET", "path": "/api/projects"},
     ]
+
+
+def test_team_shell_protocol_three_fixture_matches_server_range(tmp_path) -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v3.json").read_text()
+    )
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        assert client.get("/api/health").json()["team_shell_protocol"] == fixture["server_range"]
+    assert fixture["schema_version"] == 1
+    assert fixture["protocol_version"] == TEAM_SHELL_PROTOCOL_MAXIMUM
+    assert fixture["selection_header"] == TEAM_SHELL_PROTOCOL_HEADER
 
 
 def test_health_projects_team_creation_eligibility_without_member_authority(tmp_path) -> None:

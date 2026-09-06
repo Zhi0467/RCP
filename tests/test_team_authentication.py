@@ -720,7 +720,8 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     assert AppStore(store.path).space_user(member["user_id"]) is not None
 
 
-def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path) -> None:
+@pytest.mark.parametrize("selected", ["1", "2", "3"])
+def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path, selected) -> None:
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     metadata = ServerMetadata.create(
         tmp_path,
@@ -743,36 +744,36 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path)
     mismatch = client.post(
         "/api/team/enroll",
         json={"code": bootstrap, "display_name": "Alice"},
-        headers={header: "3"},
+        headers={header: "4"},
     )
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"] == {
         "code": "team_shell_protocol_mismatch",
         "message": "The selected team-shell protocol is not supported by this server.",
-        "server_protocol": {"minimum": 1, "maximum": 2},
+        "server_protocol": {"minimum": 1, "maximum": 3},
         "action": "Update the RCP desktop or team server from current origin/main.",
     }
 
     enrolled = client.post(
         "/api/team/enroll",
         json={"code": bootstrap, "display_name": "Alice"},
-        headers={header: "1"},
+        headers={header: selected},
     )
     assert enrolled.status_code == 200
-    assert enrolled.headers[header] == "1"
+    assert enrolled.headers[header] == selected
     token = enrolled.json()["token"]
 
     exchanged = client.post(
         "/api/team/session/exchange",
         json={"token": token},
-        headers={header: "1"},
+        headers={header: selected},
     )
     assert exchanged.status_code == 200
-    assert exchanged.headers[header] == "1"
+    assert exchanged.headers[header] == selected
 
-    projects = client.get("/api/projects", headers={header: "1"})
+    projects = client.get("/api/projects", headers={header: selected})
     assert projects.status_code == 200
-    assert projects.headers[header] == "1"
+    assert projects.headers[header] == selected
     assert len(store.space_users()) == 1
 
 
