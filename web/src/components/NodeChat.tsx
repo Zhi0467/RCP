@@ -86,6 +86,8 @@ import {
   visibleChatWatchers,
   watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
+  retainedChatJobObservers,
+  watcherIsActive,
 } from "../runProjection";
 import {
   downloadDesktopArtifact,
@@ -697,6 +699,10 @@ export function NodeChat({
   const chatTitle = node?.title || conversationTitle || project.name;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const computeJobs = useComputeJobs(apiBase, watchers);
+  const watcherRows = useMemo(
+    () => [...liveWatchers, ...retainedChatJobObservers(watchers, chatId, computeJobs.jobs)],
+    [chatId, computeJobs.jobs, liveWatchers, watchers],
+  );
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
@@ -1552,10 +1558,10 @@ export function NodeChat({
           </div>
         )}
       </div>
-      {liveWatchers.length > 0 && watchersOpen && (
+      {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Active watchers">
           {computeJobs.error && <span role="alert">Compute jobs: {computeJobs.error}</span>}
-          {liveWatchers.map((watcher) => {
+          {watcherRows.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
@@ -1582,15 +1588,18 @@ export function NodeChat({
                       : "Not evaluated yet"}
                 </time>
                 {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-                {!readOnly && onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => onStopWatcher(watcher.watcher_id)}
-                  >
-                    Stop watching
-                  </button>
-                )}
+                {!readOnly &&
+                  onStopWatcher &&
+                  watcherIsActive(watcher) &&
+                  watcherIsIndividuallyStoppable(watcher) && (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() => onStopWatcher(watcher.watcher_id)}
+                    >
+                      Stop watching
+                    </button>
+                  )}
               </div>
             );
           })}
