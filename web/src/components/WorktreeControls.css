@@ -1,0 +1,37 @@
+.chat-worktree-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.chat-worktree-controls:empty {
+  display: none;
+}
+
+.chat-worktree-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-worktree-options,
+.chat-worktree-removal,
+.chat-worktree-controls pre {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.chat-worktree-options > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.chat-worktree-controls pre {
+  white-space: pre-wrap;
+}
