@@ -910,6 +910,16 @@ export interface Edge {
   assessment?: EvidenceAssessment | null;
 }
 
+export interface GraphEditOptions {
+  relations: Array<{
+    name: string;
+    source_types: string[];
+    target_types: string[];
+    same_type: boolean;
+    assessment_required_for: Array<{ source_type: string; target_type: string }>;
+  }>;
+}
+
 export interface EvidenceAssessment {
   relevance: "direct" | "indirect" | "contextual";
   weight: "limited" | "moderate" | "strong";

@@ -448,8 +448,11 @@ a per-turn invocation pointer. Packages cannot widen surface capability.
 
 The graph-authoring contract always includes the local causal check. Optional
 `graph-audit`, `experiment-causality`, and `evidence-triage` packages provide
-progressively deeper guidance. Requiring an executable graph scanner remains an
-open question, not current behavior.
+progressively deeper guidance. Programmatic quality advice belongs to the existing
+live Patch validator, not a separate mandatory scanner package or model call.
+Nonblocking flags return in a valid result's `messages` with exit code zero;
+blocking errors take priority while the Patch is invalid. Quality advice does
+not require another provider turn and cannot change acceptance or graph authority.
 
 ## Network behavior
 

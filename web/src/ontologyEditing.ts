@@ -184,17 +184,26 @@ export function makeCustomNode(
   origin: GraphNode["origin"],
   extensionFields: GraphNode["extension_fields"],
 ): GraphNode {
+  return makeHumanNode(ontology, extensionType, slug, title, primaryText, origin, extensionFields);
+}
+
+export function makeHumanNode(
+  ontology: OntologyState,
+  typeName: string,
+  slug: string,
+  title: string,
+  primaryText: string,
+  origin: GraphNode["origin"],
+  extensionFields: GraphNode["extension_fields"],
+): GraphNode {
+  const extensionType = typeName;
   const definition = ontology.types.find((item) => item.name === extensionType && !item.deprecated);
-  if (!definition) throw new Error(`Ontology type ${extensionType} is not active.`);
-  const base = baseOntologyTypes.find((item) => item.name === definition.base_type)!;
+  const base = baseOntologyTypes.find((item) => item.name === (definition?.base_type ?? typeName));
+  if (!base) throw new Error(`Ontology type ${typeName} is not active.`);
   const node: GraphNode = {
-    id: `${extensionType}/${slug
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")}`,
-    type: definition.base_type,
-    extension_type: extensionType,
+    id: humanNodeId(ontology, typeName, slug),
+    type: base.name,
+    extension_type: definition ? extensionType : null,
     extension_fields: extensionFields,
     title: title.trim(),
     standing: "asserted",
@@ -237,5 +246,25 @@ export function makeCustomNode(
       recommended_action: null,
     },
   };
-  return { ...node, ...defaults[definition.base_type] };
+  return { ...node, ...defaults[base.name] };
+}
+
+export function humanNodeId(ontology: OntologyState, typeName: string, slug: string): string {
+  const prefixes: Record<string, string> = {
+    research_question: "rq",
+    hypothesis: "hyp",
+    experiment: "exp",
+    evidence: "ev",
+    decision: "dec",
+    blocker: "blk",
+  };
+  const prefix = ontology.types.some((item) => item.name === typeName && !item.deprecated)
+    ? typeName
+    : prefixes[typeName];
+  if (!prefix) throw new Error(`Ontology type ${typeName} is not active.`);
+  return `${prefix}/${slug
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")}`;
 }

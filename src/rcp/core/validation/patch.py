@@ -30,6 +30,7 @@ from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
 from rcp.core.validation.nodes import older
 from rcp.core.validation.proposals import proposal_is_stale
+from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
 
@@ -214,6 +215,8 @@ def _validate_patch(
     oldest_ref = _validate_operations(ctx)
     _validate_queued_decision_options(ctx)
     _validate_created_proposal_liveness(ctx)
+    if mode == "admission":
+        flag_introduced_quality_issues(state, ctx.state, report, ctx.revision)
 
     if (
         mode == "admission"

@@ -98,6 +98,16 @@ prose editor stages the change in the project draft and clears the draft standin
 to asserted; node chat is never started merely to rewrite text. Canonical history
 changes only when the human presses Sync.
 
+**New node** creates any of the six built-in node types or an active custom type
+in the same project draft. Graph connection controls select source, target and
+relation; a node-to-node connection gesture opens the same editor. Explicit
+select controls provide a keyboard alternative. Connections can be removed or
+replaced through that draft. Backend preview validates the full batch before
+Sync; the UI does not derive lifecycle effects or imply that staging committed.
+Removing a node removes its current incident edges, not its history. Existing
+accepted-node and active-Experiment safeguards still apply. Artifact selections
+remain chat context, not graph-editing controls or Evidence creation shortcuts.
+
 ## DAG controls
 
 Boundary-aware page scroll chaining, brighten/dim-all, fullscreen with visible

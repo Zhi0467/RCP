@@ -143,6 +143,36 @@ def test_branch_starts_at_exact_main_head_and_advances_without_mutating_main(man
     assert not (root / "cursors.json").exists()
 
 
+def test_branch_glossary_edits_remain_on_branch_and_replay(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    metadata = _branch_metadata(history)
+    branch = history.create_auto_research_branch(metadata)
+    for definition in ("Initial explanation.", "Revised explanation."):
+        branch.append(
+            Patch(
+                kind="work",
+                author="agent",
+                profile="orchestrator",
+                authorized_by=metadata.authorized_by,
+                task_id=str(uuid.uuid4()),
+                episode_id=metadata.episode_id,
+                summary="Explained a project-wide research term.",
+                run_truth_scope=["repo-a"],
+                ops=[
+                    {
+                        "op": "upsert_glossary",
+                        "terms": [{"term": "EWC", "plain_definition": definition}],
+                    }
+                ],
+            )
+        )
+
+    assert "EWC" not in history.state().glossary
+    assert branch.materialize().state.glossary["EWC"].plain_definition == "Revised explanation."
+    assert history.head_ref() == metadata.base_head
+
+
 def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())

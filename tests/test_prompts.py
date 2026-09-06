@@ -63,6 +63,7 @@ def _assert_shared_graph_authority(contract: str) -> None:
         belief_boundary='`kind="evidence_edge"` naming a valid Evidence -> Hypothesis',
         human_only="Agents never set `standing`, approve, or reject Proposals",
         withdrawal="may withdraw any pending Proposal with `withdraw_proposals`",
+        glossary="Add or revise thin project-wide definitions with `upsert_glossary`",
         run_authority="Only the human pressing **Run** grants RCP permission",
     )
 

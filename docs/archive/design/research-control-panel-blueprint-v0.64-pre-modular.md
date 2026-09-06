@@ -11,7 +11,7 @@ and add one concise entry to the changelog. Do not create amendment, delta, or
 snapshot blueprint files. Git history is the version archive.
 
 Acceptance scenarios in [`acceptance/`](acceptance/) are the executable promises
-for user-visible behavior. [`open-questions.md`](open-questions.md) contains
+for user-visible behavior. [`open-questions.md`](../open-questions-2026-09-05.md) contains
 raised but undecided questions and is deliberately non-normative.
 
 ## Changelog
@@ -527,7 +527,7 @@ provenance pointers and are not claimed to be portable across installations.
 
 Future schema widening must be explicit and migration-aware. Undecided ontology
 or glossary-authority questions stay in
-[`open-questions.md`](open-questions.md), not in agent prompts or opportunistic
+[`open-questions.md`](../open-questions-2026-09-05.md), not in agent prompts or opportunistic
 implementation changes.
 
 An already-registered legacy project without a nameplate is adopted
@@ -1107,7 +1107,7 @@ make every Seed or Refresh run a full audit.
 
 Package registry, version, dependency, staging, and receipts are implemented
 contracts. An executable mandatory graph-scanner remains only the unconfirmed
-proposal in [S59](acceptance/S59-staged-graph-audit-skills.md) and is not part of
+proposal in [S59](../acceptance/S59-staged-graph-audit-skills.md) and is not part of
 this blueprint.
 
 Provider-native skills are a separate app-scoped inventory, never additions to
@@ -1627,7 +1627,7 @@ dispositions are shown as timeline events, not scientific conclusions.
 
 Live-output delivery, durable output offsets, debounce/batching for output,
 repository leases, stale-record policy, and direct graph manipulation remain open
-in [`open-questions.md`](open-questions.md). Graph-wide scheduling is no longer
+in [`open-questions.md`](../open-questions-2026-09-05.md). Graph-wide scheduling is no longer
 among them; it is bounded by the Auto-research episode mode below.
 
 ## Auto-research episode mode
@@ -2363,5 +2363,5 @@ reachable host.
 
 Canonical history and materialized files are never edited to make tests pass.
 When implementation and blueprint disagree, record the disagreement and resolve
-it deliberately. Undecided matters go to [`open-questions.md`](open-questions.md)
+it deliberately. Undecided matters go to [`open-questions.md`](../open-questions-2026-09-05.md)
 rather than being guessed inside implementation.

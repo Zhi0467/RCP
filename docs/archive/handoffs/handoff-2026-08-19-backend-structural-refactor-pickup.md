@@ -38,7 +38,7 @@
 1. [`AGENTS.md`](../../AGENTS.md), especially the authority invariants, explicit
    policy-boundary rule, fan-out guidance, and verification requirements.
 2. [`docs/design.md`](../design.md), the applicable files under
-   [`docs/specs/`](../specs/), and [`docs/open-questions.md`](../open-questions.md).
+   [`docs/specs/`](../specs/), and [`docs/open-questions.md`](../open-questions-2026-09-05.md).
 3. The [original work order](handoff-2026-08-18-backend-structural-refactor.md),
    especially the Phases 5–7 re-review ledger and Phase 7.
 4. This pickup document.

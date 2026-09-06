@@ -8290,6 +8290,51 @@ button.relation-map-node:hover {
   max-width: none;
   padding-bottom: 28px;
 }
+.graph-editing-controls {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.graph-editing-controls > .new-custom-node {
+  flex: 1 0 100%;
+  margin: 0;
+  min-width: 0;
+}
+.graph-connection-list {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+}
+.graph-connection-list li {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.graph-connection-list .is-removed > span {
+  text-decoration: line-through;
+}
+.dag-connect-handle {
+  position: absolute;
+  right: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
+}
 .dag-shell {
   background: var(--paper);
   min-height: 0;

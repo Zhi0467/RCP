@@ -1,6 +1,6 @@
 # Archived acceptance scenarios
 
-These scenarios are implemented historical contracts that are now primarily
+These scenarios are historical contracts or explicitly rejected proposals, now primarily
 minor regressions, module-local behavior, implementation details, or redundant
 with stronger active journeys. Their text and permanent ids are retained for
 history and searching, but they are not current design authority and do not

@@ -24,7 +24,7 @@ from rcp.core.models import (
     Patch,
     SourceRef,
 )
-from rcp.core.operations import GraphOperation, operation_dict
+from rcp.core.operations import GraphOperation, NewGlossaryTerm, operation_dict
 
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _NODE_ID = rf"[a-z][a-z0-9]*(?:_[a-z0-9]+)*/{_SLUG}"
@@ -361,6 +361,11 @@ class SetStandingOperation(_StrictModel):
     standing: Literal["asserted", "accepted", "contested"]
 
 
+class UpsertGlossaryOperation(_StrictModel):
+    op: Literal["upsert_glossary"]
+    terms: list[NewGlossaryTerm] = Field(min_length=1)
+
+
 AgentOperation = Annotated[
     CreateNodesOperation
     | UpdateNodesOperation
@@ -370,7 +375,8 @@ AgentOperation = Annotated[
     | SupersedeNodesOperation
     | MergeNodesOperation
     | CreateProposalsOperation
-    | WithdrawProposalsOperation,
+    | WithdrawProposalsOperation
+    | UpsertGlossaryOperation,
     Field(discriminator="op"),
 ]
 
@@ -398,6 +404,7 @@ OrchestratorAgentOperation = Annotated[
     | MergeNodesOperation
     | CreateProposalsOperation
     | WithdrawProposalsOperation
+    | UpsertGlossaryOperation
     | SetStandingOperation,
     Field(discriminator="op"),
 ]

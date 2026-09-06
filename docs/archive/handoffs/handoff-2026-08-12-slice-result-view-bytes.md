@@ -116,7 +116,7 @@ unchanged, then leave it alone.
 
 ## Out of scope
 
-Anything that would answer [Q6](../../open-questions.md) — a view still emits no
+Anything that would answer [Q6](../open-questions-2026-09-05.md) — a view still emits no
 research action, appends no Patch, spends no revision, creates no Proposal, and
 changes no attention count. Do not add a cache in front of the store; the store
 *is* the fix. Do not touch the gesture channel except where S114 now records the

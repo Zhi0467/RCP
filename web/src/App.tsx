@@ -165,6 +165,9 @@ import {
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
+  stageEdgeAddition,
+  stageEdgeRemoval,
+  unstageEdgeRemoval,
   unstageCustomNode,
   unstageNodeRemoval,
   toHumanSyncRequest,
@@ -643,6 +646,9 @@ export function humanDraftTransitionRouting(
   // infer any outcomes; absent tags route all of these shapes to preview conservatively.
   if (
     request.removed_node_ids.length > 0 ||
+    request.custom_nodes.length > 0 ||
+    request.added_edges.length > 0 ||
+    request.removed_edge_ids.length > 0 ||
     request.proposals.length > 0 ||
     changesExperimentControl
   ) {
@@ -4016,6 +4022,7 @@ export default function App() {
           )}
           {view === "scientific" && (
             <ScientificView
+              projectId={project.id}
               graph={presentedGraph}
               trustView={trustView}
               mutationsDisabled={mutationsDisabled}
@@ -4023,10 +4030,34 @@ export default function App() {
               onStageCustomNode={(node) =>
                 updateHumanDraft((draft) => stageCustomNode(draft, node))
               }
+              onStageEdge={(edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, edge))}
+              onRemoveEdge={(edgeId) =>
+                updateHumanDraft((draft) => stageEdgeRemoval(draft, edgeId))
+              }
+              onUndoRemoveEdge={(edgeId) =>
+                updateHumanDraft((draft) => unstageEdgeRemoval(draft, edgeId))
+              }
+              draftAddedEdges={humanDraft?.added_edges}
+              draftRemovedEdgeIds={humanDraft?.removed_edge_ids}
+              canonicalEdges={graph.edges}
             />
           )}
           {view === "dag" && (
             <DagView
+              mutationsDisabled={mutationsDisabled}
+              onStageCustomNode={(node) =>
+                updateHumanDraft((draft) => stageCustomNode(draft, node))
+              }
+              onStageEdge={(edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, edge))}
+              onRemoveEdge={(edgeId) =>
+                updateHumanDraft((draft) => stageEdgeRemoval(draft, edgeId))
+              }
+              onUndoRemoveEdge={(edgeId) =>
+                updateHumanDraft((draft) => unstageEdgeRemoval(draft, edgeId))
+              }
+              draftAddedEdges={humanDraft?.added_edges}
+              draftRemovedEdgeIds={humanDraft?.removed_edge_ids}
+              canonicalEdges={graph.edges}
               graph={presentedGraph}
               trustView={trustView}
               projectId={project.id}

@@ -289,13 +289,21 @@ def test_agent_writable_is_admission_only_and_human_may_write_project_field() ->
     assert not validate_patch(state, human_patch, ["repo"]).rejected
 
 
-def test_standalone_human_new_node_is_exactly_one_asserted_custom_node() -> None:
+def test_standalone_human_new_node_is_exactly_one_asserted_base_or_custom_node() -> None:
     state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
     valid = _approval(2, [{"op": "create_nodes", "nodes": [_custom_node()]}])
     assert not validate_patch(state, valid, ["repo"]).rejected
 
     base_only = _approval(2, [{"op": "create_nodes", "nodes": [_hypothesis()]}])
-    assert "invalid-direct-node-create" in _codes(validate_patch(state, base_only, ["repo"]))
+    assert not validate_patch(state, base_only, ["repo"]).rejected
+
+    multiple = _approval(2, [{"op": "create_nodes", "nodes": [_hypothesis(), _custom_node()]}])
+    assert "invalid-direct-node-create" in _codes(validate_patch(state, multiple, ["repo"]))
+
+    accepted = _approval(
+        2, [{"op": "create_nodes", "nodes": [_hypothesis() | {"standing": "accepted"}]}]
+    )
+    assert "invalid-direct-node-create" in _codes(validate_patch(state, accepted, ["repo"]))
 
     sourced = _custom_node() | {
         "source_refs": [

@@ -581,8 +581,8 @@ provider-auth boundary, transfer/restore artifact decisions,
 team-deletion boundary, restore journal, and shared-file scheduling mutexes are
 explicit rather than left to worker interpretation. G0 is dispatchable now. The
 repository workflow decision is settled, so no unresolved product or repository
-decision blocks the feature lanes. Q10 and the later public branch-protection
-gate are deliberately future work and do not block this plan.
+decision blocks the feature lanes. Client-side restored-server rollback detection
+is excluded and does not block this plan.
 
 ## What remains
 
@@ -1047,8 +1047,7 @@ Do not add any of the following to finish this handoff:
 - public HTTPS, VPN configuration, reverse-proxy automation, or Internet-facing
   team serving;
 - multi-server authority, automatic failover, replicated SQLite, or automatic
-  detection of an old restored authority; the latter remains
-  [Q10](../open-questions.md#q10--should-a-client-detect-rollback-of-a-familiar-space);
+  detection of an old restored authority;
 - per-member or per-project Linux service accounts;
 - member-laptop team execution or checkout discovery;
 - team-project machine deprovisioning, including checkout removal or Git-key
