@@ -7,9 +7,8 @@ Independent deployment and restore journals, closed admission, generic
 checkpoints, automatic boot recovery, artifact installation, source adoption,
 operator delegation, and retirement of the old deployment owners are implemented.
 The disposable reboot and historical-source adoption harnesses are implemented;
-drive-found fixes use subsequent PRs. Actual Ubuntu qualification, fresh-host
-GitHub checkout/key reconstruction evidence, qualified release promotion, and the
-Phase 6 production drive remain outstanding.
+drive-found fixes use subsequent PRs. Actual Ubuntu qualification, qualified
+release promotion, and the Phase 6 production drive remain outstanding.
 
 Human clarification, 2026-09-06: finish the remaining coding in one PR, then drive
 the system; bugs found by that drive belong in subsequent PRs. Earlier phases
@@ -25,6 +24,11 @@ merge drive-found PRs, then promote the latest complete prerelease whose CI and
 hosted recovery/adoption drives pass on both Ubuntu versions. Production must
 consume the application and supervisor from that same promoted tag. This is
 explicit authorization for this release; it does not establish automatic promotion.
+
+Human scope decision, 2026-09-06: close the fresh-host GitHub checkout and
+replacement-key qualification work. Full machine-loss reconstruction and GitHub
+access repair may remain manual. Complete verified data backups remain required;
+this closure is a deliberate scope decision, not an executed recovery proof.
 
 Closure condition, all of it:
 
@@ -82,9 +86,8 @@ When those hold, archive this handoff.
    `build/460` published all five assets. Drive-found fixes use separate PRs.
 2. Drive `.github/workflows/supervisor-recovery-live.yml` on disposable hosted
    Ubuntu 22.04/24.04. It preflights QEMU/KVM and refuses qualification when the
-   environment cannot prove real reboots. Exercise source adoption and fresh-host
-   GitHub checkout reconstruction separately where synthetic fixtures do not
-   establish those operational promises.
+   environment cannot prove real reboots. Exercise source adoption in the
+   independent historical-source guest jobs.
 3. Under that explicit human authorization, promote a complete qualified build
    containing the maintenance contract and both wheels/locks. An older `stable`
    must fail with its missing requirement; never silently substitute `main` or a
@@ -115,9 +118,9 @@ verification, and an offline reboot using the shipped startup guard. Receipts
 keep the source identity, selected wheel identity, protected archive hashes,
 changed boot IDs, preserved team/project/canonical data, and service ownership.
 These additions are implementation and local test evidence until their hosted
-run succeeds. Fresh-host GitHub checkout and replacement deploy-key evidence
-remains a separate external gate; reusing the existing synthetic checkout does
-not prove it.
+run succeeds. Reusing the existing synthetic checkout does not prove fresh-host
+GitHub checkout or replacement-key recovery; that qualification is closed by the
+human scope decision above.
 
 Run [34052651239](https://github.com/Zhi0467/RCP/actions/runs/34052651239)
 at `8f3471f` reached real guest application bootstrap on both Ubuntu versions.
@@ -343,8 +346,8 @@ The disposable QEMU harness uses an external controller, real systemd startup,
 changed boot IDs, offline recovery, forward migration, interrupted rollback,
 unknown-journal refusal, and accepted-work preservation. It includes 84 cases per
 Ubuntu version. Local fixture builds and refusal checks pass; actual VM execution
-and the fresh-host GitHub reconstruction drive remain pending. The fixture restore
-uses an existing Git checkout and must not be described as new-host key proof.
+remains pending. The fixture restore uses an existing Git checkout and must not
+be described as new-host key proof.
 
 ### Phase 5 — retired deployment owners removed
 
@@ -378,6 +381,8 @@ followed release. Then archive this handoff.
   the window, restore from the protected backup remains the answer, as today.
 - A package repository or PyPI publication. Assets live on GitHub Releases.
 - Windows or non-Ubuntu servers.
+- Full machine-loss checkout/key reconstruction qualification. Manual recovery
+  remains available; this is not a release or production-cutover gate.
 
 ## Verification environments
 
@@ -468,7 +473,7 @@ code at `/private/tmp/rcp-supervisor-qualification-bundles-20260906` and
 verified by `rcp-supervisor verify` (base manifest `3e9976ad…`, target manifest
 `772ff7e6…`, target ledger head 9); they are not promoted releases.
 
-Coverage boundaries that stay open gates: the Linux parent-death test skips on
+Coverage boundaries at that preparation checkpoint: the Linux parent-death test skips on
 macOS and runs only in Linux CI; the fixture restore reuses an existing Git
 checkout and proves no fresh-host GitHub key or checkout reconstruction; source
 adoption has local recovery regressions but no actual old-source drive;
