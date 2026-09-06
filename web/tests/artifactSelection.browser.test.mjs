@@ -206,10 +206,21 @@ test("direct preview drags require confirmation, preserve text, and keep working
       await pending.waitFor({ state: "visible" });
       await page.keyboard.press("Escape");
       await pending.waitFor({ state: "hidden" });
+      await outline.waitFor({ state: "detached" });
+      // A preceding confirmation can leave keyboard focus in the outer shell.
+      // Beginning a new area must direct Escape to the frame owning the drag,
+      // rather than racing a parent clear message against pointerup.
+      await page.locator("aside").evaluate((rail) => {
+        rail.tabIndex = -1;
+        rail.focus();
+      });
       await page.mouse.move(...origin);
       await page.mouse.down();
       await page.mouse.move(...destination, { steps: 5 });
+      if (kind === "html")
+        assert.equal(await page.frames()[1].evaluate(() => document.hasFocus()), true);
       await page.keyboard.press("Escape");
+      assert.equal(await outline.count(), 0);
       await page.mouse.up();
       await pending.waitFor({ state: "hidden" });
       assert.equal(await page.evaluate(() => confirmed.length), 1);
