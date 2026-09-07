@@ -1841,7 +1841,11 @@ export default function App() {
     };
     const reloadAuthoritative = async () => {
       try {
-        await reloadAuthoritativeProject(projectId);
+        // Always a fresh request: joining a reload already in flight (from the
+        // heartbeat, or from this project before a quick close and reopen) could
+        // hand this open a promise whose responses are all older than the cached
+        // request above and therefore discarded, settling an empty view.
+        await reload();
       } catch (error) {
         if (!stillOpening()) return;
         if (!retained && authoritativeProjectId.current !== projectId) {
@@ -1870,7 +1874,7 @@ export default function App() {
     isActiveProject,
     loadProjectIndex,
     projectId,
-    reloadAuthoritativeProject,
+    reload,
     resetProjectHeader,
     resetProjectSelection,
     restoreProjectTabState,
