@@ -6,6 +6,7 @@ accepted only when that durable binding agrees with Git's registration.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -70,16 +71,32 @@ def _branch_exists(root: Path, branch: str, *, timeout: float) -> bool:
 
 
 def _registered(root: Path, *, timeout: float) -> dict[str, dict[str, str]]:
+    # Git 2.34 (Ubuntu 22.04) has porcelain output but no worktree-list -z.
+    # Keep Unicode literal so Python can decode newer Git's C-quoted paths.
+    output = _git(
+        root, "-c", "core.quotePath=false", "worktree", "list", "--porcelain", timeout=timeout
+    )
     result: dict[str, dict[str, str]] = {}
-    current: dict[str, str] = {}
-    for field in _git(root, "worktree", "list", "--porcelain", "-z", timeout=timeout).split("\0"):
-        if not field:
-            if "worktree" in current:
-                result[current["worktree"]] = current
-            current = {}
-        else:
+    for record in output.split("\n\n"):
+        current: dict[str, str] = {}
+        for field in record.split("\n"):
             key, _, value = field.partition(" ")
+            if (
+                key not in {"worktree", "HEAD", "branch", "bare", "detached", "locked", "prunable"}
+                or key in current
+            ):
+                raise ValueError("Git worktree registration could not be read safely.")
             current[key] = value
+        path = current.get("worktree", "")
+        if path.startswith('"'):
+            try:
+                path = ast.literal_eval(path)
+            except (SyntaxError, ValueError) as exc:
+                raise ValueError("Git worktree path could not be read safely.") from exc
+        if not isinstance(path, str) or not Path(path).is_absolute() or path in result:
+            raise ValueError("Git worktree registration could not be read safely.")
+        current["worktree"] = path
+        result[path] = current
     return result
 
 
@@ -119,7 +136,14 @@ def _validate(
     if allowed_branch is not None:
         _git(shared, "check-ref-format", f"refs/heads/{allowed_branch}", timeout=timeout)
         branches.add(f"refs/heads/{allowed_branch}")
-    if not registration or registration.get("branch") not in branches:
+    actual_branch = _git(
+        worktree, "symbolic-ref", "--quiet", "HEAD", timeout=timeout, optional=True
+    )
+    if (
+        not registration
+        or registration.get("branch") not in branches
+        or actual_branch not in branches
+    ):
         raise ValueError("Bound worktree is missing or its checked-out branch changed")
     for root in (shared, worktree):
         _bound_common_dir(root, binding, timeout=timeout)
