@@ -35,7 +35,10 @@ def prepare_compute_probe_command(
         target=MachineTarget(host=identity.host, os_account=identity.username),
         phase="compute_probe",
         state="pending",
-        expected_success="A job runs outside the service lifecycle and records exit 0 and a log.",
+        expected_success=(
+            "The selected route is ready: a helper job ran outside the service lifecycle, "
+            "or the Slurm tools and queue are reachable under the execution account."
+        ),
         message="The installed service will probe the project's configured execution machine.",
     )
 
