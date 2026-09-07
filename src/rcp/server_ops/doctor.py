@@ -444,6 +444,7 @@ class LinuxServerDoctorMachine:
             add_problem=add_problem,
         )
         active_state, unit_file_state, main_pid, reload_mode = self._inspect_service(add_problem)
+        self._inspect_linger(add_problem)
         restore_pending = self._inspect_restore(
             service_uid=service_uid,
             add_problem=add_problem,
@@ -953,6 +954,15 @@ class LinuxServerDoctorMachine:
         else:
             add_problem("installed systemd unit differs from the non-reloading service contract")
         return active or "unavailable", enabled or "unavailable", main_pid, reload_mode
+
+    def _inspect_linger(self, add_problem: Callable[[str], None]) -> None:
+        # Install enables linger so the account's systemd user manager exists for
+        # generic compute launches; an older installation converges by rerunning it.
+        result = self._runner(
+            ("loginctl", "show-user", self.layout.service_account, "--property=Linger", "--value")
+        )
+        if result.returncode != 0 or result.stdout.strip() != "yes":
+            add_problem("service account linger is not enabled; rerun rcp server install")
 
     def _inspect_process(
         self,

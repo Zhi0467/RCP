@@ -44,7 +44,9 @@ not-yet-existing account. The operator guide supplies tested prerequisite
 commands for both Ubuntu releases.
 Install runs `loginctl enable-linger <account>` after converging the service
 account and verifies `loginctl show-user <account> --property=Linger`; command
-failure or a value other than `Linger=yes` fails installation.
+failure or a value other than `Linger=yes` fails installation. Doctor reports a
+problem when the service account is not lingering, so an installation from
+before this rule converges by rerunning install.
 Other Linux distributions and architectures remain unverified.
 
 Ordinary service-owned content is grouped below `/home/rcp/rcp-server/`: the

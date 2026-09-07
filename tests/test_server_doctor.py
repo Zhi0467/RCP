@@ -467,6 +467,26 @@ def test_doctor_rejects_systemd_drop_ins(tmp_path: Path) -> None:
     assert "systemd has not loaded the exact unit without overrides" in problems
 
 
+@pytest.mark.parametrize("linger", ["no", None])
+def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: str | None) -> None:
+    layout = _layout(tmp_path)
+    problems: list[str] = []
+    healthy = _HealthyRunner(layout=layout, commit=COMMIT, pid=os.getpid())
+
+    def runner(argv: tuple[str, ...], *, cwd: Path | None = None):
+        if argv[0] == "loginctl" and linger is None:
+            # loginctl fails outright for an account that is neither logged in nor lingering.
+            return subprocess.CompletedProcess(argv, 1, "", "Failed to get user: not logged in\n")
+        if argv[0] == "loginctl":
+            assert argv[2] == "rcp"
+            return subprocess.CompletedProcess(argv, 0, linger + "\n", "")
+        return healthy(argv, cwd=cwd)
+
+    LinuxServerDoctorMachine(layout, runner=runner)._inspect_linger(problems.append)
+
+    assert problems == ["service account linger is not enabled; rerun rcp server install"]
+
+
 def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     tmp_path: Path,
 ) -> None:
@@ -599,6 +619,9 @@ class _HealthyRunner:
                 **self.systemd_overrides,
             }
             return subprocess.CompletedProcess(argv, 0, values[property_name] + "\n", "")
+        if argv[0] == "loginctl":
+            linger = self.systemd_overrides.get("Linger", "yes")
+            return subprocess.CompletedProcess(argv, 0, linger + "\n", "")
         if argv[0] == "git":
             if "remote" in argv:
                 return subprocess.CompletedProcess(
