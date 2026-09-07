@@ -1724,9 +1724,11 @@ export default function App() {
 
   const updatePaper = useCallback(
     (nextPaper: PaperSnapshot) => {
-      updateProject((current) => (current ? { ...current, paper: nextPaper } : current));
+      if (projectId) {
+        dispatchProjectSession({ kind: "paper_updated", project_id: projectId, paper: nextPaper });
+      }
     },
-    [updateProject],
+    [dispatchProjectSession, projectId],
   );
 
   useEffect(() => {

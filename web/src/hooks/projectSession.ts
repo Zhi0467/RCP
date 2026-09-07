@@ -20,6 +20,7 @@ import {
   type ExperimentControlState,
   type GraphHeadRef,
   type GraphState,
+  type PaperSnapshot,
   type ProjectSnapshot,
   type TransitionTriggerManifest,
 } from "../types";
@@ -97,6 +98,7 @@ export type ProjectSessionAction =
       request?: { project_id: string; request_id: number };
     }
   | { kind: "project_replaced"; project: ProjectSnapshot | null }
+  | { kind: "paper_updated"; project_id: string; paper: PaperSnapshot }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
   | { kind: "human_draft_updated"; project_id: string; draft: HumanDraft | null }
   | { kind: "discarded_proposals_consumed" }
@@ -252,6 +254,15 @@ export function projectSessionReducer(
         return state;
       }
       return state.project === action.project ? state : { ...state, project: action.project };
+    }
+    case "paper_updated": {
+      if (
+        action.project_id !== state.transitionCoordinator.active_project_id ||
+        action.project_id !== state.project?.id
+      ) {
+        return state;
+      }
+      return { ...state, project: { ...state.project, paper: action.paper } };
     }
     case "human_draft_loaded":
       return state.humanDraft === action.draft ? state : { ...state, humanDraft: action.draft };

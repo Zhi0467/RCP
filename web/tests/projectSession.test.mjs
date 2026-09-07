@@ -341,6 +341,56 @@ test("a settings save replaces project metadata without reconciling session stat
   assert.deepEqual(updated.draftReconciliationDiscardedProposalIds, ["proposal/retained"]);
 });
 
+test("a delayed paper response cannot change the project opened while it was saving", () => {
+  const alphaPaper = { content: "Alpha draft", sync_state: "synced" };
+  const betaPaper = { content: "Beta draft", sync_state: "synced" };
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { paper: alphaPaper }),
+    preserve_readiness: false,
+  });
+  const saveResponse = {
+    kind: "paper_updated",
+    project_id: "alpha",
+    paper: { ...alphaPaper, content: "Saved Alpha draft" },
+  };
+
+  // The route changes before its replacement snapshot has loaded.
+  state = projectSessionReducer(state, { kind: "activate", project_id: "beta" });
+  assert.strictEqual(projectSessionReducer(state, saveResponse), state);
+  state = projectSessionReducer(state, { kind: "reset", project_id: "beta" });
+  state = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { id: "beta", paper: betaPaper }),
+    preserve_readiness: false,
+  });
+  const afterResponse = projectSessionReducer(state, saveResponse);
+  assert.strictEqual(afterResponse, state);
+  assert.deepEqual(afterResponse.project.paper, betaPaper);
+});
+
+test("paper completion updates its owning project while preserving graph and staged work", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2, { paper: { content: "Before save" } }),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_loaded",
+    draft: humanDraft(2),
+  });
+  const paper = { content: "Saved introduction", sync_state: "synced" };
+  const saved = projectSessionReducer(state, {
+    kind: "paper_updated",
+    project_id: "alpha",
+    paper,
+  });
+  assert.deepEqual(saved.project.paper, paper);
+  assert.strictEqual(saved.project.graph, state.project.graph);
+  assert.strictEqual(saved.humanDraft, state.humanDraft);
+  assert.strictEqual(saved.transitionHead, state.transitionHead);
+});
+
 test("a changed compute configuration does not preserve stale readiness", () => {
   const current = snapshot(1, {
     compute_status: {

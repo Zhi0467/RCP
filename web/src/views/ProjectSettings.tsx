@@ -219,8 +219,12 @@ export function ProjectSettings({
     () => restoredSettings.machineComputeEdits,
   );
   const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
-  const currentProjectId = useRef(project.id);
-  currentProjectId.current = project.id;
+  // A return to the same project is a new visit: requests from the previous
+  // visit must not overwrite the restored form or publish into another view.
+  const requestOwner = useMemo(() => ({ projectId: project.id }), [project.id]);
+  const currentRequestOwner = useRef<typeof requestOwner | null>(requestOwner);
+  currentRequestOwner.current = requestOwner;
+  const requestIsCurrent = () => currentRequestOwner.current === requestOwner;
   const [probingMachine, setProbingMachine] = useState<string | null>(null);
   const [machineProbes, setMachineProbes] = useState<
     Record<string, { configuration: string; probe: ComputeBackendProbe }>
@@ -240,6 +244,13 @@ export function ProjectSettings({
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
 
+  useEffect(() => {
+    currentRequestOwner.current = requestOwner;
+    return () => {
+      if (currentRequestOwner.current === requestOwner) currentRequestOwner.current = null;
+    };
+  }, [requestOwner]);
+
   // Reload the form only when the project itself changes. Keying this on the
   // whole snapshot discarded in-progress edits every time an unrelated refresh
   // — a finished background run, a cache clear — handed down a new object
@@ -254,6 +265,13 @@ export function ProjectSettings({
     setProbingMachine(null);
     setSkillDefaults(restoredSettings.skillDefaults);
     setComputeConnections(restoredSettings.computeConnections);
+    setSaving(false);
+    setClearingCaches(false);
+    setClearAllCachesOpen(false);
+    setClearingAllCaches(false);
+    setResolvingProvider(null);
+    setInspectedPackage(null);
+    setStatus(null);
   }, [restoredSettings]);
 
   // Cache metrics are server-owned, so they follow every snapshot.
@@ -452,9 +470,14 @@ export function ProjectSettings({
         method: "PUT",
         body: JSON.stringify(body),
       });
-      setProviderPaths(machineProviderPathsFrom(saved.machines));
+      if (!requestIsCurrent()) return;
+      setProviderPaths((currentPaths) =>
+        currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
+      );
       setMachineComputeEdits({});
-      setComputeConnections(saved.compute_connections);
+      setComputeConnections((currentConnections) =>
+        currentConnections === computeConnections ? saved.compute_connections : currentConnections,
+      );
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
       onSaved(saved, {
@@ -463,17 +486,20 @@ export function ProjectSettings({
       });
       try {
         await onRefreshReadiness();
+        if (!requestIsCurrent()) return;
         setStatus({ kind: "saved", text: "Saved." });
       } catch (readinessError) {
+        if (!requestIsCurrent()) return;
         setStatus({
           kind: "error",
           text: `Saved, but readiness refresh failed: ${readinessError instanceof Error ? readinessError.message : String(readinessError)}`,
         });
       }
     } catch (caught) {
+      if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setSaving(false);
+      if (requestIsCurrent()) setSaving(false);
     }
   };
 
@@ -483,16 +509,16 @@ export function ProjectSettings({
     setStatus(null);
     try {
       const probe = await probeMachineCompute(apiBase, alias);
-      if (currentProjectId.current !== project.id) return;
+      if (!requestIsCurrent()) return;
       setMachineProbes((currentProbes) => ({
         ...currentProbes,
         [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
       }));
     } catch (caught) {
-      if (currentProjectId.current !== project.id) return;
+      if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      if (currentProjectId.current === project.id) setProbingMachine(null);
+      if (requestIsCurrent()) setProbingMachine(null);
     }
   };
 
@@ -521,13 +547,18 @@ export function ProjectSettings({
         `${apiBase}/machines/${encodeURIComponent(machine)}/providers/${encodeURIComponent(provider)}/resolve`,
         { method: "POST" },
       );
-      setProviderPaths((currentPaths) => ({
-        ...currentPaths,
-        [result.machine]: {
-          ...currentPaths[result.machine],
-          [result.provider]: result.binary_path ?? "",
-        },
-      }));
+      if (!requestIsCurrent()) return;
+      setProviderPaths((currentPaths) =>
+        currentPaths[machine]?.[provider] !== providerPaths[machine]?.[provider]
+          ? currentPaths
+          : {
+              ...currentPaths,
+              [result.machine]: {
+                ...currentPaths[result.machine],
+                [result.provider]: result.binary_path ?? "",
+              },
+            },
+      );
       const coachMachine = project.agent_profiles.paper_coach.run_on;
       const resolvedProject: ProjectSnapshot = {
         ...result.project,
@@ -551,9 +582,10 @@ export function ProjectSettings({
         text: `${result.readiness.label || result.provider} resolved on ${result.machine}.`,
       });
     } catch (caught) {
+      if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setResolvingProvider(null);
+      if (requestIsCurrent()) setResolvingProvider(null);
     }
   };
 
@@ -563,12 +595,14 @@ export function ProjectSettings({
     setStatus(null);
     try {
       const metrics = await clearProjectCaches(apiBase);
+      if (!requestIsCurrent()) return;
       publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
       setStatus({ kind: "saved", text: "Project cache cleared." });
     } catch (caught) {
+      if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setClearingCaches(false);
+      if (requestIsCurrent()) setClearingCaches(false);
     }
   };
 
@@ -578,13 +612,15 @@ export function ProjectSettings({
     setStatus(null);
     try {
       const metrics = await clearAllProjectCaches(project.id);
+      if (!requestIsCurrent()) return;
       publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
       setClearAllCachesOpen(false);
       setStatus({ kind: "saved", text: "All project caches cleared." });
     } catch (caught) {
+      if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
-      setClearingAllCaches(false);
+      if (requestIsCurrent()) setClearingAllCaches(false);
     }
   };
 
@@ -662,7 +698,13 @@ export function ProjectSettings({
           </button>
         </section>
       ) : null}
-      <ProjectMembers projectId={project.id} identity={identity} api={api} onLeft={onLeftProject} />
+      <ProjectMembers
+        key={project.id}
+        projectId={project.id}
+        identity={identity}
+        api={api}
+        onLeft={onLeftProject}
+      />
       <article className="settings-section boundary-settings">
         <header>
           <span>
