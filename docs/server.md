@@ -526,6 +526,14 @@ root-owned journal without fetching a release or consulting `main`.
 The installed `[release]` table defaults to `followed = "stable"`. An operator
 may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
 removing the pin follows stable again. Prereleases and build tags are refused.
+If preparation of a build fails, its directory `releases/<build>` is retained with
+`install.log` for inspection and the update refuses to retry while it exists.
+After inspecting it, remove that directory as `rcp` and rerun the update. Before
+verifying the application's managed Python, preparation drops group and other
+write bits that the service account itself left there, such as bytecode caches
+written from an operator shell with a permissive umask; anything owned by
+another account still refuses the update.
+
 Supervisor self-update is a separate explicit command:
 
 ```bash

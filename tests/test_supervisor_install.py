@@ -284,6 +284,23 @@ def test_managed_python_lock_is_protected_before_runtime_durability_check(tmp_pa
         install._fsync_owned_tree(root)
 
 
+def test_owner_written_bytecode_caches_are_normalized_before_durability_check(tmp_path):
+    root = tmp_path / "cpython"
+    cache = root / "lib" / "python3.12" / "xml" / "parsers" / "__pycache__"
+    cache.mkdir(parents=True)
+    cache.chmod(0o775)
+    compiled = cache / "expat.cpython-312.pyc"
+    compiled.write_bytes(b"bytecode")
+    compiled.chmod(0o664)
+    with pytest.raises(SupervisorError, match="unsafe"):
+        install._fsync_owned_tree(root)
+    install._normalize_owned_modes(root)
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o755
+    assert stat.S_IMODE(compiled.stat().st_mode) == 0o644
+    install._fsync_owned_tree(root)
+    assert compiled.read_bytes() == b"bytecode"
+
+
 @pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "nonempty"])
 def test_uv_lock_protection_refuses_unsafe_entries_without_modifying_them(tmp_path, unsafe):
     other = tmp_path / "other"
