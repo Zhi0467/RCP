@@ -1219,19 +1219,10 @@ def create_app(
         server_doctor_reader = doctor_machine.inspect
 
     if server_restore_completed_at_reader is None:
-
+        # Restore journals belong to the root-owned supervisor. Its public
+        # projection does not publish a completed-restore timestamp.
         def server_restore_completed_at_reader() -> datetime | None:
-            from rcp.server_ops.restore import read_restore_journal_if_present
-
-            journal = read_restore_journal_if_present(
-                server_layout,
-                expected_uid=os.geteuid(),
-            )
-            if journal is None or journal.phase != "complete":
-                return None
-            if journal.activation_readback is None:
-                raise RuntimeError("completed restore has no activation readback")
-            return journal.activation_readback.activated_at
+            return None
 
     if server_protected_backup_reader is None:
 

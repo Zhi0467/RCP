@@ -45,9 +45,11 @@ last_checked: >-
   activation is now hermetically implemented: exact
   authority/member confirmation, offline stale-member removal, closed startup,
   root-only private activation, and durable readback pass focused integration
-  coverage. Server Settings now has one authenticated GET-only projection over
-  the concrete doctor, protected-backup receipt, and completed-restore readers;
-  it exposes backend decisions without an HTTP machine mutation and without
+  coverage. Server Settings has one authenticated GET-only projection over
+  the concrete doctor and protected-backup receipt. The supervisor's public
+  projection does not publish restore completion time; Settings explicitly
+  reports that history as unavailable. It exposes backend decisions without an
+  HTTP machine mutation and without
   restating the console command catalogue. Its team-page browser drive passed
   against a disposable live service, including a GET-only manual refresh and a
   clean console. The broader fresh-host server-operation drive remains pending.

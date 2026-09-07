@@ -734,7 +734,9 @@ export function ProjectSettings({
               <article className="provider-machine" key={machine.alias}>
                 <header>
                   <strong>{machine.alias}</strong>
-                  <span>{machine.host || "This Mac"}</span>
+                  <span>
+                    {machine.host || (spaceKind === "team" ? "Team server" : "Local machine")}
+                  </span>
                 </header>
                 <div className="provider-path-list">
                   {providerCatalog.map((provider) => {

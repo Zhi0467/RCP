@@ -44,6 +44,33 @@ def bind(repository: Path, chat_id: str = "chat-1") -> dict:
     return binding
 
 
+@pytest.mark.parametrize("name", ["shared checkout", 'shared café\t"\\ checkout'])
+@pytest.mark.parametrize("legacy_output", [False, True])
+def test_worktree_lifecycle_without_null_terminated_list_support(
+    repository: Path, monkeypatch, name: str, legacy_output: bool
+) -> None:
+    repository = repository.rename(repository.with_name(name))
+    original_run = subprocess.run
+
+    def older_git(arguments, **kwargs):
+        if "worktree" in arguments and "list" in arguments:
+            if "-z" in arguments:
+                return subprocess.CompletedProcess(arguments, 129, "", "error: unknown switch 'z'")
+            if legacy_output:
+                # Git 2.34 prints raw paths; newer Git C-quotes special characters.
+                result = original_run([*arguments, "-z"], **kwargs)
+                result.stdout = result.stdout.replace("\0", "\n")
+                return result
+        return original_run(arguments, **kwargs)
+
+    monkeypatch.setattr(conversation_worktree.subprocess, "run", older_git)
+    binding = bind(repository)
+    assert run("inspect", binding=binding)["shared_branch"] == "research"
+    assert run("preflight", binding=binding, target_branch="research")["target_checked_out"]
+    assert run("remove", binding=binding)["removed"]
+    assert git(repository, "rev-parse", binding["branch"]) == binding["starting_commit"]
+
+
 def test_binding_isolates_uncommitted_work_and_survives_reexecution(repository: Path) -> None:
     (repository / "notes.txt").write_text("shared dirty\n")
     (repository / "untracked.txt").write_text("shared only\n")
@@ -126,6 +153,19 @@ def test_missing_or_relocated_worktree_and_changed_branch_fail_closed(repository
         run("inspect", binding=binding)
     with pytest.raises(ValueError, match="relocated"):
         run("inspect", binding={**binding, "worktree_path": str(relocated)})
+
+
+def test_registration_cannot_disguise_a_changed_checkout_branch(
+    repository: Path, monkeypatch
+) -> None:
+    binding = bind(repository)
+    registrations = conversation_worktree._registered(repository, timeout=10)
+    git(Path(binding["worktree_path"]), "checkout", "release")
+    monkeypatch.setattr(
+        conversation_worktree, "_registered", lambda *_args, **_kwargs: registrations
+    )
+    with pytest.raises(ValueError, match="checked-out branch changed"):
+        run("inspect", binding=binding)
 
 
 def test_plan_refuses_detached_head_and_does_not_guess_default_branch(repository: Path) -> None:
