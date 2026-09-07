@@ -52,3 +52,7 @@ project invitations gain explicit revocation state.
 first expensive semantic migrations gained durable completion markers.
 `storage-ledger-v13-371b807` records that first ledger era before startup schema
 completion and validation moved under one ordered migration plan.
+`pre-compute-jobs-v14-7d6546f` records the v0.3.5 release shape: the last before
+compute jobs, external watcher actions, child Work watcher routes, and compute
+job labels added their tables and columns. It is the boundary an installed
+v0.3.5 server upgrades from.
