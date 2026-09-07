@@ -1,15 +1,19 @@
 # External job and watcher simplification
 
 Date: 2026-09-06
-Status: active verification on `codex/compute-runner-simplify`, published as
-[draft PR #83](https://github.com/Zhi0467/RCP/pull/83). The six compute PRs are
+Status: implemented on `codex/compute-runner-simplify`, published as
+[PR #83](https://github.com/Zhi0467/RCP/pull/83). The six compute PRs are
 integrated with one shell-watcher contract, human Cancel, watcher-based job UI,
-generic Linux helper, and route-specific prompts. The ownership fix removes
-launchd and refuses macOS helper launches; the slow remote response-budget
-regression reproduces the former failure and passes after correction. Ordinary
-episode tests now isolate readiness at the admission boundary instead of
-launching real OS probes. Full follow-up verification passed: 4,522 backend
-tests, 11 skipped, plus formatting and documentation checks.
+generic Linux/macOS helper, and route-specific prompts. On 2026-09-06 the human
+chose to retain launchd with an explicit ownership exception and remove the
+episode compute-readiness gate; both changes are implemented. The slow remote
+response-budget regression reproduces the former failure and passes after
+correction. The Codex review findings on the integrated branch are fixed: Cancel
+no longer inherits graph or Experiment view locks, helper watchers run in the
+retained job root rather than an ephemeral task cwd, and project deletion
+reconciles running helper rows before its fence. Outside the sandbox on
+2026-09-07, the full backend suite, the web suite (653 tests), Ruff, and
+pre-commit pass, and the launchd facility test ran against real launchd on a Mac.
 The service account's Slurm tools, queue access, and native Codex authentication
 have been checked on the reachable team server through its operator tmux
 session. The isolated PR-code server drive is prepared and awaits explicit
@@ -28,10 +32,15 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
   chooses each job's resource arguments. RCP checks prerequisites under the
   actual execution account and guides an administrator; it never configures
   Slurm users, associations, accounts, partitions, or resources.
-- Generic processes that must outlive the turn need reliable process ownership.
-  Linux requires the systemd user manager. macOS helper launches are refused
-  because launchd cannot retain detached descendants. The SSH-session fallback,
-  launchd backend, and scheduler wrapper are removed.
+- Generic processes that must outlive the turn use the systemd user manager on
+  Linux and launchd on macOS. On 2026-09-06 the human chose the explicit macOS
+  ownership exception: Cancel stops the main process and its process group, but
+  a descendant that deliberately starts its own session can survive. Linux
+  stops the whole cgroup. The SSH-session fallback and scheduler wrapper remain
+  removed.
+- Episode starts and reauthorization are not gated on compute readiness, as
+  chosen by the human on 2026-09-06. The helper probes when invoked; Settings
+  shows each machine's stored probe.
 - Every external job uses the existing shell watcher: required `check_command`,
   `log_path`, and `cwd`, plus optional `cancel_command`. No job-id watcher form,
   no second job-list API, and no scheduler job interpretation in RCP.
@@ -52,21 +61,22 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
 
 ## Resolved review findings
 
-- macOS helper launches refuse before any job root, command, or record is
-  created, even with a stale ready probe. Actual Mac readiness, admission, and
-  launch checks passed; the served Settings UI displays the refusal and
-  supported-machine guidance. Evidence is in
-  `/private/tmp/rcp-macos-helper-refusal-x7m8sq9o/result.json` and
-  `/private/tmp/rcp-pr83-macos-ui-20260906b/results.json`.
+- On 2026-09-06 the human chose to restore launchd with the explicit macOS
+  ownership exception instead of refusing helper launches. The ownership audit
+  at `/private/tmp/rcp-ownership-check-whqtv7_m/result.json` established that a
+  descendant starting its own session can survive Cancel; the spec now states
+  that limitation. The restored facility test still requires real launchd
+  bootstrap when available; sandbox failures remain explicit verification gaps.
 - The shared client/broker response allowance derives from the existing finite
   remote call bounds. The former 120-second allowance fails the scaled slow
   sequence; the corrected allowance returns the launch result and replays it
   without a duplicate. Focused command/runtime checks passed (86 tests).
   Evidence is in `/private/tmp/rcp-helper-deadline-old-budget.log` and
   `/private/tmp/rcp-helper-deadline-focused.log`.
-- Episode admission tests no longer depend on OS facilities or a real SSH
-  server. The retry regression uses a reserved example hostname and still
-  proves that a fresh provider check gates retry before mutation.
+- The episode compute-readiness gate and its isolated probe fixture are removed.
+  Launch-time probing and stored Settings readiness remain. The retry regression
+  uses a reserved example hostname and still proves that a fresh provider check
+  gates retry before mutation.
 
 ## Verification and remaining release work
 

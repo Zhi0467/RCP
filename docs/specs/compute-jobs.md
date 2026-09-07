@@ -11,13 +11,16 @@ pending in [S136](../acceptance/S136-long-running-compute-outlives-the-agent.md)
 
 An optional `machines[].compute` block contains `job_manager` and `jobs_root`.
 `job_manager = "slurm"` opts into direct scheduler submission. An unset manager
-selects the generic helper automatically on Linux with a reachable systemd
-user manager. macOS and Linux machines without a user manager refuse helper
-launches before creating job files. There is no detached-process, launchd, or
-SSH-session fallback: launchd cannot retain descendants that create a new
-session, so it cannot meet the reliable-ownership requirement. The diagnostic
-points to a supported Linux execution machine or direct scheduler submission.
-A selected scheduler does not silently fall back to the helper.
+selects `systemd_user` on Linux with a reachable user manager and `launchd` on
+macOS. Linux without a user manager refuses helper launches before creating job
+files, with guidance to use a supported machine or direct scheduler submission.
+There is no detached-process or SSH-session fallback. A selected scheduler does
+not silently fall back to the helper.
+
+On Linux, Cancel stops the whole systemd cgroup. macOS has an explicit ownership
+exception: Cancel stops the launchd service, which is the job's main process and
+its process group; a descendant that deliberately starts its own session can
+survive Cancel.
 
 Slurm submission belongs to the agent. RCP supplies no account, partition, GPU,
 memory, time-limit, or other submission arguments, and never creates scheduler
@@ -66,18 +69,17 @@ Settings accepts `machine_compute`, a partial alias-to-config map: omission
 preserves a machine, null removes its optional block. A changed block invalidates
 its stored probe. Machine projections include configuration and readiness.
 
-Human Experiment-loop start and Auto-research start or reauthorization run a
-fresh readiness check for the selected route before reserving the episode.
-A non-ready result refuses with the machine, diagnostic, and required action.
-Ordinary human Work is not gated by episode admission. Setup failures should
-be surfaced as blockers rather than worked around by repeated polling.
+Episode starts and reauthorization are not gated on compute readiness.
+The helper probes when invoked, and Settings shows each machine's stored probe.
 
 ## Generic launch helper
 
 `compute_jobs.backends` contains the generic OS owners. `systemd_user` uses
 transient `rcp-job-<id>` units with `--collect`, explicit log paths, and
-`XDG_RUNTIME_DIR=/run/user/<uid>`. Remote commands use ordinary SSH transport;
-executable remote helpers ship from their source modules.
+`XDG_RUNTIME_DIR=/run/user/<uid>`. `launchd` bootstraps a non-keepalive service
+from a job plist in the execution account's GUI domain and uses cooperative
+containment. Remote commands use ordinary SSH transport; executable remote
+helpers ship from their source modules.
 
 A helper job's root is `<data_dir>/jobs/<id>` locally. Remotely it is
 `<jobs_root>/<id>`, defaulting to the execution account's `~/.rcp/jobs`.

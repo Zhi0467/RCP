@@ -1559,7 +1559,7 @@ export function NodeChat({
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
                 {external ? (
-                  <ExternalJobRow apiBase={apiBase} watcher={watcher} disabled={readOnly} />
+                  <ExternalJobRow apiBase={apiBase} watcher={watcher} />
                 ) : (
                   <>
                     <strong>{graphConditionLabel(watcher.condition)}</strong>

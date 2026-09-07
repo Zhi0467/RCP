@@ -11,10 +11,9 @@ one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
 grants no authority.
 
-Human start and reauthorization resolve the execution machine and freshly check
-its selected execution route before reserving an episode or branch. A non-ready
-result refuses with 422 naming the machine, diagnostic, and required action;
-ordinary human Work is not gated. Setup and explicit human Cancel follow the
+Human start and reauthorization resolve the execution machine without gating
+on compute readiness. The helper probes when invoked, and Settings shows the
+stored probe. Setup and explicit human Cancel follow the
 [compute jobs spec](compute-jobs.md).
 
 The episode has two brakes:

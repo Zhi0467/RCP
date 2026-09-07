@@ -188,18 +188,21 @@ def probe_compute_backend(
             else:
                 diagnostic = "Probe observed a running job, exit 0, and its log marker."
                 containment = "cooperative"
-                try:
-                    isolated = _run_probe_job(
-                        replace(context, containment="mirrored"), profile, data_dir
-                    )
-                except _ProbeCleanupError:
-                    raise
-                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                    diagnostic = f"Mirrored containment probe failed: {exc}. " + diagnostic
-                    isolated = _run_probe_job(context, profile, data_dir)
-                    diagnostic += " Cooperative containment only."
+                if profile.id == "systemd_user":
+                    try:
+                        isolated = _run_probe_job(
+                            replace(context, containment="mirrored"), profile, data_dir
+                        )
+                    except _ProbeCleanupError:
+                        raise
+                    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                        diagnostic = f"Mirrored containment probe failed: {exc}. " + diagnostic
+                        isolated = _run_probe_job(context, profile, data_dir)
+                        diagnostic += " Cooperative containment only."
+                    else:
+                        containment = "mirrored"
                 else:
-                    containment = "mirrored"
+                    isolated = _run_probe_job(context, profile, data_dir)
                 result = _result(
                     machine_alias,
                     backend_id,

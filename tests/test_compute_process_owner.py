@@ -4,13 +4,18 @@ import os
 import shlex
 import subprocess
 
+import pytest
+
 from rcp.compute_jobs import jobs
 from rcp.compute_jobs.backend_context import BackendContext
 from rcp.compute_jobs.files import prepare_job_root
 from rcp.compute_jobs.models import ComputeJobRecord, ComputeLaunchRequest
 
 
-def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(tmp_path):
+@pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
+def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
+    tmp_path, backend_id
+):
     root = tmp_path / "job with spaces"
     state = tmp_path / "owner-state"
     state.write_text("active")
@@ -25,6 +30,16 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
         'echo "ActiveState=$state"\n'
     )
     systemctl.chmod(0o700)
+    launchctl = binary / "launchctl"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = bootout ]; then echo inactive > "$OWNER_TEST_STATE"; exit 0; fi\n'
+        'state=$(cat "$OWNER_TEST_STATE")\n'
+        'if [ "$state" = unknown ]; then echo disconnected >&2; exit 1; fi\n'
+        'if [ "$state" = active ]; then echo "state = running"; '
+        'else echo "state = not running"; fi\n'
+    )
+    launchctl.chmod(0o700)
     request = ComputeLaunchRequest(argv=["true"], cwd=str(tmp_path))
     prepare_job_root(
         BackendContext(execution_host="", execution_machine="local", compute=None),
@@ -39,7 +54,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
         project_id="project",
         origin_operation_id="turn",
         execution_machine="local",
-        backend_id="systemd_user",
+        backend_id=backend_id,
         backend_handle="rcp-job-test",
         job_root=str(root),
         cwd=str(tmp_path),
@@ -49,6 +64,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
         created_at="2026-09-06T00:00:00Z",
     )
     spec = jobs.helper_watch_spec(record)
+    assert spec["cwd"] == str(root)
     environment = {
         **os.environ,
         "PATH": f"{binary}:{os.environ['PATH']}",

@@ -4,31 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.config import Manifest, load_manifest
-
-
-@pytest.fixture(autouse=True)
-def isolated_episode_compute_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Episode tests must not launch OS jobs or connect to a real SSH host.
-
-    Admission regressions replace this boundary with their own observations;
-    direct probe tests still exercise the production probe implementation.
-    """
-
-    def ready(_manifest, machine_alias, *, data_dir):
-        return ComputeBackendProbe(
-            execution_machine=machine_alias,
-            backend_id="systemd_user",
-            state="ready",
-            ready=True,
-            diagnostic="Test compute backend is ready.",
-            containment="cooperative",
-            status_label="Ready",
-            status_tone="ready",
-        )
-
-    monkeypatch.setattr("rcp.compute_jobs.admission.probe_compute_backend", ready)
 
 
 @pytest.fixture(autouse=True)

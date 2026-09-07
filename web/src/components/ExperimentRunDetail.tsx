@@ -653,7 +653,7 @@ function WatcherDetail({
     <li className={`experiment-run-watcher ${watcher.status}`}>
       {external && (
         <div className="chat-watcher-row">
-          <ExternalJobRow apiBase={apiBase} watcher={watcher} disabled={actionsDisabled} />
+          <ExternalJobRow apiBase={apiBase} watcher={watcher} />
         </div>
       )}
       <details>

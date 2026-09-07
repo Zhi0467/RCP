@@ -5,7 +5,6 @@ tier: live
 driver: pytest + ssh + real Codex
 covered_by:
   - tests/test_api_compute_jobs.py
-  - tests/test_api_compute_admission.py
   - tests/test_server_cli_compute.py
   - tests/test_compute_jobs_commands.py
   - tests/test_compute_jobs_settlement.py
@@ -28,10 +27,15 @@ last_checked: >-
   six-PR integration implements that scope. The complete backend suite passed
   (4,522 tests, 11 skipped), web checks passed, and a disposable browser/API
   drive verified Stop, Cancel, natural completion, and Slurm setup diagnostics.
-  The live Mac check now proves helper readiness/admission/launch refuse before
-  creating job state. The served UI shows the refusal. A slow remote regression
-  reproduces the former response timeout and passes after correction, including
-  same-key replay. On the team server, actual rcp-account Slurm tool availability,
+  Those checks precede the human's 2026-09-06 decision to restore launchd with
+  an explicit macOS ownership exception and remove episode readiness gating.
+  Both adjustments are implemented. On 2026-09-07, outside the sandbox, the full
+  backend suite, the web suite, Ruff, and pre-commit pass, and the launchd
+  facility test ran against real launchd on a Mac. Codex review findings on the
+  integrated branch are fixed: Cancel ignores view locks, helper watchers run in
+  the job root, and deletion reconciles helper rows first. A slow remote
+  regression reproduces the former response timeout and passes after
+  correction, including same-key replay. On the team server, actual rcp-account Slurm tool availability,
   queue access, and Codex authentication pass. The isolated PR-code server drive
   is prepared; explicit source-transfer approval is pending.
 ---
@@ -45,9 +49,12 @@ target, coalescing, session, budget, and Stop authority.
 
 ## Ownership and response boundary
 
-Generic helper launches require the Linux systemd user manager. macOS launches
-refuse before job state is created; local and SSH Darwin regressions and a live
-Mac check cover that refusal. There is no launchd ownership exception.
+Generic helper launches use the Linux systemd user manager or macOS launchd.
+Linux Cancel stops the whole cgroup. macOS has an explicit ownership exception:
+Cancel stops the launchd service's main process and process group, but a
+descendant that deliberately starts its own session can survive Cancel.
+Episode starts and reauthorization are not gated on compute readiness; the
+helper probes when invoked and Settings shows the stored probe.
 
 The staged client/broker response allowance covers the existing remote call
 bounds. A scaled slow sequence exercises both containment attempts, stale
@@ -90,8 +97,10 @@ the human's live project data or stop unrelated work.
    handoff obligation. A job that already finished needs no watcher.
 8. Select a Linux execution machine without reliable helper ownership. Launch
    is refused with setup guidance; no detached SSH-session fallback is offered.
-   Verify macOS refuses before creating a job or running the supplied command.
-   On Linux, Cancel also stops descendants that create a new session.
+   Verify macOS launches through launchd and Cancel stops the main process and
+   its process group; record the exception that a descendant deliberately
+   starting its own session can survive Cancel. On Linux, Cancel stops the whole
+   cgroup, including descendants that create a new session.
 9. Human Cancel a running job through its watcher. Verify the saved command
    runs only on that click, with the saved host/cwd and human attribution.
    Concurrent clicks execute once. A command failure shows its diagnostic and
@@ -124,7 +133,7 @@ the human's live project data or stop unrelated work.
 - `child_work_wake_is_budgeted_waits_the_root_and_is_fenced_by_stop`
 - `unobserved_helper_is_corrected_without_relaunch_or_invocation_spend`
 - `linux_without_reliable_process_ownership_refuses_launch`
-- `macos_without_reliable_process_ownership_refuses_launch`
+- `macos_launchd_cancel_has_an_explicit_ownership_exception`
 - `slow_remote_helper_deadline_and_retry_are_verified`
 - `human_cancel_is_attributed_bounded_and_not_completion_by_itself`
 - `stopped_watcher_can_cancel_without_reopening_delivery`

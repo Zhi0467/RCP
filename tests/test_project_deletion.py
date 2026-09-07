@@ -541,3 +541,38 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
     assert store.compute_job(other.job_id) == other
     assert store.compute_backend_probe("other-project", "laptop") == probe
     assert all((root / "log").read_text() == "preserve compute output" for root in roots)
+
+
+def test_delete_reconciles_finished_helper_jobs_before_the_running_fence(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from rcp.api.app import create_app
+    from rcp.compute_jobs.backends import COMPUTE_BACKENDS
+    from tests.test_compute_jobs_storage import job_record
+
+    data_dir = tmp_path / "app-data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    root = data_dir / "jobs" / "job-done"
+    root.mkdir(parents=True)
+    (root / "exit").write_text("0 1757000000\n")
+    store.create_compute_job(
+        job_record(
+            root.name,
+            project_id=project_id,
+            job_root=str(root),
+            log_path=str(root / "log"),
+            exit_path=str(root / "exit"),
+        )
+    )
+    # The helper finished after the last refresh; only its watcher observed that.
+    monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: False)
+
+    response = TestClient(app).delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["database_records"]["compute_jobs"] == 1
+    assert store.project(project_id) is None

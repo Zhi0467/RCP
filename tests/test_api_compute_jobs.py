@@ -11,7 +11,7 @@ from .helpers import create_named_app
 
 @pytest.fixture
 def compute_api(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data", compute_ready=False)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     return app, TestClient(app), f"/api/projects/{app.state.default_project_id}"
 
 

@@ -220,5 +220,6 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
             ]
         ),
         "log_path": job.log_path,
-        "cwd": job.cwd,
+        # The retained job root outlives an ephemeral task workspace used as the job cwd.
+        "cwd": job.job_root,
     }

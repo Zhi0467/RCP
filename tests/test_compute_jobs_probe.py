@@ -1,23 +1,22 @@
 from __future__ import annotations
 
 import os
+import plistlib
 import shlex
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
 
 from rcp.compute_jobs.backend_context import resolve_context
-from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.probe import (
     _cgroup_isolated,
-    _result,
     probe_compute_backend,
 )
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
-from rcp.storage import AppStore
 
 
 class ProbeRunner:
@@ -41,23 +40,30 @@ class ProbeRunner:
             out = self.os_name
         elif command == ["id", "-u"]:
             out = "501"
+        elif command[:2] == ["launchctl", "bootstrap"]:
+            self.root = Path(command[-1]).parent
+            self.polls = 0
         elif "systemd-run" in command:
             if self.reject_mirrored and "PrivateUsers=yes" in command:
                 return subprocess.CompletedProcess(command, 1, "", "Unsupported PrivateUsers")
             self.root = Path(command[-1]).parent
             self.polls = 0
-        elif "ActiveState" in command:
+        elif (
+            command[:2] == ["launchctl", "print"] and "/rcp-job-" in command[-1]
+        ) or "ActiveState" in command:
             self.polls += 1
             running = self.polls == 1
             if not self.observable:
                 code, err = 1, "password=hunter2\nunobservable"
-            else:
+            elif "ActiveState" in command:
                 out = "ActiveState=active" if running else "ActiveState=inactive"
+            else:
+                out = "state = running" if running else "state = exited"
             if not running:
                 (self.root / "exit").write_text(f"{self.exit_status} 12345\n")
                 (self.root / "log").write_text("rcp-probe\n" if self.marker else "wrong marker\n")
                 (self.root / "cgroup").write_text("0::/user.slice/compute-probe\n")
-        elif "stop" in command and self.reject_cancel:
+        elif ("bootout" in command or "stop" in command) and self.reject_cancel:
             code, err = 1, "Cancellation transport failed"
         return subprocess.CompletedProcess(command, code, out, err)
 
@@ -76,31 +82,43 @@ def fake_linux_cgroup(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
 def test_probe_runs_backend_and_requires_liveness_exit_and_log(
-    manifest, tmp_path, fake_linux_cgroup
+    manifest, tmp_path, fake_linux_cgroup, os_name
 ):
-    runner = ProbeRunner()
+    runner = ProbeRunner(os_name=os_name)
     result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
     assert result.ready
-    assert result.backend_id == "systemd_user"
-    assert result.containment == "mirrored"
-    assert result.cgroup_isolated is True
-    assert any("systemd-run" in command for command in runner.commands)
-    assert any("stop" in command for command in runner.commands)
+    if os_name == "Linux":
+        assert result.backend_id == "systemd_user"
+        assert result.containment == "mirrored"
+        assert result.cgroup_isolated is True
+        assert any("systemd-run" in command for command in runner.commands)
+        assert any("stop" in command for command in runner.commands)
+    else:
+        assert result.backend_id == "launchd"
+        assert result.containment == "cooperative"
+        assert result.cgroup_isolated is None
+        assert any(command[:2] == ["launchctl", "bootstrap"] for command in runner.commands)
+        assert any(command[:2] == ["launchctl", "bootout"] for command in runner.commands)
     assert list((tmp_path / "jobs").iterdir()) == []
 
 
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
 @pytest.mark.parametrize("options", [{"marker": False}, {"exit_status": 1}, {"observable": False}])
-def test_probe_fails_when_backend_contract_is_not_proved(manifest, tmp_path, options):
-    result = probe_compute_backend(manifest, "laptop", ProbeRunner(**options), data_dir=tmp_path)
+def test_probe_fails_when_backend_contract_is_not_proved(manifest, tmp_path, os_name, options):
+    result = probe_compute_backend(
+        manifest, "laptop", ProbeRunner(os_name=os_name, **options), data_dir=tmp_path
+    )
     assert result.state == "failed"
     assert result.required_action
     assert result.status_tone == "error"
     assert not result.ready
 
 
-def test_probe_retains_root_when_cancellation_cannot_be_confirmed(manifest, tmp_path):
-    runner = ProbeRunner()
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
+def test_probe_retains_root_when_cancellation_cannot_be_confirmed(manifest, tmp_path, os_name):
+    runner = ProbeRunner(os_name=os_name)
     runner.reject_cancel = True
     result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
     assert result.state == "failed"
@@ -145,78 +163,18 @@ def test_probe_without_resolvable_backend_is_unavailable(manifest, tmp_path):
     )
     assert result.state == "unavailable"
     assert "Linux" in result.required_action
+    assert "macOS" in result.required_action
     assert "Slurm" in result.required_action
     assert not (tmp_path / "jobs").exists()
 
 
-@pytest.mark.parametrize("execution_host", ["", "rcp@mac.example"])
-def test_darwin_refuses_fresh_readiness_and_launch_before_job_state(
-    manifest, tmp_path, monkeypatch, execution_host
-):
-    from rcp.compute_jobs import admission, jobs
-
-    manifest.machines[0].host = execution_host
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append(command)
-        target_command = shlex.split(command[-1]) if execution_host else command
-        if execution_host:
-            assert command[0] == "ssh" and execution_host in command
-        assert target_command in (["uname", "-s"], ["id", "-u"])
-        output = "Darwin\n" if target_command[0] == "uname" else "501\n"
-        return subprocess.CompletedProcess(command, 0, output, "")
-
-    result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
-    assert result.state == "unavailable" and not result.ready
-    assert "No reliable compute process owner" in result.diagnostic
-    assert "Darwin" in result.diagnostic
-    assert "Linux" in result.required_action and "systemd" in result.required_action
-    assert "Slurm" in result.required_action
-    assert len(calls) == 2
-
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    stale_ready = _result("laptop", "systemd_user", "ready", "Earlier readiness")
-    store.record_compute_backend_probe("project", stale_ready)
-    monkeypatch.setattr(
-        admission,
-        "probe_compute_backend",
-        lambda manifest, machine_alias, **kwargs: probe_compute_backend(
-            manifest, machine_alias, runner, **kwargs
-        ),
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
+def test_probe_returns_fresh_observation(manifest, tmp_path, fake_linux_cgroup, os_name):
+    first = probe_compute_backend(
+        manifest, "laptop", ProbeRunner(os_name=os_name), data_dir=tmp_path
     )
-    with pytest.raises(admission.ComputeBackendNotReady, match="Darwin"):
-        admission.require_episode_compute_backend(store, "project", manifest, "laptop")
-    assert not store.compute_backend_probe("project", "laptop").ready
-
-    monkeypatch.setattr(
-        jobs,
-        "resolve_context",
-        lambda manifest, machine_alias: resolve_context(manifest, machine_alias, runner),
-    )
-    with pytest.raises(RuntimeError, match="No reliable compute process owner"):
-        jobs.launch_compute_job(
-            store,
-            manifest,
-            ComputeLaunchRequest(argv=["touch", str(tmp_path / "launched")], cwd=str(tmp_path)),
-            data_dir=tmp_path,
-            project_id="project",
-            origin_operation_id="turn",
-            episode_id=None,
-            execution_machine="laptop",
-            writable_roots=[str(tmp_path)],
-            probe=stale_ready,
-        )
-    assert len(calls) == 6
-    assert store.running_compute_jobs() == []
-    assert not (tmp_path / "jobs").exists()
-    assert not (tmp_path / "launched").exists()
-
-
-def test_probe_returns_fresh_observation(manifest, tmp_path, fake_linux_cgroup):
-    first = probe_compute_backend(manifest, "laptop", ProbeRunner(), data_dir=tmp_path)
     second = probe_compute_backend(
-        manifest, "laptop", ProbeRunner(exit_status=1), data_dir=tmp_path
+        manifest, "laptop", ProbeRunner(os_name=os_name, exit_status=1), data_dir=tmp_path
     )
     assert first.ready
     assert not second.ready
@@ -359,20 +317,63 @@ def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path):
     assert not (tmp_path / "jobs").exists()
 
 
-def test_real_compute_owner_when_facility_available(manifest, tmp_path):
-    if os.uname().sysname != "Linux" or shutil.which("systemd-run") is None:
-        pytest.skip("The compute helper requires Linux with systemd")
+@pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
+def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_id):
+    executable = "systemd-run" if backend_id == "systemd_user" else "launchctl"
+    if shutil.which(executable) is None:
+        pytest.skip(f"{executable} facility is not installed")
     uid = str(os.getuid())
+    check = (
+        ["env", f"XDG_RUNTIME_DIR=/run/user/{uid}", "systemctl", "--user", "show-environment"]
+        if backend_id == "systemd_user"
+        else ["launchctl", "print", f"gui/{uid}"]
+    )
     facility = subprocess.run(
-        ["env", f"XDG_RUNTIME_DIR=/run/user/{uid}", "systemctl", "--user", "show-environment"],
+        check,
         capture_output=True,
         text=True,
         timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
         check=False,
     )
     if facility.returncode:
-        pytest.skip(f"systemd facility unavailable: {facility.stderr.strip()}")
+        pytest.skip(f"{backend_id} facility unavailable: {facility.stderr.strip()}")
+    if backend_id == "launchd":
+        # Probe OS admission independently of the implementation's generated plist.
+        label = f"rcp-compute-facility-{uuid.uuid4().hex}"
+        plist = tmp_path / "facility.plist"
+        plist.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": label,
+                    "ProgramArguments": ["/bin/sh", "-c", "exit 0"],
+                    "RunAtLoad": True,
+                    "KeepAlive": False,
+                }
+            )
+        )
+        try:
+            admission = subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                capture_output=True,
+                text=True,
+                timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if admission.returncode:
+                pytest.skip(
+                    f"launchd facility cannot bootstrap a minimal job: {admission.stderr.strip()}"
+                )
+        finally:
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
+                check=False,
+            )
     manifest.machines[0].compute = None
+    if (backend_id == "launchd") != (os.uname().sysname == "Darwin"):
+        pytest.skip("The automatic backend uses the execution machine's operating system")
     units = []
 
     def runner(command, **kwargs):
@@ -403,6 +404,6 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path):
         marker in result.diagnostic.casefold()
         for marker in ("operation not permitted", "permission denied")
     ):
-        pytest.skip(f"systemd facility blocked by execution sandbox: {result.diagnostic}")
+        pytest.skip(f"{backend_id} facility blocked by execution sandbox: {result.diagnostic}")
     assert result.ready, result.diagnostic
     assert list((tmp_path / "jobs").iterdir()) == []

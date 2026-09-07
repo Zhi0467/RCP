@@ -5,18 +5,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from rcp.compute_jobs.backend_context import ComputeBackendProfile
+from rcp.compute_jobs.backends.launchd import LaunchdBackend
 from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
 
 if TYPE_CHECKING:
     from rcp.config import MachineComputeConfig
 
 COMPUTE_BACKENDS: dict[str, ComputeBackendProfile] = {
-    profile.id: profile for profile in (SystemdUserBackend(),)
+    profile.id: profile for profile in (SystemdUserBackend(), LaunchdBackend())
 }
 ComputeBackendId = Literal[*COMPUTE_BACKENDS]
 UNAVAILABLE_BACKEND_GUIDANCE = (
     "Use a Linux machine with a reachable systemd user manager, "
-    "or opt into Slurm and submit jobs directly."
+    "a macOS machine with launchd, or opt into Slurm and submit jobs directly."
 )
 
 
@@ -31,4 +32,6 @@ def resolve_backend(
     name = os_name.casefold()
     if name == "linux" and has_user_manager:
         return COMPUTE_BACKENDS["systemd_user"]
+    if name in {"darwin", "macos"}:
+        return COMPUTE_BACKENDS["launchd"]
     return None

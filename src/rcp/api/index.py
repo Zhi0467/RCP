@@ -31,6 +31,7 @@ from rcp.api.team_shell_protocol import (
     acknowledge_team_shell_protocol,
     team_shell_protocol_mismatch,
 )
+from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import ProjectIdentityConflict
@@ -704,6 +705,10 @@ def delete_project(
         )
     try:
         canonical = catalog.resolve_project_id(project_id)
+        if any(job.project_id == canonical for job in store.running_compute_jobs()):
+            # Helper rows settle only when observed; refresh them so finished
+            # work does not block deletion until the next restart.
+            reconcile_compute_jobs(store, None, project_id=canonical, data_dir=catalog.data_dir)
         with experiment_operation_lock(canonical):
             return catalog.delete(canonical).model_dump(mode="json")
     except KeyError as exc:
