@@ -478,10 +478,13 @@ def test_registration_waits_until_project_deletion_cleanup_finishes(
 
 
 @pytest.mark.parametrize("status", ["running", "exited", "cancelled", "lost"])
-def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest, tmp_path, status):
+def test_delete_compute_jobs_preserves_running_work_and_job_directories(
+    manifest, tmp_path, monkeypatch, status
+):
     from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
+    from rcp.compute_jobs.backends import COMPUTE_BACKENDS
     from rcp.compute_jobs.models import ComputeBackendProbe
     from rcp.storage import ProjectActiveTaskConflict
     from tests.test_compute_jobs_storage import job_record
@@ -518,6 +521,8 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
     store.record_compute_backend_probe(project_id, probe)
     store.record_compute_backend_probe("other-project", probe)
     client = TestClient(app)
+    # Deletion reconciles running rows first; the fence applies to work still alive.
+    monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
     if status == "running":
         with pytest.raises(ProjectActiveTaskConflict, match="2 running compute job"):
             store.delete_project_records(project_id)
