@@ -118,3 +118,17 @@ test("compute controls introduce no sub-10px primary or status text", () => {
   assert.doesNotMatch(composer, /font(?:-size)?\s*:[^;\n]*\b[0-9]px/);
   assert.doesNotMatch(settings, /font(?:-size)?\s*:[^;\n]*\b[0-9]px/);
 });
+
+test("backend probes use the same server-owned presentation, including pending", () => {
+  assert.deepEqual(computeProbePresentation(null), { label: "Not probed", tone: "pending" });
+  assert.deepEqual(
+    computeProbePresentation({
+      backend_id: "slurm",
+      ready: false,
+      state: "opaque",
+      status_label: "Available",
+      status_tone: "ready",
+    }),
+    { label: "Available", tone: "ready" },
+  );
+});

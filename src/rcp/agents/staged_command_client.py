@@ -41,6 +41,7 @@ _MUTATING = frozenset(
         "episode",
         "inbox",
         "finish",
+        "launch",
     )
 )
 
@@ -205,6 +206,12 @@ def _parser():
     inbox_action.add_argument("--harvest", action="store_true")
     inbox_action.add_argument("--clear", action="store_true")
 
+    launch = subparsers.add_parser("launch")
+    launch.add_argument("--key", required=True)
+    launch.add_argument("--cwd", required=True)
+    launch.add_argument("--label")
+    launch.add_argument("argv", nargs=argparse.REMAINDER)
+
     finish = subparsers.add_parser("finish")
     finish.add_argument("--key", required=True)
     return parser
@@ -348,6 +355,19 @@ def _request_arguments(namespace, workspace):
         else:
             raise ClientInputError("inbox action is required")
         arguments = {"action": action}
+    elif verb == "launch":
+        if not os.path.isabs(namespace.cwd) or "\x00" in namespace.cwd:
+            raise ClientInputError("compute cwd must be an absolute path without NUL")
+        argv = namespace.argv
+        if not argv or argv[0] != "--":
+            raise ClientInputError("launch requires -- before its argv")
+        argv = argv[1:]
+        if not argv or not argv[0] or any("\x00" in argument for argument in argv):
+            raise ClientInputError("launch requires an executable and argv without NUL")
+        label = namespace.label
+        if label is not None:
+            label = _nonblank(label, "compute label")
+        arguments = {"cwd": namespace.cwd, "argv": argv, "label": label}
     elif verb == "finish":
         arguments = {}
     else:
@@ -553,6 +573,7 @@ def _requested_verb(argv):
             "episode",
             "inbox",
             "finish",
+            "launch",
         ):
             return argument
     return None

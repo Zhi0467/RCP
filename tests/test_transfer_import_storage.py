@@ -143,6 +143,10 @@ def _rich_capture(fixture: dict[str, object]):
         origin_task_kind="project_chat",
         chat_id="history-chat",
         episode_id=episode_id,
+        worker_id="history-child-worker",
+        cancel_requested_by="source-human",
+        cancel_requested_at=now,
+        cancel_error="Scheduler unavailable",
         status="completed",
         created_at=now,
         completed_at=now,
@@ -213,6 +217,12 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         ).fetchone()
         assert watcher_row["next_check_at"] is None
         assert watcher_row["execution_host"] == ""
+        assert watcher_row["worker_id"] == "history-child-worker"
+        assert watcher_row["cancel_requested_by"] == "source-human"
+        assert watcher_row["cancel_requested_at"] == capture.records.watchers[0].cancel_requested_at
+        assert watcher_row["cancel_error"] == "Scheduler unavailable"
+        assert watcher_row["cancel_command"] is None
+        assert not target.watcher(watcher_row["watcher_id"]).can_cancel
         assert json.loads(watcher_row["continuation_json"])["provider"] == "history-only"
         episode_row = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?",

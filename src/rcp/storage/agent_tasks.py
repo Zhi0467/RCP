@@ -83,6 +83,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_dispatch_started",
     "operation_dispatch_reset",
     "chat_stage_layout",
+    "compute_command_started",
+    "compute_command_result",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES

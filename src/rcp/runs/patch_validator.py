@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents.command_mailbox import (
+    CommandHandler,
     CommandTurnIdentity,
     StagedCommandMailbox,
     prepare_command_mailbox,
@@ -22,7 +23,11 @@ from rcp.agents.command_protocol import (
     staged_command_client_source,
 )
 from rcp.background import AgentTaskExecution
-from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT, PATCH_SELF_CHECK_POLL_SECONDS
+from rcp.limits import (
+    COMPUTE_COMMAND_TIMEOUT_SECONDS,
+    PATCH_SELF_CHECK_MAX_COUNT,
+    PATCH_SELF_CHECK_POLL_SECONDS,
+)
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 # Compatibility export for callers that assert which tested source was staged.
@@ -52,14 +57,20 @@ def stage_patch_validation_mailbox(
     task_id: str,
     turn_id: str,
     timeout_seconds: float,
+    authority: Literal["validate_only", "broker"] = "validate_only",
+    episode_id: str | None = None,
 ) -> StagedCommandMailbox:
-    """Stage the one command client with a validate-only, non-episode credential."""
+    """Stage the command client with the authority selected by its concrete owner."""
 
+    if authority == "broker":
+        # Broker turns also serve compute launches, which outlast a Patch check.
+        timeout_seconds = max(timeout_seconds, COMPUTE_COMMAND_TIMEOUT_SECONDS)
     return stage_command_mailbox(
         local_stage=local_stage,
         remote_stage=remote_stage,
         local_input_stage=local_input_stage,
-        episode_id=None,
+        episode_id=episode_id,
+        authority=authority,
         task_id=task_id,
         turn_id=turn_id,
         timeout_seconds=timeout_seconds,
@@ -92,6 +103,7 @@ async def serve_patch_validation_mailbox(
     validate: Callable[[str], PatchValidationResult],
     stop: asyncio.Event,
     budget: PatchValidationBudget,
+    command_handler: CommandHandler | None = None,
 ) -> None:
     """Serve bounded live Patch checks over the unified staged command mailbox."""
 
@@ -100,6 +112,8 @@ async def serve_patch_validation_mailbox(
         _identity: CommandTurnIdentity,
     ) -> CommandResponse:
         if not isinstance(request, ValidateCommandRequest):
+            if command_handler is not None:
+                return await asyncio.to_thread(command_handler, request, _identity)
             return CommandResponse(
                 request_id=request.request_id,
                 status="invalid",
@@ -123,6 +137,7 @@ async def serve_patch_validation_mailbox(
             handler=handle,
             stop=stop,
             poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
+            invocation_gate=staged.invocation_gate,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         _record_mailbox_unavailable(execution, str(exc))

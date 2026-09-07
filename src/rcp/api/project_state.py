@@ -21,6 +21,8 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
+from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.config import load_manifest
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
@@ -328,6 +330,26 @@ def resolve_project_provider_path(
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result
+
+
+@router.post(
+    "/api/projects/{project_id}/machines/{machine_alias}/compute/probe",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ComputeBackendProbe,
+)
+def probe_project_compute_backend(
+    project_id: str,
+    machine_alias: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ComputeBackendProbe:
+    project_id = catalog.resolve_project_id(project_id)
+    service = get_project_service(catalog, project_id)
+    if machine_alias not in service.manifest.machine_map:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    probe = probe_compute_backend(service.manifest, machine_alias, data_dir=catalog.data_dir)
+    return store.record_compute_backend_probe(project_id, probe)
 
 
 @router.get("/api/projects/{project_id}/sources")

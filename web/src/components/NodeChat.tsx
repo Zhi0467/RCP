@@ -1,3 +1,4 @@
+import { ExternalJobRow } from "./ExternalJobRow";
 import {
   AlertTriangle,
   ChevronUp,
@@ -84,6 +85,7 @@ import {
   visibleChatWatchers,
   watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
+  watcherIsActive,
 } from "../runProjection";
 import {
   downloadDesktopArtifact,
@@ -201,6 +203,8 @@ interface KeyboardChatAnnotationComposer {
 }
 
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
+
+const EMPTY_WATCHERS: WatcherRecord[] = [];
 
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
@@ -369,7 +373,7 @@ export function NodeChat({
   conversationTitle,
   runScope,
   tasks,
-  watchers = [],
+  watchers = EMPTY_WATCHERS,
   historyMessages = [],
   chatId,
   presentation = "floating",
@@ -667,7 +671,7 @@ export function NodeChat({
       channel?.close();
     };
   }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
-  const liveWatchers = useMemo(
+  const watcherRows = useMemo(
     () => visibleChatWatchers(watchers, chatId, node),
     [chatId, node, watchers],
   );
@@ -1483,15 +1487,15 @@ export function NodeChat({
     }
   };
 
-  const watcherToggle = liveWatchers.length > 0 && (
+  const watcherToggle = watcherRows.length > 0 && (
     <button
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
       type="button"
       aria-expanded={watchersOpen}
-      aria-label={`${liveWatchers.length} active watcher${liveWatchers.length === 1 ? "" : "s"}`}
+      aria-label={`${watcherRows.length} watcher${watcherRows.length === 1 ? "" : "s"}`}
       onClick={() => setWatchersOpen((open) => !open)}
     >
-      <RadioTower size={12} /> {liveWatchers.length}
+      <RadioTower size={12} /> {watcherRows.length}
     </button>
   );
 
@@ -1547,33 +1551,37 @@ export function NodeChat({
           </div>
         )}
       </div>
-      {liveWatchers.length > 0 && watchersOpen && (
-        <section className="chat-watchers" aria-label="Active watchers">
-          {liveWatchers.map((watcher) => {
+      {watcherRows.length > 0 && watchersOpen && (
+        <section className="chat-watchers" aria-label="Watchers">
+          {watcherRows.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
-                <strong>
-                  {external ? fileName(watcher.log_path) : graphConditionLabel(watcher.condition)}
-                </strong>
-                <time dateTime={observedAt ?? undefined}>
-                  {observedAt
-                    ? `${external ? "Checked" : "Evaluated"} ${new Date(observedAt).toLocaleString()}`
-                    : external
-                      ? "Not checked yet"
-                      : "Not evaluated yet"}
-                </time>
-                {external && watcher.last_error && <span role="alert">{watcher.last_error}</span>}
-                {!readOnly && onStopWatcher && watcherIsIndividuallyStoppable(watcher) && (
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => onStopWatcher(watcher.watcher_id)}
-                  >
-                    Stop watching
-                  </button>
+                {external ? (
+                  <ExternalJobRow apiBase={apiBase} watcher={watcher} />
+                ) : (
+                  <>
+                    <strong>{graphConditionLabel(watcher.condition)}</strong>
+                    <time dateTime={observedAt ?? undefined}>
+                      {observedAt
+                        ? `Evaluated ${new Date(observedAt).toLocaleString()}`
+                        : "Not evaluated yet"}
+                    </time>
+                  </>
                 )}
+                {!readOnly &&
+                  onStopWatcher &&
+                  watcherIsActive(watcher) &&
+                  watcherIsIndividuallyStoppable(watcher) && (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() => onStopWatcher(watcher.watcher_id)}
+                    >
+                      Stop watching
+                    </button>
+                  )}
               </div>
             );
           })}
@@ -2620,10 +2628,6 @@ function formatBytes(bytes: number): string {
 function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
   if (ref.current !== null) window.clearTimeout(ref.current);
   ref.current = null;
-}
-
-function fileName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function readStorage(key: string): string | null {

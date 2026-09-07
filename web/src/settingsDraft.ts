@@ -3,6 +3,7 @@ import type {
   AgentProfileSettings,
   ComputeConnection,
   Machine,
+  MachineComputeConfig,
   ProviderId,
   SkillDefaults,
 } from "./types";
@@ -15,6 +16,7 @@ export interface SettingsDraft {
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
+  machineComputeEdits?: MachineComputeSettings;
   skillDefaults?: SkillDefaults;
 }
 
@@ -108,6 +110,14 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (!isRecord(parsed.profiles)) return null;
     dropProfilesWithoutRuntime(parsed.profiles);
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
+      return null;
+    // Earlier drafts stored the entire map, including untouched machines. It cannot
+    // safely override newer saved configuration; retain only explicit edits.
+    delete parsed.machineCompute;
+    if (
+      parsed.machineComputeEdits !== undefined &&
+      !isMachineComputeSettings(parsed.machineComputeEdits)
+    )
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     // v3 briefly persisted unsaved compute metadata per keystroke. Drop it on
@@ -220,4 +230,35 @@ function isSkillDefaults(value: unknown): value is SkillDefaults {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export type MachineComputeSettings = Record<string, MachineComputeConfig | null>;
+
+export function machineComputeFrom(machines: Machine[]): MachineComputeSettings {
+  return Object.fromEntries(machines.map((machine) => [machine.alias, machine.compute ?? null]));
+}
+
+export function machineComputeUpdates(
+  saved: MachineComputeSettings,
+  current: MachineComputeSettings,
+): MachineComputeSettings | undefined {
+  const updates = Object.fromEntries(
+    Object.entries(current).filter(
+      ([alias, config]) =>
+        settingsFingerprint(saved[alias] ?? null) !== settingsFingerprint(config),
+    ),
+  );
+  return Object.keys(updates).length ? updates : undefined;
+}
+
+function isMachineComputeSettings(value: unknown): value is MachineComputeSettings {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every(
+    (config) =>
+      config === null ||
+      (isRecord(config) &&
+        (config.job_manager === null || config.job_manager === "slurm") &&
+        typeof config.jobs_root === "string" &&
+        Object.keys(config).every((key) => key === "job_manager" || key === "jobs_root")),
+  );
 }

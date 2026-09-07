@@ -48,6 +48,8 @@ from rcp.storage import (
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
+from .test_prompts import _assert_compute_handoff
+from .test_prompts import execution_instructions as execution_instructions
 
 _EXPERIMENT_ID = "exp/native-wake"
 
@@ -834,8 +836,9 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
         _parent_task_contract_path(retried, new_stage, None)
 
 
-def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
+def test_compact_wake_message_is_human_style_and_authority_truthful(execution_instructions) -> None:
     message = experiment_loop_wake_message(
+        execution_instructions=execution_instructions,
         focused_experiment_id=_EXPERIMENT_ID,
         experiment_contract_path="/stage/inputs/experiment-contract.md",
         invocation=2,
@@ -873,7 +876,9 @@ def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
         "failed or repeatedly terminated process without that diagnosis stays on path 1"
         in normalized
     )
-    assert "do not wait or poll for detached work; finish this" in normalized
+    assert " ".join(execution_instructions.split()) in normalized
+    _assert_compute_handoff(message)
+    assert "do not wait or poll for detached work" not in message
     assert "Merely observing that all jobs ended is not enough" in message
     assert "2. You need human input." in message
     assert "3. The Experiment is operationally finished." in message
@@ -1142,7 +1147,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert str(service.manifest.research_dir / "research.md") in wake_contract
     assert "chat-patch-schema-" in wake_contract
     assert "rcp-agent-client-" in wake_contract
-    assert " --credential " in wake_contract
+    assert " --broker " in wake_contract
+    assert " --credential " not in wake_contract
     assert " --workspace " in wake_contract
     assert " validate " in wake_contract
 

@@ -130,6 +130,10 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     )
     assert graph_response.status_code == 409
     assert graph_response.json()["detail"] == "Only an external watcher can be checked now."
+    for watcher in (active, graph):
+        no_action = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel")
+        assert no_action.status_code == 409
+        assert no_action.json()["detail"] == "This watcher has no cancel command."
 
 
 def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path: Path) -> None:
@@ -174,3 +178,68 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
     stored = store.watcher(watcher.watcher_id)
     assert stored is not None
     assert stored.status == "stopped"
+
+
+def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
+    manifest, tmp_path, monkeypatch
+):
+    from fastapi import HTTPException
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    store = app.state.services.store
+    project_id = app.state.default_project_id
+    watcher = WatcherRecord(
+        watcher_id="human-cancel",
+        project_id=project_id,
+        origin_operation_id="origin",
+        origin_task_kind="project_chat",
+        chat_id="chat",
+        check_command="false",
+        cancel_command="scancel 331",
+        log_path="/tmp/log",
+        cwd="/tmp",
+        execution_host="rcp@cluster",
+        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        created_at=store.now(),
+    )
+    store.create_watchers([watcher])
+    store.create_watchers(
+        [watcher.model_copy(update={"watcher_id": "other", "project_id": "other"})]
+    )
+    calls = []
+    app.state.watcher_poller.check_runner = lambda *_: WatcherCheckResult(
+        state="active", checked_at=store.now(), exit_code=1
+    )
+    app.state.watcher_poller.cancel_runner = lambda spec, host, timeout: calls.append(
+        (spec.cancel_command, host, spec.cwd)
+    )
+    url = f"/api/projects/{project_id}/watchers"
+    for watcher_id in ("missing", "other"):
+        assert client.post(f"{url}/{watcher_id}/cancel").status_code == 404
+    assert calls == []
+    assert client.get(url).json()[0]["can_cancel"] is True
+    response = client.post(f"{url}/{watcher.watcher_id}/cancel")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["cancel_requested_by"] == store.local_owner.user_id
+    assert payload["cancel_requested_at"] and payload["cancel_error"] is None
+    assert payload["status"] == "active" and payload["can_cancel"] is False
+    assert client.post(f"{url}/{watcher.watcher_id}/cancel").json() == payload
+    assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
+
+    def refuse_identity(_request):
+        raise HTTPException(status_code=403, detail="Human identity required")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            app.state.services.identity_access, "require_patch_capable_identity", refuse_identity
+        )
+        assert client.post(f"{url}/{watcher.watcher_id}/cancel").status_code == 403
+
+    def refuse_project(_project_id):
+        raise ValueError("Project is being removed.")
+
+    monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
+    assert client.post(f"{url}/{watcher.watcher_id}/cancel").status_code == 409
+    assert calls == [("scancel 331", "rcp@cluster", "/tmp")]

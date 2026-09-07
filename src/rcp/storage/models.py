@@ -2222,6 +2222,7 @@ AutoResearchFinishDisposition = Literal["blocked", "completed"]
 AutoResearchCommandFileKind = Literal["apply", "instruction", "goal"]
 AutoResearchFinishBlockerKind = Literal[
     "spawned_work",
+    "waiting_work",
     "experiment_episode",
     "experiment_replacement",
     "lifecycle_notice",
@@ -3132,6 +3133,7 @@ class WatcherDeliveryRecord(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation
@@ -3147,11 +3149,15 @@ class WatcherDeliveryRecord(BaseModel):
 
 
 class WatcherRecord(WatcherDeliveryRecord):
-    """Durable external observer checked from a fresh login shell."""
+    """Durable shell observer with an optional human-triggered cancellation action."""
 
     check_command: str
     log_path: str
     cwd: str
+    cancel_command: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_requested_at: str | None = None
+    cancel_error: str | None = None
     last_checked_at: str | None = None
     last_exit_code: int | None = None
     last_error: str | None = None
@@ -3159,6 +3165,21 @@ class WatcherRecord(WatcherDeliveryRecord):
     consecutive_error_count: int = Field(default=0, ge=0)
     group_id: str | None = None
     group_label: str | None = None
+
+    @field_validator("cancel_command")
+    @classmethod
+    def cancel_command_is_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("cancel_command must not be blank")
+        return value.strip() if value is not None else None
+
+    @property
+    def can_cancel(self) -> bool:
+        return bool(
+            self.cancel_command
+            and self.completed_at is None
+            and (self.cancel_requested_at is None or self.cancel_error is not None)
+        )
 
 
 class GraphWatcherRecord(WatcherDeliveryRecord):
@@ -3374,6 +3395,8 @@ _PROJECT_ID_TABLES = (
     "graph_runs",
     "episodes",
     "agent_usage",
+    "compute_jobs",
+    "compute_backend_probes",
     "watchers",
     "graph_watcher_reconciliation",
     "auto_research_child_work",

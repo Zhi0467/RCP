@@ -124,6 +124,13 @@ class RowMappingMixin:
         if graph_condition_json is None:
             data.pop("armed_revision", None)
             return WatcherRecord.model_validate(data)
+        for field in (
+            "cancel_command",
+            "cancel_requested_by",
+            "cancel_requested_at",
+            "cancel_error",
+        ):
+            data.pop(field, None)
         data.pop("check_command", None)
         data.pop("log_path", None)
         data.pop("cwd", None)

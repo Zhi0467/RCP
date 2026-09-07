@@ -1,4 +1,10 @@
-import type { AgentTask, ChatMessage, ComputeConnection, ComputeConnectionProbe } from "./types";
+import type {
+  AgentTask,
+  ChatMessage,
+  ComputeConnection,
+  ComputeConnectionProbe,
+  ComputeBackendProbe,
+} from "./types";
 
 export function reconcileActiveComputeIds(
   ids: readonly string[],
@@ -40,7 +46,9 @@ export function latestPersistedComputeIds(
   return reconcileActiveComputeIds(candidates.at(-1)?.ids ?? [], connections);
 }
 
-export function computeProbePresentation(probe: ComputeConnectionProbe | undefined): {
+export function computeProbePresentation(
+  probe: ComputeConnectionProbe | ComputeBackendProbe | null | undefined,
+): {
   label: string;
   tone: "ready" | "error" | "pending";
 } {

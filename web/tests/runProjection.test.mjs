@@ -376,33 +376,70 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   const sameNodeChat = visibleChatWatchers(watchers, "maintenance-chat", node);
   assert.deepEqual(
     sameNodeChat.map((item) => item.watcher_id),
-    ["loop-active", "loop-degraded", "self-wake"],
+    [
+      "loop-active",
+      "loop-degraded",
+      "loop-stopped",
+      "loop-completed",
+      "self-wake",
+      "stopped-self-wake",
+    ],
   );
   assert.deepEqual(
     visibleChatWatchers([...watchers, loopActive, selfWake], "maintenance-chat", node).map(
       (item) => item.watcher_id,
     ),
-    ["loop-active", "loop-degraded", "self-wake"],
+    [
+      "loop-active",
+      "loop-degraded",
+      "loop-stopped",
+      "loop-completed",
+      "self-wake",
+      "stopped-self-wake",
+    ],
   );
   const run = buildExperimentRun(node, control({ episode_id: episodeId }), [], watchers);
   assert.equal(
     sameNodeChat.filter((item) => item.continuation.patch_kind === "experiment_loop").length,
-    run.watchers.filter(watcherIsActive).length,
+    run.watchers.length,
   );
 
   assert.deepEqual(
     visibleChatWatchers(watchers, "maintenance-chat", null).map((item) => item.watcher_id),
-    ["self-wake"],
+    ["self-wake", "stopped-self-wake"],
   );
   assert.deepEqual(
     visibleChatWatchers(watchers, "maintenance-chat", experiment("experiment/unrelated")).map(
       (item) => item.watcher_id,
     ),
-    ["self-wake"],
+    ["self-wake", "stopped-self-wake"],
   );
   assert.deepEqual(
     visibleChatWatchers(watchers, "project-chat", null).map((item) => item.watcher_id),
     [],
+  );
+});
+
+test("a chat retains all its external jobs after watching stops or completes", () => {
+  const external = (id, status) =>
+    watcher(id, null, null, status, {
+      chat_id: "work-chat",
+      continuation: {
+        ...watcher("seed", null, null, "active").continuation,
+        patch_kind: "work",
+        control_node_id: null,
+        control_episode_id: null,
+      },
+    });
+  const watchers = [
+    external("stopped-cancellable", "stopped"),
+    external("completed", "completed"),
+    external("active", "active"),
+    { ...external("other-chat", "stopped"), chat_id: "another-chat" },
+  ];
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "work-chat", null).map((item) => item.watcher_id),
+    ["stopped-cancellable", "completed", "active"],
   );
 });
 

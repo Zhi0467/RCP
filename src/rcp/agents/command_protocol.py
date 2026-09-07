@@ -8,6 +8,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.storage import GraphCondition
 
 COMMAND_PROTOCOL_VERSION = 1
@@ -28,6 +29,7 @@ CommandVerb = Literal[
     "episode",
     "inbox",
     "finish",
+    "launch",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -41,6 +43,7 @@ MutatingCommandVerb = Literal[
     "episode",
     "inbox",
     "finish",
+    "launch",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -55,6 +58,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "episode",
         "inbox",
         "finish",
+        "launch",
     }
 )
 
@@ -231,6 +235,10 @@ class FinishArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class LaunchArguments(ComputeLaunchRequest):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
 class _CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -311,6 +319,12 @@ class FinishCommandRequest(_CommandRequest):
     arguments: FinishArguments = Field(default_factory=FinishArguments)
 
 
+class LaunchCommandRequest(_CommandRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    verb: Literal["launch"]
+    arguments: LaunchArguments
+
+
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | ApplyCommandRequest
@@ -323,7 +337,8 @@ CommandRequest: TypeAlias = Annotated[
     | WatchGraphCommandRequest
     | EpisodeCommandRequest
     | InboxCommandRequest
-    | FinishCommandRequest,
+    | FinishCommandRequest
+    | LaunchCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)
@@ -386,7 +401,7 @@ def staged_command_broker_source() -> str:
 
 
 def command_authentication_payload(document: str) -> bytes:
-    """Canonical bytes covered by an Auto-research broker's per-request HMAC.
+    """Canonical bytes covered by a turn broker's per-request HMAC.
 
     The broker signs the request exactly as the client wrote it, so verification
     has to canonicalize that same text. Rebuilding the payload from the validated

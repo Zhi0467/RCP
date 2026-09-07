@@ -82,6 +82,8 @@ PROJECT_LINKED_TABLES = {
     "auto_research_messages",
     "auto_research_recoveries",
     "chat_session_contexts",
+    "compute_jobs",
+    "compute_backend_probes",
     "conversation_worktrees",
     "episode_invocations",
     "episode_report_attempts",
@@ -260,13 +262,14 @@ def test_read_only_root_inventory_reports_unknown_durable_roots(tmp_path: Path) 
     (data_dir / "project-sources").mkdir()
     (data_dir / "transfer-exports").mkdir()
     (data_dir / "run-stage").mkdir()
+    (data_dir / "jobs").mkdir()
     (data_dir / "future-project-history").mkdir()
 
     app_data = inspect_transfer_app_data_roots(data_dir)
     assert app_data.typed_entries == ("rcp.sqlite3",)
     assert app_data.project_source_entries == ("project-sources",)
     assert app_data.control_entries == ("transfer-exports",)
-    assert app_data.excluded_entries == ("run-stage",)
+    assert app_data.excluded_entries == ("jobs", "run-stage")
     assert app_data.unclassified_entries == ("future-project-history",)
     assert app_data.complete is False
 

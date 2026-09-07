@@ -8,6 +8,7 @@ from typing import Any, Literal
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
+from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import (
     DEFAULT_PROVIDER,
@@ -23,10 +24,20 @@ DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 COMPUTE_SSH_TARGET = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}"
 )
-COMPUTE_CREDENTIAL_PATH = re.compile(
-    r"(?i)(?:\.ssh[/\\]|(?:^|[/\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:$|[\s,;])|"
-    r"identity[_ -]?file)"
-)
+
+
+class MachineComputeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_manager: Literal["slurm"] | None = None
+    jobs_root: str = ""
+
+    @model_validator(mode="after")
+    def validate_compute(self) -> MachineComputeConfig:
+        validate_compute_metadata(self.jobs_root)
+        if self.jobs_root and not PurePosixPath(self.jobs_root).is_absolute():
+            raise ValueError("compute jobs_root must be absolute when configured")
+        return self
 
 
 class MachineConfig(BaseModel):
@@ -34,6 +45,7 @@ class MachineConfig(BaseModel):
     host: str = ""
     os_account: str = ""
     provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
+    compute: MachineComputeConfig | None = None
 
     @model_validator(mode="after")
     def validate_host(self) -> MachineConfig:
@@ -582,6 +594,7 @@ def write_agent_settings(
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
     compute_connections: list[ComputeConnectionConfig] | None = None,
+    machine_compute: dict[str, MachineComputeConfig | None] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -629,6 +642,7 @@ def write_agent_settings(
             del document["paper"]
 
     _apply_machine_provider_path_updates(document, provider_path_updates or {})
+    _apply_machine_compute_updates(document, machine_compute or {})
     if compute_connections is not None:
         document.pop("compute_connections", None)
         if compute_connections:
@@ -661,6 +675,29 @@ def write_machine_provider_paths(
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)
     return load_manifest(manifest.path)
+
+
+def _apply_machine_compute_updates(
+    document: tomlkit.TOMLDocument,
+    updates: dict[str, MachineComputeConfig | None],
+) -> None:
+    if not updates:
+        return
+    machine_tables = {
+        str(machine.get("alias")): machine for machine in document.get("machines", [])
+    }
+    unknown = set(updates) - set(machine_tables)
+    if unknown:
+        raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
+    for alias, compute in updates.items():
+        machine = machine_tables[alias]
+        if compute is None:
+            machine.pop("compute", None)
+        else:
+            table = tomlkit.table()
+            for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
+                table.add(key, value)
+            machine["compute"] = table
 
 
 def _apply_machine_provider_path_updates(

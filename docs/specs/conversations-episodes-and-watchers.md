@@ -209,6 +209,12 @@ episode's pinned operational ceiling. Historical episodes retain their pinned
 used/ceiling values while the current node value remains separately visible as
 **Next episode limit**.
 
+Human Experiment-loop episode starts, including a completed-watcher start, are
+not gated on compute readiness. The helper probes when invoked; Settings shows
+the stored probe. Stop and pause do not cancel jobs. The
+[compute jobs spec](compute-jobs.md) owns scheduler prerequisites, the generic
+helper, and explicit human Cancel.
+
 Starting an episode does not create an ExperimentAttempt. Attempts are semantic
 agent-authored bookkeeping and never control budget, watcher identity, or
 episode admission. A nonblank human initial goal is retained exactly; only blank
@@ -252,8 +258,9 @@ waiting. If that turn pauses, fails, or is interrupted, the episode shows
 **Needs action** and only the exact available Resume, Retry, or Switch-provider
 recovery. Recovery cannot clear Stop or reenable watcher delivery.
 
-Stop does not cancel external work, delete watcher history, edit Experiment
-status, create or close an attempt, or discard a valid Patch. If the exact saved
+Stop and pause do not cancel compute jobs. Stop does not cancel external work,
+delete watcher history, edit Experiment status, create or close an attempt, or
+discard a valid Patch. If the exact saved
 session is unusable, Stop may durably abandon only recovery of that already
 terminal task while preserving history, then settle.
 
@@ -264,12 +271,14 @@ may claim retained compatible completion as invocation one.
 
 ## Watcher resources
 
-Conversation and Experiment watcher targets are separate exact resources, not a
-client-chosen mode field.
+Conversation, Experiment, and Auto-research child Work watcher targets are
+separate exact resources, not a client-chosen mode field.
 
 - A conversation `watch.json` wakes that same conversation.
 - An Experiment watcher resource is keyed by project, exact graph target,
   Experiment node, and compatible episode, and wakes that bounded episode.
+- A child Work watcher retains the parent episode and child route worker id and
+  wakes that same route and native session, never the Auto-research root.
 
 A branch watcher can never wake a main task, and a main watcher can never spend
 a branch episode. Watcher selection, staging, atomic claim, task creation, and
@@ -277,9 +286,14 @@ episode association retain the same target.
 
 Every watcher file has two all-or-none lists:
 
-- `external` observations with a literal `check_command`, absolute `log_path`,
-  and absolute `cwd`; and
+- `external` observations with required literal `check_command`, absolute
+  `log_path`, and absolute `cwd`, plus optional nonblank `cancel_command`; and
 - `graph` conditions from a closed vocabulary.
+
+This is one external watcher form for direct scheduler submissions and
+helper-launched processes. Experiment items may additionally carry their
+existing `group` label; ordinary conversation items cannot. A helper's returned
+watcher object uses these same fields; there is no job-id observer form.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
 or a named Proposal being resolved after arming. There is no arbitrary query,
@@ -305,7 +319,7 @@ delivery idempotent.
 
 ## External observation
 
-External checks run in a cold login shell with a hard timeout. A timeout kills
+Shell checks run in a cold login shell with a hard timeout. A timeout kills
 the check's process group on its execution machine, including shell children;
 it never cancels the separate external job being observed. SSH checks carry
 their own bounded timeout owner so a lost client cannot abandon the check.
@@ -313,6 +327,23 @@ Exit `0` means the named work is gone, `1` means still present, and any other re
 unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
 the error count. A degraded observation is never inferred complete or dead.
+
+Shell completion reports operational liveness, not scientific success. The
+Experiment watcher-state file and generic Work wake message, including child
+Work, retain the shell watcher's log-path evidence and ordinary coalescing and
+claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
+submission, generic helper launch, and human cancellation.
+
+An optional saved `cancel_command` runs only on a human Cancel request, after a
+fresh check confirms active work. It uses the recorded execution host and cwd,
+and never changes the watcher into a separate cancelled lifecycle. A successful
+command is an attributed request; observation still determines completion.
+Stop fences continuation and leaves the action available for still-live work.
+Cancellation failures permit explicit retry. Transfer and offline restore
+remove executable actions; ordinary restart preserves them.
+
+Prompt guidance lets short jobs finish inline and recommends a watcher for
+roughly more than ten minutes of waiting. This is not a runtime cutoff.
 
 Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is
@@ -326,6 +357,21 @@ atomically. One invalid item arms none. An empty final watcher declaration is
 legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
+
+At Work, child Work, and Experiment-loop settlement, RCP also refreshes every
+job launched by the turn. A still-running job absent from the declared job
+observers is a correctable handoff defect listing the unobserved job ids. The same correction
+round repairs it without another invocation; jobs already exited need no
+observer, and a turn that launched nothing is unaffected. Child Work uses the
+ordinary Work reader, validator, and arming path for its final `watch.json`.
+
+A child watcher claim creates one continuation and spends one parent B unit
+atomically. It requires a running parent, a route without a Stop fence, and a
+succeeded current child task. A repeated delivery cannot create a second wake;
+exhausted B leaves the completion pending. A succeeded child with an armed,
+undelivered watcher is waiting, which blocks the root's guarded finish. Episode
+Stop and the root's child `stop` verb retire the child's watchers within their
+admission fence. They never cancel the observed jobs.
 
 ## Watcher maintenance authority
 

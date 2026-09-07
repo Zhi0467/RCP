@@ -52,6 +52,7 @@ BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
         "chat-attachments",
+        "jobs",
         "paper-snapshots",
         "project-caches",
         "project-snapshots",

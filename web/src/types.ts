@@ -905,6 +905,11 @@ export interface ExternalWatcherRecord extends WatcherDeliveryRecord {
   check_command: string;
   log_path: string;
   cwd: string;
+  cancel_command: string | null;
+  cancel_requested_by: string | null;
+  cancel_requested_at: string | null;
+  cancel_error: string | null;
+  can_cancel: boolean;
   last_checked_at: string | null;
   last_exit_code: number | null;
   last_error: string | null;
@@ -1618,6 +1623,28 @@ export interface Machine {
   host: string;
   os_account: string;
   provider_paths: Record<ProviderId, string>;
+  compute: MachineComputeConfig | null;
+  compute_probe: ComputeBackendProbe | null;
+}
+
+export type ComputeContainment = "mirrored" | "cooperative";
+
+export interface MachineComputeConfig {
+  job_manager: "slurm" | null;
+  jobs_root: string;
+}
+
+export interface ComputeBackendProbe {
+  execution_machine: string;
+  backend_id: string;
+  state: ComputeProbeState;
+  ready: boolean;
+  diagnostic: string;
+  required_action: string | null;
+  containment: ComputeContainment;
+  cgroup_isolated: boolean | null;
+  status_label: string;
+  status_tone: "ready" | "error";
 }
 
 export interface ComputeConnection {
@@ -2453,6 +2480,7 @@ export interface ProjectSettingsRequest {
   agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
+  machine_compute?: Record<string, MachineComputeConfig | null>;
   compute_connections?: ComputeConnection[];
 }
 

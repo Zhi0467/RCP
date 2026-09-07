@@ -9,6 +9,7 @@ ACTIVE_ACCEPTANCE = DOCS / "acceptance"
 ARCHIVED_ACCEPTANCE = DOCS / "archive" / "acceptance"
 
 EXPECTED_SPECS = {
+    "compute-jobs.md",
     "api-web-and-desktop-projections.md",
     "authority-and-proposals.md",
     "auto-research-and-branch-merge.md",

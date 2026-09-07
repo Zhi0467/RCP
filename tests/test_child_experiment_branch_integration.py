@@ -59,13 +59,14 @@ class _CompletingExperimentProvider:
         )
         validator = re.search(r"run this exact command: `([^`]+)`", contract)
         assert validator is not None
-        process = await asyncio.create_subprocess_exec(
-            *shlex.split(validator.group(1)),
-            cwd=kwargs["cwd"],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
+        async with kwargs["invocation_gate"].serve_current_session():
+            process = await asyncio.create_subprocess_exec(
+                *shlex.split(validator.group(1)),
+                cwd=kwargs["cwd"],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
         assert process.returncode == 0, (stdout.decode(), stderr.decode())
         self.validation_results.append(json.loads(stdout))
         yield AgentEvent(event="session", session_id="child-experiment-session")

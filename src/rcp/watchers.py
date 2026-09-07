@@ -64,13 +64,16 @@ class WatchSpec(BaseModel):
     check_command: str = Field(min_length=1)
     log_path: str = Field(min_length=1)
     cwd: str = Field(min_length=1)
+    cancel_command: str | None = Field(default=None, min_length=1)
 
-    @field_validator("check_command")
+    @field_validator("check_command", "cancel_command")
     @classmethod
-    def check_command_is_not_blank(cls, value: str) -> str:
+    def command_is_not_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         stripped = value.strip()
         if not stripped:
-            raise ValueError("check_command must not be blank")
+            raise ValueError("watcher commands must not be blank")
         return stripped
 
     @field_validator("log_path", "cwd")
@@ -133,6 +136,7 @@ class WatcherBinding(BaseModel):
     chat_id: str
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     execution_host: str = ""
     continuation: WatcherContinuation
@@ -1127,12 +1131,10 @@ def _retryable_sqlite_error(exc: Exception) -> bool:
     return "locked" in message or "busy" in message
 
 
-def run_watcher_check(
-    spec: WatchSpec,
-    execution_host: str = "",
-    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-) -> WatcherCheckResult:
-    """Ask a watcher from a fresh login shell without interpreting its command."""
+def _run_watcher_command(
+    shell_command: str, cwd: str, execution_host: str, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Use the same bounded shell and remote watchdog for checks and human actions."""
 
     if execution_host:
         command = ssh_arguments(
@@ -1142,18 +1144,28 @@ def run_watcher_check(
                     "python3",
                     "-c",
                     _remote_script("watcher_process.py"),
-                    spec.cwd,
+                    cwd,
                     str(timeout),
-                    spec.check_command,
+                    shell_command,
                 ]
             ),
         )
-        cwd = None
+        process_cwd = None
     else:
-        command = watcher_shell_command(spec.check_command, spec.cwd)
-        cwd = spec.cwd
+        command = watcher_shell_command(shell_command, cwd)
+        process_cwd = cwd
+    return run_check_process(command, cwd=process_cwd, timeout=timeout)
+
+
+def run_watcher_check(
+    spec: WatchSpec,
+    execution_host: str = "",
+    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+) -> WatcherCheckResult:
+    """Ask a watcher from a fresh login shell without interpreting its command."""
+
     try:
-        result = run_check_process(command, cwd=cwd, timeout=timeout)
+        result = _run_watcher_command(spec.check_command, spec.cwd, execution_host, timeout)
     except subprocess.TimeoutExpired as exc:
         detail = _process_error_output(exc.stderr, exc.stdout)
         message = f"check timed out after {timeout:g} seconds"
@@ -1188,6 +1200,33 @@ def run_watcher_check(
         checked_at=_now(),
         exit_code=result.returncode,
         error=_bounded_error(message),
+    )
+
+
+def run_watcher_cancel(
+    spec: WatchSpec,
+    execution_host: str = "",
+    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+) -> str | None:
+    """Run only a human-requested saved action; exit zero is command acceptance."""
+
+    if spec.cancel_command is None:
+        raise ValueError("This watcher has no cancel command.")
+    try:
+        result = _run_watcher_command(spec.cancel_command, spec.cwd, execution_host, timeout)
+    except subprocess.TimeoutExpired as exc:
+        detail = _process_error_output(exc.stderr, exc.stdout)
+        return _bounded_error(
+            f"Cancel command timed out after {timeout:g} seconds; its outcome is unknown."
+            + (f" {detail}" if detail else "")
+        )
+    except OSError as exc:
+        return _bounded_error(f"Could not execute Cancel command: {exc}")
+    if result.returncode == 0:
+        return None
+    detail = _process_error_output(result.stderr, result.stdout)
+    return _bounded_error(
+        f"Cancel command exited with status {result.returncode}." + (f" {detail}" if detail else "")
     )
 
 
@@ -1274,8 +1313,10 @@ def arm_watchers(
                 chat_id=binding.chat_id,
                 node_id=binding.node_id,
                 episode_id=binding.episode_id,
+                worker_id=binding.worker_id,
                 graph_target=binding.graph_target,
                 execution_host=binding.execution_host,
+                cancel_command=spec.cancel_command,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
@@ -1310,6 +1351,7 @@ def arm_watchers(
                     chat_id=binding.chat_id,
                     node_id=binding.node_id,
                     episode_id=binding.episode_id,
+                    worker_id=binding.worker_id,
                     graph_target=binding.graph_target,
                     execution_host=binding.execution_host,
                     condition=condition,
@@ -1338,8 +1380,10 @@ class WatcherPoller:
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
+        cancel_runner: Callable[[WatchSpec, str, float], str | None] = run_watcher_cancel,
     ) -> None:
         self.store = store
+        self.cancel_runner = cancel_runner
         self.on_completed = on_completed
         self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
@@ -1394,17 +1438,67 @@ class WatcherPoller:
                 raise RuntimeError("External watcher changed type during its check.")
             return updated
 
+    def cancel(self, project_id: str, watcher_id: str, requested_by: str) -> WatcherRecord:
+        """Execute the saved action only after a human request and a fresh active check."""
+
+        # The API holds the project's write-admission lock. Do not acquire the
+        # poll lock here: poll delivery takes those locks in the opposite order.
+        # SQLite claims serialize cancellation; ordinary polling owns delivery.
+        record = self.store.watcher(watcher_id)
+        if record is None or record.project_id != project_id:
+            raise KeyError(watcher_id)
+        if not isinstance(record, WatcherRecord) or not record.cancel_command:
+            raise ValueError("This watcher has no cancel command.")
+        if not record.can_cancel:
+            return record
+        try:
+            result = self._check_record(record)
+        except Exception as exc:
+            result = WatcherCheckResult(
+                state="error", checked_at=_now(), error=_bounded_error(str(exc))
+            )
+        checked = self.store.record_watcher_check(
+            watcher_id,
+            status={"active": "active", "complete": "completed", "error": "degraded"}[result.state],
+            exit_code=result.exit_code,
+            error=result.error,
+            checked_at=result.checked_at,
+            include_stopped=True,
+        )
+        if result.state == "error":
+            return self.store.record_watcher_cancel_result(
+                watcher_id,
+                requested_at=record.cancel_requested_at,
+                error=_bounded_error(
+                    "Could not check whether the external work is still active; "
+                    f"Cancel was not run. {result.error or ''}"
+                ),
+            )
+        if result.state == "complete":
+            return checked
+        claimed = self.store.claim_watcher_cancel(project_id, watcher_id, requested_by)
+        if claimed is None:
+            current = self.store.watcher(watcher_id)
+            assert isinstance(current, WatcherRecord)
+            return current
+        try:
+            error = self.cancel_runner(
+                _spec_from_record(claimed), claimed.execution_host, self.timeout
+            )
+        except Exception as exc:
+            error = _bounded_error(f"Cancel command failed: {exc}")
+        return self.store.record_watcher_cancel_result(
+            watcher_id, requested_at=claimed.cancel_requested_at, error=error
+        )
+
+    def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
+        return self.check_runner(_spec_from_record(record), record.execution_host, self.timeout)
+
     def _check_records(self, records: list[WatcherRecord]) -> None:
         if records:
             with ThreadPoolExecutor(max_workers=min(self.workers, len(records))) as executor:
                 futures = {
-                    executor.submit(
-                        self.check_runner,
-                        _spec_from_record(record),
-                        record.execution_host,
-                        self.timeout,
-                    ): record
-                    for record in records
+                    executor.submit(self._check_record, record): record for record in records
                 }
                 for future in as_completed(futures):
                     record = futures[future]
@@ -1565,6 +1659,7 @@ def _spec_from_record(record: WatcherRecord) -> WatchSpec:
         check_command=record.check_command,
         log_path=record.log_path,
         cwd=record.cwd,
+        cancel_command=record.cancel_command,
     )
 
 

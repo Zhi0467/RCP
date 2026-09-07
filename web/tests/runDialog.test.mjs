@@ -588,6 +588,8 @@ test("conversation watcher status and wake attribution stay operational", () => 
     watcher_id: "watcher-1",
     chat_id: "chat",
     status: "degraded",
+    check_command: "check job",
+    cwd: "/tmp",
     log_path: "/tmp/train.log",
     last_checked_at: "2026-08-01T04:00:00Z",
     last_error: "SSH exited 255",
@@ -646,7 +648,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
   );
   // The watcher list is disclosed by the count control, so it is absent until opened.
   assert.match(html, /class="chat-watcher-count"[^>]*aria-expanded="false"/);
-  assert.match(html, /aria-label="1 active watcher"/);
+  assert.match(html, /aria-label="2 watchers"/);
   assert.doesNotMatch(html, /train\.log/);
   assert.doesNotMatch(html, /SSH exited 255/);
   assert.doesNotMatch(html, /chat-watchers/);
@@ -671,6 +673,8 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     watcher_id: "loop-active",
     chat_id: "creator-chat",
     status: "active",
+    check_command: "check job",
+    cwd: "/tmp",
     log_path: "/tmp/loop-active.log",
     last_checked_at: null,
     last_error: null,
@@ -734,8 +738,8 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     }),
   );
 
-  assert.match(html, /aria-label="3 active watchers"/);
-  assert.match(html, /<svg[^>]*>.*<\/svg> 3<\/button>/s);
+  assert.match(html, /aria-label="5 watchers"/);
+  assert.match(html, /<svg[^>]*>.*<\/svg> 5<\/button>/s);
   assert.doesNotMatch(projectChatHtml, /chat-watcher-count/);
 });
 

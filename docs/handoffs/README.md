@@ -2,6 +2,11 @@
 
 Active:
 
+- [External job and watcher simplification](handoff-2026-09-06-external-job-simplification.md)
+  — direct Slurm submission, one shell-watcher contract, human Cancel, and an
+  OS-owned helper for ordinary processes. Integrated checks and the real
+  team-server/Codex journey remain; the predecessor compute-runner plan is archived.
+
 - [Live provider steering](handoff-2026-09-05-live-provider-steering.md) — Phase 2 implemented; local Codex API and browser-component receipts verified; full served-browser, Claude live and SSH verification open.
 
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)

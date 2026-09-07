@@ -639,7 +639,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     store = app.state.background_tasks.store
     launcher = _SessionSequenceLauncher(
         [
-            {"watch.json": "child watcher output must not be parsed"},
+            {},
             {},
             {},
             {},
@@ -711,12 +711,22 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
 
     initial_master_path = Path(launcher.prompts[0].splitlines()[1])
     initial_master = initial_master_path.read_text(encoding="utf-8")
-    assert "## Auto-research child Work boundary" in initial_master
-    assert "only staged command capabilities" in initial_master
-    assert "Do not invoke `apply`, `status`, `spawn`" in initial_master
-    assert "`watch-graph`" in initial_master
-    assert "`watch_graph`" not in initial_master
-    assert "Do not write `watch.json`" in initial_master
+    assert "## Auto-research child Work boundary" not in initial_master
+    prefix = "Read current execution instructions relative to this turn's cwd: `"
+    execution_path = next(
+        line.removeprefix(prefix).removesuffix("`")
+        for line in launcher.prompts[0].splitlines()
+        if line.startswith(prefix)
+    )
+    initial_boundary = (launcher.workspaces[0] / execution_path).read_text(encoding="utf-8")
+    assert "## Auto-research child Work boundary" in initial_boundary
+    assert "optional reply to your orchestrator" in initial_boundary
+    assert "Do not invoke `apply`, `status`, `spawn`" in initial_boundary
+    assert "`watch-graph`" in initial_boundary
+    assert "`watch_graph`" not in initial_boundary
+    assert "RCP wakes this same child route and native session" in initial_boundary
+    assert "outside your tools or authority, reply to the orchestrator" in initial_boundary
+    assert "RCP ignores child watcher output" not in initial_boundary
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     workspace = launcher.workspaces[0]
     stage = workspace.parent
@@ -733,10 +743,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     )
     assert launch.payload["canonical_write_roots"][0] == str(workspace)
     assert not (launcher.workspaces[0] / "watch.json").exists()
-    assert any(
-        receipt.category == "auto_research_child_watcher_output_discarded"
-        for receipt in store.agent_task_receipts(child.operation_id)
-    )
     if legacy_layout:
         with store.connection() as connection:
             connection.execute(

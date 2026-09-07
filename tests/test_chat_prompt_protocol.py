@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shlex
 import threading
 from pathlib import Path
 
@@ -40,6 +41,36 @@ class _RecordingLauncher:
         self.launch_kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
+        if "This is a Work turn." in prompt:
+            tooling_path = next(
+                line.removeprefix(
+                    "Read current execution instructions relative to this turn's cwd: `"
+                ).removesuffix("`")
+                for line in prompt.splitlines()
+                if line.startswith(
+                    "Read current execution instructions relative to this turn's cwd: `"
+                )
+            )
+            execution_instructions = (Path(kwargs["cwd"]) / tooling_path).read_text()
+            command = next(
+                code
+                for code in execution_instructions.split("`")[1::2]
+                if "launch" in shlex.split(code) and "--cwd" in shlex.split(code)
+            )
+            argv = shlex.split(command)
+            gate = kwargs["invocation_gate"]
+            authority = list(gate.client_arguments())
+            assert argv[2 : 2 + len(authority)] == authority
+            assert argv[argv.index("--workspace") + 1] == str(kwargs["cwd"])
+            assert argv[argv.index("launch") :] == [
+                "launch",
+                "--key",
+                "<idempotency-key>",
+                "--cwd",
+                "<working-directory>",
+                "--",
+                "<argv...>",
+            ]
         self.prompts.append(prompt)
         self.workspaces.append(Path(kwargs["cwd"]))
         self.sessions.append(kwargs.get("session_id"))
@@ -150,9 +181,9 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     current = store.chat_session_context("codex", "laptop", session_id)
     assert current is not None
     stale_snapshot = json.loads(current.snapshot_json)
-    stale_snapshot["master_context_version"] = 2
-    stale_snapshot["contract_key"] = "chat-master-v2"
-    stale_snapshot["master_context_path"] = "/stale/chat-master-v2.md"
+    stale_snapshot["master_context_version"] = 6
+    stale_snapshot["contract_key"] = "chat-master-v6"
+    stale_snapshot["master_context_path"] = "/stale/chat-master-v6.md"
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
     store.commit_chat_session_context(
         provider="codex",
@@ -162,7 +193,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         kind="project_chat",
         chat_id=chat_id,
         node_id=None,
-        protocol_version=2,
+        protocol_version=6,
         snapshot_json=stale_json,
         snapshot_sha256=hashlib.sha256(stale_json.encode("utf-8")).hexdigest(),
         committed_operation_id=first_execution.operation_id,

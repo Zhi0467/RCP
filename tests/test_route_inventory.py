@@ -101,6 +101,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/repositories/files/preview"),
     (("PUT",), "/api/projects/{project_id}/settings"),
     (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"),
+    (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/compute/probe"),
     (("GET",), "/api/projects/{project_id}/history"),
     (("GET",), "/api/projects/{project_id}/history/summaries"),
     (("GET",), "/api/projects/{project_id}/sources"),
@@ -118,6 +119,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/watchers"),
     (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/check"),
     (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/stop"),
+    (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/cancel"),
     (("POST",), "/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop"),
     (("POST",), "/api/projects/{project_id}/experiments/{node_id:path}/stop"),
     (("GET",), "/api/projects/{project_id}/chats"),
@@ -263,6 +265,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "repair_agent_task_graph_update": "src/rcp/api/tasks.py",
     "reject_artifact_revision_candidate": "src/rcp/api/tasks.py",
     "resolve_project_provider_path": "src/rcp/api/project_state.py",
+    "probe_project_compute_backend": "src/rcp/api/project_state.py",
     "result_views": "src/rcp/api/result_views.py",
     "resume_agent_task": "src/rcp/api/tasks.py",
     "retry_agent_task": "src/rcp/api/tasks.py",
@@ -280,6 +283,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "stop_experiment_loop": "src/rcp/api/experiments.py",
     "stop_experiment_watchers": "src/rcp/api/experiments.py",
     "stop_watcher": "src/rcp/api/watchers.py",
+    "cancel_watcher": "src/rcp/api/watchers.py",
     "sync_graph": "src/rcp/api/sync.py",
     "team_invitations": "src/rcp/api/team.py",
     "update_identity": "src/rcp/api/team.py",
@@ -316,15 +320,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 131
-    assert len(_FROZEN_ROUTE_INVENTORY) == 131
+    assert len(entries) == 133
+    assert len(_FROZEN_ROUTE_INVENTORY) == 133
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 127
+    assert sum(isinstance(route, APIRoute) for route in routes) == 129
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -339,5 +343,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 119
+    assert len(observed) == 121
     assert observed == _HANDLER_MODULE_MAP

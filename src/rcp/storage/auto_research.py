@@ -1601,7 +1601,7 @@ class AutoResearchStoreMixin:
         *,
         diagnostic: str | None = None,
     ) -> EpisodeRecord:
-        """Fence an Auto-research ending and retire its watchers in one transaction."""
+        """Fence an Auto-research ending and settle its watcher delivery atomically."""
 
         now = self.now()
         with self.connection() as connection:
@@ -1635,6 +1635,7 @@ class AutoResearchStoreMixin:
             reason = "Auto-research episode stopped."
         else:
             reason = f"Auto-research episode ended ({episode.ending})."
+        retain_child_observers = episode.ending == "exhausted" and episode.stop_requested_at is None
         return connection.execute(
             """
             UPDATE watchers
@@ -1643,6 +1644,7 @@ class AutoResearchStoreMixin:
                 stop_reason = COALESCE(stop_reason, ?),
                 stopped_at = COALESCE(stopped_at, ?)
             WHERE status IN ('active', 'degraded', 'completed')
+              AND NOT (? AND worker_id IS NOT NULL)
               AND (
                   episode_id = ?
                   OR EXISTS (
@@ -1652,7 +1654,7 @@ class AutoResearchStoreMixin:
                   )
               )
             """,
-            (reason, stopped_at, episode_id, episode_id),
+            (reason, stopped_at, retain_child_observers, episode_id, episode_id),
         ).rowcount
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:

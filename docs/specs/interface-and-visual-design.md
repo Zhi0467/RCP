@@ -167,6 +167,28 @@ with a concise save-first label until the metadata is saved. A compute-settings
 save also invalidates older in-flight readiness responses, so a late old-target
 success cannot replace the empty state left by a failed new-target probe.
 
+Settings groups provider executables and **Long-running jobs** under each
+machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
+configures helper storage. RCP exposes no scheduler resource settings. **Reset
+compute** removes the optional block through the normal Settings **Save**.
+Readiness uses the same label, tone, and pending presentation as compute
+connections. Editing masks the saved result and requires Save before Probe;
+probe and save cannot overlap.
+
+Chat and Experiment show one external job row per shell watcher. Its log path,
+observation status, last check, and diagnostic remain visible with Cancel
+requester and time when recorded. A completed watcher does not assert scientific
+success; **Cancel requested** does not assert the process was stopped. There is
+no second job-ID-based display path.
+
+**Stop watching** keeps its existing meaning and never cancels external work.
+A **Cancel** control appears only while the backend's `can_cancel` permits it,
+including on a stopped watcher that may still describe live work. It is
+independent of graph read-only mode or Experiment action locks because the API
+owns project write admission. The action response updates the displayed receipt;
+the existing watcher refresh owns observation. The browser does not infer
+cancellation availability from watcher status.
+
 ## Paper
 
 The editor/coach split is human-resizable, and the editor begins with authored

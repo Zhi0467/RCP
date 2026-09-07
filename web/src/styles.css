@@ -6388,20 +6388,28 @@ button.relation-map-node:hover {
   border-left-color: var(--red);
 }
 .chat-watcher-row > strong {
-  font: 700 9px var(--mono);
+  font: 700 11px var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-watcher-row time {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
 }
-.chat-watcher-row > span {
-  color: var(--red);
-  font-size: 8px;
+.chat-watcher-row > span,
+.chat-watcher-row > code {
+  font-size: 10px;
   grid-column: 1 / -1;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.chat-watcher-row > button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.chat-watcher-row > [role="alert"] {
+  color: var(--red);
 }
 .node-chat-lines {
   flex: 1;
@@ -10618,6 +10626,29 @@ button.relation-map-node:hover {
   min-width: 0;
   padding: 0 8px;
   width: 100%;
+}
+.machine-compute {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0 0;
+  min-width: 0;
+  padding: 8px 0 0;
+}
+.machine-compute legend {
+  font: 750 11px var(--mono);
+  padding: 0 8px;
+}
+.machine-compute .compute-connection-fields {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.machine-compute input[type="checkbox"] {
+  accent-color: var(--cobalt);
+  height: 16px;
+  width: 16px;
+}
+.machine-compute .compute-probe {
+  display: flex;
+  flex-wrap: wrap;
 }
 .compute-probe-list {
   border-top: 1px solid var(--line);

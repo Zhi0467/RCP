@@ -153,8 +153,8 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     tmp_path,
     monkeypatch,
 ) -> None:
-    host = "tianhaowang-gpu0.ucsd.edu"
-    binary = "/home/zhwang/.nvm/versions/node/v18.20.8/bin/codex"
+    host = "compute.example"
+    binary = "/opt/codex/bin/codex"
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -177,7 +177,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         f"/api/projects/{project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 3},
     )
-    assert started.status_code == 202
+    assert started.status_code == 202, started.text
     episode_id = started.json()["episode_id"]
     operation_id = started.json()["root_operation_id"]
     failed = wait_for_task(store, operation_id, expect="failed")
@@ -217,16 +217,16 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     assert blocked.status_code == 503
     assert blocked.json() == {
         "detail": (
-            "Auto-research Retry cannot start: tianhaowang-gpu0.ucsd.edu is unreachable, "
-            "so /home/zhwang/.nvm/versions/node/v18.20.8/bin/codex could not be checked. "
+            "Auto-research Retry cannot start: compute.example is unreachable, "
+            "so /opt/codex/bin/codex could not be checked. "
             "The current task was left unchanged."
         )
     }
     assert readiness_calls == [
         (
             "codex",
-            "tianhaowang-gpu0.ucsd.edu",
-            "/home/zhwang/.nvm/versions/node/v18.20.8/bin/codex",
+            "compute.example",
+            "/opt/codex/bin/codex",
             True,
         )
     ]

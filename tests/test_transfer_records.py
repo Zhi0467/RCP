@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.artifacts import descriptor_for
+from rcp.compute_jobs.models import ComputeJobRecord
 from rcp.providers import ProviderUsage
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
@@ -145,6 +146,22 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
             (task.operation_id,),
         )
 
+    source_job = ComputeJobRecord(
+        job_id="source-compute-job",
+        project_id=project_id,
+        origin_operation_id=task.operation_id,
+        execution_machine="source-gpu",
+        execution_host="gpu",
+        backend_id="slurm",
+        backend_handle="source-scheduler-handle",
+        job_root="/source/jobs/job",
+        cwd="/source/project",
+        argv=["true"],
+        log_path="/source/jobs/job/log",
+        exit_path="/source/jobs/job/exit",
+        created_at=store.now(),
+    )
+    store.create_compute_job(source_job)
     first = store.export_project_transfer_records(project_id, attributions=attributions)
     second = store.export_project_transfer_records(project_id, attributions=attributions)
 
@@ -186,6 +203,9 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
     serialized = first.model_dump_json()
     assert "native-paper-session" not in serialized
     assert "excluded-paper-session" not in serialized
+    assert "source-compute-job" not in serialized
+    assert "source-scheduler-handle" not in serialized
+    assert store.compute_job(source_job.job_id) == source_job
     assert "/source/stage" not in serialized
     assert "source-gpu" not in serialized
     with store.connection() as connection:
@@ -252,11 +272,22 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
         store.export_project_transfer_records(project_id, attributions=attributions)
 
     with store.connection() as connection:
-        connection.execute("UPDATE watchers SET notified = 1 WHERE watcher_id = ?", (watcher_id,))
+        connection.execute(
+            "UPDATE watchers SET notified = 1, worker_id = 'history-worker', "
+            "cancel_command = 'scancel 33', cancel_requested_by = ?, "
+            "cancel_requested_at = ?, cancel_error = 'Scheduler unavailable' WHERE watcher_id = ?",
+            (actor.user_id, now, watcher_id),
+        )
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
     assert bundle.watchers[0].status == "completed"
     assert "check_command" not in type(bundle.watchers[0]).model_fields
     assert "continuation" not in type(bundle.watchers[0]).model_fields
+
+    assert bundle.watchers[0].worker_id == "history-worker"
+    assert bundle.watchers[0].cancel_requested_by == actor.user_id
+    assert bundle.watchers[0].cancel_requested_at == now
+    assert bundle.watchers[0].cancel_error == "Scheduler unavailable"
+    assert "cancel_command" not in type(bundle.watchers[0]).model_fields
 
 
 def test_finished_auto_research_corpus_exports_all_terminal_record_groups(

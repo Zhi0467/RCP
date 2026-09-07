@@ -38,6 +38,7 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
     {
         "bootstrap-manifests",
         "chat-attachments",
+        "jobs",
         "paper-snapshots",
         "project-caches",
         "project-snapshots",

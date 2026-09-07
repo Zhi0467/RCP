@@ -70,6 +70,9 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "_legacy_campaigns_archive",
         "artifact_revision_candidates",
         "chat_session_contexts",
+        # Backend handles and job paths remain owned by the source machine.
+        "compute_jobs",
+        "compute_backend_probes",
         "conversation_worktrees",
         "graph_watcher_reconciliation",
         "project_aliases",
@@ -608,6 +611,10 @@ class TransferWatcherRecord(_StrictTransferRecord):
     chat_id: str = Field(min_length=1)
     node_id: str | None = None
     episode_id: str | None = None
+    worker_id: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_requested_at: AwareTimestamp | None = None
+    cancel_error: str | None = None
     graph_target: TransferGraphTarget = Field(default_factory=TransferGraphTarget)
     status: Literal["completed", "stopped"]
     graph_condition: TransferJsonDocument | None = None

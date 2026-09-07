@@ -55,11 +55,11 @@ _RCP_OWNED_ITEM_FIELDS = {
 
 
 def create_named_app(*args: Any, **kwargs: Any):
-    """Create an app whose personal test owner has accepted the write precondition."""
+    """Create a named test app."""
 
     app = create_app(*args, **kwargs)
+    store = app.state.background_tasks.store
     if app.state.space_kind == "personal":
-        store = app.state.background_tasks.store
         owner = store.local_owner
         if owner is not None and owner.display_name is None:
             store.rename_space_user(owner.user_id, "Test researcher")

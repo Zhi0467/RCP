@@ -16,9 +16,15 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from rcp.core.models import AuthorizedHuman
+from rcp.runs.auto_research_admission import start_auto_research_child_work_watcher_wake
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, EpisodeRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    EpisodeInvocationCeilingReached,
+    EpisodeNotRunning,
+    EpisodeRecord,
+)
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -59,6 +65,37 @@ def start_watcher_notification(
     }
     if graph_target.kind == "branch" and len(branch_episode_ids) != 1:
         raise ValueError("A branch watcher notification requires one exact episode lineage.")
+
+    worker_ids = {item.worker_id for item in resolved_watchers}
+    if worker_ids != {None}:
+        if len(worker_ids) != 1 or None in worker_ids or len(branch_episode_ids) != 1:
+            raise ValueError("A child watcher notification requires one exact child route.")
+        if request.watcher_ids != watcher_ids or not request.message:
+            raise ValueError("A child watcher notification requires its exact payload and ids.")
+        started_child: AgentTaskRecord | None = None
+
+        def claim_child_wake() -> None:
+            nonlocal started_child
+            with tasks._watcher_delivery_lock:
+                if not tasks._accepting_watcher_deliveries:
+                    return
+                try:
+                    started_child = start_auto_research_child_work_watcher_wake(
+                        tasks,
+                        next(iter(branch_episode_ids)),
+                        next(iter(worker_ids)),
+                        watcher_ids,
+                        request=request,
+                    )
+                except (EpisodeInvocationCeilingReached, EpisodeNotRunning):
+                    return
+
+        if admission_fence is not None:
+            if not admission_fence(claim_child_wake):
+                return None
+        else:
+            claim_child_wake()
+        return started_child
 
     experiment_reauthorization = (
         request.trigger == "experiment_run"

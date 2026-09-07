@@ -347,3 +347,58 @@ test("settings compare keeps list order, which the researcher chose", () => {
     settingsFingerprint({ scope: ["b", "a"] }),
   );
 });
+
+test("machine compute edits stage, restore, and save only changed aliases", async () => {
+  const { machineComputeFrom, machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const slurm = { job_manager: "slurm", jobs_root: "/jobs" };
+  const saved = machineComputeFrom([
+    { alias: "local", compute: null },
+    { alias: "cluster", compute: slurm },
+  ]);
+  assert.equal(machineComputeUpdates(saved, saved), undefined);
+  assert.deepEqual(machineComputeUpdates(saved, { cluster: null }), { cluster: null });
+  const draft = {
+    version: 4,
+    scope: ["repo"],
+    profiles: {},
+    machineComputeEdits: { cluster: null },
+  };
+  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        ...draft,
+        machineComputeEdits: { cluster: { ...slurm, job_manager: "unknown" } },
+      }),
+    ),
+    null,
+  );
+});
+
+test("compute drafts cannot restore untouched stale machine settings", async () => {
+  const { machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const original = { job_manager: null, jobs_root: "/old" };
+  const fresh = { job_manager: null, jobs_root: "/new" };
+  const saved = { local: fresh, cluster: null };
+  const unrelatedDraft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 4,
+      scope: ["changed-repo"],
+      profiles: {},
+      machineCompute: { local: original, cluster: null },
+    }),
+  );
+  assert.equal(unrelatedDraft.machineCompute, undefined);
+  assert.equal(machineComputeUpdates(saved, unrelatedDraft.machineComputeEdits ?? {}), undefined);
+  const edits = { cluster: { job_manager: "slurm", jobs_root: "" } };
+  const staged = deserializeSettingsDraft(
+    serializeSettingsDraft({
+      version: 4,
+      scope: ["repo"],
+      profiles: {},
+      machineComputeEdits: edits,
+    }),
+  );
+  assert.deepEqual({ ...saved, ...staged.machineComputeEdits }, { local: fresh, ...edits });
+  assert.deepEqual(machineComputeUpdates(saved, staged.machineComputeEdits), edits);
+});

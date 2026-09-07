@@ -72,6 +72,9 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
+from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.reconcile import reconcile_compute_jobs
+from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -131,6 +134,7 @@ from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
     ServerControlBackupCaptureResult,
+    ServerControlComputeProbeResult,
     ServerControlError,
     ServerControlMaintenanceResult,
     ServerControlMemberAdvanceResult,
@@ -388,6 +392,7 @@ def create_app(
             | ServerControlProjectTransferUploadResult
             | ServerControlBackupCaptureResult
             | ServerControlMaintenanceResult
+            | ServerControlComputeProbeResult
         ):
             root_operations = {
                 "maintenance_enter",
@@ -433,7 +438,11 @@ def create_app(
                         operations=tuple(
                             operation
                             for operation in SERVER_CONTROL_OPERATIONS
-                            if request.protocol_version == 10 or operation not in root_operations
+                            if (request.protocol_version >= 10 or operation not in root_operations)
+                            and (
+                                request.protocol_version >= 11
+                                or operation != "compute_backend_probe"
+                            )
                         ),
                         pending_member_removals=(
                             member_removal_coordinator.pending_snapshots()
@@ -452,6 +461,30 @@ def create_app(
                     return member_removal_coordinator.advance(
                         request.selector_id,
                         boundary_sha256=request.boundary_sha256,
+                    )
+                case "compute_backend_probe":
+                    assert request.selector_id is not None and request.machine_alias is not None
+                    record = store.project(request.selector_id)
+                    if record is None or record.home_space_id != store.space_id:
+                        raise ServerControlError("operation_refused", "Project not found.")
+                    try:
+                        manifest = load_manifest(record.locator)
+                        if request.machine_alias not in manifest.machine_map:
+                            raise ValueError(f"unknown execution machine: {request.machine_alias}")
+                    except (OSError, ValueError) as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    probe = probe_compute_backend(
+                        manifest, request.machine_alias, data_dir=app_data
+                    )
+                    return ServerControlComputeProbeResult(
+                        instance_id=identity.instance_id,
+                        pid=identity.pid,
+                        data_dir_id=identity.data_dir_id,
+                        space_id=space_id,
+                        selector_kind="project",
+                        selector_id=record.project_id,
+                        machine_alias=request.machine_alias,
+                        probe=store.record_compute_backend_probe(record.project_id, probe),
                     )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
@@ -1289,6 +1322,19 @@ def create_app(
             # availability when the project's remote machine is unavailable.
             logger.warning("Could not sweep remote run stages: %s", exc)
 
+    async def reconcile_running_compute_jobs() -> None:
+        for project_id in {job.project_id for job in store.running_compute_jobs()}:
+            try:
+                await asyncio.to_thread(
+                    reconcile_compute_jobs,
+                    store,
+                    None,
+                    project_id=project_id,
+                    data_dir=app_data,
+                )
+            except Exception:
+                logger.exception("Could not reconcile compute jobs for project %s", project_id)
+
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
@@ -1472,6 +1518,7 @@ def create_app(
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+                startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()

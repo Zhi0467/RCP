@@ -461,6 +461,34 @@ project**. RCP creates canonical `.research/` state only after this final human
 action. That state is not silently committed to the repository's human Git
 history.
 
+## Opt into Slurm for long-running work
+
+After creating the project, open **Project Settings → Long-running jobs** for
+its execution machine, enable **Use Slurm**, and Save. Run **Probe**, or use the
+installed-service check from the server operator session:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias>
+```
+
+The check runs through the actual execution account: `rcp` for server-local
+work or the configured account on an SSH execution machine. It verifies the
+Slurm commands and queue are reachable. If access is missing, follow its
+administrator guidance and check again. RCP does not create scheduler users or
+associations, submit a test job, or configure job resources. Slurm validates
+submission permission and resources when the agent submits its own job.
+
+That setup is retained across ordinary server updates. Agents choose their
+submission command or script and each job's resources, then supply the existing
+shell watcher to hand off a long wait. An optional saved cancel command makes
+human **Cancel** available in the job row. **Stop watching** only stops
+continuation; it leaves the external job alive.
+
+Without Slurm selected, the generic launch helper uses the execution machine's
+OS process owner. Linux requires the systemd user manager and linger; launches
+are refused when reliable ownership is unavailable. Short jobs may still finish
+inline. See [compute jobs](specs/compute-jobs.md) for the contract and limits.
+
 ## Inspect and stop the service
 
 ```bash

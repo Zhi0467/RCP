@@ -436,6 +436,12 @@ class ProjectStoreMixin:
                         "DELETE FROM artifact_revision_candidates WHERE project_id = ?",
                         (project_id,),
                     ).rowcount,
+                    "compute_jobs": connection.execute(
+                        "DELETE FROM compute_jobs WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "compute_backend_probes": connection.execute(
+                        "DELETE FROM compute_backend_probes WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -625,6 +631,15 @@ class ProjectStoreMixin:
         connection: sqlite3.Connection,
         project_id: str,
     ) -> None:
+        running_jobs = connection.execute(
+            "SELECT COUNT(*) FROM compute_jobs WHERE project_id = ? AND status = 'running'",
+            (project_id,),
+        ).fetchone()[0]
+        if running_jobs:
+            raise ProjectActiveTaskConflict(
+                f"This project has {running_jobs} running compute job(s). "
+                "Cancel or wait for those jobs first before deleting this project."
+            )
         if (
             connection.execute(
                 """
@@ -1006,6 +1021,14 @@ class ProjectStoreMixin:
             )
             connection.execute(
                 "UPDATE agent_usage SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE compute_jobs SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE compute_backend_probes SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(

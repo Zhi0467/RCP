@@ -42,6 +42,10 @@ class AppStoreBase:
         (6, "artifact_revision_candidates_v1"),
         (7, "space_run_projection_indexes_v1"),
         (8, "conversation_worktrees_v1"),
+        (9, "compute_jobs_v1"),
+        (10, "external_watcher_actions_v1"),
+        (11, "child_work_watchers_v1"),
+        (12, "compute_job_labels_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -65,6 +69,7 @@ class AppStoreBase:
             "team_bootstrap_codes",
             "team_invitations",
             "watchers",
+            "compute_jobs",
             "writing_sessions",
         }
     )
@@ -472,6 +477,30 @@ class AppStoreBase:
             version=8,
             name="conversation_worktrees_v1",
             migration=self._migrate_conversation_worktrees,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=9,
+            name="compute_jobs_v1",
+            migration=self._migrate_compute_jobs,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=10,
+            name="external_watcher_actions_v1",
+            migration=self._migrate_external_watcher_actions,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=11,
+            name="child_work_watchers_v1",
+            migration=self._migrate_child_work_watchers,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=12,
+            name="compute_job_labels_v1",
+            migration=self._migrate_compute_job_labels,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1898,6 +1927,10 @@ class AppStoreBase:
         # upgrade for stores whose version-5 migration already completed.
         self._migrate_artifact_revision_candidates(connection)
         self._migrate_conversation_worktrees(connection)
+        self._migrate_compute_jobs(connection)
+        self._migrate_external_watcher_actions(connection)
+        self._migrate_child_work_watchers(connection)
+        self._migrate_compute_job_labels(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1916,6 +1949,85 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_compute_job_labels(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_jobs)")}
+        if "label" not in columns:
+            connection.execute("ALTER TABLE compute_jobs ADD COLUMN label TEXT")
+
+    @classmethod
+    def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "watchers", "worker_id", "TEXT")
+        connection.execute(
+            """
+            UPDATE watchers
+            SET (worker_id, episode_id) = (
+                SELECT route.worker_id, route.episode_id
+                FROM auto_research_child_work AS route
+                JOIN auto_research_child_work_attempts AS attempt
+                  ON attempt.worker_id = route.worker_id
+                WHERE attempt.operation_id = watchers.origin_operation_id
+            )
+            WHERE worker_id IS NULL AND EXISTS (
+                SELECT 1 FROM auto_research_child_work_attempts AS attempt
+                WHERE attempt.operation_id = watchers.origin_operation_id
+            )
+            """
+        )
+
+    @classmethod
+    def _migrate_external_watcher_actions(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS compute_backend_probes ("
+            "project_id TEXT NOT NULL, execution_machine TEXT NOT NULL, "
+            "probe_json TEXT NOT NULL, probed_at TEXT NOT NULL, "
+            "PRIMARY KEY (project_id, execution_machine))"
+        )
+        for column in (
+            "cancel_command",
+            "cancel_requested_by",
+            "cancel_requested_at",
+            "cancel_error",
+        ):
+            cls._ensure_column(connection, "watchers", column, "TEXT")
+
+    @staticmethod
+    def _migrate_compute_jobs(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS compute_jobs (
+                job_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                origin_operation_id TEXT NOT NULL,
+                episode_id TEXT,
+                execution_machine TEXT NOT NULL,
+                execution_host TEXT NOT NULL,
+                backend_id TEXT NOT NULL,
+                backend_handle TEXT NOT NULL,
+                job_root TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                argv TEXT NOT NULL,
+                log_path TEXT NOT NULL,
+                exit_path TEXT NOT NULL,
+                containment TEXT NOT NULL CHECK(containment IN ('mirrored', 'cooperative')),
+                status TEXT NOT NULL CHECK(status IN ('running', 'exited', 'cancelled', 'lost')),
+                exit_status INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                diagnostic TEXT
+            )
+            """
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS compute_jobs_status ON compute_jobs(status)")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS compute_jobs_project "
+            "ON compute_jobs(project_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS compute_jobs_origin ON compute_jobs(origin_operation_id)"
+        )
 
     @staticmethod
     def _migrate_conversation_worktrees(connection: sqlite3.Connection) -> None:

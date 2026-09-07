@@ -822,6 +822,7 @@ def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) 
         chat_id=str(worker.request["chat_id"]),
         node_id=str(worker.request["node_id"]),
         episode_id=auto_research.episode_id,
+        worker_id=worker.operation_id,
         graph_target=auto_research.graph_target,
         check_command="true",
         log_path="/tmp/child-work-completion.log",
@@ -848,7 +849,9 @@ def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) 
         )
     store.request_episode_stop(auto_research.episode_id)
     wake_request = dict(worker.request)
-    wake_request.update(trigger="watcher", message=None, watcher_ids=[wake_watcher_id])
+    wake_request.update(
+        trigger="orchestrator", message="Job completed.", watcher_ids=[wake_watcher_id]
+    )
     now = store.now()
     wake = AgentTaskRecord(
         operation_id="late-child-work-wake",
@@ -865,7 +868,10 @@ def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) 
         dispatch_authority=worker.dispatch_authority,
     )
 
-    assert store.create_watcher_notification_task(wake, [wake_watcher_id]) is None
+    with pytest.raises(EpisodeNotRunning):
+        store.create_auto_research_child_work_watcher_wake_task(
+            wake, worker_id=worker.operation_id, watcher_ids=[wake_watcher_id]
+        )
     assert store.agent_task(wake.operation_id) is None
     assert store.watcher(wake_watcher_id).notified is False  # type: ignore[union-attr]
     assert store.settle_auto_research_watchers(auto_research.episode_id) == 2

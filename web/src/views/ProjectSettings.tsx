@@ -16,8 +16,8 @@ import {
   TriangleAlert,
   Type,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, clearAllProjectCaches, clearProjectCaches, probeMachineCompute } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
 import { ServerSettings } from "../components/ServerSettings";
@@ -29,6 +29,9 @@ import {
   computeConnectionNeedsSave,
   computeProbeConfigurationChanged,
   deserializeSettingsDraft,
+  machineComputeFrom,
+  machineComputeUpdates,
+  type MachineComputeSettings,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
   mergeAgentProfiles,
@@ -47,6 +50,8 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ComputeConnection,
+  ComputeBackendProbe,
+  MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
   IdentityResponse,
@@ -135,6 +140,15 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
   return project.skill_catalog ?? [];
 }
 
+function machineComputeProbeKey(machine: ProjectSnapshot["machines"][number]): string {
+  return settingsFingerprint({
+    alias: machine.alias,
+    host: machine.host,
+    os_account: machine.os_account,
+    compute: machine.compute ?? null,
+  });
+}
+
 /** The staged edits for this project, or the manifest's values when none exist. */
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
@@ -142,6 +156,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
+    machineComputeEdits: {} as MachineComputeSettings,
     skillDefaults: skillDefaultsFrom(project),
     computeConnections: project.compute_connections ?? [],
   };
@@ -160,6 +175,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
       staged.autoResearchInvocationCeiling ?? saved.autoResearchInvocationCeiling,
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
+    machineComputeEdits: staged.machineComputeEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
     computeConnections: saved.computeConnections,
   };
@@ -199,6 +215,16 @@ export function ProjectSettings({
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
     () => restoredSettings.providerPaths,
   );
+  const [machineComputeEdits, setMachineComputeEdits] = useState<MachineComputeSettings>(
+    () => restoredSettings.machineComputeEdits,
+  );
+  const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
+  const currentProjectId = useRef(project.id);
+  currentProjectId.current = project.id;
+  const [probingMachine, setProbingMachine] = useState<string | null>(null);
+  const [machineProbes, setMachineProbes] = useState<
+    Record<string, { configuration: string; probe: ComputeBackendProbe }>
+  >({});
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
   );
@@ -223,6 +249,9 @@ export function ProjectSettings({
     setAutoResearchInvocationCeiling(restoredSettings.autoResearchInvocationCeiling);
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
+    setMachineComputeEdits(restoredSettings.machineComputeEdits);
+    setMachineProbes({});
+    setProbingMachine(null);
     setSkillDefaults(restoredSettings.skillDefaults);
     setComputeConnections(restoredSettings.computeConnections);
   }, [restoredSettings]);
@@ -243,6 +272,7 @@ export function ProjectSettings({
         autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
+        machineCompute: machineComputeFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
         computeConnections: project.compute_connections ?? [],
       }),
@@ -253,6 +283,7 @@ export function ProjectSettings({
     autoResearchInvocationCeiling,
     profiles,
     providerPaths,
+    machineCompute,
     skillDefaults,
     computeConnections,
   });
@@ -260,8 +291,8 @@ export function ProjectSettings({
   const autoResearchInvocationCeilingIsValid =
     Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
-  // Stage ordinary settings edits locally. Compute metadata deliberately stays
-  // in component memory until Save; clearing a clean form drops the staged copy.
+  // Stage machine settings alongside provider paths. Compute connection metadata
+  // stays in memory until Save; clearing a clean form drops the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(project.id);
     try {
@@ -274,6 +305,10 @@ export function ProjectSettings({
             autoResearchInvocationCeiling,
             profiles,
             providerPaths,
+            machineComputeEdits: machineComputeUpdates(
+              machineComputeFrom(project.machines),
+              machineComputeEdits,
+            ),
             skillDefaults,
           }),
         );
@@ -377,6 +412,7 @@ export function ProjectSettings({
     setAutoResearchInvocationCeiling(project.default_auto_research_invocation_ceiling);
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
+    setMachineComputeEdits({});
     setSkillDefaults(savedSkillDefaults);
     setComputeConnections(project.compute_connections ?? []);
     setStatus(null);
@@ -386,6 +422,7 @@ export function ProjectSettings({
     if (
       !dirty ||
       saving ||
+      probingMachine !== null ||
       writesDisabled ||
       !autoResearchInvocationCeilingIsValid ||
       !computeConnectionsAreValid
@@ -405,12 +442,18 @@ export function ProjectSettings({
       providerPaths,
     );
     if (pathUpdates) body.machine_provider_paths = pathUpdates;
+    const computeUpdates = machineComputeUpdates(
+      machineComputeFrom(project.machines),
+      machineCompute,
+    );
+    if (computeUpdates) body.machine_compute = computeUpdates;
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
         body: JSON.stringify(body),
       });
       setProviderPaths(machineProviderPathsFrom(saved.machines));
+      setMachineComputeEdits({});
       setComputeConnections(saved.compute_connections);
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
@@ -432,6 +475,40 @@ export function ProjectSettings({
     } finally {
       setSaving(false);
     }
+  };
+
+  const probeMachine = async (alias: string) => {
+    if (probingMachine || saving || writesDisabled) return;
+    setProbingMachine(alias);
+    setStatus(null);
+    try {
+      const probe = await probeMachineCompute(apiBase, alias);
+      if (currentProjectId.current !== project.id) return;
+      setMachineProbes((currentProbes) => ({
+        ...currentProbes,
+        [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
+      }));
+    } catch (caught) {
+      if (currentProjectId.current !== project.id) return;
+      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
+    } finally {
+      if (currentProjectId.current === project.id) setProbingMachine(null);
+    }
+  };
+
+  const updateMachineCompute = (alias: string, config: MachineComputeConfig | null) => {
+    setMachineComputeEdits((currentEdits) => {
+      const next = { ...currentEdits, [alias]: config };
+      if (
+        !machineComputeUpdates(
+          { [alias]: machineByAlias[alias].compute ?? null },
+          { [alias]: config },
+        )
+      )
+        delete next[alias];
+      return next;
+    });
+    setStatus(null);
   };
 
   const resolveProviderPath = async (machine: string, provider: ProviderId) => {
@@ -631,64 +708,141 @@ export function ProjectSettings({
           <span>
             <Server size={16} />
           </span>
-          <h2>Provider executables</h2>
+          <h2>Machines</h2>
         </header>
         <div className="provider-machine-list">
-          {project.machines.map((machine) => (
-            <article className="provider-machine" key={machine.alias}>
-              <header>
-                <strong>{machine.alias}</strong>
-                <span>
-                  {machine.host || (spaceKind === "team" ? "Team server" : "Local machine")}
-                </span>
-              </header>
-              <div className="provider-path-list">
-                {providerCatalog.map((provider) => {
-                  const recorded = machine.provider_paths[provider.provider] ?? "";
-                  const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
-                  const readiness = project.provider_readiness[machine.alias]?.[provider.provider];
-                  const state = providerPathPresentation(readiness, value, recorded);
-                  const resolveKey = `${machine.alias}:${provider.provider}`;
-                  return (
-                    <div className="provider-path-row" key={provider.provider}>
-                      <strong>{provider.label || provider.provider}</strong>
+          {project.machines.map((machine) => {
+            const config = machineCompute[machine.alias] ?? {
+              job_manager: null,
+              jobs_root: "",
+            };
+            const needsSave = Boolean(
+              machineComputeUpdates(
+                { [machine.alias]: machine.compute ?? null },
+                { [machine.alias]: machineCompute[machine.alias] ?? null },
+              ),
+            );
+            const latestProbe = machineProbes[machine.alias];
+            const probe = needsSave
+              ? null
+              : latestProbe?.configuration === machineComputeProbeKey(machine)
+                ? latestProbe.probe
+                : machine.compute_probe;
+            const presentation = computeProbePresentation(probe);
+            const computeDisabled = writesDisabled || saving || probingMachine !== null;
+            return (
+              <article className="provider-machine" key={machine.alias}>
+                <header>
+                  <strong>{machine.alias}</strong>
+                  <span>
+                    {machine.host || (spaceKind === "team" ? "Team server" : "Local machine")}
+                  </span>
+                </header>
+                <div className="provider-path-list">
+                  {providerCatalog.map((provider) => {
+                    const recorded = machine.provider_paths[provider.provider] ?? "";
+                    const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
+                    const readiness =
+                      project.provider_readiness[machine.alias]?.[provider.provider];
+                    const state = providerPathPresentation(readiness, value, recorded);
+                    const resolveKey = `${machine.alias}:${provider.provider}`;
+                    return (
+                      <div className="provider-path-row" key={provider.provider}>
+                        <strong>{provider.label || provider.provider}</strong>
+                        <input
+                          type="text"
+                          aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
+                          value={value}
+                          disabled={writesDisabled}
+                          onChange={(event) => {
+                            const path = event.target.value;
+                            setProviderPaths((currentPaths) => ({
+                              ...currentPaths,
+                              [machine.alias]: {
+                                ...currentPaths[machine.alias],
+                                [provider.provider]: path,
+                              },
+                            }));
+                            setStatus(null);
+                          }}
+                        />
+                        <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+                        <button
+                          className="button secondary compact"
+                          type="button"
+                          disabled={writesDisabled || Boolean(resolvingProvider)}
+                          onClick={() => void resolveProviderPath(machine.alias, provider.provider)}
+                        >
+                          {resolvingProvider === resolveKey ? (
+                            <LoaderCircle className="spin" size={13} />
+                          ) : (
+                            <ScanSearch size={13} />
+                          )}
+                          Resolve
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <fieldset className="machine-compute" disabled={computeDisabled}>
+                  <legend>Long-running jobs</legend>
+                  <div className="compute-connection-fields">
+                    <label>
+                      <span>Use Slurm</span>
                       <input
-                        type="text"
-                        aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
-                        value={value}
-                        disabled={writesDisabled}
-                        onChange={(event) => {
-                          const path = event.target.value;
-                          setProviderPaths((currentPaths) => ({
-                            ...currentPaths,
-                            [machine.alias]: {
-                              ...currentPaths[machine.alias],
-                              [provider.provider]: path,
-                            },
-                          }));
-                          setStatus(null);
-                        }}
+                        type="checkbox"
+                        checked={config.job_manager === "slurm"}
+                        onChange={(event) =>
+                          updateMachineCompute(machine.alias, {
+                            ...config,
+                            job_manager: event.target.checked ? "slurm" : null,
+                          })
+                        }
                       />
-                      <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
-                      <button
-                        className="button secondary compact"
-                        type="button"
-                        disabled={writesDisabled || Boolean(resolvingProvider)}
-                        onClick={() => void resolveProviderPath(machine.alias, provider.provider)}
-                      >
-                        {resolvingProvider === resolveKey ? (
-                          <LoaderCircle className="spin" size={13} />
-                        ) : (
-                          <ScanSearch size={13} />
-                        )}
-                        Resolve
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </article>
-          ))}
+                    </label>
+                    <label>
+                      <span>Jobs root</span>
+                      <input
+                        value={config.jobs_root}
+                        onChange={(event) =>
+                          updateMachineCompute(machine.alias, {
+                            ...config,
+                            jobs_root: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      onClick={() => updateMachineCompute(machine.alias, null)}
+                    >
+                      Reset compute
+                    </button>
+                  </div>
+                  <div className={`compute-probe ${presentation.tone}`}>
+                    <span className="compute-probe-dot" aria-hidden="true" />
+                    <span>{presentation.label}</span>
+                    {probe?.backend_id && <span>{probe.backend_id}</span>}
+                    {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                    {probe?.required_action && <em>{probe.required_action}</em>}
+                    <button
+                      className="button secondary compact"
+                      type="button"
+                      disabled={needsSave}
+                      onClick={() => void probeMachine(machine.alias)}
+                    >
+                      {probingMachine === machine.alias
+                        ? "Probing…"
+                        : needsSave
+                          ? "Save before probing"
+                          : "Probe"}
+                    </button>
+                  </div>
+                </fieldset>
+              </article>
+            );
+          })}
         </div>
       </section>
 
@@ -1093,7 +1247,11 @@ export function ProjectSettings({
               (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}
           </span>
         </div>
-        <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
+        <button
+          className="button secondary"
+          disabled={!dirty || saving || probingMachine !== null}
+          onClick={reset}
+        >
           <RotateCcw size={14} /> Reset
         </button>
         <button
@@ -1102,6 +1260,7 @@ export function ProjectSettings({
             writesDisabled ||
             !dirty ||
             saving ||
+            probingMachine !== null ||
             !autoResearchInvocationCeilingIsValid ||
             !computeConnectionsAreValid
           }

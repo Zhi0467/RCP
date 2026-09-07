@@ -59,6 +59,9 @@ class WatcherStoreMixin:
             raise ValueError("restored watcher detachment requires a reason and confirmer")
         _required_timestamp(now)
         stop_reason = f"{detail} Restore confirmed by {confirmer}."[:2000]
+        # Restore is historical: even a previously stopped watcher must not
+        # retain an executable action against its former execution machine.
+        connection.execute("UPDATE watchers SET cancel_command = NULL")
         connection.execute(
             """
             UPDATE watchers
@@ -231,6 +234,7 @@ class WatcherStoreMixin:
                 record.chat_id,
                 record.node_id,
                 record.episode_id,
+                record.worker_id,
                 record.execution_host,
                 record.continuation.model_dump_json(),
             )
@@ -296,13 +300,14 @@ class WatcherStoreMixin:
             "chat_id",
             "node_id",
             "episode_id",
+            "worker_id",
             "execution_host",
             "continuation",
             "group_id",
             "group_label",
         ]
         if isinstance(existing, WatcherRecord):
-            immutable_fields.extend(("check_command", "log_path", "cwd"))
+            immutable_fields.extend(("check_command", "log_path", "cwd", "cancel_command"))
         else:
             immutable_fields.append("condition")
         if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
@@ -325,6 +330,35 @@ class WatcherStoreMixin:
             != record.graph_target.model_dump(mode="json")
         ):
             raise ValueError("a watcher cannot change its origin task graph binding")
+        child_route = connection.execute(
+            """
+            SELECT route.worker_id, route.episode_id, route.stop_requested_at
+            FROM auto_research_child_work AS route
+            JOIN auto_research_child_work_attempts AS attempt
+              ON attempt.worker_id = route.worker_id
+            WHERE attempt.operation_id = ?
+            """,
+            (record.origin_operation_id,),
+        ).fetchone()
+        if (child_route is None and record.worker_id is not None) or (
+            child_route is not None
+            and (
+                record.worker_id != child_route["worker_id"]
+                or record.episode_id != child_route["episode_id"]
+            )
+        ):
+            raise ValueError("a child watcher must preserve its durable worker route")
+        if child_route is not None and child_route["stop_requested_at"] is not None:
+            record = record.model_copy(
+                update={
+                    "status": "stopped",
+                    "notified": True,
+                    "next_check_at": None,
+                    "stopped_by": "loop",
+                    "stopped_at": child_route["stop_requested_at"],
+                    "stop_reason": "Auto-research child Work stopped.",
+                }
+            )
         stopped_episode = connection.execute(
             """
             SELECT COALESCE(
@@ -337,10 +371,11 @@ class WatcherStoreMixin:
             WHERE run.operation_id = ?
               AND (
                   episode.stop_requested_at IS NOT NULL
-                  OR episode.ending IS NOT NULL
+                  OR (episode.ending IS NOT NULL
+                      AND NOT (episode.ending = 'exhausted' AND ?))
               )
             """,
-            (record.origin_operation_id,),
+            (record.origin_operation_id, record.worker_id is not None),
         ).fetchone()
         if stopped_episode is not None and record.status != "stopped":
             record = record.model_copy(
@@ -367,9 +402,6 @@ class WatcherStoreMixin:
                 and record.armed_revision < int(consumed["revision"])
             ):
                 raise ValueError("a graph watcher cannot arm behind the consumed target boundary")
-            # Legacy watcher tables keep these external-only columns NOT NULL.
-            # The separate GraphWatcherRecord never exposes the compatibility
-            # placeholders; graph_condition_json selects its stored type.
             check_command = ""
             log_path = ""
             cwd = ""
@@ -391,8 +423,9 @@ class WatcherStoreMixin:
                 last_exit_code, last_error, completed_at, next_check_at,
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
-                stop_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                stop_operation_id, worker_id, cancel_command, cancel_requested_by,
+                cancel_requested_at, cancel_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -426,6 +459,11 @@ class WatcherStoreMixin:
                 record.stop_reason,
                 record.stopped_at,
                 record.stop_operation_id,
+                record.worker_id,
+                record.cancel_command if isinstance(record, WatcherRecord) else None,
+                record.cancel_requested_by if isinstance(record, WatcherRecord) else None,
+                record.cancel_requested_at if isinstance(record, WatcherRecord) else None,
+                record.cancel_error if isinstance(record, WatcherRecord) else None,
             ),
         )
 
@@ -920,6 +958,53 @@ class WatcherStoreMixin:
             context[1],
         )
 
+    def claim_watcher_cancel(
+        self, project_id: str, watcher_id: str, requested_by: str
+    ) -> WatcherRecord | None:
+        """Claim one human action before execution, including across concurrent requests."""
+
+        if not requested_by.strip():
+            raise ValueError("Cancellation requires an attributed human.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM watchers WHERE watcher_id = ? AND project_id = ?",
+                (watcher_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(watcher_id)
+            current = self._watcher_record(row)
+            if not isinstance(current, WatcherRecord) or not current.cancel_command:
+                raise ValueError("This watcher has no cancel command.")
+            if not current.can_cancel:
+                return None
+            connection.execute(
+                "UPDATE watchers SET cancel_requested_by = ?, cancel_requested_at = ?, "
+                "cancel_error = NULL WHERE watcher_id = ?",
+                (requested_by, self.now(), watcher_id),
+            )
+            return self._watcher_record(
+                connection.execute(
+                    "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+                ).fetchone()
+            )
+
+    def record_watcher_cancel_result(
+        self, watcher_id: str, *, requested_at: str | None, error: str | None
+    ) -> WatcherRecord:
+        """An action receipt never changes observation or continuation state."""
+
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE watchers SET cancel_error = ? "
+                "WHERE watcher_id = ? AND cancel_requested_at IS ?",
+                (error, watcher_id, requested_at),
+            )
+        stored = self.watcher(watcher_id)
+        if not isinstance(stored, WatcherRecord):
+            raise KeyError(watcher_id)
+        return stored
+
     def record_watcher_check(
         self,
         watcher_id: str,
@@ -928,6 +1013,7 @@ class WatcherStoreMixin:
         exit_code: int | None,
         error: str | None,
         checked_at: str | None = None,
+        include_stopped: bool = False,
     ) -> WatcherRecord:
         if status == "degraded" and not error:
             raise ValueError("a degraded watcher requires a check error")
@@ -944,14 +1030,15 @@ class WatcherStoreMixin:
             current = self._watcher_record(row)
             if not isinstance(current, WatcherRecord):
                 raise ValueError("a graph condition cannot receive a shell check result")
-            if current.status not in {"active", "degraded"} or current.notified:
+            stopped = include_stopped and current.status == "stopped"
+            if not stopped and (current.status not in {"active", "degraded"} or current.notified):
                 return current
             consecutive_error_count = (
                 current.consecutive_error_count + 1 if status == "degraded" else 0
             )
             next_check_at = (
                 watcher_next_check_at(watcher_id, timestamp, consecutive_error_count)
-                if status in {"active", "degraded"}
+                if not stopped and status in {"active", "degraded"}
                 else None
             )
             cursor = connection.execute(
@@ -963,10 +1050,10 @@ class WatcherStoreMixin:
                         WHEN ? = 'completed' THEN COALESCE(completed_at, ?)
                         ELSE completed_at
                     END
-                WHERE watcher_id = ? AND status IN ('active', 'degraded') AND notified = 0
+                WHERE watcher_id = ? AND status = ? AND notified = ?
                 """,
                 (
-                    status,
+                    "stopped" if stopped else status,
                     timestamp,
                     exit_code,
                     error,
@@ -975,6 +1062,8 @@ class WatcherStoreMixin:
                     status,
                     timestamp,
                     watcher_id,
+                    current.status,
+                    int(current.notified),
                 ),
             )
             if cursor.rowcount == 0:
@@ -1114,6 +1203,8 @@ class WatcherStoreMixin:
                 if {str(row["watcher_id"]) for row in rows} != set(ids):
                     raise ValueError("watchers are missing, unready, or already notified")
                 watchers = [self._watcher_record(row) for row in rows]
+                if any(item.worker_id is not None for item in watchers):
+                    raise ValueError("child Work watchers require their route's paid wake")
                 self._validate_watcher_notification_members(connection, watchers)
                 if {item.project_id for item in watchers} != {record.project_id}:
                     raise ValueError("watchers and notification task belong to different projects")
@@ -1468,8 +1559,9 @@ class WatcherStoreMixin:
                 raise ValueError("Auto-research watcher wake changed its continuation cause")
             return
         if continuation.patch_kind != "experiment_loop":
-            if trigger != "watcher":
-                raise ValueError("a generic watcher notification must use the watcher trigger")
+            expected_trigger = "orchestrator" if first.worker_id is not None else "watcher"
+            if trigger != expected_trigger:
+                raise ValueError("a watcher notification must preserve its owner trigger")
             return
         invocation = request.get("control_invocation")
         episode_id = request.get("control_episode_id")

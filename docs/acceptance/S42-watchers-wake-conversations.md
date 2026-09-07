@@ -71,7 +71,7 @@ Confirmed by the human on 2026-08-01.
 
 ## Assertions
 
-- `watch_json_is_a_non_empty_list_of_strict_three_field_items`
+- `shell_observers_use_strict_three_field_items`
 - `one_turn_can_arm_n_watchers`
 - `old_watch_json_is_cleared_before_a_fresh_work_turn`
 - `host_conversation_and_continuation_policy_are_rcp_bound`
@@ -102,9 +102,13 @@ Confirmed by the human on 2026-08-01.
 
 ## Deliberately not possible in v1
 
-RCP-owned job submission, an MCP reverse tunnel, an injected handle protocol,
-automatic outcome interpretation, wake-on-new-output, stale-watcher cleanup, a
-user-facing cleanup primitive, or treating a watcher as an experiment attempt.
+An MCP reverse tunnel, automatic outcome interpretation, wake-on-new-output,
+stale-watcher cleanup, a user-facing cleanup primitive, or treating a watcher
+as an experiment attempt.
+
+The OS launch helper, direct Slurm setup, and human Cancel have their pending
+live journey in [S136](S136-long-running-compute-outlives-the-agent.md). Both use
+the same shell observers whose continuation behavior this scenario exercises.
 
 ## Failure means
 

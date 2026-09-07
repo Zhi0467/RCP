@@ -32,6 +32,34 @@ from rcp.service import RunRequest
 from tests.helpers import seed_patch
 
 
+@pytest.fixture
+def execution_instructions():
+    # Route selection belongs to WorkComputeCommands; the prompt preserves its resolved block.
+    return "Use this turn's resolved execution route.\nLaunch command: `test-client launch`."
+
+
+def _assert_compute_handoff(contract: str) -> None:
+    compact = " ".join(contract.split())
+    assert "`check_command`, `log_path`, and `cwd`, with optional `cancel_command`" in compact
+    assert "only when a human clicks Cancel" in compact
+    assert "Stopping continuation does not run it" in compact
+    assert "exit 1 while work remains, 0 when gone, otherwise unobservable" in compact
+    assert "Do not wait in a polling loop" in compact
+    assert "Short compute jobs can finish inline without a watcher" in compact
+    assert "roughly more than 10 minutes" in compact
+    assert "guidance, not a cutoff" in compact
+    assert '"job_id"' not in contract
+    assert "job-status" not in contract
+
+
+def test_work_compute_handoff_preserves_the_resolved_execution_instructions(execution_instructions):
+    contract = _work_contract(
+        watch_path="/stage/watch.json", execution_instructions=execution_instructions
+    )
+    assert execution_instructions in contract
+    _assert_compute_handoff(contract)
+
+
 def _assert_pointer_envelope(prompt: str, contract_path: str) -> None:
     assert contract_path in prompt
     assert len(prompt.splitlines()) < 200
@@ -181,6 +209,7 @@ def test_chat_master_context_contains_both_exclusive_mode_contracts() -> None:
     assert master.count("Instruction and trust boundary:") == 1
     assert "This task cannot produce a Patch" in master
     assert "Live graph validator:" in master
+    _assert_compute_handoff(master.split("## Work contract", 1)[1])
     work = " ".join(master.split("## Work contract", 1)[1].split())
     assert "exactly `external` and `graph` lists" in work
     assert '"status_in":["resolved"]' in work
@@ -276,7 +305,9 @@ def test_chat_master_treats_same_host_experiment_watcher_maintenance_as_local() 
     assert "episode execution host: host `gpu.example`" not in work
 
 
-def test_experiment_watcher_maintenance_correction_defers_to_original_contract() -> None:
+def test_experiment_watcher_maintenance_correction_keeps_target_and_refreshes_observer_shape() -> (
+    None
+):
     contract = experiment_watcher_maintenance_correction_contract(
         original_contract_path="/stage/inputs/chat-master.md",
         diagnostics_path="/stage/inputs/maintenance-diagnostic.json",
@@ -285,10 +316,9 @@ def test_experiment_watcher_maintenance_correction_defers_to_original_contract()
 
     compact = " ".join(contract.split())
     assert "Read the original contract" in compact
-    assert "exact item shapes" in compact
+    assert "grouping and retirement rules, wake target, and protected fields" in compact
     assert "do not add a target or control field" in compact
-    assert "items contain exactly" not in contract
-    assert "check_command`, `log_path`, and `cwd" not in contract
+    _assert_compute_handoff(contract)
 
 
 def test_resumed_chat_turn_is_marker_plus_unchanged_human_message_and_optional_delta() -> None:
@@ -688,6 +718,10 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
             graph_target=GraphTargetRef(),
             execution_host="",
             check_command="test -f complete",
+            cancel_command=None,
+            cancel_requested_by=None,
+            cancel_requested_at=None,
+            cancel_error=None,
             log_path=f"/tmp/{watcher_id}.log",
             cwd="/tmp",
             status=status,
@@ -770,9 +804,12 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
     } == {"watcher/completed", "watcher/agent-stopped"}
 
 
-def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() -> None:
+def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff(
+    execution_instructions,
+) -> None:
     validator_command = "python /stage/validator.py /stage/patch.json"
     contract = experiment_loop_task_contract(
+        execution_instructions=execution_instructions,
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
@@ -809,7 +846,9 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "unexpected process exit (including SIGTERM)" in compact
     assert "not by itself a graph Blocker, a human-authority pause" in compact
     assert "Two similar failures do not prove an external cause" in compact
-    assert "launch it and arm a real external observer" in compact
+    assert "follow the current execution instructions and hand off a shell watcher" in compact
+    assert execution_instructions in contract
+    _assert_compute_handoff(contract)
     assert "exact next action needed to clear it is unavailable" in compact
     assert "plausibly transient failure is uncertainty, not a Blocker" in compact
     assert "attempts, status, `current_summary`, and `next_action`" in compact
@@ -853,7 +892,7 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "A node status already true when armed is ready immediately" in compact
     assert "Proposal resolution committed after it is armed" in compact
     assert "continues this Experiment's bounded loop and never a separate conversation" in compact
-    assert "exits 1 while the named work remains" in compact
+    assert "exit 1 while work remains" in compact
     assert "connect same-Patch Evidence to an existing Decision with `informs`" in compact
     assert "or to a Blocker with `addresses`" in compact
     assert "These handoffs never select the Decision or change Blocker status" in compact
@@ -863,18 +902,16 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     )
     assert "create a Hypothesis Proposal" in compact
     assert "Decision `selected_option`/`status`" not in contract
-    # The loop is the surface that submits scheduler jobs, so it carries the
-    # set-membership Slurm check outright: a direct `squeue -j` lookup cannot tell a
-    # finished job from an unreachable scheduler and would degrade the watcher.
-    assert "grep -Fxq 4471" in compact
-    assert "squeue -h -j" not in contract
-    assert "RCP runs every check on this machine" in compact
+    assert "RCP runs the watcher commands on this machine" in compact
     _assert_live_validator_contract(contract, validator_command)
     _assert_local_causal_check(contract)
 
 
-def test_provider_switch_recovery_keeps_full_loop_contract_and_exact_diagnostics() -> None:
+def test_provider_switch_recovery_keeps_full_loop_contract_and_exact_diagnostics(
+    execution_instructions,
+) -> None:
     contract = experiment_loop_task_contract(
+        execution_instructions=execution_instructions,
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
@@ -1104,7 +1141,9 @@ def test_experiment_loop_corrections_retain_the_local_causal_check() -> None:
     assert "must pass the retained `Local causal check for this Patch`" in " ".join(watcher.split())
 
 
-def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() -> None:
+def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into(
+    execution_instructions,
+) -> None:
     """A busy scheduler is a queue to submit into, not a fault and not a finding.
 
     Contention used to sit inside the list of mechanical faults to diagnose, which
@@ -1114,6 +1153,7 @@ def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() ->
     """
     loop = " ".join(
         experiment_loop_task_contract(
+            execution_instructions=execution_instructions,
             project_name="Example",
             ontology_path="/state/graph.json#ontology",
             ontology_extensions=False,
@@ -1135,7 +1175,11 @@ def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() ->
 
     # The loop owns external observers, so it submits and then observes the queued job.
     assert "Capacity contention is not a fault and not a finding" in loop
-    assert "Submit and let the job wait in the queue rather than waiting for an idle" in loop
+    assert "Let submitted work wait in the queue, arm a shell watcher" in loop
+    assert (
+        "Repair your own command, script, or resource request within the existing authority" in loop
+    )
+    assert "a bad argument does not by itself establish an authority gap" in loop
     assert "Never report contention as a limit you could not act on" in loop
     assert "command failure, resource contention, or similar infrastructure symptom" not in loop
 
@@ -1428,3 +1472,60 @@ def test_compute_context_changes_render_as_a_concise_named_delta() -> None:
         }
     }
     assert _chat_context_delta(updated, updated) is None
+
+
+@pytest.mark.parametrize(
+    "diagnostic", [None, "Running compute requires its returned shell watcher in watch.json"]
+)
+def test_watch_correction_uses_main_observer_forms(diagnostic):
+    contract = PromptFactory.continuation_task_contract(
+        original_contract_path="/inputs/original.md",
+        mode="watch_correction",
+        watch_path="/stage/watch.json",
+        diagnostics_path="/inputs/diagnostics.json",
+        watcher_diagnostic=diagnostic,
+    )
+    main = _work_contract(watch_path="/stage/watch.json")
+    _assert_compute_handoff(contract)
+    _assert_compute_handoff(main)
+    assert "use its launch receipt or authoritative" in contract
+    if diagnostic:
+        assert diagnostic in contract
+
+
+@pytest.mark.parametrize("mode", ["resume", "retry", "watch_correction"])
+def test_work_continuation_refreshes_the_shell_watcher_contract(mode, execution_instructions):
+    contract = PromptFactory.continuation_task_contract(
+        original_contract_path="/old/task.md",
+        mode=mode,
+        watch_path="/stage/watch.json",
+        diagnostics_path="/stage/diagnostics.json",
+        execution_instructions=execution_instructions,
+    )
+    _assert_compute_handoff(contract)
+    assert "replace earlier launch and external-watcher" in contract
+    if mode != "watch_correction":
+        assert execution_instructions in contract
+    else:
+        assert execution_instructions not in contract
+
+
+@pytest.mark.parametrize("mode", ["resume", "retry"])
+def test_experiment_continuation_refreshes_execution_without_broadening_authority(
+    mode, execution_instructions
+):
+    contract = experiment_loop_continuation_contract(
+        original_contract_path="/old/task.md",
+        mode=mode,
+        loop_control_path="/stage/control.json",
+        patch_path="/stage/patch.json",
+        watch_path="/stage/watch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="test-client validate",
+        execution_instructions=execution_instructions,
+        diagnostics_path="/stage/diagnostics.json",
+    )
+    _assert_compute_handoff(contract)
+    assert execution_instructions in contract
+    assert "replace earlier launch and external-watcher" in contract
+    assert "original objective, authority, and completed work remain unchanged" in contract

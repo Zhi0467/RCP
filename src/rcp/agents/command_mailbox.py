@@ -52,8 +52,13 @@ class CommandTurnIdentity:
     episode_id: str | None
     task_id: str
     turn_id: str
+    authority: Literal["validate_only", "broker"]
 
     def __post_init__(self) -> None:
+        if self.authority not in {"validate_only", "broker"}:
+            raise ValueError("command authority must be validate_only or broker")
+        if self.episode_id is not None and self.authority != "broker":
+            raise ValueError("episode command authority is broker-only")
         values = (("task id", self.task_id), ("turn id", self.turn_id))
         if self.episode_id is not None:
             values = (("episode id", self.episode_id), *values)
@@ -86,8 +91,8 @@ class CommandTurnCredential:
         return self._state == "expired"
 
     def document(self) -> CommandCredential:
-        if self.identity.episode_id is not None:
-            raise RuntimeError("episode command authority is broker-only")
+        if self.identity.authority == "broker":
+            raise RuntimeError("command authority is broker-only")
         return CommandCredential(mailbox_id=self.mailbox_id, token=self.token)
 
     def activate(self) -> None:
@@ -98,11 +103,11 @@ class CommandTurnCredential:
     def accepts(self, request: CommandRequest, document: str) -> bool:
         """Check one request against this turn's binding.
 
-        ``document`` is the request exactly as it was written, because an episode
+        ``document`` is the request exactly as it was written, because a turn
         broker signs those bytes rather than the model they validate into.
         """
 
-        if self.identity.episode_id is not None:
+        if self.identity.authority == "broker":
             expected = hmac.new(
                 self._token.encode("ascii"),
                 command_authentication_payload(document),
@@ -176,6 +181,7 @@ def stage_command_mailbox(
     episode_id: str | None,
     task_id: str,
     turn_id: str,
+    authority: Literal["validate_only", "broker"] | None = None,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
 ) -> StagedCommandMailbox:
     """Clear a reusable stage and issue either broker or validate-only authority."""
@@ -191,7 +197,16 @@ def stage_command_mailbox(
         else mailbox
     )
     prepare_command_mailbox(mailbox=mailbox)
-    identity = CommandTurnIdentity(episode_id=episode_id, task_id=task_id, turn_id=turn_id)
+    identity = CommandTurnIdentity(
+        episode_id=episode_id,
+        task_id=task_id,
+        turn_id=turn_id,
+        authority=(
+            authority
+            if authority is not None
+            else ("broker" if episode_id is not None else "validate_only")
+        ),
+    )
     credential = CommandTurnCredential.issue(identity)
     credential_path: str | None = None
     invocation_gate: ProviderInvocationGate | None = None
@@ -202,7 +217,7 @@ def stage_command_mailbox(
             f"rcp-agent-client-{credential.mailbox_id}-{source_digest}.py",
             source,
         )
-        if episode_id is None:
+        if identity.authority == "validate_only":
             credential_name = f"rcp-command-{credential.mailbox_id}.credential.json"
             mailbox.write_text(
                 credential_name,
@@ -269,9 +284,9 @@ async def serve_command_mailbox(
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("command mailbox poll interval must be a positive finite number")
     credential = staged.credential
-    if credential.identity.episode_id is not None:
+    if credential.identity.authority == "broker":
         if invocation_gate is None or invocation_gate is not staged.invocation_gate:
-            raise ValueError("episode command mailbox requires its exact provider invocation gate")
+            raise ValueError("broker command mailbox requires its exact provider invocation gate")
     elif invocation_gate is not None:
         raise ValueError("validate-only mailbox does not accept a provider invocation gate")
     credential.activate()
@@ -332,9 +347,9 @@ async def _answer_request(
             raise ValueError("command credential is invalid or expired")
         if (
             command_requires_idempotency_key(request.verb)
-            and staged.credential.identity.episode_id is None
+            and staged.credential.identity.authority != "broker"
         ):
-            raise ValueError(f"{request.verb} requires an episode-bound credential")
+            raise ValueError(f"{request.verb} requires broker authority")
     except (FileNotFoundError, OSError, StateUnavailable) as exc:
         return _error_response(request_id, "unavailable", "Command request unavailable", exc)
     except (UnicodeError, ValueError, ValidationError) as exc:

@@ -64,7 +64,16 @@ _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 _PATH_COLUMN_NAMES = frozenset(
-    {"locator", "state_location", "stage_root", "output_path", "log_path", "cwd"}
+    {
+        "locator",
+        "state_location",
+        "stage_root",
+        "output_path",
+        "log_path",
+        "cwd",
+        "job_root",
+        "exit_path",
+    }
 )
 
 
@@ -688,6 +697,23 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                 "UPDATE watchers SET log_path = ?, cwd = ? WHERE rowid = ?",
                 (str(rebound / "log"), str(rebound / "cwd"), row["rowid"]),
             )
+    if "compute_jobs" in tables:
+        rows = connection.execute("SELECT rowid, execution_host FROM compute_jobs").fetchall()
+        for row in rows:
+            if row["execution_host"]:
+                continue
+            rebound = absent_root / "compute_jobs" / str(row["rowid"])
+            connection.execute(
+                "UPDATE compute_jobs SET job_root = ?, cwd = ?, log_path = ?, exit_path = ? "
+                "WHERE rowid = ?",
+                (
+                    str(rebound),
+                    str(rebound / "cwd"),
+                    str(rebound / "log"),
+                    str(rebound / "exit"),
+                    row["rowid"],
+                ),
+            )
 
 
 def _transfer_inbox_overlay_paths(
@@ -725,7 +751,11 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
-            if column in {"log_path", "cwd"} and table != "watchers":
+            if column in {"log_path", "cwd"} and table not in {"watchers", "compute_jobs"}:
+                raise CandidateRehearsalRefused(
+                    f"Copied table {table!r} unexpectedly owns {column!r}."
+                )
+            if column in {"job_root", "exit_path"} and table != "compute_jobs":
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
@@ -782,6 +812,17 @@ def _validate_rebound_paths(
                 ):
                     raise CandidateRehearsalRefused(
                         "A copied local watcher path escaped its overlay."
+                    )
+        if table == "compute_jobs":
+            for row in connection.execute(
+                "SELECT execution_host, job_root, cwd, log_path, exit_path FROM compute_jobs"
+            ).fetchall():
+                if not row["execution_host"] and any(
+                    not Path(str(row[name])).is_relative_to(root)
+                    for name in ("job_root", "cwd", "log_path", "exit_path")
+                ):
+                    raise CandidateRehearsalRefused(
+                        "A copied local compute job path escaped its overlay."
                     )
 
 

@@ -21,10 +21,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
     SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_COMPUTE_PROBE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
@@ -38,10 +40,10 @@ from rcp.server_runtime import ServerMetadata, read_server_metadata
 
 logger = logging.getLogger(__name__)
 
-SERVER_CONTROL_PROTOCOL_VERSION = 10
+SERVER_CONTROL_PROTOCOL_VERSION = 11
 # Existing private console operations retain their explicit wire versions.
-# Maintenance has a new boundary and requires protocol 10.
-SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, 9, SERVER_CONTROL_PROTOCOL_VERSION)
+# Compute probes require protocol 11; maintenance retains its protocol 10 boundary.
+SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, 9, 10, SERVER_CONTROL_PROTOCOL_VERSION)
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -55,6 +57,7 @@ ServerControlOperation = Literal[
     "probe",
     "provider_readiness_plan",
     "provider_readiness_check",
+    "compute_backend_probe",
     "project_provision_plan",
     "project_provision_step",
     "project_transfer_upload_plan",
@@ -72,6 +75,7 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "probe",
     "provider_readiness_plan",
     "provider_readiness_check",
+    "compute_backend_probe",
     "project_provision_plan",
     "project_provision_step",
     "project_transfer_upload_plan",
@@ -118,6 +122,7 @@ class ServerControlRequest(_StrictModel):
     selector_id: str | None = None
     boundary_sha256: str | None = None
     target_id: str | None = None
+    machine_alias: str | None = Field(default=None, exclude_if=lambda value: value is None)
     proof_path: str | None = None
     proof_sha256: str | None = None
 
@@ -130,6 +135,8 @@ class ServerControlRequest(_StrictModel):
 
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
+        if self.operation != "compute_backend_probe" and self.machine_alias is not None:
+            raise ValueError("only compute backend probes accept a machine alias")
         if self.operation != "maintenance_verify" and (
             self.proof_path is not None or self.proof_sha256 is not None
         ):
@@ -149,6 +156,16 @@ class ServerControlRequest(_StrictModel):
                 )
             ):
                 raise ValueError("selector-free control operations cannot carry selector fields")
+        elif self.operation == "compute_backend_probe":
+            if (
+                self.protocol_version < 11
+                or self.selector_kind != "project"
+                or self.selector_id is None
+                or not self.machine_alias
+                or self.boundary_sha256 is not None
+                or self.target_id is not None
+            ):
+                raise ValueError("compute backend probe requires one project and machine alias")
         elif self.operation in {
             "maintenance_enter",
             "maintenance_status",
@@ -156,7 +173,7 @@ class ServerControlRequest(_StrictModel):
             "maintenance_release",
         }:
             if (
-                self.protocol_version != 10
+                self.protocol_version < 10
                 or self.selector_kind is not None
                 or self.selector_id is None
                 or self.boundary_sha256 is None
@@ -418,6 +435,30 @@ class ServerControlProviderPlanResult(_StrictModel):
         ids = [target.target_id for target in self.targets]
         if len(ids) != len(set(ids)):
             raise ValueError("provider readiness plan targets must be unique")
+        return self
+
+
+class ServerControlComputeProbeResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    selector_kind: Literal["project"]
+    selector_id: str
+    machine_alias: str
+    probe: ComputeBackendProbe
+
+    @model_validator(mode="after")
+    def validate_probe(self) -> ServerControlComputeProbeResult:
+        _canonical_uuid4(self.instance_id, label="control instance id")
+        _canonical_uuid4(self.space_id, label="control space id")
+        _canonical_uuid4(self.selector_id, label="control project id")
+        if len(self.data_dir_id) != 64 or any(
+            character not in _HEX_DIGEST for character in self.data_dir_id
+        ):
+            raise ValueError("control data directory id must be a lowercase SHA-256 digest")
+        if self.machine_alias != self.probe.execution_machine:
+            raise ValueError("compute backend probe returned another machine")
         return self
 
 
@@ -769,6 +810,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
+        | ServerControlComputeProbeResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
@@ -817,6 +859,7 @@ ServerControlHandler = Callable[
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -932,6 +975,23 @@ class ServerControlClient:
                 "The running RCP process returned the wrong member-removal result.",
             )
         return result
+
+    def probe_compute_backend(self, *, project_id: str, machine_alias: str) -> ComputeBackendProbe:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="compute_backend_probe",
+            selector_kind="project",
+            selector_id=project_id,
+            machine_alias=machine_alias,
+        )
+        result = self._exchange(request)
+        if (
+            not isinstance(result, ServerControlComputeProbeResult)
+            or result.machine_alias != machine_alias
+        ):
+            raise ServerControlError("invalid_response", "The service returned another probe.")
+        return result.probe
 
     def provider_readiness_plan(
         self,
@@ -1141,6 +1201,7 @@ class ServerControlClient:
         | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
+        | ServerControlComputeProbeResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
@@ -1158,6 +1219,8 @@ class ServerControlClient:
             timeout = SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
         elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
+        elif request.operation == "compute_backend_probe":
+            timeout = SERVER_CONTROL_COMPUTE_PROBE_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
             timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
         elif request.operation in {
@@ -1541,6 +1604,7 @@ def _validated_control_result(
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -1553,6 +1617,7 @@ def _validated_control_result(
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -1564,6 +1629,18 @@ def _validated_control_result(
         if not isinstance(result, ServerControlProbeResult):
             raise ValueError("control probe returned another operation's result")
         return ServerControlProbeResult.model_validate(result)
+    if request.operation == "compute_backend_probe":
+        if not isinstance(result, ServerControlComputeProbeResult):
+            raise ValueError("compute backend probe returned another operation's result")
+        validated_probe = ServerControlComputeProbeResult.model_validate(result)
+        if (
+            validated_probe.selector_kind != request.selector_kind
+            or validated_probe.selector_id != request.selector_id
+        ):
+            raise ValueError("compute backend probe returned another selector")
+        if validated_probe.machine_alias != request.machine_alias:
+            raise ValueError("compute backend probe returned another machine")
+        return validated_probe
     if request.operation == "provider_readiness_plan":
         if not isinstance(result, ServerControlProviderPlanResult):
             raise ValueError("provider readiness plan returned another operation's result")
@@ -1806,6 +1883,7 @@ __all__ = [
     "ServerControlProjectTransferUploadResult",
     "ServerControlProjectTarget",
     "ServerControlProviderCheckResult",
+    "ServerControlComputeProbeResult",
     "ServerControlProviderPlanResult",
     "ServerControlProviderTarget",
     "ServerControlRequest",

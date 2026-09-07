@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.command_mailbox import CommandHandler, StagedCommandMailbox
 from rcp.agents.context import ChatContext
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
@@ -30,6 +30,7 @@ from rcp.runs.shared import (
     _sse,
     _stream_agent_events,
 )
+from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.result_views import ResultViewSnapshot, _PreparedResultView
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -101,6 +102,7 @@ class WorkTurn:
     validator_budget: PatchValidationBudget
     outcome: _ProviderOutcome
     answer: str | None = None
+    compute_commands: WorkComputeCommands | None = None
 
     @property
     def continuation(self) -> AgentTaskContinuation:
@@ -330,6 +332,7 @@ def start_work_validator_mailbox(
     budget: PatchValidationBudget,
     validate: Callable[[str], PatchValidationResult],
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
+    command_handler: CommandHandler | None = None,
 ) -> WorkValidatorMailboxLifecycle:
     stop = asyncio.Event()
     try:
@@ -340,6 +343,7 @@ def start_work_validator_mailbox(
                 validate=validate,
                 stop=stop,
                 budget=budget,
+                **({"command_handler": command_handler} if command_handler is not None else {}),
             )
         )
     except BaseException:

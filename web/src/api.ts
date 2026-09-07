@@ -1,4 +1,6 @@
 import type {
+  ComputeBackendProbe,
+  ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatMessage,
   SteerRequest,
@@ -368,4 +370,12 @@ export function steerChatTurn(
     { method: "POST", body: JSON.stringify(request) },
     { retryIdentity: false },
   );
+}
+
+export function probeMachineCompute(apiBase: string, alias: string): Promise<ComputeBackendProbe> {
+  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/probe`, { method: "POST" });
+}
+
+export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
+  return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
 }

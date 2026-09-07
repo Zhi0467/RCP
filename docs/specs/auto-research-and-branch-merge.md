@@ -11,6 +11,11 @@ one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
 grants no authority.
 
+Human start and reauthorization resolve the execution machine without gating
+on compute readiness. The helper probes when invoked, and Settings shows the
+stored probe. Setup and explicit human Cancel follow the
+[compute jobs spec](compute-jobs.md).
+
 The episode has two brakes:
 
 - operational invocation budget **B**, set by the human and defaulted from
@@ -48,7 +53,17 @@ The orchestrator may seat an ordinary Work worker only on an Experiment or
 Blocker, both of which have mechanically recognizable operational exits. Seating
 selects context and accountability, not a second graph-authority subtree. The
 worker's repository scope is the exact child run scope and its graph target is
-the parent Auto-research branch.
+the parent Auto-research branch. Child Work follows the selected execution
+route: direct Slurm submission or the generic `launch` helper. The helper binds
+the current turn's machine, writable roots, operation, and episode. Both routes
+use ordinary shell `watch.json` validation, settlement correction, and arming.
+A still-running helper launched by the turn or retained from its recovery
+lineage needs the returned shell watcher before the turn ends.
+
+A child route is waiting when its current task succeeded and it has an armed,
+undelivered watcher. Waiting is derived from the route, task, and watcher rows;
+it is not a new persisted task state. The root's status distinguishes waiting
+workers from running and settled workers.
 
 One project-global live Experiment-loop episode may exist per Experiment. An
 orchestrator kickoff reuses normal readiness and, if a loop already exists,
@@ -146,6 +161,17 @@ separate wake. Budget exhaustion retains notices but cannot create an
 unauthorized turn. Clear refuses before acknowledgment if even its compact full
 response exceeds the bound.
 
+A completed child watcher group wakes the same child route and native session,
+never the root. Watchers retain the episode id and route worker id. One atomic
+claim creates the continuation, binds it to the route, and spends one B unit;
+the same group cannot create another wake. Admission requires a running parent,
+a route without a Stop fence, and a succeeded current child task. Exhausted B
+leaves the completion pending and visible, including after the exhaustion ending
+fence. The wake retains the watcher's resolved model, reasoning, and skill policy
+within the child's pinned execution scope. It carries job id, exit status,
+timestamps, duration, log path, and backend identity, plus shell observer results;
+the child's eventual settlement reaches the root through the existing lifecycle.
+
 ## Staged command client
 
 The orchestrator receives one exact RCP-authored command prefix. The closed
@@ -179,12 +205,20 @@ or one of its live descendants on the execution host. It stores no reusable
 bearer credential in prompt, environment, stage, or command arguments. This
 guards command provenance within the cooperative execution-account model; it
 does not defend against an arbitrary hostile same-UID process.
+Broker authority is separate from episode identity: ordinary Work and
+Experiment-loop use the same turn binding, while every Auto-research request
+retains its episode id and signature. Generalizing that binding does not widen
+the root's command policy: it has no compute launch, status, or cancel verbs.
+Child Work serves those three verbs through the same turn-bound compute handler
+as Work. Its existing validation and reply commands retain their policy.
 
 Apply uses the ordinary transition-manager path on the branch target, with
 idempotent source effect identity and refreshed graph pointers. Guarded finish
 is a pure state transition: it refuses with a complete immutable blocker receipt
 while child work, replacements, undelivered notices, or accepted-unreflected
-admissions remain. It never performs cleanup as a side effect of saying finish.
+admissions remain. A waiting child contributes a `waiting_work` blocker with
+action `stop --key <key> <worker_id>`. Finish never performs cleanup as a side
+effect of saying finish.
 
 ## Completion, Stop, and report
 
@@ -200,6 +234,11 @@ fences new work, and the common visual report resumes the exact branch-bound
 session with one immutable receipt. Human Stop uses the common graceful fence
 and skips the report. Reauthorization always creates a new episode, native
 session, and branch; it never reopens an exhausted parent.
+
+Episode Stop retires child watchers in the same admission fence as the root's
+watchers. The root's child `stop` verb likewise fences that route and retires its
+armed watchers. A completion on a stopping or stopped route cannot create a
+wake. These fences do not cancel compute jobs.
 
 ## Branch lifecycle and merge eligibility
 

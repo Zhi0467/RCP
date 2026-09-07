@@ -1411,3 +1411,36 @@ test("grouped watchers show truthful operational counts and preserve member prov
   assert.match(html, /Cancelled superseded external job/);
   assert.doesNotMatch(html, /Stop watching/);
 });
+
+test("external job rows use watcher facts and keep Cancel independent of observation status", async () => {
+  const { ExternalJobRow } = await server.ssrLoadModule("/src/components/ExternalJobRow.tsx");
+  const record = watcher({
+    status: "stopped",
+    log_path: "/scratch/training.log",
+    can_cancel: true,
+    cancel_requested_by: "human-1",
+    cancel_requested_at: "2026-09-06T10:00:00Z",
+    cancel_error: "Scheduler is unavailable",
+    last_error: "Check could not connect",
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(ExternalJobRow, {
+      apiBase: "/api/projects/test",
+      watcher: record,
+    }),
+  );
+  assert.match(html, /training\.log/);
+  assert.match(html, /Watcher stopped/);
+  assert.match(html, /Cancel requested by human-1/);
+  assert.match(html, /Scheduler is unavailable/);
+  assert.match(html, /Check could not connect/);
+  assert.match(html, /aria-label="Cancel job training\.log"/);
+  const completed = renderToStaticMarkup(
+    React.createElement(ExternalJobRow, {
+      apiBase: "/api/projects/test",
+      watcher: { ...record, status: "completed", can_cancel: false },
+    }),
+  );
+  assert.match(completed, /Watcher completed/);
+  assert.doesNotMatch(completed, /aria-label="Cancel|success|succeeded/);
+});
