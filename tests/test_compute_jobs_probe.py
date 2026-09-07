@@ -290,6 +290,19 @@ def test_cgroup_comparison_rejects_same_service_and_descendants():
     )
 
 
+def test_cgroup_comparison_ignores_hierarchies_where_both_sit_at_the_root():
+    # Observed on a cgroup2 host with leftover v1 controllers (Ubuntu 22.04, 5.15).
+    own = "3:devices:/\n2:freezer:/\n0::/user.slice/user-1002.slice/session-8.scope\n"
+    job = "3:devices:/\n2:freezer:/\n0::/user.slice/user-1014.slice/user@1014.service/app.slice/rcp-job-x.service\n"
+    assert _cgroup_isolated(job, own)
+    assert not _cgroup_isolated(
+        "3:devices:/\n0::/system.slice/rcp.service\n",
+        own.replace("session-8.scope", "x") and "3:devices:/\n0::/system.slice/rcp.service\n",
+    )
+    with pytest.raises(RuntimeError, match="could not compare"):
+        _cgroup_isolated("3:devices:/\n", "3:devices:/\n")
+
+
 def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path):
     manifest.machines[0].host = "compute.example"
     commands = []

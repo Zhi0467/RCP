@@ -486,8 +486,11 @@ continuation; it leaves the external job alive.
 
 Without Slurm selected, the generic launch helper uses the execution machine's
 OS process owner. Linux requires the systemd user manager and linger; launches
-are refused when reliable ownership is unavailable. Short jobs may still finish
-inline. See [compute jobs](specs/compute-jobs.md) for the contract and limits.
+are refused when reliable ownership is unavailable. `rcp server install` enables
+linger for the service account, and `rcp server doctor` reports a problem when
+it is missing, so an installation from before that rule converges by rerunning
+install. Short jobs may still finish inline. See
+[compute jobs](specs/compute-jobs.md) for the contract and limits.
 
 ## Inspect and stop the service
 

@@ -35,9 +35,19 @@ last_checked: >-
   integrated branch are fixed: Cancel ignores view locks, helper watchers run in
   the job root, and deletion reconciles helper rows first. A slow remote
   regression reproduces the former response timeout and passes after
-  correction, including same-key replay. On the team server, actual rcp-account Slurm tool availability,
-  queue access, and Codex authentication pass. The isolated PR-code server drive
-  is prepared; explicit source-transfer approval is pending.
+  correction, including same-key replay. On 2026-09-07 the source-transfer drive
+  ran on the team server as the rcp service account with a disposable RCP
+  instance, real Codex, and the real Slurm queue. Both routes passed: the Slurm
+  route (agent-submitted pending job, armed watcher, survival across RCP
+  restart, human Cancel through the API, one wake in the originating
+  conversation, no duplicate after another restart) and the generic helper
+  route (systemd user manager after linger, mirrored containment with cgroup
+  isolation, keyed launch, survival, Cancel stopping a setsid descendant, one
+  wake, no duplicate). Evidence: /private/tmp/rcp-s136-live-20260907/. The drive
+  found two setup defects, both fixed: the probe rejected hosts whose leftover
+  cgroup v1 hierarchies place every process at the root, and doctor did not
+  report a service account without linger. Steps 5, 6, 7, and 10 to 13 are not
+  yet exercised live.
 ---
 
 # Long-running compute outlives the agent and wakes it
@@ -55,6 +65,8 @@ Cancel stops the launchd service's main process and process group, but a
 descendant that deliberately starts its own session can survive Cancel.
 Episode starts and reauthorization are not gated on compute readiness; the
 helper probes when invoked and Settings shows the stored probe.
+Ordinary Work wakes are fresh watcher-attributed Work turns in the originating
+conversation; only Experiment-loop and child Work wakes resume a native session.
 
 The staged client/broker response allowance covers the existing remote call
 bounds. A scaled slow sequence exercises both containment attempts, stale

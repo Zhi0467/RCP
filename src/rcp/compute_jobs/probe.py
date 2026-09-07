@@ -74,7 +74,13 @@ def _cgroup_isolated(job_cgroup: str, own_cgroup: str) -> bool:
         return result
 
     job_paths, own_paths = paths(job_cgroup), paths(own_cgroup)
-    common = job_paths.keys() & own_paths.keys()
+    # A hierarchy where both processes sit at the root (leftover v1 controllers
+    # on a unified host, say) carries no placement information.
+    common = {
+        key
+        for key in job_paths.keys() & own_paths.keys()
+        if not (job_paths[key] == "/" and own_paths[key] == "/")
+    }
     if not common:
         raise RuntimeError("The probe could not compare compute and RCP cgroups.")
     return all(

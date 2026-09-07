@@ -14,10 +14,12 @@ retained job root rather than an ephemeral task cwd, and project deletion
 reconciles running helper rows before its fence. Outside the sandbox on
 2026-09-07, the full backend suite, the web suite (653 tests), Ruff, and
 pre-commit pass, and the launchd facility test ran against real launchd on a Mac.
-The service account's Slurm tools, queue access, and native Codex authentication
-have been checked on the reachable team server through its operator tmux
-session. The isolated PR-code server drive is prepared and awaits explicit
-source-transfer approval. No merge or installed-service update is authorized.
+On 2026-09-07 the source-transfer drive ran on the team server as the rcp
+service account and both S136 routes passed (see S136 `last_checked`). It exposed
+two setup defects, fixed in the follow-up PR: the probe's cgroup comparison
+rejected hosts with leftover v1 hierarchies, and doctor did not report a service
+account without linger. PR #83 is merged; the remaining S136 steps and the
+release promotion are the open work.
 Close this handoff after S136's remaining live journey is resolved.
 
 The former compute-runner plan is
