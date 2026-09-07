@@ -193,6 +193,7 @@ def install_release(bundle: Path, releases_root: Path) -> Path:
         ):
             raise SupervisorError("The application Python is not its managed 3.12 runtime.")
         _protect_uv_lock(target / ".venv")
+        _normalize_owned_modes(resolved_python.parent.parent)
         _fsync_owned_tree(resolved_python.parent.parent)
         _fsync_owned_tree(target)
         receipt = {
@@ -465,6 +466,25 @@ def _require_root_python(python: Path, root: Path) -> None:
         info = path.stat()
         if info.st_uid != 0 or info.st_mode & 0o022:
             raise SupervisorError("The root Python runtime has another writer.")
+
+
+def _normalize_owned_modes(root: Path, *, uid: int | None = None) -> None:
+    """Drop group/other write bits the owner left inside its own managed runtime.
+
+    Any process running as the service account outside the umask-077 wrapper, such
+    as an operator shell with Ubuntu's default umask 0002, writes bytecode caches
+    into the managed Python. Those entries have no other writer; only their mode
+    is wrong, so repair it rather than refusing every later update.
+    """
+    uid = os.geteuid() if uid is None else uid
+    for current, directories, files in os.walk(root, followlinks=False):
+        for name in (*directories, *files):
+            path = Path(current) / name
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != uid:
+                continue
+            if info.st_mode & 0o022:
+                os.chmod(path, stat.S_IMODE(info.st_mode) & ~0o022, follow_symlinks=False)
 
 
 def _fsync_owned_tree(root: Path, *, uid: int | None = None) -> None:
