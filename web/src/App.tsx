@@ -414,6 +414,29 @@ export async function loadCanonicalRevision(
   return snapshot.revision;
 }
 
+/**
+ * Open a project in two steps: the cached display snapshot paints first when the
+ * session accepts it, and the authoritative reload always follows and finishes
+ * the open. A cached snapshot the session declines — a newer snapshot request
+ * already started, such as the active-tab heartbeat's reload, or a stale
+ * revision — must never end the open early, or the view keeps its spinner with
+ * nothing left to clear it.
+ */
+export async function openProjectSequence(steps: {
+  applyCachedSnapshot: () => Promise<void>;
+  reloadAuthoritative: () => Promise<void>;
+  stillOpening: () => boolean;
+  settle: () => void;
+}): Promise<void> {
+  await steps.applyCachedSnapshot();
+  if (!steps.stillOpening()) return;
+  try {
+    await steps.reloadAuthoritative();
+  } finally {
+    if (steps.stillOpening()) steps.settle();
+  }
+}
+
 export function canonicalRevisionNeedsReload(
   observedRevision: number,
   renderedRevision: number,
@@ -1786,17 +1809,18 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const openProject = async () => {
-      const cachedPath = `/api/projects/${encodeURIComponent(projectId)}/cached`;
+    const stillOpening = () => !cancelled && isActiveProject(projectId);
+    const applyCachedSnapshot = async () => {
       const cachedRequestId = beginProjectSnapshotRequest(projectId);
       try {
-        const cachedProject = await api<ProjectSnapshot>(cachedPath);
-        if (
-          cancelled ||
-          !isActiveProject(projectId) ||
-          !projectSnapshotRequestIsCurrent(projectId, cachedRequestId)
-        )
-          return;
+        const cachedProject = await api<ProjectSnapshot>(
+          `/api/projects/${encodeURIComponent(projectId)}/cached`,
+        );
+        if (!stillOpening()) return;
+        // The session declines a cached snapshot that lost to a newer snapshot
+        // request — the active-tab heartbeat may already be reloading — or that
+        // is behind the rendered revision. Only an accepted snapshot paints early;
+        // the authoritative reload finishes the open either way.
         if (
           !applyProjectSnapshot(cachedProject, false, {
             projectId,
@@ -1814,19 +1838,24 @@ export default function App() {
           });
         }
       }
+    };
+    const reloadAuthoritative = async () => {
       try {
-        await reload();
+        await reloadAuthoritativeProject(projectId);
       } catch (error) {
-        if (cancelled || !isActiveProject(projectId)) return;
+        if (!stillOpening()) return;
         if (!retained && authoritativeProjectId.current !== projectId) {
           setProjectReconciliation("failed");
         }
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-      } finally {
-        if (!cancelled && isActiveProject(projectId)) setLoading(false);
       }
     };
-    void openProject();
+    void openProjectSequence({
+      applyCachedSnapshot,
+      reloadAuthoritative,
+      stillOpening,
+      settle: () => setLoading(false),
+    });
     return () => {
       cancelled = true;
     };
@@ -1841,8 +1870,7 @@ export default function App() {
     isActiveProject,
     loadProjectIndex,
     projectId,
-    projectSnapshotRequestIsCurrent,
-    reload,
+    reloadAuthoritativeProject,
     resetProjectHeader,
     resetProjectSelection,
     restoreProjectTabState,

@@ -15,6 +15,7 @@ const {
   humanSyncSuccessNotice,
   latestSnapshotRequestCanApply,
   loadCanonicalRevision,
+  openProjectSequence,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
   projectIsStillReadable,
@@ -162,6 +163,56 @@ test("returning to a cached tab restores its complete render state without an em
   assert.deepEqual(open.state.viewState.panelScroll, [["chats", 420]]);
   assert.deepEqual([...cache.keys()], ["beta", "alpha"]);
   assert.equal(projectTabStateForOpen(cache, "missing"), null);
+});
+
+test("a declined cached snapshot still reaches the authoritative reload and settles the open", async () => {
+  // The active-tab heartbeat can start a newer snapshot request while the cached
+  // open response is in flight; the session then declines the cached snapshot.
+  // The open must still reload and clear its loading state instead of ending early.
+  const calls = [];
+  await openProjectSequence({
+    applyCachedSnapshot: async () => {
+      calls.push("cached declined");
+    },
+    reloadAuthoritative: async () => {
+      calls.push("reload");
+    },
+    stillOpening: () => true,
+    settle: () => calls.push("settle"),
+  });
+  assert.deepEqual(calls, ["cached declined", "reload", "settle"]);
+});
+
+test("an open that lost its project after the cached step neither reloads nor settles", async () => {
+  const calls = [];
+  let opening = true;
+  await openProjectSequence({
+    applyCachedSnapshot: async () => {
+      opening = false;
+    },
+    reloadAuthoritative: async () => {
+      calls.push("reload");
+    },
+    stillOpening: () => opening,
+    settle: () => calls.push("settle"),
+  });
+  assert.deepEqual(calls, []);
+});
+
+test("a failing authoritative reload still settles the open", async () => {
+  const calls = [];
+  await assert.rejects(
+    openProjectSequence({
+      applyCachedSnapshot: async () => {},
+      reloadAuthoritative: async () => {
+        throw new Error("state unavailable");
+      },
+      stillOpening: () => true,
+      settle: () => calls.push("settle"),
+    }),
+    /state unavailable/,
+  );
+  assert.deepEqual(calls, ["settle"]);
 });
 
 test("canonical state reloads only after the accepted revision advances", () => {
