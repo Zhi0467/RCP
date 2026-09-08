@@ -854,6 +854,7 @@ class HistoryManager:
         *,
         expected_episode_id: str | None = None,
         expected_project_id: str | None = None,
+        initialize: bool = True,
     ) -> BranchHistoryManager:
         """Open and verify one canonical episode branch."""
 
@@ -864,6 +865,7 @@ class HistoryManager:
             branch_id,
             expected_episode_id=expected_episode_id,
             expected_project_id=expected_project_id,
+            initialize=initialize,
         )
 
     def branch_metadata(

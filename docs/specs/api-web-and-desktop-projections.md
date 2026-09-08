@@ -50,7 +50,7 @@ that task row is unavailable. A backend candidate graph must be synced before
 Start because the run endpoint still authorizes the canonical graph; a
 rule-inert local prose draft does not create that fence.
 
-Concurrent project snapshot requests are fenced per project by start order,
+Concurrent project snapshot requests are fenced per project and graph target by start order,
 including equal-revision responses. Once a newer cache, reload, watcher poll,
 settings save, or Sync starts, an older response cannot overwrite its graph or
 operational controls.
@@ -64,6 +64,26 @@ Every branch route proves the branch belongs to the requested project and
 episode. A branch id alone never grants lookup. Task, watcher, episode, and
 Experiment detail APIs preserve exact `main` versus `branch:<id>` target
 identity.
+
+Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
+optional `branch_id` query naming an existing episode branch. Omitting it selects
+main; project-wide task and watcher lists retain their project-wide default.
+Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on main).
+`graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
+delta, changed and neighboring node ids, before/after values, and Patch/task
+provenance. The backend derives that read model from one coherent branch replay.
+
+The durable project display cache remains main-only. A branch cached-snapshot
+request returns an explicit cache miss, and the authoritative snapshot endpoint
+opens the exact branch. Target-scoped polling observes its branch revision and
+graph mutation availability, including merge-state changes at the same revision.
+Branch reads validate refreshed state without repairing or publishing graph
+outputs; an unavailable canonical refresh fails explicitly.
+Neither a branch response nor a delayed main response may replace the other
+target's state. Experiment controls and graph-wake evaluation use that same
+target. An active branch merge publishes graph mutation as unavailable and
+rejects manual Sync and new graph writers until it settles. Discuss remains
+available with its ordinary read-only capability.
 
 ## Compute setup and job APIs
 
@@ -476,8 +496,9 @@ truncated content. Conversation listing
 exposes the saved chat ids the page has loaded together with the backend total.
 When a conversation's turns have aged out of the bounded task window the page
 holds, inspection and Send read the exact task behind its latest transcript
-message, so an Auto-research branch conversation stays read-only and is never
-resumed as an ordinary main-graph turn.
+message, so a conversation can continue only on its original graph target.
+An ordinary branch conversation can use Discuss and Work from that branch's
+workspace; a main workspace cannot resume its branch-bound session.
 Artifact and report listing and opening use the recent task and episode windows
 the page holds and report both window sizes; an exact `task_id`, task viewer id,
 or `episode_id` outside those windows is fetched from the existing task or
@@ -619,11 +640,12 @@ the route shows a History handoff without exposing the newer episode's transcrip
 or controls.
 
 An Auto-research detail shows compact graph-branch identity, base/head, merge
-state, and **Merge to main** only for an eligible changed head. Main graph views
-never switch to branch truth. An exact branch Experiment route may show branch
-history and its transcript, but its chat/composer and repair controls are
-read-only until a deliberate branch conversation authority is designed. Generic
-main NodeChat cannot reuse the branch-bound conversation or native session.
+state, and **Merge to main** only for an eligible changed head. **Open graph**
+selects the branch workspace explicitly. An exact branch Experiment route may
+show its historical transcript through Runs without exposing an ordinary
+composer for that episode-owned session. Ordinary chats started in the branch
+workspace have their own sessions and authority. A main workspace cannot reuse
+a branch-bound conversation or native session.
 
 The space project index reuses these same backend lifecycle projections in a
 summary ledger. It does not derive a second status machine from task or episode

@@ -1,3 +1,5 @@
+import { graphSessionKey, graphTargetFromHash, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
   exactAutoResearchEpisodeHref,
@@ -47,6 +49,7 @@ interface UseGraphSelectionOptions {
   initialExperimentRoute: ExperimentRouteIdentity | null;
   initialAutoResearchEpisodeId: string | null;
   projectId: string | null;
+  graphTarget?: GraphTargetRef;
   loadedProjectId: string | null;
   loading: boolean;
   getActiveProjectId: () => string | null;
@@ -131,6 +134,7 @@ export function useGraphSelection({
   initialExperimentRoute,
   initialAutoResearchEpisodeId,
   projectId,
+  graphTarget = MAIN_GRAPH,
   loadedProjectId,
   loading,
   getActiveProjectId,
@@ -191,28 +195,32 @@ export function useGraphSelection({
   };
 
   const activeDagViewportRef = projectId
-    ? projectViewportRef(dagViewportRefsRef.current, projectId)
+    ? projectViewportRef(dagViewportRefsRef.current, graphSessionKey(projectId, graphTarget))
     : null;
 
-  const captureProjectSelection = useCallback((id: string): GraphSelectionTabSnapshot => {
-    const panelScroll = new Map(panelScrollRef.current);
-    const dagViewport = dagViewportRefsRef.current.get(id)?.current ?? null;
-    if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
-    const current = selectionSnapshotRef.current;
-    return {
-      ...current,
-      runScope: [...current.runScope],
-      detailFocusTokens: { ...current.detailFocusTokens },
-      selectedExperimentRoute: copyExperimentRoute(current.selectedExperimentRoute),
-      dockedNodeIds: [...current.dockedNodeIds],
-      viewState: {
-        view: viewRef.current,
-        panelScroll: [...panelScroll.entries()],
-        researchSubview: researchSubviewRef.current,
-        dagViewport: dagViewport ? { ...dagViewport } : null,
-      },
-    };
-  }, []);
+  const captureProjectSelection = useCallback(
+    (id: string, target: GraphTargetRef = MAIN_GRAPH): GraphSelectionTabSnapshot => {
+      const panelScroll = new Map(panelScrollRef.current);
+      const dagViewport =
+        dagViewportRefsRef.current.get(graphSessionKey(id, target))?.current ?? null;
+      if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
+      const current = selectionSnapshotRef.current;
+      return {
+        ...current,
+        runScope: [...current.runScope],
+        detailFocusTokens: { ...current.detailFocusTokens },
+        selectedExperimentRoute: copyExperimentRoute(current.selectedExperimentRoute),
+        dockedNodeIds: [...current.dockedNodeIds],
+        viewState: {
+          view: viewRef.current,
+          panelScroll: [...panelScroll.entries()],
+          researchSubview: researchSubviewRef.current,
+          dagViewport: dagViewport ? { ...dagViewport } : null,
+        },
+      };
+    },
+    [],
+  );
 
   const restoreProjectSelection = useCallback(
     (
@@ -221,6 +229,7 @@ export function useGraphSelection({
       presentedNodes: GraphState["nodes"],
       snapshot: GraphSelectionTabSnapshot,
       requestedRoute?: ProjectHashRoute,
+      target: GraphTargetRef = MAIN_GRAPH,
     ) => {
       setRunScope([...snapshot.runScope]);
       setSelectedNode(
@@ -252,7 +261,10 @@ export function useGraphSelection({
       setDagRelationFocusId(snapshot.dagRelationFocusId);
       panelScrollRef.current = new Map(snapshot.viewState.panelScroll);
       researchSubviewRef.current = snapshot.viewState.researchSubview;
-      const viewportRef = projectViewportRef(dagViewportRefsRef.current, id);
+      const viewportRef = projectViewportRef(
+        dagViewportRefsRef.current,
+        graphSessionKey(id, target),
+      );
       viewportRef.current = snapshot.viewState.dagViewport
         ? { ...snapshot.viewState.dagViewport }
         : null;
@@ -420,7 +432,12 @@ export function useGraphSelection({
         selectedAutoResearchEpisodeId,
         selectionKind,
       );
-      if (replacementHref) window.history.replaceState(null, "", replacementHref);
+      if (replacementHref)
+        window.history.replaceState(
+          null,
+          "",
+          graphTargetUrl(replacementHref, graphTargetFromHash(window.location.hash)),
+        );
     },
     [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
   );
@@ -435,7 +452,11 @@ export function useGraphSelection({
         selectionSnapshotRef.current.selectedAutoResearchEpisodeId,
       );
       if (!replacementHref) return;
-      window.history.replaceState(null, "", replacementHref);
+      window.history.replaceState(
+        null,
+        "",
+        graphTargetUrl(replacementHref, graphTargetFromHash(window.location.hash)),
+      );
       dispatchExperimentSelection({
         kind: "route",
         experimentId: null,
@@ -480,7 +501,9 @@ export function useGraphSelection({
     setDagRelationFocusId(null);
   }, []);
   const forgetProjectViewport = useCallback((id: string) => {
-    dagViewportRefsRef.current.delete(id);
+    for (const key of dagViewportRefsRef.current.keys()) {
+      if (key === id || key.startsWith(`${id}:branch:`)) dagViewportRefsRef.current.delete(key);
+    }
   }, []);
 
   useEffect(() => {

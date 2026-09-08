@@ -145,10 +145,12 @@ def validate_approval_shape(
             "A node, project setting, or semantic cause changed after this proposal was written.",
             revision,
         )
+    proposed_standing = any(operation.op == "set_standing" for operation in proposal.ops)
     semantic_ops = [
         op
         for op in patch.ops
-        if not isinstance(op, (ResolveProposalsOperation, SetStandingOperation))
+        if not isinstance(op, ResolveProposalsOperation)
+        and (proposed_standing or not isinstance(op, SetStandingOperation))
     ]
     if status == "approved":
         normalized_ops = normalized_decision_proposal_ops(state, proposal)

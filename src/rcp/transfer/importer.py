@@ -260,6 +260,7 @@ def _target_owners(
         data_dir=catalog.data_dir,
         project_id=archive.project_id,
         task_continuation_session=catalog.store.agent_task_continuation_session_id,
+        chat_graph_target=catalog.store.chat_graph_target,
     )
     if service.imported_sources is None:
         raise RuntimeError("target transfer import lacks its imported-source owner")

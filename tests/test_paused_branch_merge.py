@@ -8,10 +8,13 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.background import BackgroundAgentTasks
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AutoResearchChildAdmissionRecord, EpisodeNotRunning
 
 from .helpers import wait_for_task
 from .test_auto_research_children_storage import _experiment_route, _experiment_task, _work_pair
+from .test_background import _done_stream
 from .test_branch_merge_api import (
     _candidate_for,
     _create_branch_harness,
@@ -21,6 +24,7 @@ from .test_branch_merge_api import (
 from .test_branch_target_storage import (
     _create_auto_episode,
     _merge_task,
+    _ordinary_branch_chat,
     _store,
     _watcher,
     _worker_authority,
@@ -109,6 +113,29 @@ def _paused_store(tmp_path: Path):
         }
     )
     return store, episode, root, recovery
+
+
+def test_discuss_does_not_block_end_and_merge_or_gain_episode_lineage(tmp_path: Path) -> None:
+    store, episode, _root, _recovery = _paused_store(tmp_path)
+    chat = _ordinary_branch_chat(store, episode, status="queued")
+    request = {**chat.request, "mode": "discuss"}
+    chat = store.create_agent_task(
+        chat.model_copy(
+            update={
+                "request": request,
+                "dispatch_authority": resolve_dispatch_authority(
+                    "project_chat", RunRequest.model_validate(request)
+                ),
+            }
+        )
+    )
+    assert store.auto_research_can_end_for_merge(episode.episode_id)
+    merged = store.create_branch_merge_task(_merge_task(store, episode, str(uuid.uuid4())))
+    assert merged.graph_target == episode.graph_target
+    assert store.agent_task(chat.operation_id).episode_id is None
+    assert store.agent_task(chat.operation_id).status == "queued"
+    BackgroundAgentTasks(store, _done_stream).launch_admitted(chat.operation_id)
+    assert wait_for_task(store, chat.operation_id).status == "succeeded"
 
 
 @pytest.mark.parametrize("winner", ["merge", "resume"])

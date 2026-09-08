@@ -24,7 +24,7 @@ from rcp.core.models import (
     Patch,
     SourceRef,
 )
-from rcp.core.operations import GraphOperation, NewGlossaryTerm, operation_dict
+from rcp.core.operations import GraphOperation, HumanEditCause, NewGlossaryTerm, operation_dict
 
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _NODE_ID = rf"[a-z][a-z0-9]*(?:_[a-z0-9]+)*/{_SLUG}"
@@ -274,6 +274,15 @@ class ProposalUpdateNodesOperation(_StrictModel):
     nodes: list[ProposalNodeUpdate] = Field(min_length=1, max_length=1)
 
 
+class ProposalStandingChangeOperation(_StrictModel):
+    """Reserved for exact human source changes in a canonical branch merge."""
+
+    op: Literal["set_standing"]
+    intent: Literal["standing_change"]
+    node_id: str
+    standing: Literal["asserted", "accepted", "contested"]
+
+
 class ProposalContentChangeOperation(_StrictModel):
     op: Literal["update_nodes"]
     intent: Literal["content_change"]
@@ -345,6 +354,36 @@ class CreateProposalsOperation(_StrictModel):
     proposals: list[AgentProposal] = Field(min_length=1)
 
 
+class OrchestratorProposalNodeUpdate(ProposalNodeUpdate):
+    cause: EvidenceEdgeCause | HumanEditCause
+
+
+class OrchestratorProposalStatusChangeOperation(ProposalUpdateNodesOperation):
+    nodes: list[OrchestratorProposalNodeUpdate] = Field(min_length=1, max_length=1)
+
+
+OrchestratorProposalOperation = (
+    OrchestratorProposalStatusChangeOperation
+    | ProposalStandingChangeOperation
+    | ProposalContentChangeOperation
+    | ProposalRemovalOperation
+    | ProposalSupersedeOperation
+    | ProposalMergeOperation
+    | ProposalCreateProtectedRelationOperation
+    | ProposalRemoveProtectedRelationOperation
+)
+
+
+class OrchestratorAgentProposal(AgentProposal):
+    # Admission reserves a same-node bundle for canonical branch merges.
+    ops: list[OrchestratorProposalOperation] = Field(min_length=1, max_length=3)
+
+
+class OrchestratorCreateProposalsOperation(_StrictModel):
+    op: Literal["create_proposals"]
+    proposals: list[OrchestratorAgentProposal] = Field(min_length=1)
+
+
 class AgentProposalWithdrawal(_StrictModel):
     id: str = Field(pattern=rf"^prop/{_SLUG}$")
     reason: str = ""
@@ -402,7 +441,7 @@ OrchestratorAgentOperation = Annotated[
     | RemoveNodesOperation
     | SupersedeNodesOperation
     | MergeNodesOperation
-    | CreateProposalsOperation
+    | OrchestratorCreateProposalsOperation
     | WithdrawProposalsOperation
     | UpsertGlossaryOperation
     | SetStandingOperation,

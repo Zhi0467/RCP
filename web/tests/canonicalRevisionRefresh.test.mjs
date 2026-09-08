@@ -14,7 +14,7 @@ const {
   canonicalRevisionNeedsReload,
   humanSyncSuccessNotice,
   latestSnapshotRequestCanApply,
-  loadCanonicalRevision,
+  loadGraphRevision,
   openProjectSequence,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
@@ -55,12 +55,12 @@ function projectSessionCacheFields(project, humanDraft = null) {
 
 test("canonical revision polling uses only the lightweight project endpoint", async () => {
   const requested = [];
-  const revision = await loadCanonicalRevision(async (path) => {
+  const revision = await loadGraphRevision(async (path) => {
     requested.push(path);
     return { revision: 12 };
   }, "/api/projects/project-1");
 
-  assert.equal(revision, 12);
+  assert.deepEqual(revision, { revision: 12 });
   assert.deepEqual(requested, ["/api/projects/project-1/cached/revision"]);
 });
 
@@ -606,4 +606,12 @@ test("an index that cannot be reached is not evidence that a project is gone", a
   }, "alpha");
 
   assert.equal(readable, true);
+});
+
+test("branch mutation availability refreshes even when revision is unchanged", () => {
+  const available = { available: true, reason: null };
+  const merging = { available: false, reason: "Branch merge in progress" };
+  assert.equal(canonicalRevisionNeedsReload(7, 7, merging, available), true);
+  assert.equal(canonicalRevisionNeedsReload(7, 7, available, merging), true);
+  assert.equal(canonicalRevisionNeedsReload(7, 7, available, available), false);
 });

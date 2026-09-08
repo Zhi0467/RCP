@@ -80,10 +80,22 @@ class ExperimentStoreMixin:
             or record.graph_target != parent_episode.graph_target
         ):
             raise ValueError("an Auto-research child Experiment changed its parent graph target")
+        graph_branch = (
+            self.episode(record.graph_target.branch_id)
+            if record.graph_target.kind == "branch"
+            else None
+        )
+        if record.graph_target.kind == "branch" and (
+            graph_branch is None
+            or graph_branch.mode != "auto_research"
+            or graph_branch.project_id != record.project_id
+            or graph_branch.graph_target != record.graph_target
+        ):
+            raise ValueError("a branch Experiment requires its exact project graph branch")
         episode = self._new_experiment_episode(
             record,
             auto_research_route=auto_research_route,
-            graph_base_head=(parent_episode.graph_base_head if parent_episode else None),
+            graph_base_head=(graph_branch.graph_base_head if graph_branch else None),
         )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)

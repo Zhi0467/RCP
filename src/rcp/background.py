@@ -413,6 +413,7 @@ class BackgroundAgentTasks:
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task dispatch")
         if kind == "auto_research":
@@ -470,6 +471,7 @@ class BackgroundAgentTasks:
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
+            graph_target=graph_target,
         )
 
     def resume(
@@ -896,6 +898,7 @@ class BackgroundAgentTasks:
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
+        graph_target: GraphTargetRef | None = None,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -910,7 +913,11 @@ class BackgroundAgentTasks:
 
         self._require_startup_effects_open("provider task admission")
         episode: EpisodeRecord | None = None
-        task_graph_target = parent.graph_target if parent is not None else GraphTargetRef()
+        task_graph_target = (
+            parent.graph_target if parent is not None else graph_target or GraphTargetRef()
+        )
+        if parent is not None and graph_target is not None and parent.graph_target != graph_target:
+            raise ValueError("A task continuation cannot change its graph target.")
         if isinstance(request, BranchMergeRunRequest):
             raise TypeError("BranchMergeRunRequest requires start_branch_merge.")
         if isinstance(request, AutoResearchRunRequest):
@@ -1224,18 +1231,7 @@ class BackgroundAgentTasks:
         )
         if request_episode_id is not None and request_episode_id != record.episode_id:
             raise ValueError("The admitted task request changed its exact episode identity.")
-        if record.episode_id is None:
-            if record.graph_target.kind != "main":
-                raise ValueError("A task without an episode must target the main graph.")
-        else:
-            episode = self.store.episode(record.episode_id)
-            if episode is None:
-                raise ValueError("The admitted task lost its exact episode parent.")
-            if (
-                episode.project_id != record.project_id
-                or episode.graph_target != record.graph_target
-            ):
-                raise ValueError("The admitted task changed its episode project or graph target.")
+        self.store.validate_agent_task_graph_target(record)
 
         expected_parent = record.parent_operation_id
         if (expected_parent is None) != (parent is None):

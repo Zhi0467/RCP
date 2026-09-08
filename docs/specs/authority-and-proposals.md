@@ -200,7 +200,7 @@ inferred from a generic `update_nodes` shape.
 
 ## Protected-belief Proposals
 
-An agent Proposal contains exactly one declared intent:
+An ordinary agent Proposal contains exactly one declared intent:
 
 - `content_change`;
 - `removal`;
@@ -215,6 +215,17 @@ same protected type. A status-change Proposal changes exactly one Hypothesis and
 names one valid Evidence-to-Hypothesis epistemic edge as its cause. Other
 Proposal intents use their human-readable rationale and do not invent an
 evidence cause.
+
+A canonical branch merge has narrowly bounded review forms for changes humans
+could make on the source branch. It may propose one exact `standing_change`, or
+a `status_change` with a canonically proven human cause. It may bundle at most
+one content, one status, and one standing intent for the same existing protected
+node, with each intent validated independently. The normal human Inbox approves
+that bundle atomically; an explicit proposed standing is not replaced by the
+usual implicit accepted standing. A merge may also propose one exact removal of
+an accepted ordinary node. None of these forms grants an agent approval or
+direct accepted-node removal authority. Merge conformance must prove every
+effect against the source delta before the Proposal can become canonical.
 
 Every agent-produced Proposal waits for a human. The orchestrator writes its
 children's instructions and therefore may not approve a child's Proposal as an

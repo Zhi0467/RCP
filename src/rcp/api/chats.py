@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
-    get_project_service,
+    get_graph_service,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -22,6 +22,7 @@ from rcp.conversation_worktrees import (
 )
 from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
+from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
 
@@ -103,8 +104,9 @@ def chats(
     ),
     *,
     catalog: CatalogDependency,
+    branch_id: str | None = None,
 ) -> ChatSummaryPage:
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     return service.chat_summaries(offset=offset, limit=limit)
 
 
@@ -117,8 +119,9 @@ def chat(
     chat_id: str,
     *,
     catalog: CatalogDependency,
+    branch_id: str | None = None,
 ) -> ChatTranscript:
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     try:
         transcript = service.chat_transcript(chat_id)
     except ValueError as exc:
@@ -149,9 +152,11 @@ def conversation_worktree_controls(
     run_truth_scope: Annotated[list[str] | None, Query()] = None,
     chat_scope: Literal["node", "project"] = "project",
     node_id: str | None = None,
+    branch_id: str | None = None,
 ) -> ConversationWorktreeResponse:
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     try:
+        require_chat_graph_target(service, store, project_id, chat_id)
         profile = service.resolve_agent_profile(
             "node_chat" if chat_scope == "node" else "project_chat", run_on=run_on
         )
@@ -182,10 +187,12 @@ def delete_conversation_worktree(
     *,
     catalog: CatalogDependency,
     store: Annotated[AppStore, Depends(get_store)],
+    branch_id: str | None = None,
 ) -> ConversationWorktreeResponse:
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id)
     try:
         with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
+            require_chat_graph_target(service, store, project_id, chat_id)
             binding = remove_conversation_worktree(service, store, project_id, chat_id)
         return project_conversation_worktree(
             service,

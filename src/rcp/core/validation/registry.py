@@ -17,6 +17,7 @@ from rcp.core.operations import (
     ProposalOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
+    ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
 )
 from rcp.core.validation.context import OpRule
@@ -120,6 +121,8 @@ def proposal_dependencies(
     config_keys: set[str] = set()
 
     for op in ops:
+        if isinstance(op, ProposalStandingChangeOperation):
+            node_ids.add(op.node_id)
         name = op.op
         rule = OP_RULES.get(name)
         if rule is None or rule.dependencies is None:

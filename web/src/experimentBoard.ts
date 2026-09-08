@@ -1,3 +1,4 @@
+import { graphTargetFromHash, graphViewHash } from "./graphTarget";
 import type {
   AgentTask,
   AppView,
@@ -182,7 +183,11 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
   if (params.get("view") !== "runs") {
     return {
       projectId,
-      view: "overview",
+      view: (["overview", "dag", "scientific", "attention", "chats", "paper", "settings"].includes(
+        params.get("view") ?? "",
+      )
+        ? params.get("view")
+        : "overview") as AppView,
       projectViewSpecified: params.has("view"),
       experimentId: null,
       experimentRoute: null,
@@ -224,6 +229,9 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
 
 export function projectHashAfterViewChange(hash: string, nextView: AppView): string | null {
   const route = parseProjectHash(hash);
+  const target = graphTargetFromHash(hash);
+  if (target.kind === "branch" && route.projectId)
+    return graphViewHash(route.projectId, target, nextView);
   if (nextView === "execution" || route.view !== "execution" || !route.projectId) return null;
   return `#/projects/${encodeURIComponent(route.projectId)}`;
 }

@@ -1,3 +1,4 @@
+import { graphViewHash } from "../graphTarget";
 import {
   ChevronDown,
   CirclePause,
@@ -225,6 +226,17 @@ export function AutoResearchEpisodeCard({
             >
               <strong>{projection.healthLabel}</strong>
             </div>
+            {episode.graph_branch && (
+              <a
+                className="button primary compact"
+                href={graphViewHash(episode.project_id, {
+                  kind: "branch",
+                  branch_id: episode.graph_branch.branch_id,
+                })}
+              >
+                <Network size={13} /> Open graph
+              </a>
+            )}
             {episode.report && episode.wrapup_state === "ready" && (
               <div className="campaign-report-actions">
                 <EpisodeReportLink
@@ -541,7 +553,9 @@ function GraphHeadFact({ label, head }: { label: string; head: Episode["graph_ba
   );
 }
 
-function branchMergeStateLabel(state: NonNullable<Episode["graph_branch"]>["merge_state"]): string {
+export function branchMergeStateLabel(
+  state: NonNullable<Episode["graph_branch"]>["merge_state"],
+): string {
   switch (state) {
     case "unmerged":
       return "Unmerged";

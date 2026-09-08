@@ -1,3 +1,5 @@
+import { sameGraphTarget } from "./graphTarget";
+import type { GraphTargetRef } from "./types";
 import {
   artifactUrl,
   latestNativeSessionId,
@@ -1002,8 +1004,10 @@ function conversationRefusal(
   taskStartPending: boolean,
   runTruthScope: string[],
   providerReady: boolean,
+  projectGraphTarget?: GraphTargetRef,
+  conversationGraphTarget?: GraphTargetRef,
 ): string | null {
-  if (latestTask?.graph_target.kind === "branch") {
+  if (!sameGraphTarget(conversationGraphTarget ?? latestTask?.graph_target, projectGraphTarget)) {
     return "This Auto-research branch conversation is read-only.";
   }
   const active = relatedTasks.find((task) => task.active);
@@ -1091,6 +1095,8 @@ async function resolveProjectConversationContext(
       taskStartPending,
       runTruthScope,
       providerReady,
+      project.graph_target,
+      transcript.graph_target,
     ),
   };
 }

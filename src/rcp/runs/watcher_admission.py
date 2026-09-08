@@ -63,8 +63,8 @@ def start_watcher_notification(
     branch_episode_ids = {
         item.episode_id for item in resolved_watchers if item.episode_id is not None
     }
-    if graph_target.kind == "branch" and len(branch_episode_ids) != 1:
-        raise ValueError("A branch watcher notification requires one exact episode lineage.")
+    if graph_target.kind == "branch" and len({item.episode_id for item in resolved_watchers}) != 1:
+        raise ValueError("A branch watcher notification requires one exact episode binding.")
 
     worker_ids = {item.worker_id for item in resolved_watchers}
     if worker_ids != {None}:
@@ -147,7 +147,7 @@ def start_watcher_notification(
         project_id=project_id,
         episode_id=request.control_episode_id
         if experiment_wake or experiment_reauthorization
-        else next(iter(branch_episode_ids))
+        else next(iter(branch_episode_ids), None)
         if graph_target.kind == "branch"
         else None,
         graph_target=graph_target,

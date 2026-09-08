@@ -13,6 +13,7 @@ from rcp.core.authority import (
     PROTECTED_EPISTEMIC_RELATIONS,
     PROTECTED_RELATION_CHANGE_INTENT,
     REMOVAL_INTENT,
+    STANDING_CHANGE_INTENT,
     STATUS_CHANGE_INTENT,
     SUPERSEDE_INTENT,
     created_edge_ids,
@@ -31,6 +32,7 @@ from rcp.core.operations import (
     DecisionCause,
     EvidenceEdgeCause,
     GraphOperation,
+    HumanEditCause,
     LegacyProposalMergeOperation,
     LegacyProposalProtectedRelationOperation,
     LegacyProposalRemovalOperation,
@@ -41,6 +43,7 @@ from rcp.core.operations import (
     ProposalOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
+    ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
     UpdateNodesOperation,
@@ -309,16 +312,8 @@ def _validate_agent_proposal_boundary(
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
-    if len(proposal.ops) != 1:
+    if len(proposal.ops) != 1 and not _is_same_node_merge_bundle(state, context_patch, proposal):
         refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
-        return
-    operation = proposal.ops[0]
-    intent = operation.intent
-    if intent not in PROPOSAL_INTENTS:
-        refuse(
-            f"Proposal {proposal.id} must declare one of these intents: "
-            f"{', '.join(sorted(PROPOSAL_INTENTS))}."
-        )
         return
     validators = {
         CONTENT_CHANGE_INTENT: _validate_content_change_intent,
@@ -327,10 +322,41 @@ def _validate_agent_proposal_boundary(
         MERGE_INTENT: _validate_merge_intent,
         PROTECTED_RELATION_CHANGE_INTENT: _validate_protected_relation_change_intent,
         STATUS_CHANGE_INTENT: _validate_status_change_intent,
+        STANDING_CHANGE_INTENT: _validate_standing_change_intent,
     }
-    error = validators[intent](state, context_patch, operation)
-    if error is not None:
-        refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
+    for operation in proposal.ops:
+        intent = operation.intent
+        if intent not in PROPOSAL_INTENTS:
+            refuse(
+                f"Proposal {proposal.id} must declare one of these intents: "
+                f"{', '.join(sorted(PROPOSAL_INTENTS))}."
+            )
+            continue
+        error = validators[intent](state, context_patch, operation)
+        if error is not None:
+            refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
+
+
+def _is_same_node_merge_bundle(state: GraphState, patch: Patch | None, proposal: Proposal) -> bool:
+    if not _is_branch_merge(patch) or not 2 <= len(proposal.ops) <= 3:
+        return False
+    intents: set[str] = set()
+    targets: set[str] = set()
+    for operation in proposal.ops:
+        if operation.intent in intents:
+            return False
+        intents.add(operation.intent)
+        if isinstance(operation, ProposalStandingChangeOperation):
+            targets.add(operation.node_id)
+        elif isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+            if len(operation.nodes) != 1:
+                return False
+            targets.add(operation.nodes[0].id)
+        else:
+            return False
+    return len(targets) == 1 and isinstance(
+        state.nodes.get(next(iter(targets))), (ResearchQuestion, Hypothesis)
+    )
 
 
 def _validate_content_change_intent(
@@ -382,8 +408,36 @@ def _validate_status_change_intent(
     if changes["status"] == node.status:
         return "a status change must actually change the Hypothesis status."
     cause = update.cause
+    if isinstance(cause, HumanEditCause) and _is_branch_merge(context_patch):
+        # The merge owner separately proves this exact value against canonical
+        # human source operations. This remains a pending, unapplied Proposal.
+        return None
     if not isinstance(cause, EvidenceEdgeCause) or not cause.ref_id:
         return "a status change requires an evidence_edge cause naming an epistemic edge."
+    return None
+
+
+def _is_branch_merge(patch: Patch | None) -> bool:
+    return (
+        patch is not None
+        and patch.author == "agent"
+        and patch.profile == "orchestrator"
+        and patch.branch_merge is not None
+    )
+
+
+def _validate_standing_change_intent(
+    state: GraphState,
+    context_patch: Patch | None,
+    operation: ProposalOperation,
+) -> str | None:
+    if not isinstance(operation, ProposalStandingChangeOperation):
+        return "a standing change requires one set_standing operation."
+    if not _is_branch_merge(context_patch):
+        return "standing changes may be proposed only by a canonical branch merge."
+    node = state.nodes.get(operation.node_id)
+    if node is None or node.standing == operation.standing:
+        return "a standing change must change the standing of one existing node."
     return None
 
 
@@ -398,6 +452,9 @@ def _validate_removal_intent(
     if len(node_ids) != 1:
         return "removal must name exactly one node."
     if _existing_protected_node(state, context_patch, node_ids[0]) is None:
+        node = state.nodes.get(node_ids[0])
+        if _is_branch_merge(context_patch) and node is not None and node.standing == "accepted":
+            return None
         return "removal must target one existing ResearchQuestion or Hypothesis."
     return None
 

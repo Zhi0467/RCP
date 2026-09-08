@@ -339,6 +339,7 @@ SUPERSEDE_INTENT = "supersede"
 MERGE_INTENT = "merge"
 PROTECTED_RELATION_CHANGE_INTENT = "protected_relation_change"
 STATUS_CHANGE_INTENT = "status_change"
+STANDING_CHANGE_INTENT = "standing_change"
 ProposalIntent = Literal[
     "content_change",
     "removal",
@@ -346,6 +347,7 @@ ProposalIntent = Literal[
     "merge",
     "protected_relation_change",
     "status_change",
+    "standing_change",
 ]
 PROPOSAL_INTENTS = frozenset(get_args(ProposalIntent))
 

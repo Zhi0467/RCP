@@ -12,6 +12,7 @@ from rcp.agents import AgentLauncher
 from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
+from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.server_ops.backup import BackupArchiveReceipt
@@ -146,6 +147,28 @@ def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectServ
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def get_graph_service(
+    catalog: ProjectCatalog,
+    project_id: str,
+    branch_id: str | None = None,
+    *,
+    initialize: bool = True,
+) -> ProjectService:
+    """Resolve the normal graph owner on an exact project-owned branch or main."""
+
+    service = get_project_service(catalog, project_id)
+    if branch_id is None:
+        return service
+    try:
+        return service.for_graph_target(
+            GraphTargetRef(kind="branch", branch_id=branch_id),
+            expected_episode_id=branch_id,
+            initialize=initialize,
+        )
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Episode graph not found") from exc
+
+
 def require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
     try:
         catalog.card(project_id)
@@ -199,6 +222,7 @@ __all__ = [
     "get_health_composition",
     "get_server_status_composition",
     "get_project_service",
+    "get_graph_service",
     "get_project_display_cache",
     "get_result_view_keep_locks",
     "get_setup",

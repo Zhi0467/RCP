@@ -1416,6 +1416,10 @@ def _append_chat_records(
     reserve_prompt: bool = False,
 ) -> None:
     """Append under the chat lock; callers own the StateWorkspace transaction."""
+    records = [
+        {**record, "graphTarget": service.history.graph_target.model_dump(mode="json")}
+        for record in records
+    ]
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = service.history.workspace.root / ".chat.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:

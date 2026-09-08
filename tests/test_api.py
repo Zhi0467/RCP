@@ -3702,8 +3702,10 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         authorized_by=None,
         stage_host=None,
         stage_root=None,
+        graph_target=None,
     ):
         assert kind == "project_chat"
+        assert graph_target.kind == "main"
         assert stage_host is None and stage_root is None
         admitted_requests.append(request)
         now = store.now()

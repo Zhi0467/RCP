@@ -1997,3 +1997,34 @@ test("the App exposes the project surface only behind the same backend-session g
   assert.match(appSource, /const webMcpSurfaceKey = webMcpProject\s*\?/);
   assert.doesNotMatch(appSource, /webMcpSurfaceKey =\s*project\?\.id === projectId/);
 });
+
+test("ordinary branch conversations can send from their matching graph view", async () => {
+  const graphTarget = { kind: "branch", branch_id: "branch-1" };
+  const project = { ...projectFixture(), graph_target: graphTarget };
+  const { task, transcript } = conversationFixtures();
+  const branchTask = { ...task, graph_target: graphTarget };
+  const source = conversationSource({ ...transcript, graph_target: graphTarget });
+  const inspected = await inspectProjectConversation(
+    project,
+    [branchTask],
+    { chat_id: "chat-1" },
+    source,
+  );
+  assert.equal(inspected.send_options.can_send, true);
+  const started = [];
+  await sendProjectConversationMessage(
+    project,
+    [branchTask],
+    { message: "Review this branch", mode: "work", chat_id: "chat-1" },
+    source,
+    false,
+    () => {
+      throw new Error("Existing conversation must be reused");
+    },
+    async (submission) => {
+      started.push(submission);
+      return { operation_id: "task-next" };
+    },
+  );
+  assert.equal(started.length, 1);
+});

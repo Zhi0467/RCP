@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from rcp.api.dependencies import (
     get_catalog,
+    get_graph_service,
     get_identity_access,
     get_store,
     get_watcher_poller,
@@ -29,12 +30,22 @@ WatcherPollerDependency = Annotated[WatcherPoller, Depends(get_watcher_poller)]
 @router.get("/api/projects/{project_id}/watchers")
 def project_watchers(
     project_id: str,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
-    return [_watcher_response(record) for record in store.watchers(project_id)]
+    target = (
+        get_graph_service(catalog, project_id, branch_id, initialize=False).history.graph_target
+        if branch_id is not None
+        else None
+    )
+    return [
+        _watcher_response(record)
+        for record in store.watchers(catalog.resolve_project_id(project_id))
+        if target is None or record.graph_target == target
+    ]
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/check")

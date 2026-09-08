@@ -1,3 +1,7 @@
+import { branchGraphProjection, expandBranchContext } from "../branchGraph";
+import { graphSessionKey } from "../graphTarget";
+import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
+import type { GraphBranchChanges, GraphTargetRef } from "../types";
 import {
   ChevronDown,
   CircleDot,
@@ -186,6 +190,9 @@ export function ScientificView({ graph, trustView, onSelectNode, ...editing }: S
 }
 
 interface DagProps extends Props, GraphEditingProps {
+  graphTarget?: GraphTargetRef;
+  branchChanges?: GraphBranchChanges | null;
+  onInspectTask?: (taskId: string) => void;
   /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
   viewportRef: MutableRefObject<DagViewport | null>;
   relationFocusNodeId?: string | null;
@@ -205,6 +212,9 @@ export function DagView({
   trustView,
   onSelectNode,
   projectId,
+  graphTarget,
+  branchChanges,
+  onInspectTask,
   viewportRef,
   relationFocusNodeId,
   onClearRelationFocus,
@@ -212,9 +222,55 @@ export function DagView({
 }: DagProps) {
   const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
   const connectionDrag = useRef<{ source: string; pointerId: number } | null>(null);
+  const [expandedContext, setExpandedContext] = useState<Set<string> | null>(() => new Set());
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const displayGraph = useMemo(
+    () => (branchChanges ? branchGraphProjection(graph, branchChanges, expandedContext) : graph),
+    [graph, branchChanges, expandedContext],
+  );
+  const nodeChanges = useMemo(
+    () => new Map(branchChanges?.nodes.map((change) => [change.node_id, change]) ?? []),
+    [branchChanges],
+  );
+  const edgeChanges = useMemo(
+    () => new Map(branchChanges?.edges.map((change) => [change.edge_id, change]) ?? []),
+    [branchChanges],
+  );
+  const changeTasks = useMemo(
+    () => [
+      ...new Map(
+        [...(branchChanges?.nodes ?? []), ...(branchChanges?.edges ?? [])].flatMap((change) =>
+          change.history
+            .filter((source) => source.task_id)
+            .map((source) => [source.task_id!, source] as const),
+        ),
+      ).values(),
+    ],
+    [branchChanges],
+  );
+  const taskHighlights = useMemo(() => {
+    const nodes = new Set<string>();
+    for (const change of branchChanges?.nodes ?? []) {
+      if (change.history.some((source) => source.task_id === selectedTaskId))
+        nodes.add(change.node_id);
+    }
+    for (const change of branchChanges?.edges ?? []) {
+      if (!change.history.some((source) => source.task_id === selectedTaskId)) continue;
+      for (const edge of [change.before, change.after]) {
+        if (edge) {
+          nodes.add(edge.source);
+          nodes.add(edge.target);
+        }
+      }
+    }
+    return nodes;
+  }, [branchChanges, selectedTaskId]);
   const projection = useMemo(
-    () => buildDagProjection(graph, trustView, relationFocusNodeId),
-    [graph, relationFocusNodeId, trustView],
+    () =>
+      buildDagProjection(displayGraph, trustView, relationFocusNodeId, {
+        includeResolvedBlockers: Boolean(branchChanges),
+      }),
+    [displayGraph, relationFocusNodeId, trustView, branchChanges],
   );
   const naturalFocusNodeId = useMemo(
     () => dagFocusNode(projection.nodes, projection.edges),
@@ -266,7 +322,7 @@ export function DagView({
   const layout = useForceDag({
     nodes: projection.nodes,
     edges: projection.edges,
-    projectId,
+    projectId: graphSessionKey(projectId, graphTarget),
     repulsion,
     mode: layoutMode,
   });
@@ -535,7 +591,7 @@ export function DagView({
           ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
         setConnection({
           source: connection.source,
-          target: target && target !== connection.source ? target : "",
+          target: target && graph.nodes[target] && target !== connection.source ? target : "",
         });
       }
       return;
@@ -585,9 +641,73 @@ export function DagView({
   return (
     <section className="view-panel dag-panel">
       <ViewHeading
-        title="DAG view"
+        title={branchChanges ? "Branch graph" : "DAG view"}
         aside={`${projection.nodes.length} nodes · ${projection.edges.length} edges`}
       />
+      {branchChanges && (
+        <div className="branch-graph-controls">
+          <div className="dag-layout-switch" role="group" aria-label="Branch graph lens">
+            <button
+              type="button"
+              aria-pressed={expandedContext !== null}
+              className={expandedContext !== null ? "is-active" : ""}
+              onClick={() => setExpandedContext(new Set())}
+            >
+              Changes + context
+            </button>
+            <button
+              type="button"
+              aria-pressed={expandedContext === null}
+              className={expandedContext === null ? "is-active" : ""}
+              onClick={() => setExpandedContext(null)}
+            >
+              Full graph
+            </button>
+          </div>
+          {expandedContext !== null && (
+            <button
+              type="button"
+              className="button compact secondary"
+              onClick={() =>
+                setExpandedContext(
+                  expandBranchContext(graph, new Set(Object.keys(displayGraph.nodes))),
+                )
+              }
+            >
+              Expand context
+            </button>
+          )}
+          <label>
+            Task{" "}
+            <select
+              aria-label="Highlight task changes"
+              value={selectedTaskId}
+              onChange={(event) => setSelectedTaskId(event.target.value)}
+            >
+              <option value="">All changes</option>
+              {changeTasks.map((source) => (
+                <option key={source.task_id} value={source.task_id!}>
+                  {source.summary || `Revision ${source.revision}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedTaskId && onInspectTask && (
+            <button
+              type="button"
+              className="button compact secondary"
+              onClick={() => onInspectTask(selectedTaskId)}
+            >
+              View task
+            </button>
+          )}
+          <div className="branch-change-legend" aria-label="Change legend">
+            <span className="branch-change-badge created">Created</span>
+            <span className="branch-change-badge updated">Updated</span>
+            <span className="branch-change-badge removed">Removed</span>
+          </div>
+        </div>
+      )}
       <GraphEditingControls
         graph={graph}
         projectId={projectId}
@@ -605,6 +725,26 @@ export function DagView({
             <X size={13} /> Clear focus
           </button>
         </div>
+      )}
+      {branchChanges && branchChanges.edges.length > 0 && (
+        <details className="branch-edge-changes">
+          <summary>{branchChanges.edges.length} relation changes</summary>
+          {branchChanges.edges.map((change) => {
+            const edge = change.after ?? change.before!;
+            return (
+              <article key={change.edge_id}>
+                <strong>
+                  <span className={`branch-change-badge ${change.change}`}>{change.change}</span>{" "}
+                  {displayGraph.nodes[edge.source]?.title ?? edge.source} →{" "}
+                  {displayGraph.nodes[edge.target]?.title ?? edge.target}
+                </strong>
+                <p>{edge.relation.replaceAll("_", " ")}</p>
+                <ChangedFields before={change.before} after={change.after} />
+                <ChangeHistory history={change.history} onInspectTask={onInspectTask} />
+              </article>
+            );
+          })}
+        </details>
       )}
       {projection.nodes.length === 0 ? (
         <EmptyState icon={<GitBranch size={20} />} title="No graph" />
@@ -777,16 +917,23 @@ export function DagView({
                     const projectionEmphasis = edgeProjectionEmphasis(edge, ontologyProjection);
                     const dimmed =
                       projectionEmphasis === "dimmed" ||
-                      !brightTypes.has(graph.nodes[edge.source]?.type) ||
-                      !brightTypes.has(graph.nodes[edge.target]?.type) ||
-                      Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id));
+                      !brightTypes.has(displayGraph.nodes[edge.source]?.type) ||
+                      !brightTypes.has(displayGraph.nodes[edge.target]?.type) ||
+                      Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id)) ||
+                      Boolean(
+                        selectedTaskId &&
+                        !edgeChanges
+                          .get(edge.id)
+                          ?.history.some((source) => source.task_id === selectedTaskId),
+                      );
                     return (
                       <g
-                        className={`dag-edge-group ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
+                        className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
                         key={edge.id}
                       >
                         <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />
                         <text className="dag-edge-label" x={geometry.labelX} y={geometry.labelY}>
+                          {edgeChanges.has(edge.id) ? `${edgeChanges.get(edge.id)!.change} · ` : ""}
                           {edge.relation.replaceAll("_", " ")}
                         </text>
                       </g>
@@ -802,10 +949,11 @@ export function DagView({
                   const dimmed =
                     projectionEmphasis === "dimmed" ||
                     !brightTypes.has(node.type) ||
-                    Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id));
+                    Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
+                    Boolean(selectedTaskId && !taskHighlights.has(node.id));
                   return (
                     <div
-                      className={`dag-node ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
+                      className={`dag-node ${nodeChanges.has(node.id) ? `branch-${nodeChanges.get(node.id)!.change}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -829,14 +977,23 @@ export function DagView({
                         type="button"
                         onClick={() => inspectNode(node)}
                       >
-                        <span className="eyebrow">{nodeTypeLabel(node)}</span>
+                        <span className="eyebrow">
+                          {nodeTypeLabel(node)}
+                          {nodeChanges.has(node.id) && (
+                            <span
+                              className={`branch-change-badge ${nodeChanges.get(node.id)!.change}`}
+                            >
+                              {nodeChanges.get(node.id)!.change}
+                            </span>
+                          )}
+                        </span>
                         <strong>{node.title}</strong>
                         <small>
                           <span className={`standing ${node.standing}`}>{node.standing}</span>
                           <span>{node.status || node.validity || ""}</span>
                         </small>
                       </button>
-                      {!editing.mutationsDisabled && (
+                      {!editing.mutationsDisabled && graph.nodes[node.id] && (
                         <button
                           className="dag-connect-handle"
                           type="button"

@@ -1,3 +1,4 @@
+import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "./graphTarget";
 import type {
   GraphAttentionProjection,
   GraphHeadRef as TransitionGraphHead,
@@ -66,15 +67,21 @@ export interface TransitionSyncFence {
 
 export interface ProjectTransitionCoordinatorState {
   active_project_id: string | null;
+  active_graph_target?: TransitionGraphTarget;
   canonical_heads: Record<string, TransitionGraphHead>;
   draft_generations: Record<string, number>;
   sync_requests: Record<string, TransitionSyncFence>;
 }
 
 export type ProjectTransitionCoordinatorAction =
-  | { kind: "activate"; project_id: string | null }
+  | { kind: "activate"; project_id: string | null; graph_target?: TransitionGraphTarget }
   | { kind: "observe_head"; project_id: string; head: TransitionGraphHead }
-  | { kind: "observe_draft_generation"; project_id: string; generation: number }
+  | {
+      kind: "observe_draft_generation";
+      project_id: string;
+      graph_target?: TransitionGraphTarget;
+      generation: number;
+    }
   | { kind: "sync_started"; fence: TransitionSyncFence }
   | { kind: "sync_finished"; fence: TransitionSyncFence };
 
@@ -88,39 +95,47 @@ export function reduceProjectTransitionCoordinator(
   state: ProjectTransitionCoordinatorState,
   action: ProjectTransitionCoordinatorAction,
 ): ProjectTransitionCoordinatorState {
+  const target = "graph_target" in action ? (action.graph_target ?? MAIN_GRAPH) : MAIN_GRAPH;
+  const key =
+    "fence" in action
+      ? graphSessionKey(action.fence.project_id, action.fence.expected_head.target)
+      : "head" in action
+        ? graphSessionKey(action.project_id, action.head.target)
+        : graphSessionKey(action.project_id ?? "", target);
   switch (action.kind) {
     case "activate":
-      return state.active_project_id === action.project_id
+      return state.active_project_id === action.project_id &&
+        sameGraphTarget(state.active_graph_target, target)
         ? state
-        : { ...state, active_project_id: action.project_id };
+        : { ...state, active_project_id: action.project_id, active_graph_target: target };
     case "observe_head":
-      return transitionHeadsEqual(state.canonical_heads[action.project_id], action.head)
+      return transitionHeadsEqual(state.canonical_heads[key], action.head)
         ? state
         : {
             ...state,
-            canonical_heads: { ...state.canonical_heads, [action.project_id]: action.head },
+            canonical_heads: { ...state.canonical_heads, [key]: action.head },
           };
     case "observe_draft_generation":
-      return state.draft_generations[action.project_id] === action.generation
+      return state.draft_generations[key] === action.generation
         ? state
         : {
             ...state,
             draft_generations: {
               ...state.draft_generations,
-              [action.project_id]: action.generation,
+              [key]: action.generation,
             },
           };
     case "sync_started":
       return {
         ...state,
-        sync_requests: { ...state.sync_requests, [action.fence.project_id]: action.fence },
+        sync_requests: { ...state.sync_requests, [key]: action.fence },
       };
     case "sync_finished": {
-      if (state.sync_requests[action.fence.project_id]?.request_id !== action.fence.request_id) {
+      if (state.sync_requests[key]?.request_id !== action.fence.request_id) {
         return state;
       }
       const syncRequests = { ...state.sync_requests };
-      delete syncRequests[action.fence.project_id];
+      delete syncRequests[key];
       return { ...state, sync_requests: syncRequests };
     }
   }
@@ -130,14 +145,19 @@ export function transitionSyncCompletionDisposition(
   state: ProjectTransitionCoordinatorState,
   fence: TransitionSyncFence,
 ): TransitionSyncCompletionDisposition {
-  if (state.active_project_id !== fence.project_id) return "reload_inactive";
-  if (state.sync_requests[fence.project_id]?.request_id !== fence.request_id) {
+  if (
+    state.active_project_id !== fence.project_id ||
+    !sameGraphTarget(state.active_graph_target, fence.expected_head.target)
+  )
+    return "reload_inactive";
+  const key = graphSessionKey(fence.project_id, fence.expected_head.target);
+  if (state.sync_requests[key]?.request_id !== fence.request_id) {
     return "reload_active";
   }
-  if ((state.draft_generations[fence.project_id] ?? 0) !== fence.draft_generation) {
+  if ((state.draft_generations[key] ?? 0) !== fence.draft_generation) {
     return "reload_active";
   }
-  const currentHead = state.canonical_heads[fence.project_id];
+  const currentHead = state.canonical_heads[key];
   return transitionHeadsEqual(currentHead, fence.expected_head) ? "apply" : "reload_active";
 }
 

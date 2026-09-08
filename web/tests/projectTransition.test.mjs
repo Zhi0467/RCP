@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import { createServer } from "vite";
 
-import {
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+after(() => server.close());
+const {
   decodeTransitionTriggerManifest,
   emptyProjectTransitionCoordinator,
   reduceProjectTransitionCoordinator,
@@ -9,7 +18,7 @@ import {
   transitionPreviewRouting,
   transitionSnapshotRefusal,
   transitionSyncCompletionDisposition,
-} from "../src/projectTransition.ts";
+} = await server.ssrLoadModule("/src/projectTransition.ts");
 
 const transitionOne = "1".repeat(64);
 const transitionTwo = "2".repeat(64);

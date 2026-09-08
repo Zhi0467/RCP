@@ -1,3 +1,4 @@
+import { graphSessionKey } from "../graphTarget";
 import { useCallback, useReducer, useRef } from "react";
 import { emptyHumanDraft, humanDraftChangeCount, type HumanDraft } from "../humanDraft";
 import type { TransitionSyncFence } from "../projectTransition";
@@ -69,13 +70,14 @@ export function useProjectSession(initialProjectId: string | null) {
   const beginSync = useCallback(
     (projectId: string, expectedHead: GraphHeadRef): TransitionSyncFence | null => {
       const current = stateRef.current;
-      if (current.transitionCoordinator.sync_requests[projectId]) return null;
+      const key = graphSessionKey(projectId, expectedHead.target);
+      if (current.transitionCoordinator.sync_requests[key]) return null;
       const syncRequestSequence = current.syncRequestSequence + 1;
       const fence: TransitionSyncFence = {
         project_id: projectId,
         request_id: syncRequestSequence,
         expected_head: expectedHead,
-        draft_generation: current.transitionCoordinator.draft_generations[projectId] ?? 0,
+        draft_generation: current.transitionCoordinator.draft_generations[key] ?? 0,
       };
       dispatch({
         kind: "sync_started",

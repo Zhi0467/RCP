@@ -19,6 +19,7 @@ from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
     get_experiment_admission,
+    get_graph_service,
     get_identity_access,
     get_project_service,
     get_result_view_keep_locks,
@@ -28,6 +29,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
 from rcp.artifact_replace import ArtifactReplacementConflict
@@ -43,17 +45,14 @@ from rcp.artifacts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
-from rcp.conversation_worktrees import (
-    admit_conversation_worktree,
-    conversation_worktree_locks,
-    conversation_worktree_recovery_admission,
-)
+from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import Experiment
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
+from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.steering import (
     begin_chat_steer,
     chat_steering_state,
@@ -268,6 +267,7 @@ def start_agent_task(
     attachment_store: AttachmentStoreDependency,
     background_tasks: BackgroundTasksDependency,
     result_view_keep_locks: ResultViewKeepLocksDependency,
+    branch_id: str | None = None,
 ) -> dict[str, object]:
     if kind in {"auto_research", "branch_merge", "episode_report"}:
         raise HTTPException(
@@ -275,13 +275,21 @@ def start_agent_task(
             detail="Use the project episode endpoint for Auto-research and branch merge.",
         )
     authorized_by = identity_access.require_patch_capable_identity(http_request)
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id)
+    if branch_id is not None and kind not in {"node_chat", "project_chat"}:
+        raise HTTPException(
+            status_code=422, detail="Only ordinary conversations can target a graph branch here."
+        )
     admission_lock: threading.Lock | None = None
     chat_admission_lock = None
     result_view_stage_host: str | None = None
     result_view_stage_root: str | None = None
     try:
         request = _validated_task_request(service, kind, body)
+        if task_graph_capable(kind, request):
+            require_graph_edit_admission(
+                store, catalog.resolve_project_id(project_id), service.history.graph_target
+            )
         if isinstance(request, RunRequest):
             if request.result_view is not None and request.result_view.action == "revise":
                 admission_lock = result_view_keep_locks(request.result_view.view_id)
@@ -309,25 +317,8 @@ def start_agent_task(
         if kind in {"node_chat", "project_chat"}:
             assert isinstance(request, RunRequest)
             assert request.chat_id is not None
-            if store.has_resumable_paused_chat_task(
-                project_id,
-                kind,
-                request.chat_id,
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "This conversation has a paused turn. Resume or retry it before "
-                        "starting a new turn."
-                    ),
-                )
-        if kind in {"node_chat", "project_chat"}:
-            assert isinstance(request, RunRequest)
-            chat_admission_lock = conversation_worktree_locks(
-                f"{store.path}:{project_id}:{request.chat_id}"
-            )
-            chat_admission_lock.__enter__()
-            request = admit_conversation_worktree(service, store, project_id, request)
+            chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
+            request = chat_admission_lock.__enter__()
         operation_id = str(uuid.uuid4())
         claimed_set: tuple[str, str] | None = None
         if kind in {"node_chat", "project_chat"}:
@@ -364,6 +355,7 @@ def start_agent_task(
                 authorized_by=authorized_by,
                 stage_host=result_view_stage_host,
                 stage_root=result_view_stage_root,
+                graph_target=service.history.graph_target,
             )
         except BaseException:
             if claimed_set is not None and store.agent_task(operation_id) is None:
@@ -388,11 +380,17 @@ def agent_tasks(
     catalog: CatalogDependency,
     store: StoreDependency,
     background_tasks: BackgroundTasksDependency,
+    branch_id: str | None = None,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
+    target = (
+        get_graph_service(catalog, project_id, branch_id, initialize=False).history.graph_target
+        if branch_id is not None
+        else None
+    )
     return [
         _agent_task_response(store, record, background_tasks)
-        for record in store.agent_tasks(project_id)
+        for record in store.agent_tasks(project_id, graph_target=target)
     ]
 
 
@@ -435,10 +433,10 @@ def steer_agent_task(
     background_tasks: BackgroundTasksDependency,
 ) -> ChatMessage:
     identity_access.require_patch_capable_identity(http_request)
-    service = get_project_service(catalog, project_id)
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    service = get_graph_service(catalog, project_id, record.graph_target.branch_id)
     try:
         with project_write_admission(project_id, http_request):
             delivery = begin_chat_steer(
@@ -931,7 +929,7 @@ def resume_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
     result_view_resume_lock: threading.Lock | None = None
     try:
         if previous.kind not in {"paper_coach", "auto_research"}:
@@ -998,7 +996,7 @@ def repair_agent_task_graph_update(
         if task_graph_capable(previous.kind, previous.request)
         else None
     )
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
     try:
         experiment_admission.require_current(service, previous.request)
         with _chat_recovery_admission(service, store, previous):
@@ -1040,7 +1038,7 @@ def retry_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
     result_view_retry_lock: threading.Lock | None = None
     try:
         overrides = body.model_dump(exclude_none=True) if body is not None else {}
@@ -1492,6 +1490,8 @@ def _validated_task_request(
     kind: AgentTaskKind,
     body: dict[str, object],
 ) -> AgentTaskRequest:
+    if "graph_target" in body or "branch_id" in body:
+        raise ValueError("Select the graph target with the branch_id route parameter.")
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 

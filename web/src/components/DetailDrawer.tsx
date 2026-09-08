@@ -1,3 +1,5 @@
+import { BranchChangeDetail } from "./BranchChangeDetail";
+import type { GraphBranchChanges } from "../types";
 import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -26,6 +28,9 @@ import { RelationMap } from "./RelationMap";
 
 interface Props {
   node: GraphNode;
+  branchChange?: GraphBranchChanges["nodes"][number];
+  historical?: boolean;
+  onInspectTask?: (taskId: string) => void;
   edges: Edge[];
   allNodes: Record<string, GraphNode>;
   glossaryIndex: GlossaryIndex;
@@ -90,6 +95,9 @@ const originLabels: Record<NonNullable<GraphNode["origin"]>, string> = {
 
 export function DetailDrawer({
   node,
+  branchChange,
+  historical = false,
+  onInspectTask,
   edges,
   allNodes,
   glossaryIndex,
@@ -166,7 +174,7 @@ export function DetailDrawer({
     [draft, editFields],
   );
   const editInvalid = Object.keys(editErrors).length > 0;
-  const nodeMutationDisabled = mutationsDisabled || stagedForRemoval;
+  const nodeMutationDisabled = mutationsDisabled || stagedForRemoval || historical;
   // Whether a loop is active is the projection's answer, not a second one
   // assembled here from the operational flags underneath it. Composing those
   // flags locally let this panel and Runs disagree about the same Experiment.
@@ -346,6 +354,9 @@ export function DetailDrawer({
         </header>
 
         <div className={`drawer-content${editing ? " editing" : ""}`}>
+          {branchChange && (
+            <BranchChangeDetail change={branchChange} onInspectTask={onInspectTask} />
+          )}
           {stagedForRemoval && (
             <section className="node-removal-staged" role="status">
               <Trash2 size={16} />
@@ -716,7 +727,7 @@ export function DetailDrawer({
             </>
           ) : (
             <>
-              <button className="button ghost" onClick={onOpenChat}>
+              <button className="button ghost" disabled={historical} onClick={onOpenChat}>
                 <MessageCircle size={15} /> Ask about this node
               </button>
               <div className="node-detail-actions">

@@ -9,6 +9,7 @@ from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
     get_experiment_operation_lock,
+    get_graph_service,
     get_identity_access,
     get_project_service,
     get_store,
@@ -18,11 +19,11 @@ from rcp.api.dependencies import (
 )
 from rcp.api.episodes import _episode_for_http
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
+from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.control import ExperimentControlState
 from rcp.core.models import Experiment
-from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs.experiment_admission import (
@@ -58,6 +59,7 @@ def run_experiment(
     node_id: str,
     body: dict[str, object],
     request: Request,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -65,7 +67,10 @@ def run_experiment(
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
+    project_id = catalog.resolve_project_id(project_id)
+    service = get_graph_service(catalog, project_id, branch_id)
+    target = service.history.graph_target
+    require_graph_edit_admission(store, project_id, target)
     try:
         state = service.history.state()
         node = state.nodes.get(node_id)
@@ -76,7 +81,7 @@ def run_experiment(
             project_id,
             state,
             node_id,
-            graph_target=GraphTargetRef(),
+            graph_target=target,
         )
         if not control.ready:
             raise HTTPException(status_code=409, detail=" ".join(control.reasons))
@@ -95,7 +100,7 @@ def run_experiment(
             else store.completed_experiment_watcher_group(
                 project_id,
                 node_id,
-                graph_target=GraphTargetRef(),
+                graph_target=target,
             )
         )
         if pending_group is not None:
@@ -147,6 +152,7 @@ def run_experiment(
             "node_chat",
             experiment_request,
             authorized_by=authorized_by,
+            graph_target=target,
         )
     except AgentTaskAdmissionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -207,7 +213,7 @@ def stop_bound_experiment_episode(
         raise HTTPException(status_code=404, detail="Experiment not found")
     if episode.graph_target.kind == "branch":
         route = store.auto_research_child_experiment(episode.episode_id)
-        if route is None or route.auto_research_episode_id != episode.graph_target.branch_id:
+        if route is not None and route.auto_research_episode_id != episode.graph_target.branch_id:
             raise HTTPException(
                 status_code=409,
                 detail="The branch Experiment lost its Auto-research parent binding.",
@@ -249,6 +255,7 @@ def stop_experiment_loop(
     node_id: str,
     request: Request,
     episode_id: str | None = Query(default=None),
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -264,16 +271,19 @@ def stop_experiment_loop(
     """
 
     identity_access.require_patch_capable_identity(request)
+    project_id = catalog.resolve_project_id(project_id)
+    target = get_graph_service(catalog, project_id, branch_id).history.graph_target
     with experiment_operation_lock(project_id):
         if episode_id is None:
             runtime = store.experiment_loop_runtime(
                 project_id,
                 node_id,
+                graph_target=target,
             )
             episode = store.episode(runtime.episode_id) if runtime.episode_id is not None else None
             if episode is None or episode.project_id != project_id:
                 raise HTTPException(status_code=404, detail="Experiment episode not found")
-            if episode.graph_target != GraphTargetRef():
+            if episode.graph_target != target:
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -284,6 +294,8 @@ def stop_experiment_loop(
         else:
             episode = _episode_for_http(store, catalog, project_id, episode_id)
             if episode.control_node_id != node_id:
+                raise HTTPException(status_code=404, detail="Experiment episode not found")
+            if branch_id is not None and episode.graph_target != target:
                 raise HTTPException(status_code=404, detail="Experiment episode not found")
         control = stop_bound_experiment_episode(
             project_id,

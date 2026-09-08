@@ -71,11 +71,12 @@ from rcp.core.operations import (
     ProposalMergeOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
+    ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
     UpdateNodesOperation,
 )
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import (
     CommittedTransition,
     PreparedTransition,
@@ -180,6 +181,8 @@ def _proposal_approval_standing_targets(proposal: Proposal) -> list[str]:
     carry an intent and retain their existing related-node behavior.
     """
 
+    if any(isinstance(operation, ProposalStandingChangeOperation) for operation in proposal.ops):
+        return []
     if len(proposal.ops) != 1:
         return list(proposal.related_node_ids)
     operation = proposal.ops[0]
@@ -328,6 +331,7 @@ class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: str
+    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     kind: Literal["node_chat", "project_chat"]
     node_id: str | None
     title: str
@@ -359,6 +363,7 @@ class _StoredChatRecord(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     session_id: str = Field(alias="sessionId")
+    graph_target: GraphTargetRef | None = Field(default=None, alias="graphTarget")
     native_session_id: str | None = Field(default=None, alias="nativeSessionId")
     node_id: str | None = Field(default=None, alias="nodeId")
     chat_scope: Literal["node", "project"] = Field(alias="chatScope")
@@ -658,6 +663,11 @@ def _validate_stored_chat_record(
         record.session_id != anchor.session_id
         or record.chat_scope != anchor.chat_scope
         or record.node_id != anchor.node_id
+        or (
+            record.graph_target is not None
+            and anchor.graph_target is not None
+            and record.graph_target != anchor.graph_target
+        )
     ):
         raise ValueError("canonical chat record context changed")
     if (anchor.chat_scope == "node" and not anchor.node_id) or (
@@ -1075,6 +1085,7 @@ class ProjectService:
         project_id: str | None = None,
         repository_inventory: Callable[[], list[RegisteredRepositoryRoot]] | None = None,
         task_continuation_session: Callable[[str, str], str | None] | None = None,
+        chat_graph_target: Callable[[str, str], GraphTargetRef | None] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
@@ -1085,6 +1096,7 @@ class ProjectService:
         self.imported_sources = _imported_source_store(data_dir, self._project_id)
         self._repository_inventory = repository_inventory
         self._task_continuation_session = task_continuation_session
+        self._chat_graph_target = chat_graph_target
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
@@ -1128,6 +1140,7 @@ class ProjectService:
         target: GraphTargetRef,
         *,
         expected_episode_id: str | None = None,
+        initialize: bool = True,
     ) -> ProjectService:
         """Return a service whose graph reads and writes stay on one exact target."""
 
@@ -1140,6 +1153,7 @@ class ProjectService:
             target.branch_id,
             expected_episode_id=expected_episode_id,
             expected_project_id=self._project_id,
+            initialize=initialize,
         )
         return ProjectService(
             history.manifest,
@@ -1151,6 +1165,7 @@ class ProjectService:
             project_id=self._project_id,
             repository_inventory=self._repository_inventory,
             task_continuation_session=self._task_continuation_session,
+            chat_graph_target=self._chat_graph_target,
         )
 
     def chat_path(
@@ -1220,7 +1235,11 @@ class ProjectService:
         if limit < 1 or limit > CHAT_PAGE_MAX_LIMIT:
             raise ValueError(f"chat limit must be between 1 and {CHAT_PAGE_MAX_LIMIT}")
         chats = sorted(
-            self._canonical_chat_summaries(),
+            (
+                summary
+                for summary in self._canonical_chat_summaries()
+                if summary.graph_target == self.history.graph_target
+            ),
             key=lambda item: (datetime.fromisoformat(item.updated_at), item.chat_id),
             reverse=True,
         )
@@ -1246,6 +1265,7 @@ class ProjectService:
                 if path.name.endswith(suffix)
                 and (transcript := self._read_chat_transcript(path)) is not None
                 and transcript.chat_id == chat_id
+                and transcript.graph_target == self.history.graph_target
             ]
         # The same UUID under two canonical node/project paths is ambiguous.
         return transcripts[0] if len(transcripts) == 1 else None
@@ -1337,8 +1357,27 @@ class ProjectService:
                 if descriptor >= 0:
                     os.close(descriptor)
             raw_records = [json.loads(line) for line in lines if line.strip()]
+            records = [_StoredChatRecord.model_validate(record) for record in raw_records]
+            if not records:
+                return None
+            targets = {
+                record.graph_target.key: record.graph_target
+                for record in records
+                if record.graph_target is not None
+            }
+            if self._chat_graph_target is not None:
+                bound_target = self._chat_graph_target(self._project_id, records[0].session_id)
+                if bound_target is not None:
+                    targets[bound_target.key] = bound_target
+                elif not targets and any(record.operation_id for record in records):
+                    # A task-backed legacy transcript needs a durable target
+                    # binding; missing operational history cannot imply main.
+                    return None
+            if len(targets) > 1:
+                return None
+            graph_target = next(iter(targets.values()), GraphTargetRef())
             records = _fold_chat_receipts(
-                [_StoredChatRecord.model_validate(record) for record in raw_records]
+                [record.model_copy(update={"graph_target": graph_target}) for record in records]
             )
         except (OSError, TypeError, ValueError):
             return None
@@ -1405,6 +1444,7 @@ class ProjectService:
         updated_at = records[max(range(len(records)), key=timestamps.__getitem__)].timestamp
         return ChatTranscript(
             chat_id=chat_id,
+            graph_target=graph_target,
             kind=kind,
             node_id=first.node_id,
             title=title,
@@ -1419,11 +1459,17 @@ class ProjectService:
         *,
         state: GraphState | None = None,
         paper: PaperSnapshot | None = None,
+        head: GraphHeadRef | None = None,
     ) -> _ProjectSnapshotDraft:
         if state is None:
             state = self.history.state()
         if paper is None:
             paper = self.paper.snapshot()
+        head = head or GraphHeadRef(target=self.history.graph_target, revision=state.revision)
+        if head.target != self.history.graph_target or head.revision != state.revision:
+            raise ValueError(
+                "The graph snapshot and its head must describe the same target revision."
+            )
         primary = project_primary_question(state)
         attention = project_graph_attention(state)
         counts = project_counts(state, attention)
@@ -1436,6 +1482,9 @@ class ProjectService:
             {
                 "name": self.manifest.name,
                 "revision": state.revision,
+                "graph_target": head.target.model_dump(mode="json"),
+                "graph_head": head.model_dump(mode="json"),
+                "graph_changes": None,
                 "state_repository": self.manifest.state.repository,
                 "canonical_state": self.history.workspace.status().model_dump(mode="json"),
                 "run_on": refresh_profile.run_on,

@@ -1,3 +1,5 @@
+import { graphSessionKey, MAIN_GRAPH } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, loadExperimentEpisodes, loadProjectExperimentEpisodes, loadSpaceRuns } from "../api";
 import { experimentBoardHref } from "../experimentBoard";
@@ -277,7 +279,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     (id: string): boolean => {
       const result = closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id);
       if (result.tabs === openProjectTabsRef.current) return false;
-      projectTabStatesRef.current.delete(id);
+      for (const [key, state] of projectTabStatesRef.current) {
+        if (state.project.id === id) projectTabStatesRef.current.delete(key);
+      }
       setTabs(result.tabs);
       if (id !== activeProjectId.current) return true;
       if (result.activeProjectId) {
@@ -297,7 +301,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       setProjects((current) => current.filter((item) => item.id !== id));
       setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
       setSpaceRuns((current) => current.filter((item) => item.project_id !== id));
-      projectTabStatesRef.current.delete(id);
+      for (const [key, state] of projectTabStatesRef.current) {
+        if (state.project.id === id) projectTabStatesRef.current.delete(key);
+      }
       setTabs(closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id).tabs);
     },
     [setTabs],
@@ -314,10 +320,15 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   }, []);
 
   const cacheProjectState = useCallback((id: string, state: T) => {
-    cacheProjectTabState(projectTabStatesRef.current, id, state);
+    cacheProjectTabState(
+      projectTabStatesRef.current,
+      graphSessionKey(id, state.project.graph_target),
+      state,
+    );
   }, []);
   const cachedProjectStateForOpen = useCallback(
-    (id: string) => projectTabStateForOpen(projectTabStatesRef.current, id),
+    (id: string, graphTarget: GraphTargetRef = MAIN_GRAPH) =>
+      projectTabStateForOpen(projectTabStatesRef.current, graphSessionKey(id, graphTarget)),
     [],
   );
   const inactiveCachedProjectState = useCallback(

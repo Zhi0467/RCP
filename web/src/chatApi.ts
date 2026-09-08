@@ -1,3 +1,5 @@
+import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "./graphTarget";
+import type { GraphTargetRef } from "./types";
 import type { ChatSummary, ChatSummaryPage, ChatTranscript } from "./types";
 
 export type ChatPageRequest = (path: string) => Promise<ChatSummaryPage>;
@@ -8,8 +10,17 @@ export async function loadChatSummaryPage(
   apiBase: string,
   offset: number,
   request: ChatPageRequest,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): Promise<ChatSummaryPage> {
-  return request(`${apiBase}/chats?offset=${offset}&limit=${CHAT_SUMMARY_PAGE_SIZE}`);
+  const page = await request(
+    graphTargetUrl(
+      `${apiBase}/chats?offset=${offset}&limit=${CHAT_SUMMARY_PAGE_SIZE}`,
+      graphTarget,
+    ),
+  );
+  if (page.items.some((item) => !sameGraphTarget(item.graph_target, graphTarget)))
+    throw new Error("Conversation list returned a different graph target.");
+  return page;
 }
 
 export function mergeChatSummaryPage(
@@ -64,6 +75,12 @@ export async function loadChatTranscript(
   apiBase: string,
   chatId: string,
   request: (path: string) => Promise<ChatTranscript>,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): Promise<ChatTranscript> {
-  return request(`${apiBase}/chats/${encodeURIComponent(chatId)}`);
+  const transcript = await request(
+    graphTargetUrl(`${apiBase}/chats/${encodeURIComponent(chatId)}`, graphTarget),
+  );
+  if (graphTarget.kind === "branch" && !sameGraphTarget(transcript.graph_target, graphTarget))
+    throw new Error("Conversation returned a different graph target.");
+  return transcript;
 }

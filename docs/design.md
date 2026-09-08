@@ -21,7 +21,10 @@ graph history records their research meaning only through an admitted Patch.
 
 RCP schedules autonomous work only inside a human-authorized Auto-research
 episode with a fixed operational invocation budget. Every such episode writes
-research-graph changes to its persistent graph-only branch. Main stays editable,
+research-graph changes to its persistent graph-only branch. Humans can inspect
+and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
+during and after the episode. Those conversations have their own sessions and
+authority. Main stays editable,
 and branch work reaches main only when a human dispatches the dedicated semantic
 merge agent. Repository files and external effects are never branched or rolled
 back by that graph workflow.
@@ -204,7 +207,7 @@ winner by timestamp or silently implement around it.
 
 ## Current exclusions
 
-RCP has no general graph-branching product, branch editor, conflict viewer,
+RCP has no general graph-branching product, conflict viewer,
 repository rollback, orchestrator self-merge, frontend transition-rule engine,
 user-authored rule language, provider-neutral hostile-process sandbox,
 live output watcher, hard provider interruption,

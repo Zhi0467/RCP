@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import { createServer } from "vite";
 
-import {
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+after(() => server.close());
+const {
   loadChatSummaryPage,
   mergeChatSummaryPage,
   nextChatSummaryOffset,
   reconcileChatSelectionAfterRefresh,
-} from "../src/chatApi.ts";
+} = await server.ssrLoadModule("/src/chatApi.ts");
 
 test("chat summary loading fetches exactly the requested page", async () => {
   const calls = [];

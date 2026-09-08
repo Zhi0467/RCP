@@ -152,6 +152,24 @@ test("pending Experiment watcher polling always refreshes control state", async 
   assert.ok(result.project.experiment_control);
 });
 
+test("branch watcher polling scopes the graph while retaining project task lifecycles", async () => {
+  const requested = [];
+  const base = "/api/projects/project-1";
+  await loadExperimentWatcherPoll(
+    async (path) => {
+      requested.push(path);
+      return {};
+    },
+    base,
+    { kind: "branch", branch_id: "episode-branch" },
+  );
+  assert.deepEqual(requested, [
+    `${base}/watchers?branch_id=episode-branch`,
+    `${base}/tasks`,
+    `${base}?branch_id=episode-branch`,
+  ]);
+});
+
 test("watcher polling reports persistent API failures instead of swallowing them", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 

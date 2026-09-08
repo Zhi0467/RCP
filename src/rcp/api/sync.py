@@ -6,17 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from rcp.api.dependencies import (
     get_catalog,
+    get_graph_service,
     get_identity_access,
     get_project_display_cache,
-    get_project_service,
     get_store,
     get_watcher_delivery,
     project_write_admission,
     require_project_membership,
 )
+from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import RELATION_SPEC
-from rcp.core.transition_models import GraphTargetRef
 from rcp.core.transitions import current_project_projection
 from rcp.core.validation.constants import NODE_PREFIXES
 from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR
@@ -36,7 +36,10 @@ WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_deliv
 
 
 @router.get("/api/projects/{project_id}/graph-edit-options")
-def graph_edit_options(project_id: str):
+def graph_edit_options(
+    project_id: str, branch_id: str | None = None, *, catalog: CatalogDependency
+):
+    get_graph_service(catalog, project_id, branch_id, initialize=False)
     return {
         "node_prefixes": NODE_PREFIXES,
         "relations": [
@@ -57,6 +60,7 @@ def sync_graph(
     project_id: str,
     body: GraphSyncRequest,
     request: Request,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -67,12 +71,14 @@ def sync_graph(
     authorized_by = identity_access.require_patch_capable_identity(request)
     try:
         with project_write_admission(project_id, request) as canonical_project_id:
-            service = get_project_service(catalog, canonical_project_id)
+            service = get_graph_service(catalog, canonical_project_id, branch_id)
+            target = service.history.graph_target
+            require_graph_edit_admission(store, canonical_project_id, target)
             transition = service.sync_graph_transition(
                 body,
                 active_control_node_ids=store.active_experiment_control_ids(
                     canonical_project_id,
-                    graph_target=GraphTargetRef(),
+                    graph_target=target,
                 ),
                 authorized_by=authorized_by,
             )
@@ -99,6 +105,7 @@ def sync_graph(
             canonical_project_id,
             state,
             source="human Sync",
+            graph_target=target,
         )
         return payload
     except KeyError as exc:
@@ -116,6 +123,7 @@ def preview_graph_sync(
     project_id: str,
     body: GraphSyncRequest,
     request: Request,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -123,13 +131,15 @@ def preview_graph_sync(
     project_display_cache: DisplayCacheDependency,
 ):
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    project_id = catalog.resolve_project_id(project_id)
+    require_graph_edit_admission(store, project_id, service.history.graph_target)
     try:
         prepared = service.preview_sync_graph(
             body,
             active_control_node_ids=store.active_experiment_control_ids(
                 project_id,
-                graph_target=GraphTargetRef(),
+                graph_target=service.history.graph_target,
             ),
             authorized_by=authorized_by,
         )

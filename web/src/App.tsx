@@ -1,3 +1,12 @@
+import { branchMergeStateLabel } from "./components/CampaignRuns";
+import {
+  graphSessionKey,
+  graphTargetFromHash,
+  graphTargetUrl,
+  graphViewHash,
+  MAIN_GRAPH,
+  sameGraphTarget,
+} from "./graphTarget";
 import type { GraphEditingProps } from "./components/GraphEditingControls";
 import {
   AlertTriangle,
@@ -187,8 +196,10 @@ import type {
   ExperimentControlState,
   GraphAttentionProjection,
   GraphHeadRef,
+  GraphRevisionSnapshot,
   GraphNode,
   GraphState,
+  GraphTargetRef,
   Health,
   PaperSnapshot,
   ProjectCard,
@@ -407,12 +418,11 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
 ];
 
-export async function loadCanonicalRevision(
+export async function loadGraphRevision(
   fetchJson: <T>(path: string) => Promise<T>,
   apiBase: string,
-): Promise<number> {
-  const snapshot = await fetchJson<{ revision: number }>(`${apiBase}/cached/revision`);
-  return snapshot.revision;
+): Promise<GraphRevisionSnapshot> {
+  return fetchJson<GraphRevisionSnapshot>(`${apiBase}/cached/revision`);
 }
 
 /**
@@ -441,8 +451,18 @@ export async function openProjectSequence(steps: {
 export function canonicalRevisionNeedsReload(
   observedRevision: number,
   renderedRevision: number,
+  observedMutation?: ProjectSnapshot["graph_mutation"],
+  renderedMutation?: ProjectSnapshot["graph_mutation"],
 ): boolean {
-  return observedRevision > renderedRevision;
+  return (
+    observedRevision > renderedRevision ||
+    Boolean(
+      observedMutation &&
+      renderedMutation &&
+      (observedMutation.available !== renderedMutation.available ||
+        observedMutation.reason !== renderedMutation.reason),
+    )
+  );
 }
 
 function pageIsHidden(): boolean {
@@ -551,15 +571,16 @@ export function decisionsAwaitingChoice(
 export async function loadExperimentWatcherPoll(
   fetchJson: <T>(path: string) => Promise<T>,
   base: string,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): Promise<{
   watchers: WatcherRecord[];
   tasks: AgentTask[];
   project: ProjectSnapshot;
 }> {
   const [watchers, tasks, project] = await Promise.all([
-    fetchJson<WatcherRecord[]>(`${base}/watchers`),
+    fetchJson<WatcherRecord[]>(graphTargetUrl(`${base}/watchers`, graphTarget)),
     fetchJson<AgentTask[]>(`${base}/tasks`),
-    fetchJson<ProjectSnapshot>(base),
+    fetchJson<ProjectSnapshot>(graphTargetUrl(base, graphTarget)),
   ]);
   return { watchers, tasks, project };
 }
@@ -620,8 +641,9 @@ export function attentionGraphForProjection(
   canonicalGraph: GraphState,
   projection: BrowserTransitionProjection | null,
   route: TransitionPreviewRouting["route"] = "backend_preview",
+  draft: HumanDraft | null = null,
 ): GraphState {
-  if (route === "local_draft") return canonicalGraph;
+  if (route === "local_draft") return applyHumanDraft(canonicalGraph, draft);
   return projection?.graph ?? canonicalGraph;
 }
 
@@ -740,8 +762,15 @@ export default function App() {
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return { project: parseProjectHash(hash), setupOpen: isSetupHash(hash) };
+    return {
+      project: parseProjectHash(hash),
+      graphTarget: graphTargetFromHash(hash),
+      setupOpen: isSetupHash(hash),
+    };
   });
+  const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const activeGraphTargetRef = useRef(graphTarget);
+  activeGraphTargetRef.current = graphTarget;
   const {
     identityReady,
     identityIssue,
@@ -875,7 +904,11 @@ export default function App() {
     reportError: reportErrorNotice,
   });
   useEffect(() => setWebMcpArtifactViewerUrl(null), [projectId]);
-  const { project, humanDraft } = projectDraftPreviewEffectInputs(projectSession, projectId);
+  const { project, humanDraft } = projectDraftPreviewEffectInputs(
+    projectSession,
+    projectId,
+    graphTarget,
+  );
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
@@ -937,6 +970,7 @@ export default function App() {
     initialExperimentRoute: initialRoute.project.experimentRoute,
     initialAutoResearchEpisodeId: initialRoute.project.autoResearchEpisodeId,
     projectId,
+    graphTarget,
     loadedProjectId: project?.id ?? null,
     loading,
     getActiveProjectId,
@@ -982,6 +1016,7 @@ export default function App() {
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
     projectId: string;
+    graphTarget: GraphTargetRef;
     request: Promise<void>;
   } | null>(null);
   const initialShowHandshake = useRef(false);
@@ -997,8 +1032,16 @@ export default function App() {
     [dispatchProjectSession, getProjectSessionState],
   );
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
+  const isActiveGraph = useCallback(
+    (id: string) =>
+      isActiveProject(id) && sameGraphTarget(activeGraphTargetRef.current, graphTarget),
+    [graphTarget, isActiveProject],
+  );
   const syncingDraft = projectId
-    ? Boolean(projectSession.transitionCoordinator.sync_requests[projectId])
+    ? Boolean(
+        projectSession.transitionCoordinator.sync_requests[graphSessionKey(projectId, graphTarget)],
+      )
     : false;
   const transitionManifest = trustedProjectTransitionManifest(projectSession, projectId);
   const {
@@ -1022,7 +1065,11 @@ export default function App() {
     resetProjectTasks,
     restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
-  const { retryTask, tasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
+  const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
+  const tasks = useMemo(
+    () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
+    [projectTasks, graphTarget],
+  );
   const selectedMainExperimentRouteIsCurrent =
     !selectedExperimentRoute ||
     selectedExperimentUsesBranch ||
@@ -1060,8 +1107,9 @@ export default function App() {
   } = useChatState({
     projectId,
     apiBase,
+    graphTarget,
     selectedExperimentChatId,
-    isActiveProject,
+    isActiveProject: isActiveGraph,
     visibleTranscriptIds: resolveVisibleChatTranscriptIds,
     reportError: reportErrorNotice,
   });
@@ -1100,6 +1148,10 @@ export default function App() {
     isActiveProject,
     runsVisible: view === "execution",
   });
+  const activeBranchEpisode =
+    graphTarget.kind === "branch"
+      ? episodes.find((episode) => episode.graph_branch?.branch_id === graphTarget.branch_id)
+      : null;
   const {
     snapshot: projectHistorySnapshot,
     openProjectHistory,
@@ -1110,9 +1162,10 @@ export default function App() {
   } = useProjectHistory({
     projectId,
     apiBase,
+    graphTarget,
     loadedProjectId: project?.id ?? null,
     revision: graph.revision,
-    isActiveProject,
+    isActiveProject: isActiveGraph,
     reportError: reportErrorNotice,
   });
   const {
@@ -1151,7 +1204,7 @@ export default function App() {
       if (!id) return;
       const current = currentProjectStateRef.current;
       if (!current || current.project.id !== id) return;
-      const selection = captureProjectSelection(id);
+      const selection = captureProjectSelection(id, current.project.graph_target);
       cacheProjectState(id, {
         ...current,
         ...selection,
@@ -1195,7 +1248,14 @@ export default function App() {
       });
       authoritativeProjectId.current = id;
       restoreProjectHeader(state.projectHeaderCollapsed);
-      restoreProjectSelection(id, nextGraph, presented.nodes, state, requestedRoute);
+      restoreProjectSelection(
+        id,
+        nextGraph,
+        presented.nodes,
+        state,
+        requestedRoute,
+        next.graphTarget,
+      );
       restoreProjectChats(state, presented.nodes);
       restoreProjectTasks(state);
       restoreProjectHistory(state);
@@ -1234,7 +1294,7 @@ export default function App() {
       const authoritative = nextProject.snapshot_freshness === "fresh";
       applyCanonicalProject(next.project, authoritative);
       try {
-        persistProjectHumanDraft(localStorage, next.project.id, next.humanDraft);
+        persistProjectHumanDraft(localStorage, next.project.id, next.humanDraft, next.graphTarget);
       } catch {
         // The in-memory draft remains usable if browser storage is unavailable.
       }
@@ -1251,10 +1311,10 @@ export default function App() {
       const requestedProjectId = projectId;
       const requestId = beginProjectSnapshotRequest(requestedProjectId);
       const responseIsCurrent = () =>
-        isActiveProject(requestedProjectId) &&
+        isActiveGraph(requestedProjectId) &&
         projectSnapshotRequestIsCurrent(requestedProjectId, requestId);
       const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-      const projectRequest = api<ProjectSnapshot>(base).then((nextProject) => {
+      const projectRequest = api<ProjectSnapshot>(graphPath(base)).then((nextProject) => {
         if (!responseIsCurrent()) return;
         const applied = applyProjectSnapshot(
           nextProject,
@@ -1278,9 +1338,11 @@ export default function App() {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
           if (responseIsCurrent()) setUsage(null);
         });
-      const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
-        if (responseIsCurrent()) setWatchers(nextWatchers);
-      });
+      const watchersRequest = api<WatcherRecord[]>(graphPath(`${base}/watchers`)).then(
+        (nextWatchers) => {
+          if (responseIsCurrent()) setWatchers(nextWatchers);
+        },
+      );
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
         if (responseIsCurrent()) {
           setNotice({
@@ -1299,6 +1361,8 @@ export default function App() {
     },
     [
       applyProjectSnapshot,
+      graphPath,
+      isActiveGraph,
       beginProjectSnapshotRequest,
       isActiveProject,
       projectId,
@@ -1318,9 +1382,9 @@ export default function App() {
       project_id: requestedProjectId,
       manifest: currentManifest.project_id === requestedProjectId ? currentManifest.manifest : null,
     });
-    void api<unknown>(`${apiBase}/transition-manifest`)
+    void api<unknown>(graphPath(`${apiBase}/transition-manifest`))
       .then((payload) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        if (cancelled || !isActiveGraph(requestedProjectId)) return;
         const manifest = decodeTransitionTriggerManifest(
           payload,
           getProjectSessionState().transitionManifestExpectedRulesetTag,
@@ -1337,7 +1401,7 @@ export default function App() {
       })
       .catch(() => {
         // A missing manifest is an intentional fail-safe state: staged edits use backend preview.
-        if (!cancelled && isActiveProject(requestedProjectId)) {
+        if (!cancelled && isActiveGraph(requestedProjectId)) {
           dispatchProjectSession({ kind: "manifest_invalid", project_id: requestedProjectId });
         }
       });
@@ -1346,6 +1410,8 @@ export default function App() {
     };
   }, [
     apiBase,
+    graphPath,
+    isActiveGraph,
     dispatchProjectSession,
     getProjectSessionState,
     isActiveProject,
@@ -1357,7 +1423,13 @@ export default function App() {
     (requestedProjectId?: string | null) => {
       const activeId = requestedProjectId ?? getActiveProjectId();
       if (!activeId || !isActiveProject(activeId)) return Promise.resolve();
-      if (authoritativeReloadInFlight.current?.projectId === activeId) {
+      if (
+        authoritativeReloadInFlight.current?.projectId === activeId &&
+        sameGraphTarget(
+          authoritativeReloadInFlight.current.graphTarget,
+          activeGraphTargetRef.current,
+        )
+      ) {
         return authoritativeReloadInFlight.current.request;
       }
       const request = reloadRef.current().finally(() => {
@@ -1365,7 +1437,11 @@ export default function App() {
           authoritativeReloadInFlight.current = null;
         }
       });
-      authoritativeReloadInFlight.current = { projectId: activeId, request };
+      authoritativeReloadInFlight.current = {
+        projectId: activeId,
+        graphTarget: activeGraphTargetRef.current,
+        request,
+      };
       return request;
     },
     [getActiveProjectId, isActiveProject],
@@ -1375,9 +1451,15 @@ export default function App() {
     (requestedProjectId: string): Promise<void> =>
       runProjectHeartbeat(requestedProjectId, async () => {
         const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        let observedRevision: number;
+        const requestedTarget = isActiveProject(requestedProjectId)
+          ? activeGraphTargetRef.current
+          : MAIN_GRAPH;
+        let observation: GraphRevisionSnapshot;
         try {
-          observedRevision = await loadCanonicalRevision(api, base);
+          observation = await loadGraphRevision(
+            (path) => api(graphTargetUrl(path, requestedTarget)),
+            base,
+          );
         } catch (error) {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
           // A 404 here is ambiguous: the display cache may merely be missing,
@@ -1392,13 +1474,17 @@ export default function App() {
           setNotice({ kind: "error", text: "This project is no longer available." });
           return;
         }
+        const observedRevision = observation.revision;
         const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
         if (!tabIsOpen()) return;
         if (isActiveProject(requestedProjectId)) {
+          if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
           if (
             canonicalRevisionNeedsReload(
               observedRevision,
               getProjectSessionState().renderedRevision,
+              observation.graph_mutation,
+              getProjectSessionState().project?.graph_mutation,
             )
           ) {
             await reloadAuthoritativeProject(requestedProjectId);
@@ -1752,9 +1838,15 @@ export default function App() {
     const handleHashChange = () => {
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
-      if (route.projectId !== activeId) {
+      const nextTarget = graphTargetFromHash(window.location.hash);
+      if (
+        route.projectId !== activeId ||
+        !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
+      ) {
         rememberProjectState(activeId);
       }
+      activeGraphTargetRef.current = nextTarget;
+      setGraphTarget((current) => (sameGraphTarget(current, nextTarget) ? current : nextTarget));
       applyHashRoute(route.projectId, isSetupRoute());
       applyRouteSelection(
         route.view,
@@ -1771,7 +1863,7 @@ export default function App() {
     if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
-    const retainedOpen = projectId ? cachedProjectStateForOpen(projectId) : null;
+    const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
     const retained = retainedOpen?.state;
     setNotice(null);
     if (projectId && retained) {
@@ -1788,7 +1880,7 @@ export default function App() {
       if (projectId) {
         try {
           storedDraft = deserializeHumanDraft(
-            localStorage.getItem(humanDraftStorageKey(projectId)),
+            localStorage.getItem(humanDraftStorageKey(projectId, graphTarget)),
           );
         } catch (error) {
           setNotice({
@@ -1797,7 +1889,12 @@ export default function App() {
           });
         }
       }
-      dispatchProjectSession({ kind: "reset", project_id: projectId, human_draft: storedDraft });
+      dispatchProjectSession({
+        kind: "reset",
+        project_id: projectId,
+        graph_target: graphTarget,
+        human_draft: storedDraft,
+      });
       resetProjectSelection(
         routeMatchesProject ? requestedRoute.view : "overview",
         routeMatchesProject ? requestedRoute.experimentId : null,
@@ -1806,7 +1903,7 @@ export default function App() {
       );
       resetProjectChats();
       resetProjectTasks();
-      resetProjectHistory(projectId);
+      resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
       resetProjectHeader(projectId);
@@ -1828,12 +1925,12 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    const stillOpening = () => !cancelled && isActiveProject(projectId);
+    const stillOpening = () => !cancelled && isActiveGraph(projectId);
     const applyCachedSnapshot = async () => {
       const cachedRequestId = beginProjectSnapshotRequest(projectId);
       try {
         const cachedProject = await api<ProjectSnapshot>(
-          `/api/projects/${encodeURIComponent(projectId)}/cached`,
+          graphPath(`/api/projects/${encodeURIComponent(projectId)}/cached`),
         );
         if (!stillOpening()) return;
         // The session declines a cached snapshot that lost to a newer snapshot
@@ -1893,6 +1990,9 @@ export default function App() {
     isActiveProject,
     loadProjectIndex,
     projectId,
+    graphTarget,
+    graphPath,
+    isActiveGraph,
     reload,
     resetProjectHeader,
     resetProjectSelection,
@@ -2004,8 +2104,20 @@ export default function App() {
     return control;
   };
   const presentedGraph = useMemo(
-    () => attentionGraphForProjection(graph, presentedTransitionProjection),
-    [graph, presentedTransitionProjection],
+    () =>
+      attentionGraphForProjection(
+        graph,
+        presentedTransitionProjection,
+        draftPreviewRouting.route,
+        mutationsDisabled ? null : humanDraft,
+      ),
+    [
+      graph,
+      presentedTransitionProjection,
+      draftPreviewRouting.route,
+      mutationsDisabled,
+      humanDraft,
+    ],
   );
   const presentedAttention = projectAttentionForPresentation(
     project,
@@ -2127,12 +2239,12 @@ export default function App() {
     const requestedProjectId = projectId;
     const request = toHumanSyncRequest(normalizedPreviewDraft, graph);
     let cancelled = false;
-    void api<TransitionPreviewResponse>(`${apiBase}/sync/preview`, {
+    void api<TransitionPreviewResponse>(graphPath(`${apiBase}/sync/preview`), {
       method: "POST",
       body: JSON.stringify(request),
     })
       .then((response) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        if (cancelled || !isActiveGraph(requestedProjectId)) return;
         const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
@@ -2229,7 +2341,7 @@ export default function App() {
         });
       })
       .catch((error) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
+        if (cancelled || !isActiveGraph(requestedProjectId)) return;
         dispatchProjectSession({
           kind: "draft_preview_changed",
           projection: getProjectSessionState().draftTransitionProjection,
@@ -2242,6 +2354,8 @@ export default function App() {
     };
   }, [
     apiBase,
+    graphPath,
+    isActiveGraph,
     committableDraftCount,
     dispatchProjectSession,
     draftPreviewRouting.route,
@@ -2259,7 +2373,7 @@ export default function App() {
     transitionRulesetTag,
   ]);
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
-  const hasActiveTasks = tasks.some(isActiveTask);
+  const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
     setTextScale((current) => changeTextScale(current, action));
@@ -2296,6 +2410,8 @@ export default function App() {
     }
   }, [
     apiBase,
+    graphPath,
+    isActiveGraph,
     projectId,
     refreshChatSummaries,
     selectedChatId,
@@ -2360,7 +2476,7 @@ export default function App() {
         ) {
           try {
             const nextWatchers = await api<WatcherRecord[]>(
-              `/api/projects/${encodeURIComponent(projectId)}/watchers`,
+              graphPath(`/api/projects/${encodeURIComponent(projectId)}/watchers`),
             );
             if (!stopped) setWatchers(nextWatchers);
           } catch (error) {
@@ -2381,7 +2497,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [consumeTerminalTasks, hasActiveTasks, projectId, reloadAuthoritativeProject]);
+  }, [consumeTerminalTasks, hasActiveTasks, projectId, graphTarget, reloadAuthoritativeProject]);
 
   useEffect(() => {
     if (!projectId || !watchersAwaitingDelivery) return;
@@ -2399,7 +2515,7 @@ export default function App() {
           watchers: nextWatchers,
           tasks: nextTasks,
           project: nextProject,
-        } = await loadExperimentWatcherPoll(api, base);
+        } = await loadExperimentWatcherPoll(api, base, graphTarget);
         if (
           !stopped &&
           isActiveProject(requestedProjectId) &&
@@ -2443,6 +2559,8 @@ export default function App() {
     };
   }, [
     applyProjectSnapshot,
+    graphPath,
+    isActiveGraph,
     beginProjectSnapshotRequest,
     isActiveProject,
     projectId,
@@ -2492,7 +2610,7 @@ export default function App() {
     setNotice(null);
     const { next } = updateProjectHumanDraft(projectId, graph, update);
     try {
-      persistProjectHumanDraft(localStorage, projectId, next.humanDraft);
+      persistProjectHumanDraft(localStorage, projectId, next.humanDraft, graphTarget);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2502,7 +2620,7 @@ export default function App() {
     if (!projectId) return;
     dispatchProjectSession({ kind: "human_draft_updated", project_id: projectId, draft: null });
     try {
-      localStorage.removeItem(humanDraftStorageKey(projectId));
+      localStorage.removeItem(humanDraftStorageKey(projectId, graphTarget));
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2533,19 +2651,24 @@ export default function App() {
     setNotice(null);
     let committedResponseReceived = false;
     const reconcileRequestedProject = async () => {
-      if (isActiveProject(requestedProjectId)) {
+      if (isActiveGraph(requestedProjectId)) {
         await reloadAuthoritativeProject(requestedProjectId);
       } else {
-        await heartbeatProjectCache(requestedProjectId);
+        // The saved draft is reconciled against its exact target on next open.
+        if (expectedHead.target.kind === "main") await heartbeatProjectCache(requestedProjectId);
       }
     };
     try {
-      const response = await api<ProjectTransitionResponse>(`${apiBase}/sync`, {
+      const response = await api<ProjectTransitionResponse>(graphPath(`${apiBase}/sync`), {
         method: "POST",
         body: JSON.stringify(request),
       });
       committedResponseReceived = true;
-      dispatchProjectSession({ kind: "activate", project_id: getActiveProjectId() });
+      dispatchProjectSession({
+        kind: "activate",
+        project_id: getActiveProjectId(),
+        graph_target: activeGraphTargetRef.current,
+      });
       const disposition = transitionSyncCompletionDisposition(
         getProjectSessionState().transitionCoordinator,
         fence,
@@ -2556,11 +2679,11 @@ export default function App() {
       ) {
         try {
           await reconcileRequestedProject();
-          if (isActiveProject(requestedProjectId)) {
+          if (isActiveGraph(requestedProjectId)) {
             setNotice({ kind: "info", text: "Sync committed and canonical state was refreshed." });
           }
         } catch (error) {
-          if (isActiveProject(requestedProjectId)) {
+          if (isActiveGraph(requestedProjectId)) {
             setNotice({
               kind: "error",
               text: `Sync committed, but canonical state could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2611,12 +2734,18 @@ export default function App() {
         throw new Error("Committed transition response lost the active project session.");
       }
       try {
-        persistProjectHumanDraft(localStorage, requestedProjectId, committedSession.humanDraft);
+        persistProjectHumanDraft(
+          localStorage,
+          requestedProjectId,
+          committedSession.humanDraft,
+          expectedHead.target,
+        );
       } catch (error) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
       applyCanonicalProject(committedSession.project, true);
       reconcileFloatingChat(nextGraph.nodes, false);
+      if (expectedHead.target.kind === "branch") await reload();
       setNotice({
         kind: "info",
         text: humanSyncSuccessNotice(nextGraph.revision, request.proposals, nextGraph),
@@ -2626,7 +2755,7 @@ export default function App() {
         try {
           await reconcileRequestedProject();
         } catch (reloadError) {
-          if (isActiveProject(requestedProjectId)) {
+          if (isActiveGraph(requestedProjectId)) {
             setNotice({
               kind: "error",
               text: `Sync committed, but its response was refused and canonical refresh failed: ${reloadError instanceof Error ? reloadError.message : String(reloadError)}`,
@@ -2634,7 +2763,7 @@ export default function App() {
           }
           return;
         }
-        if (isActiveProject(requestedProjectId)) {
+        if (isActiveGraph(requestedProjectId)) {
           setNotice({
             kind: "error",
             text: `Sync committed, but its response could not be applied directly: ${error instanceof Error ? error.message : String(error)}`,
@@ -2643,7 +2772,7 @@ export default function App() {
         return;
       }
       const failure = humanSyncFailure(error);
-      if (isActiveProject(requestedProjectId)) {
+      if (isActiveGraph(requestedProjectId)) {
         setNotice({ kind: "error", text: failure.text });
       }
       if (failure.revisionConflict) {
@@ -2661,22 +2790,34 @@ export default function App() {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
-        const task = await api<AgentTask>(`${apiBase}/tasks/${kind}`, {
-          method: "POST",
-          body: JSON.stringify(request),
-        });
-        recordStartedTask(task);
-        setNotice(null);
+        const task = await api<AgentTask>(
+          kind === "node_chat" || kind === "project_chat"
+            ? graphPath(`${apiBase}/tasks/${kind}`)
+            : `${apiBase}/tasks/${kind}`,
+          {
+            method: "POST",
+            body: JSON.stringify(request),
+          },
+        );
+        if (
+          (kind === "node_chat" || kind === "project_chat") &&
+          !sameGraphTarget(task.graph_target, graphTarget)
+        )
+          throw new Error("Conversation start returned a different graph target.");
+        if (projectId && isActiveGraph(projectId)) {
+          recordStartedTask(task);
+          setNotice(null);
+        }
         return task;
       } finally {
         finishTaskStart();
       }
     },
-    [apiBase, beginTaskStart, recordStartedTask],
+    [apiBase, graphPath, graphTarget, projectId, isActiveGraph, beginTaskStart, recordStartedTask],
   );
   const loadWebMcpConversation = useCallback(
-    (chatId: string) => loadChatTranscript(apiBase, chatId, api),
-    [apiBase],
+    (chatId: string) => loadChatTranscript(apiBase, chatId, api, graphTarget),
+    [apiBase, graphTarget],
   );
   const loadWebMcpTask = useCallback(
     async (operationId: string): Promise<AgentTask | null> => {
@@ -2726,7 +2867,8 @@ export default function App() {
       await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
         method: "POST",
       });
-      setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
+      const nextWatchers = await api<WatcherRecord[]>(graphPath(`${apiBase}/watchers`));
+      if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2738,7 +2880,9 @@ export default function App() {
       if (experimentStopId) throw new Error("Another Experiment Stop is already being submitted.");
       const finishExperimentStop = beginExperimentStop(nodeId);
       try {
-        await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
+        await api<unknown>(graphPath(experimentStopPath(apiBase, nodeId, episodeId)), {
+          method: "POST",
+        });
         try {
           await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
         } catch (error) {
@@ -2751,7 +2895,7 @@ export default function App() {
         finishExperimentStop();
       }
     },
-    [apiBase, beginExperimentStop, experimentStopId, refreshExperimentLoops, reload],
+    [apiBase, graphPath, beginExperimentStop, experimentStopId, refreshExperimentLoops, reload],
   );
   const stopExperimentLoop = useCallback(
     async (nodeId: string, episodeId: string | null = null) => {
@@ -2810,7 +2954,7 @@ export default function App() {
         const chatId = ensureConversation(conversations, "node_chat", node, project.name);
         const profile = project.agent_profiles.node_chat;
         const task = await api<AgentTask>(
-          `${apiBase}/experiments/${encodeURIComponent(node.id)}/run`,
+          graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
             method: "POST",
             body: JSON.stringify({
@@ -2823,6 +2967,9 @@ export default function App() {
             }),
           },
         );
+        if (!sameGraphTarget(task.graph_target, graphTarget))
+          throw new Error("Experiment start returned a different graph target.");
+        if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);
         setNotice(null);
         setFloatingChat(null);
@@ -2842,6 +2989,9 @@ export default function App() {
     },
     [
       apiBase,
+      graphPath,
+      graphTarget,
+      isActiveGraph,
       beginTaskStart,
       conversations,
       ensureConversation,
@@ -3934,6 +4084,35 @@ export default function App() {
         )}
       </nav>
 
+      {graphTarget.kind === "branch" && (
+        <section className="branch-graph-banner" aria-label="Active graph target">
+          <span>
+            <GitBranch size={16} />
+            <strong>Episode branch</strong>
+            <span className="mono">{graphTarget.branch_id.slice(0, 8)}</span>
+            <span>Revision {graph.revision}</span>
+            {activeBranchEpisode?.graph_branch && (
+              <span>{branchMergeStateLabel(activeBranchEpisode.graph_branch.merge_state)}</span>
+            )}
+          </span>
+          <div>
+            <button
+              type="button"
+              className="button compact secondary"
+              onClick={() => {
+                if (activeBranchEpisode) {
+                  window.location.hash = `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
+                } else changeView("execution");
+              }}
+            >
+              Episode & tasks
+            </button>
+            <a className="button compact secondary" href={graphViewHash(project.id, MAIN_GRAPH)}>
+              Main graph
+            </a>
+          </div>
+        </section>
+      )}
       {dockedNodes.length > 0 && (
         <section className="node-window-dock" aria-label="Docked node windows">
           <div className="node-window-dock-label">
@@ -4139,6 +4318,10 @@ export default function App() {
           )}
           {view === "dag" && (
             <DagView
+              key={graphSessionKey(project.id, graphTarget)}
+              graphTarget={graphTarget}
+              branchChanges={project.graph_changes}
+              onInspectTask={selectTaskInspector}
               {...graphEditingProps}
               graph={presentedGraph}
               trustView={trustView}
@@ -4155,7 +4338,7 @@ export default function App() {
                 episodes={episodes}
                 episodeMessages={episodeMessages}
                 episodeAction={episodeAction}
-                tasks={tasks}
+                tasks={projectTasks}
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
                 experimentEntries={experimentLoops.filter(
@@ -4210,7 +4393,7 @@ export default function App() {
               apiBase={apiBase}
               project={project}
               initialPaper={paper}
-              tasks={tasks}
+              tasks={projectTasks}
               onStartTask={startAgentTask}
               onPaperChange={updatePaper}
             />
@@ -4251,9 +4434,14 @@ export default function App() {
                   retention,
                 );
                 beginProjectSnapshotRequest(saved.id);
-                updateProject((current) => projectSettingsSavedProject(saved, current, retention));
-                const applied = getProjectSessionState().project;
-                if (applied) replaceRunScope(applied.default_run_truth_scope);
+                if (graphTarget.kind === "main")
+                  updateProject((current) =>
+                    projectSettingsSavedProject(saved, current, retention),
+                  );
+                else void reload();
+                // The saved snapshot carries the new default; the session may still
+                // hold the pre-save branch snapshot while its reload is in flight.
+                replaceRunScope(saved.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -4303,18 +4491,26 @@ export default function App() {
       ).map(({ slot, selected }) => {
         if (!selected) return null;
         const node = presentedGraph.nodes[selected.id] ?? selected;
-        const experimentControl = experimentControlForNode(node);
+        const historical =
+          !presentedGraph.nodes[node.id] &&
+          project.graph_changes?.nodes.some(
+            (change) => change.node_id === node.id && change.change === "removed",
+          ) === true;
+        const experimentControl = historical ? null : experimentControlForNode(node);
         return (
           <DetailDrawer
             key={`${slot}:${node.id}`}
             node={node}
+            historical={historical}
+            branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
+            onInspectTask={selectTaskInspector}
             edges={Object.values(presentedGraph.edges)}
             allNodes={presentedGraph.nodes}
             glossaryIndex={glossaryIndex}
             beliefTransitions={graph.belief_transitions}
             validationMessages={graph.validation_messages}
             ontology={presentedGraph.ontology}
-            sizeStorageKey={nodeDetailSizeStorageKey(project.id)}
+            sizeStorageKey={nodeDetailSizeStorageKey(graphSessionKey(project.id, graphTarget))}
             detailSlot={slot}
             focusRequestToken={detailFocusTokens[slot]}
             mutationsDisabled={mutationsDisabled}
@@ -4476,7 +4672,7 @@ export default function App() {
       )}
       {taskInspectorId && (
         <AgentTaskInspector
-          tasks={tasks}
+          tasks={projectTasks}
           task={inspectedTask}
           loading={taskInspectorLoading}
           actionBusy={Boolean(

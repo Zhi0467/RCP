@@ -210,9 +210,11 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
         authorized_by=None,
         stage_host=None,
         stage_root=None,
+        graph_target=None,
     ):
         assert stage_host is None
         assert stage_root is None
+        assert graph_target.kind == "main"
         started_kinds.append(kind)
         now = store.now()
         return AgentTaskRecord(
@@ -457,9 +459,11 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         authorized_by=None,
         stage_host=None,
         stage_root=None,
+        graph_target=None,
     ):
         assert stage_host is None
         assert stage_root is None
+        assert graph_target.kind == "main"
         now = valid_store.now()
         return AgentTaskRecord(
             operation_id=operation_id or str(uuid.uuid4()),

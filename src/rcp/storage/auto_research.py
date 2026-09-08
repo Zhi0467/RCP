@@ -1675,6 +1675,8 @@ class AutoResearchStoreMixin:
         connection: sqlite3.Connection,
         episode: EpisodeRecord,
     ) -> list[AgentTaskRecord]:
+        from rcp.runs.task_policy import task_graph_capable
+
         if (
             episode.status not in {"running", "stopping"}
             or episode.ending is not None
@@ -1687,9 +1689,13 @@ class AutoResearchStoreMixin:
         )
         if orchestrator is None or orchestrator["status"] != "paused":
             return []
-        tasks = self._unsettled_graph_target_tasks_in_connection(
-            connection, episode.project_id, episode.graph_target
-        )
+        tasks = [
+            task
+            for task in self._unsettled_graph_target_tasks_in_connection(
+                connection, episode.project_id, episode.graph_target
+            )
+            if task_graph_capable(task.kind, task.request)
+        ]
         if not any(task.operation_id == orchestrator["operation_id"] for task in tasks):
             return []
         if any(

@@ -124,3 +124,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S135](S135-supervisor-recovers-automatically-after-reboot.md) | Recover interrupted deployment before admitting work after reboot | pending | pytest + ssh + systemd + vm |
 | [S136](S136-long-running-compute-outlives-the-agent.md) | Long-running compute outlives the agent and wakes it | pending | pytest + ssh + real Codex |
 | [S137](S137-archive-episode-runs.md) | Archive an episode without erasing its work | implemented | pytest + api + browser |
+| [S138](S138-edit-and-discuss-an-episode-graph.md) | Inspect, edit, and discuss an episode graph with ordinary controls | implemented | pytest + browser |

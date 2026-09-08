@@ -1,3 +1,5 @@
+import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { RevisionSummary, ValidationMessage } from "../types";
@@ -14,6 +16,7 @@ export interface ProjectHistorySnapshot {
 interface UseProjectHistoryOptions {
   projectId: string | null;
   apiBase: string;
+  graphTarget?: GraphTargetRef;
   loadedProjectId: string | null;
   revision: number;
   isActiveProject: (projectId: string) => boolean;
@@ -44,6 +47,7 @@ export function validationNoticeId(message: ValidationMessage): string {
 export function useProjectHistory({
   projectId,
   apiBase,
+  graphTarget = MAIN_GRAPH,
   loadedProjectId,
   revision,
   isActiveProject,
@@ -55,7 +59,7 @@ export function useProjectHistory({
   const [historySummariesError, setHistorySummariesError] = useState<string | null>(null);
   const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
   const [dismissedHistoryNoticeIds, setDismissedHistoryNoticeIds] = useState<Set<string>>(() =>
-    readDismissedHistoryNoticeIds(projectId),
+    readDismissedHistoryNoticeIds(projectId, graphTarget),
   );
 
   useEffect(() => {
@@ -70,7 +74,9 @@ export function useProjectHistory({
     setLatestRevisionSummary((current) =>
       current?.to_revision === requestedRevision ? current : null,
     );
-    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase, requestedRevision))
+    void api<RevisionSummary[]>(
+      graphTargetUrl(revisionSummariesUrl(apiBase, requestedRevision), graphTarget),
+    )
       .then((summaries) => {
         if (cancelled || !isActiveProject(requestedProjectId)) return;
         setLatestRevisionSummary(
@@ -87,7 +93,7 @@ export function useProjectHistory({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, revision, loadedProjectId, projectId]);
+  }, [apiBase, graphTarget, revision, loadedProjectId, projectId]);
 
   useEffect(() => {
     if (!projectHistoryOpen || !projectId || !apiBase || loadedProjectId !== projectId) return;
@@ -95,7 +101,7 @@ export function useProjectHistory({
     const requestedRevision = revision;
     let cancelled = false;
     setHistorySummariesError(null);
-    void api<RevisionSummary[]>(revisionSummariesUrl(apiBase))
+    void api<RevisionSummary[]>(graphTargetUrl(revisionSummariesUrl(apiBase), graphTarget))
       .then((summaries) => {
         if (cancelled || !isActiveProject(requestedProjectId)) return;
         setHistoryRevisionSummaries(summaries);
@@ -112,7 +118,7 @@ export function useProjectHistory({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, revision, loadedProjectId, projectHistoryOpen, projectId]);
+  }, [apiBase, graphTarget, revision, loadedProjectId, projectHistoryOpen, projectId]);
 
   const openProjectHistory = useCallback(() => {
     setHistorySummariesRevision(null);
@@ -124,14 +130,17 @@ export function useProjectHistory({
     setProjectHistoryOpen(false);
   }, []);
 
-  const resetProjectHistory = useCallback((nextProjectId: string | null) => {
-    setLatestRevisionSummary(null);
-    setHistoryRevisionSummaries([]);
-    setHistorySummariesRevision(null);
-    setHistorySummariesError(null);
-    setProjectHistoryOpen(false);
-    setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(nextProjectId));
-  }, []);
+  const resetProjectHistory = useCallback(
+    (nextProjectId: string | null, nextTarget: GraphTargetRef = MAIN_GRAPH) => {
+      setLatestRevisionSummary(null);
+      setHistoryRevisionSummaries([]);
+      setHistorySummariesRevision(null);
+      setHistorySummariesError(null);
+      setProjectHistoryOpen(false);
+      setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(nextProjectId, nextTarget));
+    },
+    [],
+  );
 
   const restoreProjectHistory = useCallback((snapshot: ProjectHistorySnapshot) => {
     setLatestRevisionSummary(snapshot.latestRevisionSummary);
@@ -150,14 +159,14 @@ export function useProjectHistory({
         ids.forEach((id) => next.add(id));
         try {
           localStorage.setItem(
-            historyNoticeStorageKey(projectId),
+            historyNoticeStorageKey(projectId ? graphSessionKey(projectId, graphTarget) : null),
             JSON.stringify([...next].sort()),
           );
         } catch {}
         return next;
       });
     },
-    [projectId],
+    [projectId, graphTarget],
   );
 
   const snapshot = useMemo<ProjectHistorySnapshot>(
@@ -193,10 +202,15 @@ function historyNoticeStorageKey(projectId: string | null): string {
   return `rcp:dismissed-history-notices:${projectId ?? "none"}`;
 }
 
-function readDismissedHistoryNoticeIds(projectId: string | null): Set<string> {
+function readDismissedHistoryNoticeIds(
+  projectId: string | null,
+  graphTarget: GraphTargetRef,
+): Set<string> {
   try {
     const parsed: unknown = JSON.parse(
-      localStorage.getItem(historyNoticeStorageKey(projectId)) ?? "[]",
+      localStorage.getItem(
+        historyNoticeStorageKey(projectId ? graphSessionKey(projectId, graphTarget) : null),
+      ) ?? "[]",
     );
     return new Set(
       Array.isArray(parsed)
