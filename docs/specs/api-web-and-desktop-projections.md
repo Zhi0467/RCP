@@ -640,9 +640,12 @@ the route shows a History handoff without exposing the newer episode's transcrip
 or controls.
 
 An Auto-research detail shows compact graph-branch identity, base/head, merge
-state, and **Merge to main** only for an eligible changed head. **Open graph**
-selects the branch workspace explicitly. An exact branch Experiment route may
-show its historical transcript through Runs without exposing an ordinary
+state, and a persistent **Merge to main** control. A deliberate click checks
+current server eligibility and either starts the merge or displays the blocker
+beside the control, following the
+[branch merge projection](auto-research-and-branch-merge.md#runs-projection).
+**Open graph** selects the branch workspace explicitly. An exact branch
+Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch
 workspace have their own sessions and authority. A main workspace cannot reuse
 a branch-bound conversation or native session.

@@ -710,6 +710,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "base_head",
         "head",
         "merge_eligible",
+        "merge_blocked_reason",
         "merge_requires_end",
         "merge_state",
         "latest_successful_merge",
@@ -724,6 +725,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "base_head": metadata.base_head.model_dump(mode="json"),
         "head": metadata.head.model_dump(mode="json"),
         "merge_eligible": True,
+        "merge_blocked_reason": None,
         "merge_requires_end": False,
         "merge_state": "unmerged",
         "latest_successful_merge": None,
@@ -773,7 +775,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert concurrent.status_code == 409
-    assert "active" in concurrent.json()["detail"]
+    assert "already running" in concurrent.json()["detail"]
 
     harness.store.fail_agent_task(first.operation_id, "The merge provider exited early.")
     for action in ("resume", "retry"):
@@ -812,7 +814,11 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     )
 
     assert refused.status_code == 409
-    assert "not merge eligible" in refused.json()["detail"]
+    assert refused.json()["detail"] == summary["merge_blocked_reason"]
+    if ended:
+        assert "no changes" in refused.json()["detail"]
+    else:
+        assert harness.root.operation_id in refused.json()["detail"]
     assert not any(
         task.kind == "branch_merge" for task in harness.store.agent_tasks(harness.project_id)
     )
@@ -873,18 +879,26 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     assert harness.branch.merge_receipts()[-1].provenance.merge_task_id == operation_id
 
 
-def test_ended_branch_still_refuses_an_unresolved_paused_writer(manifest, tmp_path: Path) -> None:
+@pytest.mark.parametrize("ending", ["stopped", "human_pause"])
+def test_ended_branch_still_refuses_an_unresolved_paused_writer(
+    manifest, tmp_path: Path, ending: str
+) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
     store = harness.store
     store.mark_agent_task_running(harness.root.operation_id)
     store.pause_agent_task(harness.root.operation_id, detail="Still owns an unfinished turn.")
-    store.end_episode_without_report(harness.episode.episode_id, ending="human_pause")
+    if ending == "stopped":
+        store.mark_episode_stop_skipped(harness.episode.episode_id)
+    else:
+        store.end_episode_without_report(harness.episode.episode_id, ending="human_pause")
 
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is False
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert response.status_code == 409
+    assert harness.root.operation_id in response.json()["detail"]
+    assert "paused" in response.json()["detail"]
     assert [
         task.operation_id
         for task in store.unsettled_graph_target_tasks(

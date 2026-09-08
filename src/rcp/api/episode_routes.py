@@ -280,8 +280,7 @@ def merge_episode_branch(
         summary = graph_branch_summary(episode, store=store, catalog=catalog)
         if not summary.merge_eligible:
             raise ValueError(
-                "This graph branch is active, unchanged, already merged, or otherwise "
-                "not merge eligible."
+                summary.merge_blocked_reason or "This graph branch cannot merge to main yet."
             )
         service.history.require_writable()
         merge_request = _resolved_branch_merge_request(service, episode.episode_id)

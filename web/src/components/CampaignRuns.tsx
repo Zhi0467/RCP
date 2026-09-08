@@ -75,6 +75,8 @@ export function AutoResearchEpisodeCard({
   const [additionalInvocations, setAdditionalInvocations] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const mergeSnapshot = JSON.stringify(episode.graph_branch);
+  const [mergeError, setMergeError] = useState<{ snapshot: string; message: string } | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const turnRows = useMemo(
     () =>
@@ -135,6 +137,10 @@ export function AutoResearchEpisodeCard({
     if (episode.can_reauthorize) setExpanded(true);
   }, [episode.can_reauthorize]);
 
+  useEffect(() => {
+    setMergeError(null);
+  }, [mergeSnapshot]);
+
   const submitReauthorization = async () => {
     if (!reauthorizationIsValid || anotherActionBusy) return;
     setLocalError(null);
@@ -169,12 +175,15 @@ export function AutoResearchEpisodeCard({
   };
 
   const mergeToMain = async () => {
-    if (!episode.graph_branch?.merge_eligible || anotherActionBusy) return;
-    setLocalError(null);
+    if (!episode.graph_branch || anotherActionBusy) return;
+    setMergeError(null);
     try {
       await onMerge(episode.episode_id);
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : String(error));
+      setMergeError({
+        snapshot: mergeSnapshot,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -366,26 +375,24 @@ export function AutoResearchEpisodeCard({
                     {episode.graph_branch.merge_diagnostic}
                   </div>
                 )}
-              {episode.graph_branch.merge_eligible &&
-                episode.graph_branch.merge_state !== "running" && (
-                  <button
-                    className="button primary compact campaign-branch-merge"
-                    type="button"
-                    disabled={anotherActionBusy}
-                    onClick={() => void mergeToMain()}
-                  >
-                    {mergeBusy ? (
-                      <LoaderCircle className="spin" size={12} />
-                    ) : (
-                      <Network size={12} />
-                    )}
-                    {mergeBusy
-                      ? "Starting merge…"
-                      : episode.graph_branch.merge_requires_end
-                        ? "End and merge to main"
-                        : "Merge to main"}
-                  </button>
-                )}
+              <button
+                className="button primary compact campaign-branch-merge"
+                type="button"
+                disabled={anotherActionBusy}
+                onClick={() => void mergeToMain()}
+              >
+                {mergeBusy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
+                {mergeBusy
+                  ? "Starting merge…"
+                  : episode.graph_branch.merge_requires_end
+                    ? "End and merge to main"
+                    : "Merge to main"}
+              </button>
+              {mergeError?.snapshot === mergeSnapshot && (
+                <div className="campaign-branch-diagnostic" role="alert">
+                  {mergeError.message}
+                </div>
+              )}
             </section>
           )}
 

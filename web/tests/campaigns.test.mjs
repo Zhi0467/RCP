@@ -3,6 +3,7 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { chromium } from "playwright";
 
 import {
   archiveEpisode,
@@ -408,6 +409,7 @@ function withGraphBranch(overrides = {}) {
       base_head: baseHead,
       head: branchHead,
       merge_eligible: true,
+      merge_blocked_reason: null,
       merge_requires_end: false,
       merge_state: "unmerged",
       latest_successful_merge: null,
@@ -432,7 +434,8 @@ test("an eligible episode shows its graph branch base, head, and merge action", 
   assert.match(html, />Merge to main</);
 });
 
-test("an ineligible or running branch has no merge action, while another busy action disables it", () => {
+test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {
+  const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
   const running = renderEpisodes([
     withGraphBranch({
       merge_eligible: false,
@@ -445,7 +448,8 @@ test("an ineligible or running branch has no merge action, while another busy ac
   });
 
   assert.match(running, /Merge running/);
-  assert.doesNotMatch(running, />Merge to main</);
+  assert.match(ineligible, />Merge to main</);
+  assert.match(running, />Merge to main</);
   assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
 });
 
@@ -454,6 +458,95 @@ test("a paused episode explicitly ends when its branch is merged", () => {
 
   assert.match(html, />End and merge to main</);
   assert.doesNotMatch(html, />Merge to main</);
+});
+
+test("a stopped ineligible branch submits a deliberate merge and shows the server refusal beside it", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("console", (message) => {
+      if (message.type() === "error" && !message.text().includes("409 (Conflict)")) {
+        errors.push(message.text());
+      }
+    });
+    const stopped = {
+      ...withGraphBranch({ merge_eligible: false }),
+      status: "stopped",
+      ending: "stopped",
+      health: "stopped",
+      recommendation: "none",
+      can_stop: false,
+      can_message: false,
+      task_control: null,
+      tasks: [],
+    };
+    const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
+    let polledEpisode = stopped;
+    await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
+    let requests = 0;
+    await page.route("**/api/projects/**/merge", async (route) => {
+      assert.equal(route.request().method(), "POST");
+      requests += 1;
+      await route.fulfill(
+        requests === 1
+          ? { status: 409, json: { detail: reason } }
+          : {
+              status: 202,
+              json: {
+                ...stopped,
+                graph_branch: {
+                  ...stopped.graph_branch,
+                  merge_state: "running",
+                  active_merge_task_id: "merge-task",
+                },
+              },
+            },
+      );
+    });
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
+    );
+    const merge = page.getByRole("button", { name: "Merge to main", exact: true });
+    await merge.click();
+    const branch = page.getByRole("region", { name: "Episode graph branch" });
+    await branch.getByRole("alert").waitFor();
+    assert.equal(await branch.getByRole("alert").textContent(), reason);
+    assert.equal(requests, 1);
+    assert.equal(await merge.isEnabled(), true);
+    // Polling identical state retains the refusal, but a newly eligible snapshot retires it.
+    await page.evaluate(() => window.refreshMergeEpisode());
+    assert.equal(await branch.getByRole("alert").textContent(), reason);
+    polledEpisode = {
+      ...stopped,
+      graph_branch: { ...stopped.graph_branch, merge_eligible: true },
+    };
+    await page.evaluate(() => window.refreshMergeEpisode());
+    await branch.getByRole("alert").waitFor({ state: "detached" });
+    assert.equal(requests, 1);
+    // Returning to the earlier snapshot must not resurrect an obsolete refusal.
+    polledEpisode = stopped;
+    await page.evaluate(() => window.refreshMergeEpisode());
+    assert.equal(await branch.getByRole("alert").count(), 0);
+    // Eligibility can change after the last snapshot; the second click must reach the server.
+    await merge.click();
+    await branch.getByText("Merge running", { exact: true }).waitFor();
+    assert.equal(await branch.getByRole("alert").count(), 0);
+    assert.equal(requests, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
 });
 
 test("merged and failed branch summaries stay visible without branch-management controls", () => {
@@ -490,7 +583,7 @@ test("merged and failed branch summaries stay visible without branch-management 
   assert.match(merged, />Merged</);
   assert.match(merged, /Merged on main/);
   assert.match(merged, />r11</);
-  assert.doesNotMatch(merged, />Merge to main</);
+  assert.match(merged, />Merge to main</);
   assert.doesNotMatch(merged, /discard|switch|conflict viewer/i);
   assert.match(failed, /Merge failed/);
   assert.match(failed, /The branch delta could not be rebased onto current main\./);
