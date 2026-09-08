@@ -289,7 +289,8 @@ One RCP process owns one data directory, enforced by an OS lock. `rcp open`
 reuses a healthy owner or gracefully replaces an unavailable one; explicit
 `rcp serve` performs the same takeover only after recoverable work is paused.
 The replaced server gives in-flight requests a bounded grace period shorter than
-the takeover wait, so one stuck request cannot defeat replacement. The human is
+the takeover wait and then aborts every pending canonical-lock wait, so one stuck
+request cannot defeat replacement. The human is
 never asked to discover or kill the old process manually.
 
 Remote canonical locks are process-held advisory files. Writers wait for live

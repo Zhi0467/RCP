@@ -59,6 +59,24 @@ from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
+# Set once when the server shuts down. Every canonical-lock wait polls it, so a
+# request thread blocked behind a contended lock unwinds instead of keeping the
+# old process alive past the replacement window.
+_CANONICAL_LOCK_WAIT_FENCE = threading.Event()
+
+
+def fence_canonical_lock_waits() -> None:
+    """Abort every pending canonical-lock wait; the server calls this at shutdown."""
+
+    _CANONICAL_LOCK_WAIT_FENCE.set()
+
+
+def _fenced(cancelled: Callable[[], bool] | None) -> Callable[[], bool]:
+    if cancelled is None:
+        return lambda: _CANONICAL_LOCK_WAIT_FENCE.is_set()
+    return lambda: _CANONICAL_LOCK_WAIT_FENCE.is_set() or cancelled()
+
+
 _SNAPSHOT_LOCKS: dict[str, threading.RLock] = {}
 
 _LOCK_ACQUIRED = "acquired"
@@ -1368,11 +1386,12 @@ class StateWorkspace:
         on_lost: Callable[[str], None] | None = None,
     ) -> Iterator[RunLockLease]:
         self.root.mkdir(parents=True, exist_ok=True)
+        cancelled = _fenced(cancelled)
         path = self.root / ".agent-run.lock"
         with path.open("a+", encoding="utf-8") as handle:
             waiting_reported = False
             while True:
-                if cancelled is not None and cancelled():
+                if cancelled():
                     raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1384,7 +1403,7 @@ class StateWorkspace:
                     time.sleep(STATE_LOCK_POLL_INTERVAL_SECONDS)
             lease = RunLockLease(str(path), on_lost=on_lost)
             try:
-                if cancelled is not None and cancelled():
+                if cancelled():
                     raise RunLockCancelled("Run-lock acquisition was cancelled after acquiring.")
                 yield lease
             finally:
@@ -1777,7 +1796,8 @@ def _process_advisory_lock(
     cancelled: Callable[[], bool] | None = None,
     on_lost: Callable[[str], None] | None = None,
 ) -> Iterator[RunLockLease]:
-    if cancelled is not None and cancelled():
+    cancelled = _fenced(cancelled)
+    if cancelled():
         raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
     try:
         holder = subprocess.Popen(  # noqa: S603 - argv is constructed without a shell.

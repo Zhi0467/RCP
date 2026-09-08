@@ -50,6 +50,7 @@ from rcp.transport.state import (
     _HolderLines,
     _process_advisory_lock,
     _remote_advisory_lock_command,
+    fence_canonical_lock_waits,
 )
 
 from .helpers import seed_patch, wait_until
@@ -706,6 +707,28 @@ def test_ssh_sessions_notice_a_dead_peer() -> None:
     assert f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}" in arguments
     assert f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}" in arguments
     assert SSH_SERVER_ALIVE_INTERVAL_SECONDS * SSH_SERVER_ALIVE_COUNT_MAX <= 90
+
+
+def test_shutdown_fence_aborts_a_contended_lock_wait(tmp_path) -> None:
+    """A request thread queued behind a held lock must unwind when the server stops."""
+
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    waiting = threading.Event()
+
+    def contend() -> None:
+        with _process_advisory_lock(arguments, str(path), on_wait=lambda _m: waiting.set()):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as pool, _process_advisory_lock(arguments, str(path)):
+        future = pool.submit(contend)
+        assert waiting.wait(timeout=5)
+        fence_canonical_lock_waits()
+        with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
+            future.result(timeout=5)
+
+    with pytest.raises(RunLockCancelled), _process_advisory_lock(arguments, str(path)):
+        pass
 
 
 def test_process_advisory_lock_uses_one_waiter_during_long_contention(
