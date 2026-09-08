@@ -1702,12 +1702,14 @@ export function NodeChat({
                           void openRepositoryFile(messageId, href)
                         }
                       />
-                      {repositoryFileErrors.get(messageId) && (
-                        <strong className="chat-repository-file-error" role="alert">
-                          {repositoryFileErrors.get(messageId)}
-                        </strong>
-                      )}
                     </div>
+                    {/* Outside the annotatable wrapper: a selection clamp or the
+                        keyboard flow must never stage this diagnostic as answer text. */}
+                    {repositoryFileErrors.get(messageId) && (
+                      <strong className="chat-repository-file-error" role="alert">
+                        {repositoryFileErrors.get(messageId)}
+                      </strong>
+                    )}
                     {!readOnly && (
                       <button
                         className="chat-answer-annotation-button"
