@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import WatchGraphArguments
 from rcp.core.models import AuthorizedHuman, GraphState
-from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+from rcp.limits import (
+    AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
+    AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS,
+)
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_work_spawned,
@@ -19,6 +22,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
 from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
 from rcp.storage import (
+    AgentTaskRecord,
     AppStore,
     AutoResearchActorBusy,
     AutoResearchLifecycleNoticeRecord,
@@ -30,6 +34,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     WatcherContinuation,
 )
+from rcp.storage.models import _required_timestamp
 from rcp.watchers import WatcherBinding, arm_watchers
 
 if TYPE_CHECKING:
@@ -278,6 +283,13 @@ def deliver_pending_auto_research_lifecycle(
     )
     if not notices:
         return None
+    # Measured from the oldest pending notice, so a steady stream of arrivals
+    # cannot push the wake out indefinitely; the wait is at most one grace window.
+    oldest_notice_at = min(_required_timestamp(notice.created_at) for notice in notices)
+    if (
+        _required_timestamp(store.now()) - oldest_notice_at
+    ).total_seconds() < AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS:
+        return None
     binding = store.auto_research_actor_binding(root_operation_id)
     if (
         binding.episode_id != episode_id
@@ -311,26 +323,22 @@ def deliver_pending_auto_research_lifecycle(
     def admit(record, role, cause):
         if role != "orchestrator" or cause != "lifecycle":
             raise ValueError("Lifecycle wake admission changed its root-only policy")
-        selected_notices = _lifecycle_claim_prefix(
+        claim = _RootWakeClaim(
+            store,
             episode_id=episode_id,
-            recipient_task_id=root_operation_id,
-            delivery_operation_id=record.operation_id,
-            delivered_at=record.created_at,
+            root_operation_id=root_operation_id,
+            record=record,
             notices=notices,
+            pending_messages=pending_mail.messages,
         )
-        if not selected_notices:
+        if not claim.notice_ids:
             return None
-        selected_mail = auto_research_mail_claim_prefix(
-            episode_id=episode_id,
-            recipient_task_id=root_operation_id,
-            delivery_operation_id=record.operation_id,
-            delivered_at=record.created_at,
-            messages=pending_mail.messages,
-        )
         return store.create_auto_research_lifecycle_wake_task(
             record,
-            lifecycle_notice_ids=[notice.notice_id for notice in selected_notices],
-            message_ids=[message.message_id for message in selected_mail],
+            lifecycle_notice_ids=claim.notice_ids,
+            message_ids=claim.message_ids,
+            expected_pending_notice_ids=claim.expected_pending_notice_ids,
+            expected_pending_message_ids=claim.expected_pending_message_ids,
         )
 
     try:
@@ -344,6 +352,54 @@ def deliver_pending_auto_research_lifecycle(
     except (AutoResearchActorBusy, EpisodeInvocationCeilingReached, EpisodeNotRunning):
         return None
     return task.operation_id if task is not None else None
+
+
+class _RootWakeClaim:
+    """One root wake's notice and mail prefixes, plus the snapshot proving nothing newer arrived."""
+
+    def __init__(
+        self,
+        store: AppStore,
+        *,
+        episode_id: str,
+        root_operation_id: str,
+        record: AgentTaskRecord,
+        notices: list[AutoResearchLifecycleNoticeRecord],
+        pending_messages: list[AutoResearchMessageRecord],
+    ) -> None:
+        selected_notices = _lifecycle_claim_prefix(
+            episode_id=episode_id,
+            recipient_task_id=root_operation_id,
+            delivery_operation_id=record.operation_id,
+            delivered_at=record.created_at,
+            notices=notices,
+        )
+        # A running child's reply stays held until its attempt settles, so it
+        # travels with that child's lifecycle notice instead of costing a wake.
+        eligible_messages = _standalone_mail_prefix(store, pending_messages)
+        selected_messages = auto_research_mail_claim_prefix(
+            episode_id=episode_id,
+            recipient_task_id=root_operation_id,
+            delivery_operation_id=record.operation_id,
+            delivered_at=record.created_at,
+            messages=eligible_messages,
+        )
+        self.notice_ids = [notice.notice_id for notice in selected_notices]
+        self.message_ids = [message.message_id for message in selected_messages]
+        # When the bounds did not cut the prefix, the snapshot must still be the
+        # whole pending set at admission; a row appended meanwhile belongs in this
+        # wake, so the claim is refused and a later pass re-reads.
+        self.expected_pending_notice_ids = (
+            [notice.notice_id for notice in notices]
+            if len(selected_notices) == len(notices)
+            and len(notices) < AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+            else None
+        )
+        self.expected_pending_message_ids = (
+            [message.message_id for message in pending_messages]
+            if len(selected_messages) == len(eligible_messages)
+            else None
+        )
 
 
 def _lifecycle_claim_prefix(
@@ -430,6 +486,15 @@ def deliver_pending_auto_research_mail(
     if binding.episode_id != episode_id:
         raise ValueError("auto_research mail recipient is outside the auto_research")
     if not binding.native_session_id or not binding.stage_root:
+        return None
+    episode = background.store.episode(episode_id)
+    if (
+        episode is not None
+        and binding.actor_operation_id == episode.root_operation_id
+        and background.store.pending_auto_research_lifecycle_notices(episode_id, limit=1)
+    ):
+        # The lifecycle wake claims root mail with its notices, so a separate mail
+        # wake here would spend a second allocation while a notice waits out its grace.
         return None
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
@@ -639,15 +704,58 @@ def deliver_auto_research_watcher_group(
         }
     )
 
+    store = background.store
+    episode = store.episode(binding.episode_id)
+    if episode is None:
+        raise KeyError(binding.episode_id)
+    is_root = (
+        binding.role == "orchestrator" and binding.actor_operation_id == episode.root_operation_id
+    )
+    notices = (
+        store.pending_auto_research_lifecycle_notices(
+            episode.episode_id, limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+        )
+        if is_root
+        else []
+    )
+    pending_mail = (
+        pending_auto_research_mail(
+            background,
+            episode_id=episode.episode_id,
+            recipient_task_id=binding.actor_operation_id,
+        )
+        if is_root
+        else None
+    )
+
     def admit(record, _role, cause):
         continuation_cause = {
             "watcher": "watcher_wake",
             "graph_condition": "graph_condition_wake",
         }[cause]
-        return background.store.create_watcher_notification_task(
+        if not is_root:
+            return store.create_watcher_notification_task(
+                record,
+                watcher_ids,
+                continuation_cause=continuation_cause,
+            )
+        assert pending_mail is not None
+        claim = _RootWakeClaim(
+            store,
+            episode_id=episode.episode_id,
+            root_operation_id=binding.actor_operation_id,
+            record=record,
+            notices=notices,
+            pending_messages=pending_mail.messages,
+        )
+        return store.create_watcher_notification_task(
             record,
             watcher_ids,
             continuation_cause=continuation_cause,
+            lifecycle_notice_ids=claim.notice_ids,
+            message_ids=claim.message_ids,
+            expected_pending_notice_ids=claim.expected_pending_notice_ids,
+            expected_pending_message_ids=claim.expected_pending_message_ids,
         )
 
     try:
