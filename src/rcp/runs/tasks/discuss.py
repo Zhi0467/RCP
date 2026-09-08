@@ -323,31 +323,7 @@ async def stream_discuss_run(
                     "The continued chat has no native agent session; retry it from a clean "
                     "attempt instead."
                 )
-            if resuming:
-                assert execution is not None
-                original_contract_path = _parent_task_contract_path(
-                    execution, local_stage, remote_stage
-                )
-                contract = PromptFactory.continuation_task_contract(
-                    original_contract_path=original_contract_path,
-                    mode="resume",
-                    patch_path=None,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                )
-                contract_path, prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-resume.md",
-                    contract,
-                    execution=execution,
-                    role="discuss_resume",
-                )
-            elif retry_attempt:
+            if resuming or retry_attempt:
                 assert request.message is not None
                 retry_diagnostics_path = (
                     _stage_json_task_input(
@@ -356,69 +332,63 @@ async def stream_discuss_run(
                         f"task-{token}-retry-diagnostics.json",
                         {"prior_attempt_diagnostics": list(execution.retry_feedback)},
                     )
-                    if execution is not None and (execution.retry_feedback or retry_attempt)
+                    if execution is not None and retry_attempt
                     else None
                 )
-                # A retry that still holds its native session already has the contract in the
-                # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
-                resumed_retry = retrying and reusing_checkpoint
-                current_contract_path = None
-                current_prompt = None
-                if not resumed_retry:
-                    human_request_path = _stage_task_input(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-human-request.txt",
-                        request.message,
-                    )
-                    contract = PromptFactory.discuss_task_contract(
-                        project_name=context.project_name,
-                        ontology_path=f"{context.graph_path}#ontology",
-                        ontology_extensions=context.ontology_extensions,
-                        graph_path=context.graph_path,
-                        research_path=context.research_md_path,
-                        focused_node_id=str(context.node["id"]) if context.node else None,
-                        repositories=[
-                            {"alias": item.alias, "host": item.host, "path": item.path}
-                            for item in context.repositories
-                        ],
-                        introduction_path=context.introduction_path,
-                        human_request_path=human_request_path,
-                        artifact_path=str(artifact_directory),
-                        retry_diagnostics_path=retry_diagnostics_path,
-                        experiment_watcher_resources=experiment_resource_pointers,
-                        skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
-                        invoked_provider_skills=request.resolved_provider_skills,
-                        attachments=attachment_pointers,
-                        compute_connections=service.compute_prompt_profiles(
-                            request.resolved_compute_context
-                        ),
-                    )
-                    current_contract_path, current_prompt = _stage_task_contract(
-                        local_stage,
-                        remote_stage,
-                        f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
-                        contract,
-                        execution=execution,
-                        role="discuss_retry_base" if retry_attempt else "discuss",
-                    )
-                if retrying:
+                human_request_path = _stage_task_input(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-human-request.txt",
+                    request.message,
+                )
+                contract = PromptFactory.discuss_task_contract(
+                    project_name=context.project_name,
+                    ontology_path=f"{context.graph_path}#ontology",
+                    ontology_extensions=context.ontology_extensions,
+                    graph_path=context.graph_path,
+                    research_path=context.research_md_path,
+                    focused_node_id=str(context.node["id"]) if context.node else None,
+                    repositories=[
+                        {"alias": item.alias, "host": item.host, "path": item.path}
+                        for item in context.repositories
+                    ],
+                    introduction_path=context.introduction_path,
+                    human_request_path=human_request_path,
+                    artifact_path=str(artifact_directory),
+                    retry_diagnostics_path=retry_diagnostics_path,
+                    experiment_watcher_resources=experiment_resource_pointers,
+                    skill_pointers=skill_pointers,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers,
+                        workflow_ids=request.invoked_workflow_ids,
+                        skill_ids=request.invoked_skill_ids,
+                    ),
+                    invoked_provider_skills=request.resolved_provider_skills,
+                    attachments=attachment_pointers,
+                    compute_connections=service.compute_prompt_profiles(
+                        request.resolved_compute_context
+                    ),
+                )
+                current_contract_path, current_prompt = _stage_task_contract(
+                    local_stage,
+                    remote_stage,
+                    f"task-{token}-base.md",
+                    contract,
+                    execution=execution,
+                    role="discuss_resume_base" if resuming else "discuss_retry_base",
+                )
+                if resuming or retrying:
                     assert execution is not None
-                    assert retry_diagnostics_path is not None
                     original_contract_path = _parent_task_contract_path(
                         execution, local_stage, remote_stage
                     )
-                    retry_contract = PromptFactory.continuation_task_contract(
+                    recovery_mode = "resume" if resuming else "retry"
+                    continuation_contract = PromptFactory.continuation_task_contract(
                         original_contract_path=original_contract_path,
                         current_contract_path=current_contract_path,
                         diagnostics_path=retry_diagnostics_path,
-                        mode="retry",
-                        skill_pointers=skill_pointers if resumed_retry else None,
+                        mode=recovery_mode,
+                        turn_mode="discuss",
                         invoked_skill_pointers=invoked_package_pointers(
                             skill_pointers,
                             workflow_ids=request.invoked_workflow_ids,
@@ -429,10 +399,10 @@ async def stream_discuss_run(
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
-                        f"task-{token}-retry.md",
-                        retry_contract,
+                        f"task-{token}-{recovery_mode}.md",
+                        continuation_contract,
                         execution=execution,
-                        role="discuss_retry",
+                        role=f"discuss_{recovery_mode}",
                     )
                 else:
                     contract_path, prompt = current_contract_path, current_prompt

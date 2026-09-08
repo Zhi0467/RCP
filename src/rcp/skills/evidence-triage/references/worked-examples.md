@@ -12,7 +12,8 @@ Use these generic examples to calibrate the narrow claim carried by Evidence.
 > **relations** calibration Experiment `produces` this Evidence; this Evidence `informs` the batch
 > size Decision.
 
-The measurements establish the feasible set. A human-owned action records which option is selected.
+The measurements establish the feasible set. Selection follows the current task's authority:
+ordinary work queues the Decision for a human; an authorized orchestrator may choose it directly.
 Do not make the Decision govern the calibration Experiment when the calibration exists to inform
 it, and do not put an Evidence-to-Hypothesis assessment on `informs`.
 

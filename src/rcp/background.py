@@ -332,6 +332,7 @@ class BackgroundAgentTasks:
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
+        self._shutdown_requested = False
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
@@ -388,6 +389,8 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("startup recovery")
+        with self._controls_lock:
+            self._shutdown_requested = False
         preserved_dispatches = proven_committed_auto_research_dispatches(self)
         reserved_roots = proven_reserved_auto_research_roots(self)
         self.store.interrupt_active_agent_tasks(
@@ -843,6 +846,7 @@ class BackgroundAgentTasks:
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False
             with self._controls_lock:
+                self._shutdown_requested = True
                 active = list(self._controls.items())
                 workers = [self._workers.get(operation_id) for operation_id, _ in active]
         for operation_id, control in active:
@@ -1121,7 +1125,7 @@ class BackgroundAgentTasks:
         self._require_startup_effects_open("provider task launch")
         record = self._require_operation(operation_id)
         with self._controls_lock:
-            if operation_id in self._workers:
+            if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
         if record.status != "queued":
             return record
@@ -1248,7 +1252,9 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         operation_id = record.operation_id
         with self._controls_lock:
-            if operation_id in self._workers:
+            # Shutdown closes this same registry before taking its pause
+            # snapshot. Late admissions stay queued for startup recovery.
+            if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
             current = self._validated_spawn_record(record, request, parent=parent)
             if current.status != "queued":
@@ -1434,7 +1440,15 @@ class BackgroundAgentTasks:
         # Admission may have inherited a durable conversation-stage binding.
         # Launch only from that stored record, never the caller's pre-insert model.
         record = current
-        if current.status == "pausing" or control.pause_requested.is_set():
+        # A durable Pause can win after the initial read. Only the atomic
+        # queued-to-running claim grants dispatch; a refused claim follows the
+        # same pause settlement path without entering the provider stream.
+        dispatch_claimed = (
+            current.status != "pausing"
+            and not control.pause_requested.is_set()
+            and self.store.mark_agent_task_running(operation_id)
+        )
+        if not dispatch_claimed:
             self.store.pause_agent_task(operation_id)
             execution = AgentTaskExecution(
                 operation_id=operation_id,
@@ -1451,7 +1465,6 @@ class BackgroundAgentTasks:
             finally:
                 self._forget_control(operation_id)
             return
-        self.store.mark_agent_task_running(operation_id)
         execution = AgentTaskExecution(
             operation_id=operation_id,
             store=self.store,

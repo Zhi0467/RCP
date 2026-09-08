@@ -19,7 +19,7 @@ from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
-from rcp.skill_registry import SkillDefaults
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, AppStore
 
 from .helpers import (
@@ -181,9 +181,10 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     current = store.chat_session_context("codex", "laptop", session_id)
     assert current is not None
     stale_snapshot = json.loads(current.snapshot_json)
-    stale_snapshot["master_context_version"] = 6
-    stale_snapshot["contract_key"] = "chat-master-v6"
-    stale_snapshot["master_context_path"] = "/stale/chat-master-v6.md"
+    stale_version = CHAT_MASTER_CONTEXT_VERSION - 1
+    stale_snapshot["master_context_version"] = stale_version
+    stale_snapshot["contract_key"] = f"chat-master-v{stale_version}"
+    stale_snapshot["master_context_path"] = f"/stale/chat-master-v{stale_version}.md"
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
     store.commit_chat_session_context(
         provider="codex",
@@ -193,7 +194,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         kind="project_chat",
         chat_id=chat_id,
         node_id=None,
-        protocol_version=6,
+        protocol_version=stale_version,
         snapshot_json=stale_json,
         snapshot_sha256=hashlib.sha256(stale_json.encode("utf-8")).hexdigest(),
         committed_operation_id=first_execution.operation_id,
@@ -285,6 +286,14 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     assert "Patch JSON Schema" in master
     assert "named in the envelope" in master
     assert "Invoked for this turn —" not in master
+    assert master.count("Skills and workflows staged for this run:") == 1
+    shared, mode_contracts = master.split("## Discuss contract", 1)
+    for package in official_registry().packages:
+        if package.kind == "skill":
+            identity = f"{package.label} (skill {package.id} v{package.version})"
+            assert master.count(identity) == 1
+            assert identity in shared
+    assert "Skills and workflows staged for this run:" not in mode_contracts
     assert not (launcher.workspaces[0] / "current-turn.json").exists()
     assert launcher.workspaces[0].parent / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
     inputs = master_path.parent
@@ -695,7 +704,8 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     assert prompt.startswith(f"RCP master context: {master_path}\n\n{marker}")
     assert prompt.count(second_message) == 1
     assert "Invoked for this turn — read and follow each exact staged package:" in prompt
-    assert "Graph audit (skill `graph-audit` v3.0.0)" in prompt
+    version = official_registry().package("skill", "graph-audit").version
+    assert f"Graph audit (skill `graph-audit` v{version})" in prompt
     assert "/skill/graph-audit`" in prompt
     assert prompt.count("This is a Discuss turn.") == 1
     assert "Open and retain the RCP chat master context" not in prompt
@@ -814,7 +824,8 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
         "Invoked for this turn — read and follow each exact staged package:"
         in (launcher.prompts[1])
     )
-    assert "Graph audit (skill `graph-audit` v3.0.0)" in launcher.prompts[1]
+    version = official_registry().package("skill", "graph-audit").version
+    assert f"Graph audit (skill `graph-audit` v{version})" in launcher.prompts[1]
     assert '"reasoning": "high"' in launcher.prompts[1]
     assert '"repositories"' not in launcher.prompts[1]
     assert '"skills"' not in launcher.prompts[1]

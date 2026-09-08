@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import textwrap
 from typing import Literal
 
 from rcp.agents.prompts import (
@@ -20,15 +19,15 @@ from rcp.agents.prompts import (
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
-from rcp.core.authority import render_agent_graph_authority_contract
 
 _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
 - Treat an unexpected process exit (including SIGTERM), timeout, command failure, or similar
   infrastructure symptom as a mechanical fault to diagnose. It is not by itself a graph Blocker,
   a human-authority pause, or a reason to end the episode.
-- Capacity contention is not a fault and not a finding. A full cluster, busy queue, or occupied
-  device means work has not started yet. Let submitted work wait in the queue, arm a shell watcher,
-  and finish the turn. Never report contention as a limit you could not act on.
+- Capacity contention does not by itself require human action. Inspect the actual execution route:
+  a scheduler can queue an admissible job; a direct process launcher does not supply a resource
+  queue. Use a real observer or available capacity without launching duplicate work. Report an
+  unavailable prerequisite honestly after checking what can be done within this authority.
 - Diagnose a rejected submission before deciding it needs human action. Repair your own command,
   script, or resource request within the existing authority. Missing access or prerequisites need
   a concrete required action; a bad argument does not by itself establish an authority gap.
@@ -46,6 +45,44 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
   under this contract's tools or authority. First exhaust useful, safe in-scope diagnosis and repair;
   cite the evidence, unavailable action, and required human action. An unexplained or plausibly
   transient failure is uncertainty, not a Blocker."""
+
+
+_EXPERIMENT_GRAPH_AUTHORITY = """Current Experiment-loop graph authority:
+This replaces earlier graph-permission instructions for this loop, including broader ordinary
+Work permissions. Only these graph changes are available:
+- Update the focused Experiment's complete `attempts` list, status, `current_summary`, and
+  `next_action`. Preserve attempt identity and immutable fields; never rewrite a terminal attempt.
+- Update only a pinned Decision's status: `open` while unresolved, `ready` when its choice is
+  makeable, or `revisit` when new evidence undermines a settled choice. Do not choose an option.
+- Create Evidence and Blockers. Link each same-Patch Evidence from this Experiment with `produces`
+  and each same-Patch Blocker with `blocked_by`. Only same-Patch Evidence may `informs` an existing
+  Decision or `addresses` an existing Blocker; neither edge changes its target's lifecycle.
+- Add legal epistemic edges. A belief change requires same-Patch Evidence, its assessed edge to a
+  tested Hypothesis, and one `status_change` Proposal. Its single `update_nodes` operation changes
+  only Hypothesis `status`, with an `evidence_edge` cause naming that edge. Supply the four card
+  fields: `situation_cold`, `why_human_now`, `consequences`, and `decision_needed`.
+- Add supplementary glossary definitions with `upsert_glossary`.
+All other graph mutations are unavailable: do not edit Experiment design, other Experiments,
+the pinned bundle, or existing Blockers; remove objects; set standing; choose Decisions; or resolve
+Proposals. The general authoring methods below do not extend this list.
+"""
+
+
+_EXPERIMENT_WATCH_HANDOFF = """Current Experiment watcher handoff:
+Write the named watcher file as one object with exactly `external` and `graph` lists, never a bare
+list. For example: `{"external":[],"graph":[{"node_id":"blk/foo","status_in":["resolved"]}]}`.
+- Each graph item has exactly one of these closed shapes:
+  `{"node_id":"blk/foo","status_in":["resolved","superseded"]}` or
+  `{"node_id":"hyp/foo","proposal_resolved":true}`. The node must exist in the current canonical
+  graph. Statuses must be non-empty, unique, and valid for that node's type. Do not add predicates,
+  commands, paths, or groups. A status already true is ready immediately; `proposal_resolved` waits
+  for an approval, rejection, or withdrawal committed after the watcher is armed.
+- If both lists are empty, the Patch must record this Experiment's completion with `next_action`
+  null, or a permitted Decision, Hypothesis Proposal, or same-Patch Blocker pause. The same guard
+  applies when retirement-only output leaves no live observer. If useful synchronous work remains
+  without that pause, continue it now. Watch only real external or canonical conditions.
+These rules replace older watcher-format and exit rules.
+"""
 
 
 def experiment_loop_task_contract(
@@ -265,14 +302,7 @@ Watcher handoff protocol:
   graph condition; it carries no command or path. Stopping a watcher does not prove a job was
   cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
   including retiring old watchers while arming replacements.
-- The `graph` list accepts exactly two closed condition shapes. To wake when one canonical node
-  reaches any one of a non-empty, unique set of statuses, write
-  `{{"node_id":"blk/foo","status_in":["resolved","superseded"]}}`. To wake when a Proposal on
-  one canonical node is approved, rejected, or withdrawn, write
-  `{{"node_id":"hyp/foo","proposal_resolved":true}}`. A condition has exactly the fields shown:
-  no standing predicate, edge predicate, new-node query, arbitrary query, command, path, or group.
-  Its target must already exist in the current complete canonical graph, and every `status_in` value
-  must be valid for that node's type.
+{_EXPERIMENT_WATCH_HANDOFF}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
   revisions and at startup, never through the shell poller. A staged but unsynced draft cannot
   satisfy one. A node status already true when armed is ready immediately. A
@@ -314,23 +344,6 @@ Graph reflection and authority:
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record
   `repositories_read` honestly; do not set coverage or cursors.
-- This loop may update only its own Experiment's attempts, status, `current_summary`, and
-  `next_action`; queue an existing pinned Decision by setting it to `ready`, or reopen a settled pinned Decision
-  as `revisit` when new evidence undermines it; create Evidence with methodological `role` `result`
-  or `diagnostic`, never node-global evidential strength; create Blockers; assert legal epistemic
-  edges; attach each same-Patch Evidence with `produces` and each same-Patch Blocker with
-  `blocked_by`; connect same-Patch Evidence to an existing Decision with `informs` or to a Blocker
-  with `addresses`; and create a Hypothesis Proposal within the pinned governing/tested boundary.
-  These handoffs never select the Decision or change Blocker status. The loop may not set standing,
-  decide a Decision, directly change a Hypothesis status, edit the pinned bundle, or remove graph
-  objects. Experiment status is a scientific description, not loop control.
-- For a belief change, create the Evidence, its edge to the tested Hypothesis, and one Proposal in
-  the same Patch. The Evidence-to-Hypothesis edge's relation states direction and its required
-  `assessment` states claim-relative `relevance`, `weight`, optional `scope`, and concrete
-  `qualifications`; do not attach that assessment to `produces`, `informs`, or `addresses`. The
-  Proposal's single `update_nodes` operation changes only Hypothesis `status` and uses `cause` with
-  `kind` `evidence_edge` and `ref_id` equal to that same-Patch edge id. Only human acceptance can
-  apply that belief change.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
   independent: report operational truth without claiming RCP accepted the Patch.
@@ -346,10 +359,18 @@ Reply and artifacts:
   HTML must be self-contained; ordinary HTTP(S) links are allowed, but external resource loads do
   not work in the preview.
 
-{render_agent_graph_authority_contract()}
+{_EXPERIMENT_GRAPH_AUTHORITY}
 
 {_authoring_rules(ontology_extensions)}
 """
+
+
+def _context_replacement_section(values: dict[str, object] | None) -> str:
+    if not values:
+        return ""
+    return "These context values replace what this session was given:\n" + json.dumps(
+        values, ensure_ascii=False, indent=2, sort_keys=True
+    )
 
 
 def experiment_loop_wake_message(
@@ -373,6 +394,9 @@ def experiment_loop_wake_message(
     execution_host: str = "",
     context_replacement: dict[str, object] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
+    write_scope: ProjectWriteScope | None = None,
+    artifact_path: str | None = None,
+    ontology_extensions: bool = False,
 ) -> str:
     """Continue one bounded episode's native session with a compact human-style turn.
 
@@ -403,41 +427,17 @@ def experiment_loop_wake_message(
 
     previous_watcher_ids_or_none = ", ".join(previous_watcher_ids) or "none"
     delivered = ", ".join(delivered_watcher_ids)
-    # An unchanged session renders nothing at all here -- never a heading with
-    # "none" -- so the line itself disappears when no context moved.
-    context_replacement_block_or_nothing = (
-        ""
-        if not context_replacement
-        else "\nThese context values replace what this session was given:\n"
-        + json.dumps(context_replacement, ensure_ascii=False, indent=2, sort_keys=True)
-    )
     return f"""The watched work for Experiment `{focused_experiment_id}` is ready for another look. Continue the
 same bounded loop in turn {invocation} of {invocation_ceiling}.
 
 Experiment contract: {experiment_contract_path}
+Retain the objective, attempt ledger, and completed progress from this native session. Use the
+current authority, methods, and paths below wherever earlier instructions differ.
 
 RCP accepted the previous turn's handoff:
 - graph update: {previous_graph_result}
 - watchers armed: {previous_watcher_ids_or_none}
-
 This turn was triggered by: {delivered}
-
-{_invoked_package_section(invoked_skill_pointers)}
-
-A completed external observer means only that its check no longer sees the named external work. It
-does not mean the work succeeded and does not begin, close, or correspond one-to-one with a
-scientific attempt. Inspect its authoritative scheduler or process state and its logs before
-interpreting the result. A completed graph watcher means its condition became true in canonical
-graph state; inspect that named fact in the fresh graph. If a watcher refers to work that was
-already submitted, inspect that work; submit a replacement only when the authoritative state shows
-that the earlier submission did not start, or after you have recorded the specific mechanical fault
-and changed relaunch plan required by the Experiment attempt protocol.
-
-The fresh loop-control file names any delivered watcher group and every member. That group woke
-only because no member is still observed running: exit-0 members are gone, not proven successful;
-any degraded member has unknown external state and must be inspected before you relaunch, cancel,
-or record an outcome. A member retired by an earlier agent stop is historical context, never a
-trigger.
 
 Read the fresh state before acting:
 - loop control: `{loop_control_path}`
@@ -445,111 +445,44 @@ Read the fresh state before acting:
 - current graph: `{graph_path}`
 - current research rendering: `{research_path}`
 - Patch output: `{patch_path}`
-- watcher output that continues this Experiment's bounded loop: `{watch_path}`
+- watcher output: `{watch_path}`
 - Patch JSON Schema: `{output_schema_path}`
-- Patch validator: `{validator_command}`{context_replacement_block_or_nothing}
+{_pointer("Preview artifact directory for this turn", artifact_path)}
+{_context_replacement_section(context_replacement)}
+{write_scope_section(write_scope) if write_scope is not None else ""}
+{_invoked_package_section(invoked_skill_pointers)}
 
-For this turn, apply the following rule before choosing whichever path matches the operational
-state:
+An external observer finishing means its check no longer sees the work, not that the work succeeded.
+Inspect the result and logs before interpreting it or launching a replacement. Loop control names
+all delivered group members; a degraded member has unknown external state. A graph watcher means
+its named condition became true in canonical state. Neither kind creates or closes an attempt.
 
 {_CURRENT_OPERATIONAL_INSTRUCTIONS}
-
+{execution_instructions}
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
-1. A watcher condition remains, or you have useful debugging and relaunching work to do.
+Choose an honest handoff:
+1. Continue useful authorized work now. If a real condition remains to observe, write a non-empty
+   `external` or `graph` list and finish the turn. Do not invent a watcher to defer synchronous work.
+2. Pause for an explicit human-authority boundary: a ready/revisit pinned Decision, a supported
+   Hypothesis status Proposal, or a concretely diagnosed same-Patch Blocker linked from this
+   Experiment. Watchers may keep observing, but cannot automatically resume an exited episode.
+3. Finish when no operational work remains: update this Experiment to `completed`, set
+   `next_action` to null, close attempts truthfully, and write empty watcher lists. A scientific
+   result can be unsuccessful or inconclusive even when the operational work is complete.
 
-   Continue useful work now. For work that must outlive this turn:
+{_EXPERIMENT_WATCH_HANDOFF}
+Observers retain their grouping and retirement rules. RCP validates the Patch and watcher object
+together. Completion from this file continues this Experiment's bounded
+loop, never a different conversation, and only while the episode remains authorized and has budget.
+{_EXTERNAL_WATCHER_FORMS}
+RCP runs watcher commands on {_watcher_execution_host(execution_host)}.
 
-{textwrap.indent(execution_instructions, "   ")}
-
-   Write `{watch_path}` with exactly the `external` and `graph` lists:
-   `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
-{textwrap.indent(_EXTERNAL_WATCHER_FORMS, "   ")}
-   RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
-   Each observer may also add one non-blank `group`. Once useful synchronous work and handoff
-   are complete, finish this turn. The graph list accepts only
-   `{{"node_id":"...","status_in":["..."]}}` and
-   `{{"node_id":"...","proposal_resolved":true}}`; graph conditions are evaluated against
-   canonical state after revisions and at startup, never against a draft or by shell polling. A
-   Proposal resolution counts only when committed after the condition is armed. RCP validates
-   both lists atomically and resumes this episode session when a watcher is ready; completion from
-   this file never continues another conversation.
-
-2. You need human input.
-
-   Use this path when an upstream Decision is now makeable, new evidence undermines a settled
-   Decision, a tested Hypothesis warrants a status transition, or a scientific, design,
-   implementation, data, or infrastructure constraint has been concretely diagnosed and requires a
-   specific action unavailable under this contract's tools or authority. A failed or repeatedly
-   terminated process without that diagnosis stays on path 1. Write one Patch at `{patch_path}` using
-   the exact schema at `{output_schema_path}`, then run `{validator_command}`.
-
-   Put a makeable pinned Decision in the human Inbox by setting it to `ready`; use `revisit` only to
-   reopen a settled pinned choice when new evidence undermines it.
-   For a Hypothesis status transition, use `create_proposals`. Its nested operation changes only
-   that Hypothesis's `status` and has an `evidence_edge` cause. Fill the Proposal's
-   `card.situation_cold`, `why_human_now`, `consequences`, and `decision_needed` so the human can
-   approve or reject the transition without reconstructing this turn.
-
-   When the needed design change cannot be represented by that narrow Proposal authority, create
-   an open `blocker` with `create_nodes` and connect this Experiment to it with a same-Patch
-   `blocked_by` edge. Experiment-loop authority cannot add a `requires_decision` action edge, so
-   identify any relevant Decision precisely in the Blocker's description, resolution condition,
-   and recommended human action instead.
-
-   If an external or graph condition still deserves observation while the human decides, write a
-   non-empty `{watch_path}` object using path 1's exact watcher format. Those watchers continue
-   observing, but the queued Decision, Proposal, or Blocker exits this episode, so they cannot
-   automatically wake it;
-   a later human Run may reauthorize completed watcher state. If nothing remains to watch, write
-   `{watch_path}` as `{{"external":[],"graph":[]}}`.
-
-3. The Experiment is operationally finished.
-
-   This means all useful synchronous work for the focused Experiment is finished in this turn,
-   nothing remains to watch, and the Experiment has reached a terminal
-   operational result; the scientific result may be successful, unsuccessful, inconclusive, or
-   invalid. Merely observing that all jobs ended is not enough when analysis or another ordinary
-   in-scope step remains. Write `{watch_path}` as `{{"external":[],"graph":[]}}`. At
-   `{patch_path}`, write a schema-valid Patch that updates this Experiment's `status` to `completed`,
-   preserves and closes its attempts truthfully, and creates any warranted Evidence, edges, or
-   Hypothesis Proposal.
-   Experiment-loop authority may update only this Experiment's `status`, complete `attempts` list,
-   `current_summary`, and `next_action`. When this turn introduces or closes attempts or changes
-   what should happen next, keep those two prose fields consistent with the resulting
-   attempt ledger and actual next step; leave them unchanged when still accurate, and use
-   `next_action: null` when no further action remains. Put scientific outcomes in the relevant
-   attempt, Evidence, and Markdown reply rather than treating the summary as a substitute. A
-   minimal mechanical completion is:
-
-   {{
-     "summary": "Finished the Experiment's operational work.",
-     "ops": [
-       {{
-         "op": "update_nodes",
-         "nodes": [
-           {{
-             "id": "{focused_experiment_id}",
-             "changes": {{
-               "status": "completed",
-               "next_action": null
-             }}
-           }}
-         ]
-       }}
-     ],
-     "repositories_read": [],
-     "change_summary": ["Finished the Experiment's operational work."]
-   }}
-
-   Extend that Patch rather than omitting scientifically necessary attempt closure, Evidence, or
-   interpretation, but remain within the original Experiment-loop authority. Validate it with
-   `{validator_command}`.
-
-Your Markdown reply remains independent from `patch.json` and `watch.json`. State what you found,
-what you changed or launched, which path you took, and any remaining uncertainty.
-
-{_RETAINED_LOCAL_CAUSAL_CHECK}
+{_EXPERIMENT_GRAPH_AUTHORITY}
+{_authoring_rules(ontology_extensions)}
+{_patch_validator_rules(validator_command)}
+Your Markdown reply is independent from both files. State the observations, actions, chosen
+handoff, and uncertainty; do not report a submission or watcher completion as scientific success.
 """
 
 
@@ -565,6 +498,12 @@ def experiment_loop_continuation_contract(
     execution_instructions: str = "",
     diagnostics_path: str | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
+    write_scope: ProjectWriteScope | None = None,
+    artifact_path: str | None = None,
+    ontology_extensions: bool = False,
+    graph_path: str | None = None,
+    research_path: str | None = None,
+    context_replacement: dict[str, object] | None = None,
 ) -> str:
     """Point a resumed or retried invocation at one fresh, compact control delta."""
 
@@ -604,18 +543,28 @@ def experiment_loop_continuation_contract(
 {_pointer("Exact failure diagnostics", diagnostics_path)}- Patch output: `{patch_path}`
 - Watcher output: `{watch_path}`
 - Patch JSON Schema: `{output_schema_path}`
+{_pointer("Current graph", graph_path)}{_pointer("Current research rendering", research_path)}{_pointer("Preview artifact directory for this turn", artifact_path)}
+{write_scope_section(write_scope) if write_scope is not None else ""}
+{_context_replacement_section(context_replacement)}
 
 {_invoked_package_section(invoked_skill_pointers)}
 
-Read the original contract for the objective, authority, context-reading protocol, and detailed
-attempt and watcher rules. Then read the fresh control delta before acting. It preserves the same
+Retain the original objective, attempt ledger, and progress in this native session. The current
+authority, methods, paths, and execution instructions here replace earlier versions. Read the
+original contract only as needed for unchanged attempt and watcher rules, and read the fresh
+control delta before acting. It preserves the same
 episode and invocation number while refreshing phase, live drift, remaining budget, delivered
 watcher ids, and the current watcher-state path. The paths above replace prior output paths.
 
+{_EXPERIMENT_WATCH_HANDOFF}
+
 {retry_rules}
-- Do not rebuild or broaden the original task. Patch and watcher correction are separate narrow
-  continuations; this continuation may resume operational work only within the original authority.
-- {_RETAINED_LOCAL_CAUSAL_CHECK}
+- Do not rebuild or broaden the assignment. Patch and watcher correction are separate narrow
+  continuations; resume operational work only within the current authority below.
+
+{_EXPERIMENT_GRAPH_AUTHORITY}
+{_authoring_rules(ontology_extensions)}
+{_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
 {_patch_validator_rules(validator_command)}
 {_CURRENT_OPERATIONAL_INSTRUCTIONS}
@@ -660,8 +609,7 @@ Preserve the completed operational result. Do not rerun the Experiment, resubmit
 new external side effect. Inspect authoritative scheduler, process, job, result, log, and canonical
 graph state as needed. Judge the terminal Patch/watch pair, not whether either file changed. If an
 external observer or canonical graph condition is still needed, reconstruct a valid object with a
-non-empty `external` or `graph` list using the current shell-observer rules below and the original
-canonical-condition rules, and preserve the Patch. If nothing remains to watch but useful
+non-empty `external` or `graph` list using the current watcher rules below, and preserve the Patch. If nothing remains to watch but useful
 synchronous work is still required, continue that work now without repeating completed side
 effects. Then either finish the Experiment, or explicitly pause for human authority by queuing a
 Decision, creating a Hypothesis Proposal, or creating a same-Patch Blocker. Write
@@ -675,10 +623,11 @@ with the exact command below. Your final response should only confirm that the j
 repaired.
 
 {_CURRENT_OPERATIONAL_INSTRUCTIONS}
+{_EXPERIMENT_WATCH_HANDOFF}
 {_EXTERNAL_WATCHER_FORMS}
 
-If you rewrite the semantic Patch, its candidate must pass the retained
-`Local causal check for this Patch` in the original authoring contract.
+{_EXPERIMENT_GRAPH_AUTHORITY}
+{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """
@@ -732,6 +681,8 @@ def experiment_loop_patch_correction_contract(
     patch_path: str,
     watch_path: str,
     validator_command: str,
+    output_schema_path: str | None = None,
+    write_scope: ProjectWriteScope | None = None,
 ) -> str:
     """Repair a loop Patch after handoff validation without repeating operational work."""
 
@@ -743,6 +694,12 @@ Correct only the retained semantic Patch in the same native Work session.
 - Exact Patch diagnostic: `{diagnostics_path}`
 - Patch output to rewrite: `{patch_path}`
 - Already validated watcher handoff: `{watch_path}`
+{_pointer("Current Patch JSON Schema", output_schema_path)}
+
+Before changing semantic operations, run the exact live validator below on the retained Patch.
+Historical diagnostics may describe older RCP policy. If the live check reports only retired
+schema-envelope or bookkeeping fields, remove only those fields and recheck before changing
+semantics. An old diagnostic alone is not a reason to delete a semantic operation.
 
 Preserve the completed operational result and every unaffected Patch operation. Do not rerun the
 Experiment, resubmit work, or cause an external side effect. If watcher output has both `external`
@@ -751,6 +708,8 @@ Hypothesis Proposal, or create a same-Patch Blocker; do not remove or weaken tha
 satisfy another diagnostic. Do not change `watch.json`. Your final response should only confirm that
 the Patch was rewritten.
 
+{write_scope_section(write_scope) if write_scope is not None else ""}
+{_EXPERIMENT_GRAPH_AUTHORITY}
 {_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}

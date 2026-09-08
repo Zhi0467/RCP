@@ -2785,7 +2785,9 @@ class AgentTaskStoreMixin:
         if transition.outcome == "missing":
             raise KeyError(operation_id)
 
-    def mark_agent_task_running(self, operation_id: str) -> None:
+    def mark_agent_task_running(self, operation_id: str) -> bool:
+        """Atomically claim a queued task and report whether dispatch may proceed."""
+
         now = self.now()
         with self.connection() as connection:
             transition = self._transition_agent_task(
@@ -2816,6 +2818,7 @@ class AgentTaskStoreMixin:
                     level="warning",
                     created_at=now,
                 )
+        return transition.outcome == "applied"
 
     def update_agent_task_message(
         self,

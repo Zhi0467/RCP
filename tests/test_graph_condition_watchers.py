@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -1322,6 +1323,84 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
         assert deliveries == [["reconcile-retry"]]
     finally:
         app.state.graph_watcher_retry_worker.stop()
+        app.state.background_tasks.shutdown()
+
+
+def test_completed_reconciliation_cannot_clear_a_later_transient_failure(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    delivery = app.state.services.watcher_delivery
+    store.create_watchers(
+        [
+            _graph_record(
+                "overlapping-reconciliation",
+                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
+            ).model_copy(
+                update={"project_id": project_id, "armed_revision": initial.state.revision}
+            )
+        ]
+    )
+    delivered = []
+    monkeypatch.setattr(
+        delivery,
+        "deliver_watcher_group",
+        lambda group, **_kwargs: delivered.append([item.watcher_id for item in group]),
+    )
+    project_lock = delivery._retry.lock_for(project_id)
+    first_released_lock = threading.Event()
+    release_first_pass = threading.Event()
+
+    @contextmanager
+    def controlled_lock(_project_id):
+        with project_lock:
+            yield
+        if threading.current_thread() is first_pass:
+            first_released_lock.set()
+            assert release_first_pass.wait(5)
+
+    monkeypatch.setattr(delivery._retry, "lock_for", controlled_lock)
+    first_pass = threading.Thread(
+        target=lambda: delivery.evaluate_graph_wake_boundary(
+            project_id, None, source="reconciliation retry"
+        ),
+        name="successful-all-target-reconciliation",
+    )
+    original_replay = service.history.accepted_boundary_states
+    failed = False
+
+    def unavailable_once():
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise StateUnavailable("canonical remote is temporarily unavailable")
+        return original_replay()
+
+    try:
+        first_pass.start()
+        assert first_released_lock.wait(5)
+        append_fixture_patch(service, _blocker_status_patch("resolved"))
+        monkeypatch.setattr(service.history, "accepted_boundary_states", unavailable_once)
+        delivery.evaluate_graph_wake_boundary(
+            project_id, None, graph_target=GraphTargetRef(), source="task settlement"
+        )
+        release_first_pass.set()
+        first_pass.join(timeout=5)
+        assert not first_pass.is_alive()
+        assert store.watcher("overlapping-reconciliation").status == "active"
+
+        generation = WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
+        delivery.retry_graph_wakes_after_poll(generation)
+
+        assert store.watcher("overlapping-reconciliation").status == "completed"
+        assert delivered == [["overlapping-reconciliation"]]
+    finally:
+        release_first_pass.set()
+        first_pass.join(timeout=5)
         app.state.background_tasks.shutdown()
 
 

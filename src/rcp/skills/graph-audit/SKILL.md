@@ -2,15 +2,16 @@
 id: graph-audit
 kind: skill
 label: Graph audit
-version: 3.0.0
+version: 3.1.0
 description: Audit a research graph when asked for a read-only structural review of claims, relations, node identity, lifecycle consistency, or rendered summaries; report defects without editing canonical state.
 dependencies:
 ---
 
 # Graph audit
 
-Audit what the graph tells a reader, not only whether its JSON is valid. Produce a report; do not
-repair canonical state unless a separate outer task explicitly asks for a later graph change.
+Audit what the graph tells a reader, not only whether its JSON is valid. Produce a report without
+repairing the graph or writing a Patch. Any requested repair is a later step under the current
+task's graph authority.
 
 ## Read in order
 
@@ -21,7 +22,7 @@ repair canonical state unless a separate outer task explicitly asks for a later 
 ## Check
 
 **Claims outrunning support.** Flag a conclusion that no Evidence establishes, a supported
-Hypothesis carried only by qualified or unrelated Evidence, an applicable current
+Hypothesis whose claim exceeds its Evidence's scope or qualifications, an applicable current
 Evidence-to-Hypothesis edge missing its claim-relative assessment, or prose that drops the edge's
 scope or qualifications. Treat a historical unassessed edge as legacy uncertainty, never as an
 implicit weight.
@@ -35,10 +36,12 @@ separately states relevance, weight, optional scope, and qualifications. The sam
 differently on different Hypotheses. Flag an assessment attached to Hypothesis-to-Hypothesis
 `contradicts`, `produces`, `informs`, `addresses`, or another non-applicable relation.
 
-**Missing truthful roles.** Flag Evidence with no provenance or producing Experiment when one is
-known, or whose methodological `result` or `diagnostic` role conflicts with its observation; a
-Blocker that blocks nothing; or an Experiment whose role is expressed neither through `tests`, `produces`, nor an action-gate chain. Never interpret a legacy global strength label as a current
-edge weight. Accept honest isolation such as a newly recorded observation awaiting placement.
+**Missing truthful roles.** Flag Evidence with no provenance, a missing known producing Experiment,
+or a methodological `result` or `diagnostic` role that conflicts with its observation; a
+Blocker that blocks nothing; or an Experiment with no stated test or role in an action plan. A planned
+precursor can name its intended downstream gate in its design until an observation exists; do not
+require future Evidence or a `produces` edge. Never interpret a legacy global strength label as a
+current edge weight. Accept honest isolation such as a newly recorded observation awaiting placement.
 
 **Split identity.** Flag duplicate nodes that divide one entity's claims, evidence, or action
 relations. Prefer reusing an existing identity over adding a near-copy.
@@ -64,9 +67,10 @@ Name the smallest correction and who has authority to make it.
 Briefly list the important paths verified as coherent.
 ```
 
-Separate observation from recommendation. Label standing, approval, and truth-membership changes
-as human-owned. Do not describe every lifecycle status correction as human-only; identify authority
-from the surrounding task contract and graph rules.
+Separate observation from recommendation. Existing ResearchQuestion and Hypothesis changes require
+Proposals; approval remains human-owned. Identify authority for Decision choice, standing, and
+lifecycle updates from the current task contract and graph rules. The report grants no authority
+to perform its suggestions.
 
 ## Boundaries
 

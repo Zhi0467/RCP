@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
+from rcp.agents.prompts import _authoring_rules
+
 
 def branch_merge_task_contract(
     *,
@@ -10,6 +13,7 @@ def branch_merge_task_contract(
     patch_path: str,
     validator_command: str,
     review_contract_json: str,
+    ontology_extensions: bool = False,
 ) -> str:
     """Describe one fresh semantic rebase without exposing repositories."""
 
@@ -36,6 +40,9 @@ current main graph. Preserve compatible main-side changes. Resolve every listed 
 explicitly from the supplied graph semantics; never resolve one by silently preferring an entire
 branch or main object. If the intended outcome cannot be represented legally, leave a precise
 diagnostic in your final response and do not invent authority.
+
+{orchestrator_graph_authority_contract()}
+{_authoring_rules(ontology_extensions)}
 
 The exact review policy used by validation is:
 ```json
@@ -125,6 +132,7 @@ def branch_merge_rebase_contract(
     context_id: str,
     patch_path: str,
     validator_command: str,
+    ontology_extensions: bool = False,
 ) -> str:
     """Replace a discarded candidate after main moved, preserving the native session."""
 
@@ -151,6 +159,9 @@ do not reuse the stale candidate unchanged. Run the validator command before fin
 still graph-only: perform no operational side effects, inspect no repositories, and write no
 watcher, artifact, or canonical-state files. RCP supplies all provenance and commits atomically
 or commits nothing.
+
+The replacement context and current authoring rules supersede earlier graph and schema instructions.
+{_authoring_rules(ontology_extensions)}
 """
 
 
