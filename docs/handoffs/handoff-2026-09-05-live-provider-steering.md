@@ -4,7 +4,7 @@ Date: 2026-09-05
 Status: active, human-confirmed on 2026-09-05. Phase 1 local probes are recorded
 and committed as `44626b2`. Phase 2 implements exact-attempt human chat steering
 for Codex app-server and Claude stream-json, durable human message receipts,
-backend eligibility and disabled reasons, and the web control. Local provider
+backend eligibility and disabled reasons, and composer delivery. Local provider
 and API regressions pass. A served Codex Discuss turn verified delivered and
 post-completion refused receipts; exec's disabled state was verified through
 the API. Restart preserved those receipts and recovered an active exec turn as
@@ -54,7 +54,10 @@ because app-server remains experimental.
    id and the active turn id. Claude: stdin stays open and the turn is launched
    with `--input-format stream-json`; a steer is one user message on that stream.
    Codex exec, including the pre-prompt fallback from app-server: unsupported;
-   the control is disabled and says why. The recorded actual runtime decides.
+   the API reports the reason and the ordinary composer stays unavailable as
+   for any running turn. Since 2026-09-07 there is no separate steering
+   control and no rendered reason; the composer's Send addresses the running
+   attempt while it can take input. The recorded actual runtime decides.
 4. **Delivery is fail-closed.** RCP refuses when the addressed attempt is not
    running or the turn id does not match. It never queues a refused steer as the
    next turn and never resends after a disconnect. The receipt is one of
@@ -296,7 +299,7 @@ rendered the disposable project home, but
 further automation returned `noWindowsAvailable` and then concurrent-user-change
 protection. The full web suite's Chromium drives could not launch under the
 sandbox (`bootstrap_check_in ... Permission denied (1100)`). The steer UI,
-disabled control pixels, browser network inspector, and console drive are gaps.
+disabled composer pixels, browser network inspector, and console drive are gaps.
 Work/tool verification remains a gap because nested Codex shell execution is
 blocked; Discuss was used as directed. App restart during a running turn is
 verified for the active exec Discuss turn: Ctrl-C through the owned launch

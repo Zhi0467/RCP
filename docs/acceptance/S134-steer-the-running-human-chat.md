@@ -31,8 +31,8 @@ not establish the served-app or SSH promises below.
 
 1. In disposable project data, select Codex app-server for the ordinary chat
    profile. Start a Discuss turn long enough to receive another instruction.
-   While it runs, use **Steer running turn** and **Send steer** with a
-   recognizable requested answer change.
+   While it runs, type a recognizable requested answer change into the ordinary
+   composer and send it; the send button is labelled **Steer running turn**.
    Confirm that the active turn applies it and that the human message shows
    **Delivered** only after the matching provider acknowledgment.
 2. Reload the conversation and read its stored chat record through the API.
@@ -45,9 +45,10 @@ not establish the served-app or SSH promises below.
    stored **Refused** receipt names completion, no provider turn starts, and the
    message is not queued for the next ordinary turn. Address an old attempt
    while a newer one runs; refusal must not redirect the message to the new one.
-4. Select exec, start a turn, and confirm the control is disabled with the
-   backend's unsupported-runtime reason. Repeat with a pre-prompt app-server
-   failure that falls back to exec: the actual exec runtime governs the control.
+4. Select exec, start a turn, and confirm the composer stays unavailable as for
+   any running turn while the API reports the backend's unsupported-runtime
+   reason. Repeat with a pre-prompt app-server failure that falls back to exec:
+   the actual exec runtime governs the composer.
 5. Run the equivalent mid-turn drive with Claude stream-json. Confirm the
    replayed user echo bearing the steer UUID establishes **Delivered**. Race
    input with completion: the first result ends the process, an input without
@@ -72,7 +73,7 @@ not establish the served-app or SSH promises below.
    original mode, graph target, session, and scope; it does not revive the old
    steer writer or resend an unknown steer. Graceful Stop keeps its existing
    fence rather than issuing a hard provider interrupt.
-9. Open an episode worker. No live steering control is available, and a direct
+9. Open an episode worker. Its composer cannot steer it, and a direct
    request cannot deliver input to it. The human still addresses the
    orchestrator through ordinary mail; mail and lifecycle notices do not enter
    a running provider through this channel.

@@ -1,9 +1,11 @@
+/* Sits in the composer's bottom tools row beside the mode toggle; the bound-state
+   panels below wrap onto their own lines inside this section. */
 .chat-worktree-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  min-width: 0;
   font-size: 12px;
 }
 

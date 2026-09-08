@@ -9,7 +9,9 @@ Auto-research-specific orchestration and graph branches are in
 
 Discuss and Work are explicit per-turn modes in one conversation. Submit time
 captures the mode; Pause, Resume, Retry, and correction preserve it. Changing the
-composer affects only the next ordinary turn.
+composer's mode or configuration affects only the next ordinary turn; while the
+running attempt can take live input, the composer's message steers that attempt
+instead, as described under conversation scratch and human input below.
 
 - **Discuss** reasons and answers with no repository mutation or active Patch.
 - **Work** authorizes operational execution within its exact project write
@@ -126,11 +128,14 @@ native chat-session context retains that stage, including its immutable master
 context, even while no turn is active.
 
 While an ordinary human-triggered Discuss or Work turn runs, the human may send
-plain text through its live steering control. The backend supplies whether the
+plain text to it through the ordinary composer: while the watched attempt can
+receive input, Send delivers the message to that attempt instead of starting a
+new turn. There is no separate steering control. The backend supplies whether the
 exact attempt can receive input and its disabled reason, using the actual
-runtime, including a fallback to exec. Episode workers have no steering control;
-the human continues to message their orchestrator through the episode's ordinary
-mail path.
+runtime, including a fallback to exec; when it cannot, the composer stays
+unavailable exactly as for any other running turn and renders no reason. Episode
+workers cannot be steered; the human continues to message their orchestrator
+through the episode's ordinary mail path.
 
 Each steer is stored as the human's chat message with its addressed task attempt
 and a **delivered**, **refused**, or **unknown** receipt. A refused receipt retains
