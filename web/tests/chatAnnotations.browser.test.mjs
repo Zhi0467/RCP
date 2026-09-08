@@ -87,8 +87,10 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     });
 
     await page.getByRole("button", { name: "Comment on selection" }).click();
-    await page.getByRole("textbox", { name: "Comment" }).fill("Show the comparison.");
-    await page.getByRole("button", { name: "Add comment" }).click();
+    const commentBox = page.getByRole("textbox", { name: "Comment" });
+    await commentBox.fill("Show the comparison.");
+    // Enter submits the comment, as the Add comment button does.
+    await commentBox.press("Enter");
     const annotationCount = page.getByRole("button", { name: "1 annotation" });
     await annotationCount.waitFor({ state: "visible" });
     await annotationCount.click();
