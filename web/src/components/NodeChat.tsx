@@ -2397,7 +2397,10 @@ export function NodeChat({
                     value={annotationComment}
                     onChange={(event) => setAnnotationComment(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key !== "Enter" || event.shiftKey) return;
+                      // Plain Enter only: Shift+Enter inserts a newline and the
+                      // form's own modifier+Enter shortcut stages the comment.
+                      if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey)
+                        return;
                       event.preventDefault();
                       if (submitting || !annotationComment.trim()) return;
                       event.currentTarget.form?.requestSubmit();
