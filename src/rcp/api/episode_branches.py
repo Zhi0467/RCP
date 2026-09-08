@@ -103,6 +103,7 @@ def missing_graph_branch_summary(
             transition_id=episode.graph_base_head.transition_id,
         ),
         merge_eligible=False,
+        merge_blocked_reason="The episode graph branch has not been established yet.",
         merge_state="failed" if episode.status == "failed" else "unmerged",
         merge_diagnostic=(
             root.error
@@ -161,25 +162,33 @@ def graph_branch_summary_from_snapshot(
         else None
     )
     end_paused = store.auto_research_can_end_for_merge(episode.episode_id)
-    merge_eligible = (
-        metadata.head.revision > metadata.base_head.revision
-        and (
-            end_paused
-            or (
-                episode.ending is not None
-                and store.auto_research_is_quiescent(episode.episode_id)
-                and not active_branch_writers
-            )
+    if active_task is not None:
+        blocked_reason = "A merge is already running for this branch. Wait for it to finish."
+    elif current_receipt is not None:
+        blocked_reason = "This branch head has already been merged to main."
+    elif metadata.head.revision <= metadata.base_head.revision:
+        blocked_reason = "This branch has no changes to merge."
+    elif not end_paused and active_branch_writers:
+        writers = ", ".join(
+            f"{item.kind} {item.operation_id} ({item.status})" for item in active_branch_writers
         )
-        and active_task is None
-        and current_receipt is None
-    )
+        blocked_reason = f"Branch writers must settle before merging: {writers}."
+    elif not end_paused and episode.ending is None:
+        blocked_reason = "Stop the episode or pause its orchestrator before merging."
+    elif not end_paused and not store.auto_research_is_quiescent(episode.episode_id):
+        blocked_reason = (
+            "The episode still has an unresolved turn. Resolve its recovery before merging."
+        )
+    else:
+        blocked_reason = None
+    merge_eligible = blocked_reason is None
     return GraphBranchSummary(
         branch_id=metadata.branch_id,
         episode_id=metadata.episode_id,
         base_head=metadata.base_head,
         head=metadata.head,
         merge_eligible=merge_eligible,
+        merge_blocked_reason=blocked_reason,
         merge_requires_end=merge_eligible and end_paused,
         merge_state=merge_state,
         latest_successful_merge=receipts[-1] if receipts else None,

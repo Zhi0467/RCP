@@ -55,8 +55,10 @@ branch history remain intact, and a failed merge can be retried.
    current branch head. Main graph views do not show branch-only changes.
 3. While the episode runs, make an unrelated human edit on main. Confirm both
    heads advance independently.
-4. Let the episode reach a durable ending or human pause with no branch-writing
-   task active. Confirm **Merge to main** appears only then.
+4. Confirm **Merge to main** remains visible while the episode runs. Click it
+   and confirm the current blocker appears beside the control without starting
+   a merge. Let the episode reach a durable ending or human pause with no
+   branch-writing task active.
 5. Click **Merge to main**. Follow the ordinary merge task detail while the
    graph-only agent runs and, if needed, corrects its candidate.
 6. Confirm one successful main transition appears with branch, episode, head,

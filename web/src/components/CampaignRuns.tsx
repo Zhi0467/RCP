@@ -75,6 +75,7 @@ export function AutoResearchEpisodeCard({
   const [additionalInvocations, setAdditionalInvocations] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const turnRows = useMemo(
     () =>
@@ -169,12 +170,12 @@ export function AutoResearchEpisodeCard({
   };
 
   const mergeToMain = async () => {
-    if (!episode.graph_branch?.merge_eligible || anotherActionBusy) return;
-    setLocalError(null);
+    if (!episode.graph_branch || anotherActionBusy) return;
+    setMergeError(null);
     try {
       await onMerge(episode.episode_id);
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : String(error));
+      setMergeError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -366,26 +367,24 @@ export function AutoResearchEpisodeCard({
                     {episode.graph_branch.merge_diagnostic}
                   </div>
                 )}
-              {episode.graph_branch.merge_eligible &&
-                episode.graph_branch.merge_state !== "running" && (
-                  <button
-                    className="button primary compact campaign-branch-merge"
-                    type="button"
-                    disabled={anotherActionBusy}
-                    onClick={() => void mergeToMain()}
-                  >
-                    {mergeBusy ? (
-                      <LoaderCircle className="spin" size={12} />
-                    ) : (
-                      <Network size={12} />
-                    )}
-                    {mergeBusy
-                      ? "Starting merge…"
-                      : episode.graph_branch.merge_requires_end
-                        ? "End and merge to main"
-                        : "Merge to main"}
-                  </button>
-                )}
+              <button
+                className="button primary compact campaign-branch-merge"
+                type="button"
+                disabled={anotherActionBusy}
+                onClick={() => void mergeToMain()}
+              >
+                {mergeBusy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
+                {mergeBusy
+                  ? "Starting merge…"
+                  : episode.graph_branch.merge_requires_end
+                    ? "End and merge to main"
+                    : "Merge to main"}
+              </button>
+              {mergeError && (
+                <div className="campaign-branch-diagnostic" role="alert">
+                  {mergeError}
+                </div>
+              )}
             </section>
           )}
 

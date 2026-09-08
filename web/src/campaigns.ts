@@ -105,7 +105,7 @@ const EPISODE_RECOMMENDATION_LABELS_BY_HEALTH: Partial<
   stopping: { wait: "Wait for the current turn to finish" },
   starting: { wait: "Wait for auto-research to start" },
   active: { wait: "Wait for the current turn to pause" },
-  stopped: { none: "No further action is available" },
+  stopped: { none: "The episode has stopped" },
   failed: { review: "Review the episode failure" },
   needs_action: { review: "Review the blocked turn" },
 };

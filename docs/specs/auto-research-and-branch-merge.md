@@ -362,7 +362,10 @@ shows:
 - unmerged, merging, merged-through-head, needs-action, or failed merge state;
 - paused and interrupted merge tasks project as needs action, retain their
   diagnostic, and offer a fresh **Merge to main** dispatch when eligible;
-- **Merge to main** only while eligible and changed;
+- a persistent **Merge to main** control, including when currently ineligible;
+  a deliberate click checks current server state and either admits the merge or
+  displays the specific blocker beside the control. Ineligibility does not hide
+  or disable the control; an in-flight UI action temporarily disables it;
 - the ordinary merge task/output/correction/recovery history; and
 - the episode report or final report error.
 
