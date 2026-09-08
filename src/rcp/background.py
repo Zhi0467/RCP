@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
@@ -76,6 +77,9 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.transport import RemoteRunStage
+
+logger = logging.getLogger(__name__)
+
 
 _AGENT_TASK_CONTINUATIONS = frozenset(get_args(AgentTaskContinuation))
 
@@ -1108,13 +1112,33 @@ class BackgroundAgentTasks:
                     task_record,
                     continuation_cause=continuation,
                 )
-        if isinstance(request, AutoResearchRunRequest) and request.wake_cause is not None:
-            return ensure_auto_research_wake_spawned(
-                self,
-                request.episode_id,
-                operation_id=record.operation_id,
+        # Only a fresh wake admission (watcher, lifecycle, or mail) takes the
+        # exact-wake launcher.  A retry or resume keeps its parent's wake_cause for
+        # the turn's input but reuses the paid allocation, which the wake validator
+        # rejects by design.
+        try:
+            if auto_research_wake_admission is not None or auto_research_mail_delivery is not None:
+                assert isinstance(request, AutoResearchRunRequest)
+                return ensure_auto_research_wake_spawned(
+                    self,
+                    request.episode_id,
+                    operation_id=record.operation_id,
+                )
+            return self.launch_admitted(record.operation_id)
+        except Exception as exc:
+            # This call committed the row, so it alone can say why no worker
+            # started; a queued row with no dispatch receipt is otherwise mute.
+            logger.warning(
+                "Admitted task %s (%s) failed to launch: %s", record.operation_id, kind, exc
             )
-        return self.launch_admitted(record.operation_id)
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    record.operation_id,
+                    "operation_launch_failed_after_admission",
+                    {"exception_type": type(exc).__name__, "detail": str(exc)[:2000]},
+                    tier="diagnostic",
+                )
+            raise
 
     def launch_admitted(self, operation_id: str) -> AgentTaskRecord:
         """Launch one task whose durable admission already committed.
