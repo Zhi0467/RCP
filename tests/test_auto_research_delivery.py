@@ -1657,21 +1657,22 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
             tasks,
             episode_id=auto_research.episode_id,
         )
-    episode_now = store.episode(auto_research.episode_id)
-    assert wake_id is not None, {
-        "turn_errors": turn_errors,
-        "episode_status": episode_now.status if episode_now else None,
-        "episode_ending": episode_now.ending if episode_now else None,
-        "binding": repr(store.auto_research_actor_binding(root.operation_id)),
-        "budget": repr(store.episode_budget_meter(auto_research.episode_id)),
-        "pending_notices": len(
-            store.pending_auto_research_lifecycle_notices(auto_research.episode_id)
-        ),
-        "tasks": [
-            (t.operation_id, t.status, t.attempt)
-            for t in store.auto_research_tasks(auto_research.episode_id)
-        ],
-    }
+    if wake_id is None:
+        episode_now = store.episode(auto_research.episode_id)
+        lines = [
+            f"turn_errors={turn_errors!r}",
+            f"episode={episode_now.status if episode_now else None} ending={episode_now.ending if episode_now else None}",
+            f"binding={store.auto_research_actor_binding(root.operation_id)!r}",
+            f"budget={store.episode_budget_meter(auto_research.episode_id)!r}",
+        ]
+        for notice in store.auto_research_lifecycle_notices(auto_research.episode_id):
+            lines.append(f"notice={notice!r}")
+        for task in store.auto_research_tasks(auto_research.episode_id):
+            lines.append(
+                f"task={task.operation_id} status={task.status} attempt={task.attempt} "
+                f"wake={task.request.get('wake_cause')} parent={task.parent_operation_id}"
+            )
+        pytest.fail("DIAG\n" + "\n".join(lines))
     wait_for_task(store, wake_id, expect="failed")
 
     retried = tasks.retry(wake_id)
