@@ -32,7 +32,7 @@ from rcp.api.team_shell_protocol import (
     team_shell_protocol_mismatch,
 )
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment, GraphState
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
@@ -51,6 +51,8 @@ from rcp.sources import (
 from rcp.storage import (
     AppStore,
     AutoResearchSpaceRunProjectionSnapshot,
+    EpisodeArchiveState,
+    EpisodeRecord,
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
@@ -136,6 +138,9 @@ class SpaceRunIndexEntryResponse(BaseModel):
     health_label: str
     health_tone: SpaceRunTone
     run_section: SpaceRunSection
+    archived: bool = False
+    can_archive: bool = False
+    authorized_by: AuthorizedHuman | None = None
 
 
 @router.get("/api/projects")
@@ -209,6 +214,7 @@ def _experiment_episode_entries(
     store: AppStore,
     experiment_operation_lock: KeyedLocks,
     visible: set[str],
+    archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] | None = None,
 ) -> list[ExperimentLoopIndexEntryResponse]:
     """Build the exact Experiment index once for both index projections."""
 
@@ -252,6 +258,9 @@ def _experiment_episode_entries(
                         )
                 read_models = store.experiment_control_projection_snapshots(record.project_id)
 
+        archive_states = store.episode_archive_states(record.project_id)
+        if archive_states_by_project is not None:
+            archive_states_by_project[record.project_id] = archive_states
         current: list[
             tuple[
                 ExperimentEpisodeProjectionSnapshot,
@@ -351,6 +360,10 @@ def _experiment_episode_entries(
 
             for episode_snapshot, runtime, read_model in group:
                 episode = episode_snapshot.episode
+                archive_state = archive_states.get(
+                    episode.episode_id,
+                    EpisodeArchiveState(archived=False, can_archive=False),
+                )
                 node_id = episode.control_node_id
                 assert node_id is not None
                 node = state.nodes.get(node_id)
@@ -386,6 +399,10 @@ def _experiment_episode_entries(
                         raise ValueError(
                             "Completed project control lost its exact Experiment episode."
                         )
+                    serialized_episode = serialized_episode.model_copy(
+                        update=archive_state.model_dump()
+                    )
+                    control = control.model_copy(update={"episode": serialized_episode})
                 else:
                     serialized_episode = serialize_episode(
                         store,
@@ -393,6 +410,7 @@ def _experiment_episode_entries(
                         episode,
                         branch_summary=branch_summary,
                         projection_snapshot=episode_snapshot,
+                        archive_state=archive_state,
                     )
                     control = _experiment_control_response(
                         state,
@@ -428,24 +446,27 @@ def space_runs(
     store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> list[SpaceRunIndexEntryResponse]:
-    """Publish current and recent episode parents across the visible space."""
+    """Publish current, recent, and explicitly archived visible-space parents."""
 
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
     records = {
         record.project_id: record for record in store.projects() if record.project_id in visible
     }
+    archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] = {}
     as_of = datetime.fromisoformat(store.now()).astimezone(UTC)
     completed_since = (as_of - SPACE_RUNS_COMPLETED_TTL).isoformat()
-    entries = [
-        _space_experiment_run(entry)
-        for entry in _experiment_episode_entries(
-            catalog=catalog,
-            project_display_cache=project_display_cache,
-            store=store,
-            experiment_operation_lock=experiment_operation_lock,
-            visible=visible,
-        )
-    ]
+    experiment_entries = _experiment_episode_entries(
+        catalog=catalog,
+        project_display_cache=project_display_cache,
+        store=store,
+        experiment_operation_lock=experiment_operation_lock,
+        visible=visible,
+        archive_states_by_project=archive_states_by_project,
+    )
+    entries = [_space_experiment_run(entry) for entry in experiment_entries]
+    for project_id in records:
+        if project_id not in archive_states_by_project:
+            archive_states_by_project[project_id] = store.episode_archive_states(project_id)
     for snapshot in store.auto_research_space_run_projection_snapshots(
         set(records),
         completed_since=completed_since,
@@ -456,8 +477,65 @@ def space_runs(
             snapshot,
             project_name=record.name,
             project_reachable=record.reachable,
+            archive_state=archive_states_by_project[episode.project_id].get(
+                episode.episode_id,
+                EpisodeArchiveState(archived=False, can_archive=False),
+            ),
         )
         entries.append(entry)
+    indexed_ids = {entry.episode_id for entry in entries}
+    experiment_titles = {
+        (entry.project_id, entry.graph_target.key, entry.node.id): entry.node.title
+        for entry in experiment_entries
+    }
+    for record in records.values():
+        if not any(
+            state.archived for state in archive_states_by_project[record.project_id].values()
+        ):
+            continue
+        archived = [
+            episode
+            for episode in store.archived_episodes(record.project_id)
+            if episode.episode_id not in indexed_ids
+        ]
+        if not archived:
+            continue
+        # Historical rows need a title, not today's control for the same node.
+        # Reuse exact-target index titles and the existing main display cache;
+        # an old branch without an indexed node stays an explicit history row.
+        _cache_status, cached = catalog.cached_snapshot_status(record.project_id)
+        main_state = _cached_graph_state(cached)
+        for episode in archived:
+            title = experiment_titles.get(
+                (record.project_id, episode.graph_target.key, episode.control_node_id)
+            )
+            if title is None and episode.graph_target.kind == "main" and main_state is not None:
+                node = main_state.nodes.get(episode.control_node_id)
+                if isinstance(node, Experiment):
+                    title = node.title
+            route = (
+                store.auto_research_child_experiment(episode.episode_id)
+                if episode.mode == "experiment_loop"
+                else None
+            )
+            if route is not None and (
+                route.project_id != record.project_id
+                or route.control_node_id != episode.control_node_id
+                or (
+                    episode.graph_target.kind == "branch"
+                    and route.auto_research_episode_id != episode.graph_target.branch_id
+                )
+            ):
+                raise ValueError("Archived Experiment route does not identify its durable episode.")
+            entries.append(
+                _space_archived_run(
+                    episode,
+                    project_name=record.name,
+                    project_reachable=record.reachable,
+                    title=title,
+                    parent_episode_id=(route.auto_research_episode_id if route else None),
+                )
+            )
     return sorted(
         (entry for entry in entries if _space_run_is_visible(entry, as_of=as_of)),
         key=lambda entry: (entry.started_at, entry.episode_id),
@@ -514,6 +592,9 @@ def _space_experiment_run(
         health_label=health_labels[control.health],
         health_tone=health_tones[control.health],
         run_section=control.run_section,
+        archived=entry.episode.archived,
+        can_archive=entry.episode.can_archive,
+        authorized_by=entry.episode.authorized_by,
     )
 
 
@@ -522,6 +603,7 @@ def _space_auto_research_run(
     *,
     project_name: str,
     project_reachable: bool | None,
+    archive_state: EpisodeArchiveState,
 ) -> SpaceRunIndexEntryResponse:
     episode = snapshot.episode
     health, run_section, last_activity_at = space_auto_research_episode_projection(snapshot)
@@ -562,11 +644,43 @@ def _space_auto_research_run(
         health_label=health_labels[health],
         health_tone=health_tones[health],
         run_section=run_section,
+        archived=archive_state.archived,
+        can_archive=archive_state.can_archive,
+        authorized_by=episode.authorized_by,
+    )
+
+
+def _space_archived_run(
+    episode: EpisodeRecord,
+    *,
+    project_name: str,
+    project_reachable: bool | None,
+    title: str | None,
+    parent_episode_id: str | None,
+) -> SpaceRunIndexEntryResponse:
+    return SpaceRunIndexEntryResponse(
+        episode_id=episode.episode_id,
+        project_id=episode.project_id,
+        project_name=project_name,
+        project_reachable=project_reachable,
+        mode=episode.mode,
+        title="Auto-research" if episode.mode == "auto_research" else title or "Experiment history",
+        graph_target=episode.graph_target,
+        parent_episode_id=parent_episode_id,
+        experiment_id=episode.control_node_id,
+        started_at=episode.created_at,
+        last_activity_at=episode.ended_at or episode.updated_at,
+        health_label="Archived",
+        health_tone="completed",
+        run_section="completed",
+        archived=True,
+        can_archive=True,
+        authorized_by=episode.authorized_by,
     )
 
 
 def _space_run_is_visible(entry: SpaceRunIndexEntryResponse, *, as_of: datetime) -> bool:
-    if entry.run_section != "completed":
+    if entry.archived or entry.run_section != "completed":
         return True
     completed_at = datetime.fromisoformat(entry.last_activity_at).astimezone(UTC)
     return completed_at >= as_of - SPACE_RUNS_COMPLETED_TTL

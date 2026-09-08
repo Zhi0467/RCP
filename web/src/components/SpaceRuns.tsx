@@ -1,13 +1,19 @@
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "../experimentBoard";
 import { useTheme } from "../hooks/useTheme";
 import type { ResolvedTheme } from "../theme";
 import type { SpaceRunIndexEntry, SpaceRunMode } from "../types";
+import {
+  EpisodeArchiveButton,
+  EpisodeAuthor,
+  type ArchiveEpisodeAction,
+} from "./EpisodeRunControls";
 
 interface Props {
   entries: SpaceRunIndexEntry[];
   onOpen: (projectId: string, experimentRoute?: string) => void;
+  onArchive: ArchiveEpisodeAction;
 }
 
 /** Lifecycle badge colours, per painted theme.
@@ -40,12 +46,14 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
   },
 };
 
-export function SpaceRuns({ entries, onOpen }: Props) {
+export function SpaceRuns({ entries, onOpen, onArchive }: Props) {
+  const [showArchived, setShowArchived] = useState(false);
   const { resolved: theme } = useTheme();
   const groups = useMemo(() => {
-    const needsAction = entries.filter((entry) => entry.run_section === "actionable");
-    const inProgress = entries.filter((entry) => entry.run_section === "running");
-    const completed = entries.filter((entry) => entry.run_section === "completed");
+    const visible = entries.filter((entry) => !entry.archived);
+    const needsAction = visible.filter((entry) => entry.run_section === "actionable");
+    const inProgress = visible.filter((entry) => entry.run_section === "running");
+    const completed = visible.filter((entry) => entry.run_section === "completed");
     return {
       needsAction,
       inProgress,
@@ -72,6 +80,14 @@ export function SpaceRuns({ entries, onOpen }: Props) {
         <span>
           {groups.needsAction.length} needs action · {groups.inProgress.length} in progress
         </span>
+        <label className="show-archived-runs">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(event) => setShowArchived(event.target.checked)}
+          />
+          Show archived
+        </label>
       </header>
 
       <div className="space-runs-sections">
@@ -81,6 +97,7 @@ export function SpaceRuns({ entries, onOpen }: Props) {
           entries={groups.needsAction}
           theme={theme}
           onOpen={onOpen}
+          onArchive={onArchive}
         />
         <RunSection
           title="In progress"
@@ -88,6 +105,7 @@ export function SpaceRuns({ entries, onOpen }: Props) {
           entries={groups.inProgress}
           theme={theme}
           onOpen={onOpen}
+          onArchive={onArchive}
         />
         <section className="space-runs-completed" aria-label="Completed runs">
           <header>
@@ -98,10 +116,26 @@ export function SpaceRuns({ entries, onOpen }: Props) {
             <p className="space-runs-empty">No completed runs in the last 7 days.</p>
           ) : (
             groups.completedByMode.map((group) => (
-              <CompletedGroup {...group} theme={theme} onOpen={onOpen} key={group.mode} />
+              <CompletedGroup
+                {...group}
+                theme={theme}
+                onOpen={onOpen}
+                onArchive={onArchive}
+                key={group.mode}
+              />
             ))
           )}
         </section>
+        {showArchived && (
+          <RunSection
+            title="Archived"
+            empty="No archived runs."
+            entries={entries.filter((entry) => entry.archived)}
+            theme={theme}
+            onOpen={onOpen}
+            onArchive={onArchive}
+          />
+        )}
       </div>
     </section>
   );
@@ -113,12 +147,14 @@ function RunSection({
   entries,
   theme,
   onOpen,
+  onArchive,
 }: {
   title: string;
   empty: string;
   entries: SpaceRunIndexEntry[];
   theme: ResolvedTheme;
   onOpen: Props["onOpen"];
+  onArchive: ArchiveEpisodeAction;
 }) {
   return (
     <section className="space-runs-section" aria-label={title}>
@@ -129,7 +165,7 @@ function RunSection({
       {entries.length === 0 ? (
         <p className="space-runs-empty">{empty}</p>
       ) : (
-        <RunRows entries={entries} theme={theme} onOpen={onOpen} />
+        <RunRows entries={entries} theme={theme} onOpen={onOpen} onArchive={onArchive} />
       )}
     </section>
   );
@@ -141,12 +177,14 @@ function CompletedGroup({
   entries,
   theme,
   onOpen,
+  onArchive,
 }: {
   mode: SpaceRunMode;
   title: string;
   entries: SpaceRunIndexEntry[];
   theme: ResolvedTheme;
   onOpen: Props["onOpen"];
+  onArchive: ArchiveEpisodeAction;
 }) {
   if (entries.length === 0) return null;
   return (
@@ -159,7 +197,7 @@ function CompletedGroup({
         <span>{entries.length}</span>
         <ChevronRight className="space-runs-fold" size={14} aria-hidden="true" />
       </summary>
-      <RunRows entries={entries} theme={theme} onOpen={onOpen} />
+      <RunRows entries={entries} theme={theme} onOpen={onOpen} onArchive={onArchive} />
     </details>
   );
 }
@@ -168,15 +206,23 @@ function RunRows({
   entries,
   theme,
   onOpen,
+  onArchive,
 }: {
   entries: SpaceRunIndexEntry[];
   theme: ResolvedTheme;
   onOpen: Props["onOpen"];
+  onArchive: ArchiveEpisodeAction;
 }) {
   return (
     <ul className="space-runs-rows">
       {entries.map((entry) => (
-        <SpaceRunRow entry={entry} theme={theme} onOpen={onOpen} key={entry.episode_id} />
+        <SpaceRunRow
+          entry={entry}
+          theme={theme}
+          onOpen={onOpen}
+          onArchive={onArchive}
+          key={entry.episode_id}
+        />
       ))}
     </ul>
   );
@@ -186,14 +232,16 @@ export function SpaceRunRow({
   entry,
   theme,
   onOpen,
+  onArchive,
 }: {
   entry: SpaceRunIndexEntry;
   theme: ResolvedTheme;
   onOpen: Props["onOpen"];
+  onArchive: ArchiveEpisodeAction;
 }) {
   const badge = SPACE_RUN_BADGE_PALETTE[theme][entry.health_tone];
   return (
-    <li className={`space-run-row ${entry.health_tone}`}>
+    <li className={`space-run-row ${entry.health_tone}`} data-episode-id={entry.episode_id}>
       <button
         type="button"
         onClick={() => {
@@ -203,7 +251,10 @@ export function SpaceRunRow({
         <span className="space-run-rail" aria-hidden="true" />
         <span className="space-run-copy">
           <strong>{entry.title}</strong>
-          <span>{entry.project_name}</span>
+          <span className="space-run-attribution">
+            <span>{entry.project_name}</span>
+            <EpisodeAuthor author={entry.authorized_by} />
+          </span>
         </span>
         <span className="space-run-meta">
           <span
@@ -226,6 +277,7 @@ export function SpaceRunRow({
         </span>
         <ChevronRight className="space-run-arrow" size={15} aria-hidden="true" />
       </button>
+      <EpisodeArchiveButton episode={entry} onArchive={onArchive} />
     </li>
   );
 }

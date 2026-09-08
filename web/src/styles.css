@@ -1739,6 +1739,8 @@ button:disabled {
   align-items: baseline;
   border-bottom: 1px solid var(--landing-rule);
   display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
   justify-content: space-between;
   padding: 0 2px 15px;
 }
@@ -1801,6 +1803,18 @@ button:disabled {
   background: color-mix(in srgb, var(--landing-sheet) 72%, transparent);
   border-bottom: 1px solid var(--landing-rule);
   position: relative;
+  align-items: center;
+  display: flex;
+}
+.space-run-row > .episode-archive-control {
+  flex: none;
+  margin: 0 12px;
+}
+.space-run-attribution {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .space-run-row.waiting,
 .space-run-row.stopping {
@@ -1827,6 +1841,7 @@ button:disabled {
   padding: 14px 8px 14px 18px;
   text-align: left;
   width: 100%;
+  min-width: 0;
 }
 .space-run-row > button:hover {
   background: color-mix(in srgb, var(--space-run-tone) 5%, transparent);
@@ -11829,6 +11844,75 @@ button.relation-map-node:hover {
   position: relative;
   z-index: 1;
 }
+.campaign-run-heading .episode-archive-control,
+.campaign-run-heading > .archived-episode-actions {
+  pointer-events: auto;
+}
+.runs-view-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 18px;
+}
+.show-archived-runs {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 7px;
+  white-space: nowrap;
+}
+.show-archived-runs input {
+  accent-color: var(--cobalt);
+}
+.episode-archive-control {
+  display: inline-flex;
+  position: relative;
+}
+.episode-archive-error {
+  background: var(--sheet);
+  border: 1px solid var(--coral);
+  color: var(--ink);
+  font: 12px/1.4 var(--sans);
+  max-width: 320px;
+  min-width: 200px;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  white-space: normal;
+  z-index: 3;
+}
+.episode-author {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  flex: none;
+  font: 12px var(--sans);
+  gap: 6px;
+  max-width: 180px;
+  pointer-events: auto;
+}
+.episode-author-avatar {
+  background: var(--cobalt);
+  border-radius: 50%;
+  font-size: 11px;
+  height: 22px;
+  width: 22px;
+}
+.episode-author-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archived-episode-card .campaign-run-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.archived-episode-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .campaign-run-heading:hover {
   background: color-mix(in srgb, var(--paper) 46%, var(--sheet));
 }
@@ -11861,6 +11945,7 @@ button.relation-map-node:hover {
 .campaign-run-meta {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 9px;
   min-width: 0;
 }
@@ -11928,15 +12013,14 @@ button.relation-map-node:hover {
   top: 0;
 }
 .campaign-run-time {
-  align-items: flex-end;
+  align-items: center;
   color: var(--muted);
   display: flex;
-  flex-direction: column;
   font: 8px var(--mono);
   gap: 12px;
   white-space: nowrap;
 }
-.campaign-run-toggle[aria-expanded="true"] ~ .campaign-run-time svg {
+.campaign-run-toggle[aria-expanded="true"] ~ .campaign-run-time > svg {
   transform: rotate(180deg);
 }
 .campaign-run-detail {

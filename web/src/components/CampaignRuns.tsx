@@ -26,6 +26,11 @@ import { experimentBoardHref, experimentBoardRouteToken } from "../experimentBoa
 import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
 import type { AgentTask, Episode, EpisodeMessage, ExperimentLoopIndexEntry } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
+import {
+  EpisodeArchiveButton,
+  EpisodeAuthor,
+  type ArchiveEpisodeAction,
+} from "./EpisodeRunControls";
 
 export function AutoResearchEpisodeCard({
   episode,
@@ -44,6 +49,7 @@ export function AutoResearchEpisodeCard({
   onReauthorize,
   onSendMessage,
   onOperateTask,
+  onArchive,
 }: {
   episode: Episode;
   messages: EpisodeMessage[];
@@ -61,6 +67,7 @@ export function AutoResearchEpisodeCard({
   onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
+  onArchive: ArchiveEpisodeAction;
 }) {
   const detailId = useId();
   const [expanded, setExpanded] = useState(initiallyExpanded);
@@ -194,10 +201,16 @@ export function AutoResearchEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+            <EpisodeAuthor author={episode.authorized_by} />
           </span>
         </span>
         <EpisodeBudgetMeter episode={episode} />
         <span className="campaign-run-time">
+          <EpisodeArchiveButton
+            episode={episode}
+            disabled={anotherActionBusy}
+            onArchive={onArchive}
+          />
           <ChevronDown size={15} aria-hidden="true" />
         </span>
       </div>

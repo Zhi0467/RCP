@@ -65,6 +65,11 @@ import {
 } from "../components/ExperimentRunDetail";
 import { GraphEditingControls, type GraphEditingProps } from "../components/GraphEditingControls";
 import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../components/CampaignRuns";
+import {
+  EpisodeArchiveButton,
+  EpisodeAuthor,
+  type ArchiveEpisodeAction,
+} from "../components/EpisodeRunControls";
 import { runsEpisodeCards } from "../campaigns";
 import {
   graphTargetsEqual,
@@ -893,6 +898,7 @@ interface ExecutionProps {
   onInspectTask: (operationId: string) => void;
   onLoadEpisodeMessages: (episodeId: string) => Promise<void>;
   onStopEpisode: (episodeId: string) => Promise<void>;
+  onArchiveEpisode: ArchiveEpisodeAction;
   onMergeEpisode: (episodeId: string) => Promise<void>;
   onReauthorizeEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
@@ -934,6 +940,7 @@ export function ExecutionView({
   onInspectTask,
   onLoadEpisodeMessages,
   onStopEpisode,
+  onArchiveEpisode,
   onMergeEpisode,
   onReauthorizeEpisode,
   onSendEpisodeMessage,
@@ -949,6 +956,7 @@ export function ExecutionView({
   onSwitchExperimentProvider,
   episodeReportHref,
 }: ExecutionProps) {
+  const [showArchived, setShowArchived] = useState(false);
   const selectedDetailRef = useRef<HTMLDivElement>(null);
   const selectedAutoResearchDetailRef = useRef<HTMLDivElement>(null);
   const focusedAutoResearchEpisodeId = useRef<string | null>(null);
@@ -1023,17 +1031,25 @@ export function ExecutionView({
     );
     experimentEntriesByEpisode.set(entry.episode.episode_id, entry);
   });
+  // The cached graph control owns lifecycle state. The episode reads own the
+  // current archive preference, including for main cards built from that cache.
   const episodesById = new Map(episodes.map((episode) => [episode.episode_id, episode]));
-  experimentEntriesByEpisode.forEach((entry, episodeId) => {
-    episodesById.set(episodeId, entry.episode);
-  });
+  indexedEntries.forEach((entry) => episodesById.set(entry.episode.episode_id, entry.episode));
   const orderedEpisodes = runsEpisodeCards(
     [...episodesById.values()],
     new Set(experimentRuns.keys()),
+    showArchived,
   );
+  const visibleEpisodes = orderedEpisodes.filter((episode) => !episode.archived);
+  const archivedEpisodes = orderedEpisodes.filter((episode) => episode.archived);
+  const requestedEpisodeId =
+    selectedAutoResearchEpisodeId ?? exactExperimentRoute?.episode_id ?? null;
+  const requestedEpisode = requestedEpisodeId ? episodesById.get(requestedEpisodeId) : undefined;
+  const requestedEpisodeArchived = requestedEpisode?.archived ?? false;
   const childExperimentsByParent = new Map<string, ExperimentLoopIndexEntry[]>();
   experimentEntriesByEpisode.forEach((entry) => {
     if (!entry.parent_episode_id) return;
+    if (!showArchived && episodesById.get(entry.episode.episode_id)?.archived) return;
     const children = childExperimentsByParent.get(entry.parent_episode_id) ?? [];
     children.push(entry);
     childExperimentsByParent.set(entry.parent_episode_id, children);
@@ -1048,11 +1064,11 @@ export function ExecutionView({
   const selectedAutoResearchLoaded = orderedEpisodes.some(
     (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
   );
-  const needsAction = orderedEpisodes.filter(
+  const needsAction = visibleEpisodes.filter(
     (episode) => episodeRunSection(episode) === "actionable",
   );
-  const inProgress = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "running");
-  const completed = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
+  const inProgress = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "running");
+  const completed = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
   // Expand one card by default: the selection when there is one, else the first
   // row a human is expected to read, which is the first section carrying work.
   const expandedEpisodeId =
@@ -1071,6 +1087,10 @@ export function ExecutionView({
       episodes: completed.filter((episode) => episode.mode === "auto_research"),
     },
   ];
+
+  useEffect(() => {
+    if (requestedEpisodeArchived) setShowArchived(true);
+  }, [requestedEpisodeId, requestedEpisodeArchived]);
 
   useEffect(() => {
     if (
@@ -1103,12 +1123,23 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
+      <div className="runs-view-controls">
+        <label className="show-archived-runs">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(event) => setShowArchived(event.target.checked)}
+          />
+          Show archived
+        </label>
+      </div>
       {exactProjection.staleMainRoute ? (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
           <button className="button secondary compact" type="button" onClick={onOpenHistory}>
             Open History
           </button>
+          {showArchived && requestedEpisode?.archived && renderEpisodeCard(requestedEpisode, false)}
         </div>
       ) : (
         <div className="operating-sections episode-ledger-sections">
@@ -1174,6 +1205,24 @@ export function ExecutionView({
               ))}
             </div>
           </section>
+          {showArchived && (
+            <section
+              className="operating-section episode-ledger-section archived"
+              aria-label="Archived runs"
+            >
+              <header>
+                <h2>Archived</h2>
+                <span>{archivedEpisodes.length}</span>
+              </header>
+              {archivedEpisodes.length === 0 ? (
+                <p className="episode-ledger-empty">No archived runs.</p>
+              ) : (
+                <div className="campaign-run-list">
+                  {archivedEpisodes.map((episode) => renderEpisodeCard(episode, false))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
     </section>
@@ -1206,11 +1255,56 @@ export function ExecutionView({
           onReauthorize={onReauthorizeEpisode}
           onSendMessage={onSendEpisodeMessage}
           onOperateTask={onOperateEpisodeTask}
+          onArchive={onArchiveEpisode}
           key={episode.episode_id}
         />
       );
     }
     const run = experimentRuns.get(episode.episode_id);
+    if (!run && episode.archived) {
+      const historicalEntry = experimentEntries.find(
+        (entry) => entry.episode.episode_id === episode.episode_id,
+      );
+      const title =
+        historicalEntry?.node.title ??
+        (episode.graph_target.kind === "main"
+          ? graph.nodes[episode.control_node_id ?? ""]?.title
+          : undefined) ??
+        episode.control_node_id ??
+        "Experiment loop";
+      return (
+        <article
+          className="campaign-run archived-episode-card"
+          data-episode-id={episode.episode_id}
+          key={episode.episode_id}
+        >
+          <div className="campaign-run-heading">
+            <span className="campaign-run-identity">
+              <strong className="campaign-run-title">
+                <FlaskConical size={14} aria-hidden="true" />
+                <span>{title}</span>
+              </strong>
+              <span className="campaign-run-meta">
+                <time dateTime={episode.created_at}>
+                  {formatEpisodeTimestamp(episode.created_at)}
+                </time>
+                <EpisodeAuthor author={episode.authorized_by} />
+              </span>
+            </span>
+            <div className="archived-episode-actions">
+              <button className="button secondary compact" type="button" onClick={onOpenHistory}>
+                Open History
+              </button>
+              <EpisodeArchiveButton
+                episode={episode}
+                disabled={episodeAction !== null}
+                onArchive={onArchiveEpisode}
+              />
+            </div>
+          </div>
+        </article>
+      );
+    }
     if (!run) {
       throw new Error(
         `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
@@ -1236,6 +1330,8 @@ export function ExecutionView({
         stopBusy={stopBusyId === run.node.id}
         watcherCheckBusyId={watcherCheckBusyId}
         taskActionId={taskActionId}
+        archiveDisabled={episodeAction !== null}
+        onArchive={onArchiveEpisode}
         experimentConversation={selectedExperimentConversation}
         indexedEntry={indexedEntry}
         watchedByParentAutoResearch={watchedByParentAutoResearch}
@@ -1289,6 +1385,8 @@ function ExperimentEpisodeCard({
   stopBusy,
   watcherCheckBusyId,
   taskActionId,
+  archiveDisabled,
+  onArchive,
   experimentConversation,
   indexedEntry,
   watchedByParentAutoResearch,
@@ -1315,6 +1413,8 @@ function ExperimentEpisodeCard({
   stopBusy: boolean;
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
+  archiveDisabled: boolean;
+  onArchive: ArchiveEpisodeAction;
   experimentConversation?: ReactNode;
   indexedEntry: ExperimentLoopIndexEntry | null;
   watchedByParentAutoResearch: boolean;
@@ -1347,7 +1447,10 @@ function ExperimentEpisodeCard({
   }, [selected]);
 
   return (
-    <article className={`campaign-run experiment-episode-card ${tone}`}>
+    <article
+      className={`campaign-run experiment-episode-card ${tone}`}
+      data-episode-id={episode.episode_id}
+    >
       <span className="campaign-state-rail" aria-hidden="true" />
       <div className="campaign-run-heading">
         <button
@@ -1371,10 +1474,16 @@ function ExperimentEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+            <EpisodeAuthor author={episode.authorized_by} />
           </span>
         </span>
         <EpisodeBudgetMeter episode={episode} />
         <span className="campaign-run-time">
+          <EpisodeArchiveButton
+            episode={episode}
+            disabled={archiveDisabled}
+            onArchive={onArchive}
+          />
           <ChevronDown size={15} aria-hidden="true" />
         </span>
       </div>

@@ -7,8 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from rcp.transfer.project_files import parse_transfer_project_file_payload
+from rcp.transfer.archive import TransferArchiveActor
+from rcp.transfer.project_files import (
+    parse_transfer_project_file_payload,
+    transfer_project_file_payload,
+)
 from rcp.transfer.records import (
+    TransferEpisodeArchiveRecord,
     TransferEpisodeInvocation,
     TransferEpisodeRecord,
     TransferEpisodeWrapup,
@@ -111,6 +116,14 @@ def _rich_capture(fixture: dict[str, object]):
         created_at=now,
         updated_at=now,
         ended_at=now,
+        archive=TransferEpisodeArchiveRecord(
+            archived_by=TransferArchiveActor(
+                space_id=str(uuid.uuid4()),
+                user_id=str(uuid.uuid4()),
+                display_name="Former teammate",
+            ),
+            archived_at=now,
+        ),
         invocations=(
             TransferEpisodeInvocation(
                 operation_id=task.operation_id,
@@ -153,18 +166,41 @@ def _rich_capture(fixture: dict[str, object]):
         consecutive_error_count=0,
     )
     records = operational.records.model_copy(
-        update={"tasks": (task,), "watchers": (watcher,), "episodes": (episode,)}
+        update={
+            "schema_version": 2,
+            "tasks": (task,),
+            "watchers": (watcher,),
+            "episodes": (episode,),
+        }
     )
     return operational.model_copy(update={"records": records})
 
 
+@pytest.mark.parametrize("record_schema_version", [1, 2])
 def test_storage_import_inserts_full_inert_history_and_receipt(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    record_schema_version: int,
 ) -> None:
-    fixture = _archive_fixture(manifest, tmp_path, monkeypatch)
+    fixture = _archive_fixture(
+        manifest, tmp_path, monkeypatch, include_episode_archive=record_schema_version == 2
+    )
     capture = _rich_capture(fixture)
+    payload = transfer_project_file_payload(capture)
+    if record_schema_version == 1:
+        document = json.loads(payload)
+        document["records"]["schema_version"] = 1
+        with pytest.raises(ValueError, match="operational records are invalid"):
+            parse_transfer_project_file_payload(json.dumps(document).encode())
+        for episode in document["records"]["episodes"]:
+            episode.pop("archive")
+        payload = (
+            json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+        ).encode()
+    capture = parse_transfer_project_file_payload(payload)
+    assert transfer_project_file_payload(capture) == payload
+    assert capture.records.schema_version == record_schema_version
     archive = fixture["archive"]
     target = fixture["target"]
     configuration = fixture["configuration"]
@@ -191,6 +227,20 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     assert len(receipt.event_id_map) == 1
     assert len(receipt.receipt_id_map) == 1
     assert target.project(capture.project_id) is None
+    episode = capture.records.episodes[0]
+    assert target.episode_archive_states(capture.project_id)[episode.episode_id].archived == (
+        record_schema_version == 2
+    )
+    if record_schema_version == 2:
+        assert episode.archive is not None
+        assert target.space_user(episode.archive.archived_by.user_id) is None
+        with target.connection() as connection:
+            archive_row = connection.execute(
+                "SELECT * FROM episode_archives WHERE episode_id = ?", (episode.episode_id,)
+            ).fetchone()
+            assert archive_row["archived_user_id"] == episode.archive.archived_by.user_id
+            assert archive_row["archived_display_name"] == "Former teammate"
+            assert archive_row["archived_at"] == episode.archive.archived_at
     stored_configuration = target.project_transfer_import_configuration_receipt_json(
         archive.target_request_id
     )
@@ -268,3 +318,51 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     )
     assert complete.status == "complete"
     assert complete.publication_sha256 == "b" * 64
+
+
+@pytest.mark.parametrize("prepared_schema_version", [1, 2])
+def test_storage_import_rejects_record_schema_not_negotiated_before_release(
+    manifest, tmp_path, monkeypatch, prepared_schema_version
+):
+    fixture = _archive_fixture(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        include_episode_archive=prepared_schema_version == 2,
+    )
+    capture = _rich_capture(fixture)
+    if prepared_schema_version == 2:
+        records = capture.records.model_copy(
+            update={
+                "schema_version": 1,
+                "episodes": tuple(
+                    episode.model_copy(update={"archive": None})
+                    for episode in capture.records.episodes
+                ),
+            }
+        )
+        capture = capture.model_copy(update={"records": records})
+    target = fixture["target"]
+    archive = fixture["archive"]
+    configuration = fixture["configuration"]
+    html = {
+        view.kept_filename: (
+            fixture["archive_root"] / "result-views" / view.kept_filename
+        ).read_text()
+        for view in capture.kept_result_views
+    }
+    with pytest.raises(ValueError, match="record schema does not match target preparation"):
+        target.begin_project_transfer_import(
+            archive.target_request_id,
+            archive_manifest_sha256=archive.sha256(),
+            target_manifest_sha256=configuration.receipt.target_manifest_sha256,
+            operational_payload_sha256=hashlib.sha256(
+                transfer_project_file_payload(capture)
+            ).hexdigest(),
+            target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
+            capture=capture,
+            kept_result_view_html=html,
+        )
+    assert target.project_transfer_import(archive.target_request_id) is None
+    assert target.episodes(archive.project_id) == []
+    assert target.agent_tasks(archive.project_id) == []

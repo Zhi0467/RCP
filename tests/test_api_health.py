@@ -85,7 +85,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
-        "team_shell_protocol": {"minimum": 1, "maximum": 3},
+        "team_shell_protocol": {"minimum": 1, "maximum": 4},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -159,9 +159,9 @@ def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
     ]
 
 
-def test_team_shell_protocol_three_fixture_matches_server_range(tmp_path) -> None:
+def test_team_shell_protocol_four_fixture_matches_server_range(tmp_path) -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v3.json").read_text()
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v4.json").read_text()
     )
     with TestClient(create_app(data_dir=tmp_path)) as client:
         assert client.get("/api/health").json()["team_shell_protocol"] == fixture["server_range"]

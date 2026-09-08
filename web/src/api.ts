@@ -328,6 +328,17 @@ export function stopEpisode(apiBase: string, episodeId: string): Promise<Episode
   });
 }
 
+export function archiveEpisode(
+  apiBase: string,
+  episodeId: string,
+  archived: boolean,
+): Promise<Episode> {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ archived }),
+  });
+}
+
 export function reauthorizeEpisode(
   apiBase: string,
   episodeId: string,

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
 import {
+  archiveEpisode,
   loadEpisodeMessages,
   loadEpisodes,
   loadExperimentEpisodes,
@@ -94,6 +95,8 @@ const episode = {
   ended_at: null,
   tasks: [rootTask],
   report: null,
+  archived: false,
+  can_archive: false,
   can_stop: true,
   can_reauthorize: false,
   can_message: true,
@@ -371,6 +374,17 @@ test("Runs keeps only the backend-selected current episode for each Experiment n
   );
 });
 
+test("Show archived retains an archived Experiment after a newer episode replaces it", () => {
+  const archived = { ...episode, mode: "experiment_loop", archived: true, episode_id: "old" };
+  const current = { ...episode, mode: "experiment_loop", episode_id: "current" };
+  const currentIds = new Set([current.episode_id]);
+  assert.deepEqual(runsEpisodeCards([archived, current], currentIds), [current]);
+  assert.deepEqual(
+    new Set(runsEpisodeCards([archived, current], currentIds, true)),
+    new Set([archived, current]),
+  );
+});
+
 const branchId = "8ba94d42-4d42-4ccb-9d2a-f299340dd3b8";
 const baseHead = {
   target: { kind: "main" },
@@ -584,6 +598,8 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       starting_instruction: "Start here",
     });
     await stopEpisode("/api/projects/demo", "episode/alpha");
+    await archiveEpisode("/api/projects/demo", "episode/alpha", true);
+    await archiveEpisode("/api/projects/demo", "episode/alpha", false);
     await reauthorizeEpisode("/api/projects/demo", "episode/alpha", 4);
     await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
@@ -619,6 +635,16 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       path: "/api/projects/demo/episodes/episode%2Falpha/stop",
       method: "POST",
       body: null,
+    },
+    {
+      path: "/api/projects/demo/episodes/episode%2Falpha/archive",
+      method: "POST",
+      body: JSON.stringify({ archived: true }),
+    },
+    {
+      path: "/api/projects/demo/episodes/episode%2Falpha/archive",
+      method: "POST",
+      body: JSON.stringify({ archived: false }),
     },
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/reauthorize",

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_background_tasks,
@@ -69,6 +70,12 @@ ExperimentOperationLockDependency = Annotated[
     KeyedLocks,
     Depends(get_experiment_operation_lock),
 ]
+
+
+class ArchiveEpisodeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    archived: bool
 
 
 def _branch_summaries(
@@ -165,6 +172,40 @@ def start_episode(
         )
         status = 409 if live else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/projects/{project_id}/episodes/{episode_id}/archive",
+    response_model=EpisodeResponse,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def archive_episode(
+    project_id: str,
+    episode_id: str,
+    body: ArchiveEpisodeBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> EpisodeResponse:
+    actor = identity_access.require_patch_capable_identity(request)
+    episode = _episode_for_http(store, catalog, project_id, episode_id)
+    try:
+        archive_state = store.set_episode_archived(
+            episode.project_id, episode_id, actor.user_id, archived=body.archived
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Episode not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return serialize_episode(
+        store,
+        episode.project_id,
+        episode,
+        archive_state=archive_state,
+        branch_summary=_branch_summary(store, catalog),
+    )
 
 
 @router.post(
@@ -600,6 +641,7 @@ def _resolved_branch_merge_request(
 
 
 __all__ = [
+    "archive_episode",
     "content_episode_report",
     "episode_messages",
     "episodes",

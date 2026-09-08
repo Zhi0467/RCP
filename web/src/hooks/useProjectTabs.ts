@@ -8,6 +8,7 @@ import {
   type ProjectTab,
 } from "../projectTabs";
 import type {
+  Episode,
   ExperimentLoopIndexEntry,
   ProjectCard,
   ProjectSnapshot,
@@ -153,6 +154,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const projectTabStatesRef = useRef(new Map<string, T>());
   const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
   const experimentLoopRefreshGeneration = useRef(0);
+  const spaceRunRefreshGeneration = useRef(0);
   activeProjectId.current = projectId;
   openProjectTabsRef.current = openProjectTabs;
 
@@ -185,6 +187,37 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       );
     }
     return nextEntries;
+  }, []);
+  const refreshSpaceRuns = useCallback(async () => {
+    const generation = ++spaceRunRefreshGeneration.current;
+    const nextEntries = await loadSpaceRuns();
+    if (generation === spaceRunRefreshGeneration.current) setSpaceRuns(nextEntries);
+  }, []);
+  const replaceEpisodeRunArchive = useCallback((episode: Episode) => {
+    experimentLoopRefreshGeneration.current += 1;
+    spaceRunRefreshGeneration.current += 1;
+    const archive = { archived: episode.archived, can_archive: episode.can_archive };
+    setExperimentLoops((current) =>
+      current.map((entry) =>
+        entry.project_id === episode.project_id && entry.episode.episode_id === episode.episode_id
+          ? {
+              ...entry,
+              episode: { ...entry.episode, ...archive },
+              control: {
+                ...entry.control,
+                episode: entry.control.episode ? { ...entry.control.episode, ...archive } : null,
+              },
+            }
+          : entry,
+      ),
+    );
+    setSpaceRuns((current) =>
+      current.map((entry) =>
+        entry.project_id === episode.project_id && entry.episode_id === episode.episode_id
+          ? { ...entry, ...archive }
+          : entry,
+      ),
+    );
   }, []);
   const loadProjectIndex = useCallback(async () => {
     setProjects(await api<ProjectCard[]>("/api/projects"));
@@ -352,8 +385,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
         return;
       }
       try {
-        const nextSpaceRuns = await loadSpaceRuns();
-        if (!stopped) setSpaceRuns(nextSpaceRuns);
+        await refreshSpaceRuns();
       } catch (error) {
         if (!stopped) {
           reportError(
@@ -366,9 +398,10 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     void poll();
     return () => {
       stopped = true;
+      spaceRunRefreshGeneration.current += 1;
       window.clearTimeout(timer);
     };
-  }, [projectIndexReady, projectId, reportError, setupOpen]);
+  }, [projectIndexReady, projectId, refreshSpaceRuns, reportError, setupOpen]);
 
   return {
     projectId,
@@ -384,6 +417,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     loadProjectIndex,
     refreshExperimentLoops,
     refreshProjectExperimentLoops,
+    refreshSpaceRuns,
+    replaceEpisodeRunArchive,
     applyHashRoute,
     clearProjectRoute,
     openSetup,

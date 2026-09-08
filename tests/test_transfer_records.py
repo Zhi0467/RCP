@@ -166,6 +166,7 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
     second = store.export_project_transfer_records(project_id, attributions=attributions)
 
     assert first.model_dump_json() == second.model_dump_json()
+    assert first.schema_version == 1
     assert len(first.tasks) == 1
     exported = first.tasks[0]
     assert exported.history_only is True
@@ -706,6 +707,11 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         separators=(",", ":"),
     )
     report_html = "<h1>Completed</h1>"
+    archived_by = TransferArchiveActor(
+        space_id=store.space_id,
+        user_id=str(uuid.uuid4()),
+        display_name="Former teammate",
+    )
     with store.connection() as connection:
         for operation_id, kind, request, visible in (
             (turn_id, "node_chat", turn_request, 1),
@@ -815,8 +821,30 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             ),
         )
 
+    legacy_bundle = store.export_project_transfer_records(project_id, attributions=attributions)
+    assert legacy_bundle.schema_version == 1
+    assert all("archive" not in episode for episode in legacy_bundle.model_dump()["episodes"])
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO episode_archives (
+                episode_id, archived_space_id, archived_user_id, archived_display_name, archived_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                episode_id,
+                archived_by.space_id,
+                archived_by.user_id,
+                archived_by.display_name,
+                now,
+            ),
+        )
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
+    assert bundle.schema_version == 2
     episode = next(item for item in bundle.episodes if item.episode_id == episode_id)
+    assert episode.archive is not None
+    assert episode.archive.archived_by == archived_by
+    assert episode.archive.archived_at == now
     assert episode.experiment is not None
     assert episode.experiment.provider == "codex"
     assert episode.experiment.chat_id == "chat-1"

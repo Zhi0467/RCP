@@ -49,6 +49,7 @@ from rcp.storage.models import (
     ProjectTransferUploadRecord,
     _canonical_uuid4,
 )
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProvisioningStatus]] = {
     "waiting_for_server_setup": frozenset(
@@ -414,6 +415,8 @@ class ProjectProvisioningStoreMixin:
         actual_configuration_sha256 = project_transfer_source_configuration_sha256(configuration)
         if actual_configuration_sha256 != source_configuration_sha256:
             raise ValueError("source transfer configuration digest does not match its payload")
+        if configuration.record_schema_version not in {None, TRANSFER_RECORD_SCHEMA_VERSION}:
+            raise ValueError("target does not support the source transfer record schema")
         if accepted_schema_generation != configuration.source_schema_generation:
             raise ValueError("target does not accept the source transfer schema")
         if accepted_archive_codec not in configuration.supported_archive_codecs:
@@ -793,6 +796,14 @@ class ProjectProvisioningStoreMixin:
                 raise ValueError("source transfer project is stale or already left this space")
             if configuration_sha256 != current.source_configuration_sha256:
                 raise ValueError("source configuration changed after transfer preparation")
+            required_record_schema = self._project_transfer_record_schema_version_in_connection(
+                connection, current.project_id
+            )
+            if required_record_schema != (configuration.record_schema_version or 1):
+                raise ValueError(
+                    "Episode archive state changed after transfer preparation; "
+                    "prepare the transfer again before releasing the source."
+                )
             admission = current.target_admission_receipt
             assert current.linked_request_id is not None
             assert current.accepted_schema_generation is not None

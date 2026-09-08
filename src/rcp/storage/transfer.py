@@ -18,6 +18,7 @@ from rcp.transfer.archive import (
     inspect_transfer_table_inventory,
 )
 from rcp.transfer.records import (
+    TRANSFER_RECORD_SCHEMA_VERSION,
     TransferArtifactReference,
     TransferAssistantHistory,
     TransferAutoResearchApplyResult,
@@ -238,6 +239,28 @@ class ProjectTransferStoreMixin:
                 )
             self._require_finished_transfer_state(connection, transfer.project_id)
 
+    def project_transfer_record_schema_version(self, project_id: str) -> int:
+        """Return the record capability required by retained project history."""
+
+        with self.connection() as connection:
+            return self._project_transfer_record_schema_version_in_connection(
+                connection, project_id
+            )
+
+    @staticmethod
+    def _project_transfer_record_schema_version_in_connection(
+        connection: sqlite3.Connection, project_id: str
+    ) -> int:
+        archived = connection.execute(
+            """
+            SELECT 1 FROM episode_archives AS archive
+            JOIN episodes AS episode ON episode.episode_id = archive.episode_id
+            WHERE episode.project_id = ? LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        return TRANSFER_RECORD_SCHEMA_VERSION if archived is not None else 1
+
     def export_project_transfer_records(
         self,
         project_id: str,
@@ -261,6 +284,11 @@ class ProjectTransferStoreMixin:
             episodes = self._transfer_episodes(connection, project_id, attributions)
             paper = self._transfer_paper_draft(connection, project_id)
         return TransferRecordBundle(
+            schema_version=(
+                TRANSFER_RECORD_SCHEMA_VERSION
+                if any(episode.archive is not None for episode in episodes)
+                else 1
+            ),
             project_id=project_id,
             attributions=attributions,
             tasks=tasks,
@@ -710,6 +738,10 @@ class ProjectTransferStoreMixin:
             "SELECT * FROM episode_reports WHERE episode_id = ?",
             (episode_id,),
         ).fetchone()
+        archive = connection.execute(
+            "SELECT * FROM episode_archives WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
         cls._validate_episode_report_history(row, attempts, wrapup, report)
         return TransferEpisodeRecord(
             episode_id=episode_id,
@@ -734,6 +766,18 @@ class ProjectTransferStoreMixin:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             ended_at=row["ended_at"],
+            archive=(
+                {
+                    "archived_by": {
+                        "space_id": archive["archived_space_id"],
+                        "user_id": archive["archived_user_id"],
+                        "display_name": archive["archived_display_name"],
+                    },
+                    "archived_at": archive["archived_at"],
+                }
+                if archive is not None
+                else None
+            ),
             invocations=tuple(
                 TransferEpisodeInvocation(
                     operation_id=item["operation_id"],
@@ -1207,6 +1251,12 @@ class ProjectTransferStoreMixin:
                     target_request,
                     normalized_capture.project_id,
                 )
+                if normalized_capture.records.schema_version != (
+                    target_request.source_configuration.record_schema_version or 1
+                ):
+                    raise ValueError(
+                        "transfer operational record schema does not match target preparation"
+                    )
                 existing_row = connection.execute(
                     "SELECT * FROM project_transfer_imports WHERE request_id = ?",
                     (canonical_request_id,),
@@ -1994,6 +2044,23 @@ class ProjectTransferStoreMixin:
                     episode.ended_at,
                 ),
             )
+            if episode.archive is not None:
+                archive = episode.archive
+                connection.execute(
+                    """
+                    INSERT INTO episode_archives (
+                        episode_id, archived_space_id, archived_user_id,
+                        archived_display_name, archived_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode.episode_id,
+                        archive.archived_by.space_id,
+                        archive.archived_by.user_id,
+                        archive.archived_by.display_name,
+                        archive.archived_at,
+                    ),
+                )
             if episode.experiment is not None:
                 experiment = episode.experiment
                 connection.execute(

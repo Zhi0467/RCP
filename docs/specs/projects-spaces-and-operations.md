@@ -102,6 +102,15 @@ team-to-personal product transfers remain excluded. The transfer's
 operational-record boundary and versioned archive formats are settled in the
 [personal-to-team transfer decision](../decisions/2026-08-27-personal-to-team-transfer-archive.md).
 
+Episode archives travel with their original archiving-human snapshot and time.
+Operational-record readers accept versions 1 and 2; writers use version 1 when
+there are no episode archives and version 2 when archive metadata is present.
+Version-1 records and source configurations keep their original serialized
+shape. The optional `record_schema_version=2` source-configuration field makes
+older strict clients and targets refuse preparation before the source is
+released. Release rechecks the required version under the storage write lock,
+and archive changes obey the same transfer fence as other project writes.
+
 Every project has exactly one canonical state repository, local or remote. Its
 main and Auto-research graph-branch namespaces are parts of that same canonical
 repository; a graph branch does not create another project home.

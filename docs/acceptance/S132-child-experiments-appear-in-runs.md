@@ -16,8 +16,8 @@ invariants: [8, 10g]
 An Auto-research episode may dispatch a child Experiment on its own graph
 branch. That child is one lifecycle with its own budget and controls, and it
 must be visible in project **Runs** before anyone opens its exact route. The
-parent's card links to it as provenance; it never becomes a second budget or a
-second Stop. The budget and Stop contract itself remains
+parent's card links to it as provenance until the child is explicitly archived;
+it never becomes a second budget or a second Stop. The budget and Stop contract itself remains
 [S78](S78-one-budget-one-stop.md).
 
 Hermetic backend and web coverage exists. The served browser drive below with a

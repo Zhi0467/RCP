@@ -57,6 +57,7 @@ interface UseEpisodeDialogsOptions {
   apiBase: string;
   selectedAutoResearchEpisodeId: string | null;
   isActiveProject: (projectId: string) => boolean;
+  runsVisible?: boolean;
 }
 
 export function mergeExactEpisode(episodes: Episode[], exact: Episode[]): Episode[] {
@@ -83,6 +84,7 @@ export function useEpisodeDialogs({
   apiBase,
   selectedAutoResearchEpisodeId,
   isActiveProject,
+  runsVisible = false,
 }: UseEpisodeDialogsOptions) {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [autoResearchDialogOpen, setAutoResearchDialogOpen] = useState(false);
@@ -190,7 +192,7 @@ export function useEpisodeDialogs({
 
   useEffect(() => {
     const episodeId = pollingEpisode?.episode_id;
-    if (!episodeId) return;
+    if (!episodeId && !runsVisible) return;
     return startLiveEpisodePolling(
       {
         setTimeout: (callback, delay) => window.setTimeout(callback, delay),
@@ -216,10 +218,14 @@ export function useEpisodeDialogs({
     pollingEpisode?.episode_id,
     refreshEpisodeMessages,
     refreshEpisodes,
+    runsVisible,
   ]);
 
   const replaceEpisode = useCallback(
     (nextEpisode: Episode) => {
+      if (!isActiveProject(nextEpisode.project_id)) return;
+      // A mutation response supersedes any episode poll already in flight.
+      episodeRefreshGeneration.current += 1;
       setEpisodeState((current) => {
         if (!isActiveProject(nextEpisode.project_id)) return current;
         const currentEpisodes =

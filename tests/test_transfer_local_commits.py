@@ -315,14 +315,14 @@ def test_legacy_configuration_digest_does_not_gain_null_commit(tmp_path):
 
 
 def test_git_head_drift_refuses_the_reviewed_source_boundary(tmp_path):
-    app, _store, _actor_value, project, repository, _base = _source(tmp_path)
+    app, store, _actor_value, project, repository, _base = _source(tmp_path)
     service = app.state.catalog.open(project)
     configuration, graph_head = capture_project_transfer_source(service, include_local_commits=True)
-    request = SimpleNamespace(source_configuration=configuration)
-    _require_reviewed_source_unchanged(service, request)
+    request = SimpleNamespace(source_configuration=configuration, project_id=project)
+    _require_reviewed_source_unchanged(store, service, request)
     _commit(repository, "changed after review")
     with pytest.raises(ValueError, match="source configuration changed"):
-        _require_reviewed_source_unchanged(service, request)
+        _require_reviewed_source_unchanged(store, service, request)
     assert service.history.head_ref() == graph_head
 
 

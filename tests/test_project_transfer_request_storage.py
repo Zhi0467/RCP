@@ -186,14 +186,16 @@ def _ready_incoming(target: AppStore, request_id: str):
     )
 
 
-def _linked_pair(tmp_path: Path):
+def _linked_pair(
+    tmp_path: Path, *, configuration: ProjectTransferSourceConfiguration | None = None
+):
     source = AppStore(tmp_path / "personal" / "rcp.sqlite3", space_kind="personal")
     target = AppStore(tmp_path / "team" / "rcp.sqlite3", space_kind="team")
     source_actor = _actor(source, "Z")
     target_actor = _actor(target, "Alice")
     project_id = str(uuid.uuid4())
     _project(source, project_id)
-    configuration = _source_configuration()
+    configuration = configuration or _source_configuration()
     source_request = source.create_source_project_transfer_request(
         project_id=project_id,
         target_space_id=target.space_id,
