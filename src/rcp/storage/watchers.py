@@ -1169,6 +1169,8 @@ class WatcherStoreMixin:
         continuation_cause: str = "fresh",
         lifecycle_notice_ids: list[str] | None = None,
         message_ids: list[str] | None = None,
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
     ) -> AgentTaskRecord | None:
         """Queue a wake and mark its completed watchers notified in one transaction.
 
@@ -1264,6 +1266,8 @@ class WatcherStoreMixin:
                         record,
                         lifecycle_notice_ids=list(lifecycle_notice_ids or []),
                         message_ids=list(message_ids or []),
+                        expected_pending_notice_ids=expected_pending_notice_ids,
+                        expected_pending_message_ids=expected_pending_message_ids,
                     ):
                         connection.rollback()
                         return None

@@ -437,7 +437,7 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     )
 
 
-@pytest.mark.parametrize("changed_input", ["notice", "mail"])
+@pytest.mark.parametrize("changed_input", ["notice", "mail", "newer-notice", "newer-mail"])
 def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
     tmp_path, monkeypatch, changed_input
 ) -> None:
@@ -480,14 +480,16 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
 
     def change_prefix(record, watcher_ids, **kwargs):
         attempted_ids.append(record.operation_id)
-        earlier = (_required_timestamp(notice.created_at) - timedelta(seconds=1)).isoformat()
-        if changed_input == "notice":
+        # A newer row sorts after the snapshot prefix; it must still refuse the claim.
+        offset = timedelta(seconds=1 if changed_input.startswith("newer") else -1)
+        changed_at = (_required_timestamp(notice.created_at) + offset).isoformat()
+        if changed_input.endswith("notice"):
             store.record_auto_research_lifecycle_notice(
                 notice.model_copy(
                     update={
-                        "notice_id": "earlier-notice",
-                        "source_id": "earlier-worker",
-                        "created_at": earlier,
+                        "notice_id": "changed-notice",
+                        "source_id": "changed-worker",
+                        "created_at": changed_at,
                     }
                 )
             )
@@ -495,8 +497,8 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
             store.record_auto_research_message(
                 mail.model_copy(
                     update={
-                        "message_id": "earlier-mail",
-                        "created_at": earlier,
+                        "message_id": "changed-mail",
+                        "created_at": changed_at,
                     }
                 )
             )
@@ -1293,8 +1295,9 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
     assert executions.count(wake_id) == 1
 
 
+@pytest.mark.parametrize("graph_wake_while_child_runs", [False, True])
 def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, graph_wake_while_child_runs
 ) -> None:
     store = _store(tmp_path)
     root_stage = tmp_path / "auto_research-stage"
@@ -1384,6 +1387,15 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     )
     assert store.episode_budget_meter(auto_research.episode_id) == before
     assert store.auto_research_message(message_id).delivered_at is None  # type: ignore[union-attr]
+    spent_before_settlement = 0
+    if graph_wake_while_child_runs:
+        # A root graph-condition wake must not carry the running child's reply.
+        watcher = _arm_completed_graph_condition(store, auto_research, root)
+        graph_wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+        assert graph_wake_id is not None
+        wait_for_task(store, graph_wake_id, expect="succeeded")
+        assert store.auto_research_message(message_id).delivered_at is None  # type: ignore[union-attr]
+        spent_before_settlement = 1
 
     release_child.set()
     wait_for_task(store, child.operation_id, expect="succeeded")
@@ -1406,7 +1418,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     assert len(lifecycle) == 1
     assert lifecycle[0].source_id == worker_id
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used + 1 + spent_before_settlement
     )
 
 

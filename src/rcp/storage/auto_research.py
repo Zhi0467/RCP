@@ -426,6 +426,8 @@ class AutoResearchStoreMixin:
         *,
         lifecycle_notice_ids: list[str],
         message_ids: list[str] | None = None,
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
     ) -> AgentTaskRecord | None:
         """Spend one root allocation and bind one exact lifecycle/mail prefix to it."""
 
@@ -450,6 +452,8 @@ class AutoResearchStoreMixin:
                     record,
                     lifecycle_notice_ids=lifecycle_notice_ids,
                     message_ids=list(message_ids or []),
+                    expected_pending_notice_ids=expected_pending_notice_ids,
+                    expected_pending_message_ids=expected_pending_message_ids,
                 ):
                     connection.rollback()
                     return None
@@ -467,8 +471,15 @@ class AutoResearchStoreMixin:
         *,
         lifecycle_notice_ids: list[str],
         message_ids: list[str],
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
     ) -> bool:
-        """Verify and claim bounded root inputs; False requires admission rollback."""
+        """Verify and claim bounded root inputs; False requires admission rollback.
+
+        ``expected_pending_*`` is the caller's whole pending snapshot when the
+        delivery bounds did not cut its prefix. Any row that appeared since then
+        would fit in this wake, so the claim is refused and a later pass re-reads.
+        """
 
         if episode.root_operation_id is None:
             raise ValueError("the Auto-research wake has no root recipient")
@@ -521,6 +532,18 @@ class AutoResearchStoreMixin:
         ).fetchall()
         if [str(item["notice_id"]) for item in pending_notice_prefix] != (lifecycle_notice_ids):
             return False
+        if expected_pending_notice_ids is not None:
+            pending_notices = connection.execute(
+                """
+                SELECT notice_id FROM auto_research_lifecycle_notices
+                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                """,
+                (record.episode_id,),
+            ).fetchall()
+            if {str(item["notice_id"]) for item in pending_notices} != set(
+                expected_pending_notice_ids
+            ):
+                return False
         if message_ids:
             messages = connection.execute(
                 f"""
@@ -560,6 +583,19 @@ class AutoResearchStoreMixin:
                 ),
             ).fetchall()
             if [str(item["message_id"]) for item in pending_message_prefix] != (message_ids):
+                return False
+        if expected_pending_message_ids is not None:
+            pending_messages = connection.execute(
+                """
+                SELECT message_id FROM auto_research_messages
+                WHERE episode_id = ? AND recipient_task_id = ?
+                  AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                """,
+                (record.episode_id, episode.root_operation_id),
+            ).fetchall()
+            if {str(item["message_id"]) for item in pending_messages} != set(
+                expected_pending_message_ids
+            ):
                 return False
         connection.execute(
             f"""
