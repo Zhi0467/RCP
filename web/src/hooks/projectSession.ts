@@ -79,6 +79,7 @@ export interface ProjectSessionState extends ProjectSessionTabState {
   latestSnapshotRequests: Record<string, number>;
   transitionCoordinator: ProjectTransitionCoordinatorState;
   syncRequestSequence: number;
+  paperEditorGeneration: number;
 }
 
 export type ProjectSessionAction =
@@ -98,7 +99,13 @@ export type ProjectSessionAction =
       request?: { project_id: string; request_id: number };
     }
   | { kind: "project_replaced"; project: ProjectSnapshot | null }
-  | { kind: "paper_updated"; project_id: string; paper: PaperSnapshot }
+  | { kind: "paper_editor_opened" }
+  | {
+      kind: "paper_updated";
+      project_id: string;
+      editor_generation: number;
+      paper: PaperSnapshot;
+    }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
   | { kind: "human_draft_updated"; project_id: string; draft: HumanDraft | null }
   | { kind: "discarded_proposals_consumed" }
@@ -179,6 +186,7 @@ export function emptyProjectSessionState(
       project_id: initialProjectId,
     }),
     syncRequestSequence: 0,
+    paperEditorGeneration: 0,
   };
 }
 
@@ -187,11 +195,15 @@ export function projectSessionReducer(
   action: ProjectSessionAction,
 ): ProjectSessionState {
   switch (action.kind) {
-    case "activate":
-      return withTransitionCoordinator(state, {
+    case "activate": {
+      const next = withTransitionCoordinator(state, {
         kind: "activate",
         project_id: action.project_id,
       });
+      return action.project_id === state.transitionCoordinator.active_project_id
+        ? next
+        : { ...next, paperEditorGeneration: state.paperEditorGeneration + 1 };
+    }
     case "reset": {
       const empty = emptyProjectSessionState(action.project_id);
       return {
@@ -199,6 +211,7 @@ export function projectSessionReducer(
         ...serializeProjectSessionTabState(empty),
         humanDraft: action.human_draft ?? null,
         draftPreviewPending: false,
+        paperEditorGeneration: state.paperEditorGeneration + 1,
         transitionCoordinator: reduceProjectTransitionCoordinator(state.transitionCoordinator, {
           kind: "activate",
           project_id: action.project_id,
@@ -228,6 +241,7 @@ export function projectSessionReducer(
         ...restored,
         projectId: action.project_id,
         draftPreviewPending: false,
+        paperEditorGeneration: state.paperEditorGeneration + 1,
         draftReconciliationDiscardedProposalIds: action.consumeDiscardedProposals
           ? []
           : restored.draftReconciliationDiscardedProposalIds,
@@ -255,10 +269,13 @@ export function projectSessionReducer(
       }
       return state.project === action.project ? state : { ...state, project: action.project };
     }
+    case "paper_editor_opened":
+      return { ...state, paperEditorGeneration: state.paperEditorGeneration + 1 };
     case "paper_updated": {
       if (
         action.project_id !== state.transitionCoordinator.active_project_id ||
-        action.project_id !== state.project?.id
+        action.project_id !== state.project?.id ||
+        action.editor_generation !== state.paperEditorGeneration
       ) {
         return state;
       }

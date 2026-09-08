@@ -1722,13 +1722,26 @@ export default function App() {
     }
   }, [apiBase, isActiveProject, projectId]);
 
+  useLayoutEffect(() => {
+    // A new editor supersedes the old one's pending save. Leaving Paper alone
+    // still lets that save update the project snapshot used by other views.
+    if (view === "paper" && project?.id) {
+      dispatchProjectSession({ kind: "paper_editor_opened" });
+    }
+  }, [dispatchProjectSession, project?.id, view]);
+
   const updatePaper = useCallback(
     (nextPaper: PaperSnapshot) => {
       if (projectId) {
-        dispatchProjectSession({ kind: "paper_updated", project_id: projectId, paper: nextPaper });
+        dispatchProjectSession({
+          kind: "paper_updated",
+          project_id: projectId,
+          editor_generation: projectSession.paperEditorGeneration,
+          paper: nextPaper,
+        });
       }
     },
-    [dispatchProjectSession, projectId],
+    [dispatchProjectSession, projectId, projectSession.paperEditorGeneration],
   );
 
   useEffect(() => {
