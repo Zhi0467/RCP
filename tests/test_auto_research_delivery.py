@@ -1640,12 +1640,10 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
             created_at=store.now(),
         )
     )
-    deliver_pending_auto_research_lifecycle(
+    wake_id = deliver_pending_auto_research_lifecycle(
         tasks,
         episode_id=auto_research.episode_id,
     )
-    claimed = store.auto_research_lifecycle_notices(auto_research.episode_id)[0]
-    wake_id = claimed.delivery_operation_id
     assert wake_id is not None
     wait_for_task(store, wake_id, expect="failed")
 

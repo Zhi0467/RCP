@@ -116,13 +116,10 @@ def reconcile_due_auto_research_recoveries(
     for recovery in store.due_auto_research_recoveries(as_of=as_of):
         if recovery.status != "pending":
             continue
-        launch_failed = False
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:
-                launch_failed = True
                 child = background.retry(recovery.operation_id)
-                launch_failed = False
             store.complete_auto_research_recovery(
                 recovery.recovery_id,
                 admitted_operation_id=child.operation_id,
@@ -132,10 +129,10 @@ def reconcile_due_auto_research_recoveries(
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             task = store.agent_task(recovery.operation_id)
             if child is not None:
-                if launch_failed:
-                    # The admission committed a child row, but its dispatch raised.
-                    # Keep the reason durable; the row otherwise sits queued with
-                    # no receipt explaining why no worker started.
+                if store.agent_task_dispatch_was_proven_not_started(child.operation_id):
+                    # The child row committed but no worker ever started, so this
+                    # exception is the only account of why.  A child another
+                    # admission launched is already past this proof.
                     logger.warning(
                         "Auto-research recovery %s admitted %s but its launch failed: %s",
                         recovery.recovery_id,

@@ -556,3 +556,42 @@ def test_typed_structural_orchestrator_failure_fences_atomically(tmp_path: Path)
     assert len(typed) == 1
     assert typed[0].payload["classification"] == "structural_unrecoverable"
     assert typed[0].payload["recoverable"] is False
+
+
+def test_recovery_admission_whose_launch_fails_records_a_durable_receipt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+
+    def refuse_launch(_operation_id):
+        raise RuntimeError("simulated launch refusal")
+
+    monkeypatch.setattr(tasks, "launch_admitted", refuse_launch)
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    child = store.auto_research_task_recovery_child(root.operation_id)
+    assert child is not None
+    assert child.status == "queued"
+    receipts = {
+        receipt.category: receipt.payload
+        for receipt in store.agent_task_receipts(child.operation_id)
+    }
+    assert receipts["auto_research_recovery_launch_failed"]["detail"] == "simulated launch refusal"
+    admitted = store.auto_research_recovery("task:root")
+    assert admitted is not None
+    assert admitted.status == "admitted"
+    assert admitted.admitted_operation_id == child.operation_id
