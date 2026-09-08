@@ -11,6 +11,9 @@ const idle = async () => {};
 function Fixture() {
   const [episode, setEpisode] = useState(initialEpisode);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  Object.assign(window, {
+    refreshMergeEpisode: async () => setEpisode(await (await fetch("/fixture/episode")).json()),
+  });
   return (
     <main style={{ padding: 24 }}>
       <AutoResearchEpisodeCard

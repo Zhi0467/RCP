@@ -75,7 +75,8 @@ export function AutoResearchEpisodeCard({
   const [additionalInvocations, setAdditionalInvocations] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
-  const [mergeError, setMergeError] = useState<string | null>(null);
+  const mergeSnapshot = JSON.stringify(episode.graph_branch);
+  const [mergeError, setMergeError] = useState<{ snapshot: string; message: string } | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const turnRows = useMemo(
     () =>
@@ -136,6 +137,10 @@ export function AutoResearchEpisodeCard({
     if (episode.can_reauthorize) setExpanded(true);
   }, [episode.can_reauthorize]);
 
+  useEffect(() => {
+    setMergeError(null);
+  }, [mergeSnapshot]);
+
   const submitReauthorization = async () => {
     if (!reauthorizationIsValid || anotherActionBusy) return;
     setLocalError(null);
@@ -175,7 +180,10 @@ export function AutoResearchEpisodeCard({
     try {
       await onMerge(episode.episode_id);
     } catch (error) {
-      setMergeError(error instanceof Error ? error.message : String(error));
+      setMergeError({
+        snapshot: mergeSnapshot,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -380,9 +388,9 @@ export function AutoResearchEpisodeCard({
                     ? "End and merge to main"
                     : "Merge to main"}
               </button>
-              {mergeError && (
+              {mergeError?.snapshot === mergeSnapshot && (
                 <div className="campaign-branch-diagnostic" role="alert">
-                  {mergeError}
+                  {mergeError.message}
                 </div>
               )}
             </section>

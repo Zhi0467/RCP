@@ -491,7 +491,8 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
       tasks: [],
     };
     const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: stopped }));
+    let polledEpisode = stopped;
+    await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
     let requests = 0;
     await page.route("**/api/projects/**/merge", async (route) => {
       assert.equal(route.request().method(), "POST");
@@ -522,6 +523,20 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     assert.equal(await branch.getByRole("alert").textContent(), reason);
     assert.equal(requests, 1);
     assert.equal(await merge.isEnabled(), true);
+    // Polling identical state retains the refusal, but a newly eligible snapshot retires it.
+    await page.evaluate(() => window.refreshMergeEpisode());
+    assert.equal(await branch.getByRole("alert").textContent(), reason);
+    polledEpisode = {
+      ...stopped,
+      graph_branch: { ...stopped.graph_branch, merge_eligible: true },
+    };
+    await page.evaluate(() => window.refreshMergeEpisode());
+    await branch.getByRole("alert").waitFor({ state: "detached" });
+    assert.equal(requests, 1);
+    // Returning to the earlier snapshot must not resurrect an obsolete refusal.
+    polledEpisode = stopped;
+    await page.evaluate(() => window.refreshMergeEpisode());
+    assert.equal(await branch.getByRole("alert").count(), 0);
     // Eligibility can change after the last snapshot; the second click must reach the server.
     await merge.click();
     await branch.getByText("Merge running", { exact: true }).waitFor();
