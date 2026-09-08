@@ -1129,8 +1129,9 @@ export function NodeChat({
       const range = annotatableAnswerSelectionRange(window.getSelection(), chatLinesRef.current);
       if (range) openAnnotationComposerRef.current(range);
     };
-    document.addEventListener("pointerup", onPointerUp);
-    return () => document.removeEventListener("pointerup", onPointerUp);
+    // Capture phase: a release over a window resize corner stops propagation.
+    document.addEventListener("pointerup", onPointerUp, { capture: true });
+    return () => document.removeEventListener("pointerup", onPointerUp, { capture: true });
   }, [readOnly]);
 
   const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {

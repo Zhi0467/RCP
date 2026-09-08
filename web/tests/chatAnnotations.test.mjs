@@ -20,7 +20,11 @@ test("assistant answers expose pointer selection and a real keyboard selection c
   assert.doesNotMatch(nodeChatSource, /onPointerUp=/);
   // The pointer may lift outside the swept answer, so the release is observed on the
   // document and the answer is resolved from the selection, clamped to its edges.
-  assert.match(nodeChatSource, /document\.addEventListener\("pointerup", onPointerUp\)/);
+  // Capture phase, because a release over a floating-window resize corner stops propagation.
+  assert.match(
+    nodeChatSource,
+    /document\.addEventListener\("pointerup", onPointerUp, \{ capture: true \}\)/,
+  );
   assert.match(
     nodeChatSource,
     /annotatableAnswerSelectionRange\(window\.getSelection\(\), chatLinesRef\.current\)/,
