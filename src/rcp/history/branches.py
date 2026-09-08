@@ -701,6 +701,27 @@ class BranchHistoryManager:
         )
         return self.write_merge_receipt(receipt)
 
+    def retained_patch_signature(self) -> tuple[object, ...]:
+        """Identify the exact inputs of this branch's replay without replaying it.
+
+        The accepted main prefix below ``base_head`` is immutable, so the retained
+        branch Patch files, that head, and the manifest are the whole input.
+        """
+
+        with self._process_lock:
+            self._metadata = self._read_metadata()
+            manifest_path = self.parent.root / "manifest.toml"
+            manifest_stamp = manifest_path.stat().st_mtime_ns if manifest_path.is_file() else None
+            return (
+                self._metadata.base_head.model_dump_json(),
+                manifest_stamp,
+                tuple(
+                    (path.name, stat.st_size, stat.st_mtime_ns)
+                    for path in self._patch_paths()
+                    for stat in [path.stat()]
+                ),
+            )
+
     def materialize_at_revision(self, revision: int) -> MaterializationResult:
         """Replay the branch exactly through ``revision``, retained rejected Patches included.
 

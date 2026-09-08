@@ -142,20 +142,23 @@ def active_merge(store: AppStore, project_id: str, target: GraphTargetRef) -> bo
     )
 
 
+_MERGE_FENCE_REASON = "Wait for the graph merge to finish before editing."
+
+
 def require_graph_edit_admission(store: AppStore, project_id: str, target: GraphTargetRef) -> None:
     """Called under the same project admission lock as human merge dispatch."""
 
     if active_merge(store, project_id, target):
-        raise HTTPException(
-            status_code=409, detail="Wait for the graph merge to finish before editing."
-        )
+        raise HTTPException(status_code=409, detail=_MERGE_FENCE_REASON)
+
+
+def merge_fenced_mutation_availability() -> GraphMutationAvailability:
+    return GraphMutationAvailability(available=False, reason=_MERGE_FENCE_REASON)
 
 
 def graph_mutation_availability(
     store: AppStore, project_id: str, target: GraphTargetRef, state: GraphState
 ) -> GraphMutationAvailability:
     if active_merge(store, project_id, target):
-        return GraphMutationAvailability(
-            available=False, reason="Wait for the graph merge to finish before editing."
-        )
+        return merge_fenced_mutation_availability()
     return project_graph_mutation_availability(state)

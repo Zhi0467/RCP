@@ -20,12 +20,19 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
-from rcp.api.graph_changes import branch_changes, graph_mutation_availability
+from rcp.api.graph_changes import (
+    active_merge,
+    branch_changes,
+    graph_mutation_availability,
+    merge_fenced_mutation_availability,
+)
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.config import load_manifest
+from rcp.core.attention import project_graph_mutation_availability
+from rcp.core.transition_models import GraphMutationAvailability
 from rcp.history.branches import BranchHistoryManager
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
@@ -125,21 +132,38 @@ def _branch_snapshot(
     return snapshot
 
 
+# Branch tabs poll this every second and branches have no display cache, so the
+# replay result is remembered per branch until its exact inputs change. One
+# process owns one data directory, so (project, branch) identifies the branch.
+_BRANCH_HEARTBEATS: dict[
+    tuple[str, str], tuple[tuple[object, ...], int, GraphMutationAvailability]
+] = {}
+
+
 def _branch_revision(
     project_id: str, branch_id: str, catalog: ProjectCatalog, store: AppStore
 ) -> dict[str, object]:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
-    with service.history.workspace.snapshot_lock:
-        if not service.history.workspace.refresh_if_stale():
+    history = service.history
+    assert isinstance(history, BranchHistoryManager)
+    canonical_project_id = catalog.resolve_project_id(project_id)
+    with history.workspace.snapshot_lock:
+        if not history.workspace.refresh_if_stale():
             raise StateUnavailable("The episode graph could not confirm a current snapshot.")
-        state = service.history.materialize(write_outputs=False).state
+        signature = history.retained_patch_signature()
+        remembered = _BRANCH_HEARTBEATS.get((canonical_project_id, branch_id))
+        if remembered is None or remembered[0] != signature:
+            state = history.materialize(write_outputs=False).state
+            remembered = (signature, state.revision, project_graph_mutation_availability(state))
+            _BRANCH_HEARTBEATS[(canonical_project_id, branch_id)] = remembered
+        _signature, revision, availability = remembered
+        if active_merge(store, canonical_project_id, history.graph_target):
+            availability = merge_fenced_mutation_availability()
         return {
-            "revision": state.revision,
+            "revision": revision,
             "snapshot_freshness": "fresh",
             "last_remote_sync_at": None,
-            "graph_mutation": graph_mutation_availability(
-                store, catalog.resolve_project_id(project_id), service.history.graph_target, state
-            ).model_dump(mode="json"),
+            "graph_mutation": availability.model_dump(mode="json"),
         }
 
 

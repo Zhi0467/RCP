@@ -283,3 +283,56 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     assert changes.json()["base_head"] == snapshot["graph_changes"]["base_head"]
     assert [item["node_id"] for item in changes.json()["nodes"]] == [QUESTION]
     assert changes.json()["nodes"][0]["history"][0]["producer"] == "human"
+
+
+def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.api import project_state
+    from rcp.history.branches import BranchHistoryManager
+
+    app, main, episode, _root = _app_branch(manifest, tmp_path)
+    client = TestClient(app)
+    base = f"/api/projects/{episode.project_id}"
+    params = {"branch_id": episode.episode_id}
+    replays = []
+    materialize = BranchHistoryManager.materialize
+
+    def counting(self, **kwargs):
+        replays.append(kwargs)
+        return materialize(self, **kwargs)
+
+    monkeypatch.setattr(BranchHistoryManager, "materialize", counting)
+    project_state._BRANCH_HEARTBEATS.clear()
+    first = client.get(f"{base}/cached/revision", params=params).json()
+    second = client.get(f"{base}/cached/revision", params=params).json()
+    assert first == second
+    assert first["graph_mutation"] == {"available": True, "reason": None}
+    assert len(replays) == 1
+    snapshot = client.get(base, params=params).json()
+    synced = client.post(
+        f"{base}/sync",
+        params=params,
+        json={
+            "base_revision": snapshot["revision"],
+            "nodes": [
+                {
+                    "node_id": QUESTION,
+                    "base_updated_rev": main.history.state().nodes[QUESTION].updated_rev,
+                    "changes": {"question": "Does the heartbeat notice this?"},
+                }
+            ],
+        },
+    )
+    assert synced.status_code == 200, synced.text
+    heartbeat_replays = len(replays)
+    third = client.get(f"{base}/cached/revision", params=params).json()
+    assert third["revision"] == synced.json()["head"]["revision"] > first["revision"]
+    assert len(replays) == heartbeat_replays + 1
+    client.get(f"{base}/cached/revision", params=params)
+    assert len(replays) == heartbeat_replays + 1
+    monkeypatch.setattr(project_state, "active_merge", lambda *args: True)
+    fenced = client.get(f"{base}/cached/revision", params=params).json()
+    assert fenced["revision"] == third["revision"]
+    assert fenced["graph_mutation"]["available"] is False
+    assert "merge" in fenced["graph_mutation"]["reason"]

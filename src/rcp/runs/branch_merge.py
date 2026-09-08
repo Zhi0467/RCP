@@ -1154,7 +1154,7 @@ def _review_proposal_coverage(
                 preview_graph, proposal, decision="approved", reason=None
             ).model_copy(update={"revision": preview_graph.revision + 1})
             projected = GraphTransitionManager().prepare_validated(preview_graph, [judgment])
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        except (KeyError, ValueError) as exc:
             if not is_new:
                 continue  # The pending review may address an older source value.
             if isinstance(exc, BranchMergeSemanticConflict):
