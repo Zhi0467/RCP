@@ -1211,6 +1211,52 @@ def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
     assert "rcp-artifact-selection-enable" not in document
 
 
+def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> None:
+    descriptor = AgentArtifactDescriptor(
+        artifact_id="0123456789abcdef01234567",
+        name="episode-report.html",
+        media_type="text/html",
+        size_bytes=128,
+    )
+
+    document, csp = artifact_viewer_document(
+        preview_url="/preview",
+        keep_url=None,
+        project_id="project",
+        chat_id=None,
+        operation_id="operation",
+        descriptor=descriptor,
+        source="episode_report",
+        episode_id="episode",
+        save_url="/save",
+    )
+
+    assert 'id="pending"' not in document
+    assert "rcp-artifact-context" not in document
+    assert "rcp-artifact-selection-enable" not in document
+    assert ">Comment</button>" not in document
+    assert ">Save copy</button>" in document
+    assert "fetch(config.saveUrl" in document
+    assert 'id="keep"' not in document
+    assert ">report</span>" in document
+    assert "connect-src 'self'" in csp
+
+    with_chat, _csp = artifact_viewer_document(
+        preview_url="/preview",
+        keep_url=None,
+        project_id="project",
+        chat_id="chat",
+        operation_id="operation",
+        descriptor=descriptor,
+        source="episode_report",
+        episode_id="episode",
+        save_url="/save",
+    )
+    assert 'id="pending"' in with_chat
+    assert '"chatAvailable": true' in with_chat
+    assert "fetch(config.saveUrl" in with_chat
+
+
 def test_prompt_addresses_comments_without_implying_an_edit() -> None:
     section = _chat_attachment_section(
         [

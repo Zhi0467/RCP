@@ -1757,7 +1757,14 @@ export interface ProviderRuntimeChoice {
 export interface AgentProfile {
   provider: ProviderId;
   runtime: string;
+  /** The manifest value; empty when the profile names no model. */
   model: string;
+  /**
+   * The model the backend runs for this profile: `model`, or the head of the
+   * provider's catalog on `run_on` when `model` is empty and that catalog is
+   * known. Exported, never derived here, and refreshed with readiness.
+   */
+  effective_model: string;
   reasoning: string;
   run_on: string;
   permissions: AgentPermissions;

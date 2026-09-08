@@ -383,6 +383,19 @@ class AgentLauncher:
             probe.completed.set()
         return result
 
+    def cached_readiness(
+        self,
+        provider: str,
+        *,
+        host: str = "",
+        binary: str | None = None,
+    ) -> ProviderReadiness | None:
+        """Return one already-probed capability, or None rather than probing."""
+
+        with self._readiness_lock:
+            cached = self._readiness_cache.get((provider, host, binary))
+        return None if cached is None else cached.model_copy(deep=True)
+
     def invalidate_readiness(
         self,
         provider: str,

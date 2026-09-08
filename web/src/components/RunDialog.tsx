@@ -125,6 +125,11 @@ export function RunDialog({
         <AgentConfigControls
           project={project}
           value={config}
+          effectiveModel={
+            config.provider === project.agent_profiles[kind].provider
+              ? project.agent_profiles[kind].effective_model
+              : ""
+          }
           onChange={setConfig}
           runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
           runOnLocked

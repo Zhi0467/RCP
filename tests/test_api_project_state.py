@@ -710,6 +710,11 @@ def test_project_readiness_does_not_open_or_materialize_project(
     assert compute_calls == [[]]
     assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
     assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
+    # The cold path exports the effective profiles too, without opening history.
+    assert set(response.json()["agent_profiles"]) >= {"seed", "refresh", "node_chat"}
+    assert all(
+        "effective_model" in profile for profile in response.json()["agent_profiles"].values()
+    )
     assert response.json()["provider_skill_inventories"]["laptop"]["codex"]["status"] == (
         "unavailable"
     )

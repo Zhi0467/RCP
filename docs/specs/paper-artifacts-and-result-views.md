@@ -129,8 +129,10 @@ image request; ordinary navigation to that URL receives the shell.
 ### Selection-to-prompt, not annotation
 
 HTML selection gestures activate only when the surrounding confirmation shell
-opts in through the private preview bridge. A read-only task viewer without an
-originating chat keeps ordinary browser gestures and never draws a comment box.
+opts in through the private preview bridge. A viewer without an originating chat,
+whether a task artifact or an episode report whose concluding task is not a chat
+turn, keeps ordinary browser gestures and never draws a selection rail; it keeps
+Keep or Save copy.
 
 Selections are temporary prompt inputs, not persistent annotations. Highlighting
 text remains an ordinary browser selection. Dragging from a figure or blank

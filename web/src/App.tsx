@@ -322,6 +322,9 @@ export function projectReadinessUpdate(
           provider_readiness: readiness.provider_readiness,
           providers: readiness.providers,
           provider_skill_inventories: readiness.provider_skill_inventories,
+          // Profiles resolve their unnamed model against this catalog, so a
+          // refresh that changes the head re-exports them with it.
+          agent_profiles: readiness.agent_profiles,
         }
       : {}),
   };

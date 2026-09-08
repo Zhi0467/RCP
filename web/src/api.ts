@@ -242,7 +242,11 @@ export function loadProjectReadiness(
 ): Promise<
   Pick<
     ProjectSnapshot,
-    "compute_status" | "provider_readiness" | "providers" | "provider_skill_inventories"
+    | "compute_status"
+    | "provider_readiness"
+    | "providers"
+    | "provider_skill_inventories"
+    | "agent_profiles"
   >
 > {
   return api(`${apiBase}/readiness${refresh ? "?refresh=true" : ""}`);
