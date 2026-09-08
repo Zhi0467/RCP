@@ -33,6 +33,7 @@ from rcp.limits import (
     SERVER_LOCK_OWNER_READ_ATTEMPTS,
     SERVER_LOCK_POLL_INTERVAL_SECONDS,
     SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_THREAD_DRAIN_TIMEOUT_SECONDS,
 )
 from rcp.migrate_cli import _print_version, _run_migrate
 from rcp.server_ops.cli import add_server_parser, run_server_command
@@ -411,6 +412,7 @@ def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
                 server_fd=server_socket.fileno(),
                 on_ready=lambda: _emit_launch_outcome(args, "owned", metadata=metadata, owned=True),
             )
+        _drain_worker_threads()
     except OSError as exc:
         if getattr(args, "machine_readable", False):
             _exit_refused(
@@ -422,6 +424,38 @@ def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
                 ),
             )
         raise SystemExit(f"Cannot bind {_base_url(args.host, args.port)}: {exc}") from exc
+
+
+def _drain_worker_threads(*, timeout: float = SERVER_THREAD_DRAIN_TIMEOUT_SECONDS) -> None:
+    """Wait briefly for request threads, then end the process while it still owns its locks.
+
+    A worker blocked in a bounded remote call (an rsync of the canonical mirror,
+    for example) can outlive uvicorn's shutdown. Letting this frame return would
+    release the instance lock while that thread still writes the mirror, so the
+    replacement would race it. Ending the process releases every lock at death
+    and keeps the takeover budget bounded.
+    """
+
+    deadline = time.monotonic() + timeout
+    main = threading.main_thread()
+    for thread in threading.enumerate():
+        if thread is main or thread.daemon:
+            continue
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    stuck = [
+        thread.name
+        for thread in threading.enumerate()
+        if thread is not main and not thread.daemon and thread.is_alive()
+    ]
+    if stuck:
+        print(
+            f"Ending the server with {len(stuck)} request thread(s) still running: "
+            + ", ".join(stuck),
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def _run_server(

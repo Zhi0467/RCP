@@ -5,6 +5,7 @@ import re
 import signal
 import stat
 import sys
+import threading
 import urllib.error
 from argparse import Namespace
 from contextlib import contextmanager
@@ -22,6 +23,7 @@ from rcp.__main__ import (
     ExistingServerUnavailable,
     InstanceLockHeld,
     LaunchRefused,
+    _drain_worker_threads,
     _launch_automatically,
     _open_existing_server,
     _probe_owner,
@@ -36,6 +38,7 @@ from rcp.limits import (
     BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_THREAD_DRAIN_TIMEOUT_SECONDS,
     WATCHER_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.models import ServerStepEvent
@@ -469,8 +472,29 @@ def test_server_shutdown_budget_fits_the_replacement_window() -> None:
         SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
         + 2 * (WATCHER_CHECK_TIMEOUT_SECONDS + 1)
         + BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS
+        + SERVER_THREAD_DRAIN_TIMEOUT_SECONDS
     )
     assert teardown < SERVER_SHUTDOWN_TIMEOUT_SECONDS
+
+
+def test_drain_ends_the_process_only_while_a_request_thread_is_stuck(monkeypatch) -> None:
+    """A stuck non-daemon thread must not outlive the instance lock; an idle process exits normally."""
+
+    exits: list[int] = []
+    monkeypatch.setattr("rcp.__main__.os._exit", lambda code: exits.append(code))
+
+    _drain_worker_threads(timeout=0.2)
+    assert exits == []
+
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, name="stuck-request", daemon=False)
+    stuck.start()
+    try:
+        _drain_worker_threads(timeout=0.2)
+        assert exits == [0]
+    finally:
+        release.set()
+        stuck.join(timeout=5)
 
 
 def test_owner_publishes_metadata_after_lock_and_reports_owned(

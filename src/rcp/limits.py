@@ -198,6 +198,9 @@ STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 SERVER_SHUTDOWN_TIMEOUT_SECONDS = 60.0
 # Request grace leaves room for lifespan teardown within the replacement window.
 SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 10
+# After uvicorn returns, request threads still in a bounded remote call get this
+# long; then the process ends while it still holds its instance lock.
+SERVER_THREAD_DRAIN_TIMEOUT_SECONDS = 5.0
 BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS = 7.0
 SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS = 0.0
 SERVER_LOCK_OWNER_READ_ATTEMPTS = 10
