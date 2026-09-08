@@ -574,6 +574,7 @@ export function NodeChat({
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
+  const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
   const revisionReviewTask = revisionReview
     ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
     : null;
@@ -1214,6 +1215,7 @@ export function NodeChat({
   const steer = async (task: AgentTask) => {
     const draftMessage = message;
     const draftAnnotations = annotations;
+    const draftArtifactContext = artifactContext;
     const text = assembleChatTurn(message, annotations);
     if (!annotationsComplete) {
       setAnnotationsOpen(true);
@@ -1244,15 +1246,16 @@ export function NodeChat({
               ],
             },
       );
-      // The field stays editable while the receipt is awaited, so only the text
-      // that was actually delivered is consumed; newer typing survives. Skill
-      // and artifact selections describe the message that just left and must
-      // not attach themselves to the next ordinary turn.
+      // Typing and skill selection are fenced while the receipt is awaited, so
+      // the delivered draft is exactly what is consumed. Artifact context can
+      // still arrive from another view meanwhile; it and the text it appended
+      // survive, while selections that described the delivered message are
+      // reset so they cannot attach themselves to the next ordinary turn.
       setMessage((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
+      setArtifactContext((current) => (current === draftArtifactContext ? null : current));
       setAnnotationsOpen(false);
       skills.reset();
-      setArtifactContext(null);
       lastArtifactContextRef.current = null;
     } catch (error) {
       setSubmitError(
@@ -2039,6 +2042,7 @@ export function NodeChat({
             ref={textareaRef}
             aria-label="Message"
             aria-keyshortcuts="Shift+Tab"
+            disabled={awaitingSteerReceipt}
             value={message}
             onChange={(event) => {
               if (dictating) stopDictation(true);
@@ -2072,7 +2076,10 @@ export function NodeChat({
                 type="button"
                 aria-label="Add files"
                 disabled={
-                  attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
+                  attachments.length >= MAX_CHAT_ATTACHMENTS ||
+                  attachmentsPreparing ||
+                  submitting ||
+                  awaitingSteerReceipt
                 }
                 onClick={() => attachmentInputRef.current?.click()}
               >
@@ -2175,14 +2182,16 @@ export function NodeChat({
                 disabled={
                   !assembleChatTurn(message, annotations) ||
                   !annotationsComplete ||
-                  attachmentsUnready ||
-                  (steeringTask ? attachments.length > 0 : relatedActive) ||
-                  Boolean(pausedAttempt) ||
                   submitting ||
-                  Boolean(repairingTaskId) ||
-                  reviewPending ||
-                  scope.length === 0 ||
-                  !providerReady
+                  (steeringTask
+                    ? attachments.length > 0
+                    : attachmentsUnready ||
+                      relatedActive ||
+                      Boolean(pausedAttempt) ||
+                      Boolean(repairingTaskId) ||
+                      reviewPending ||
+                      scope.length === 0 ||
+                      !providerReady)
                 }
                 onClick={() => void send()}
                 aria-label={steeringTask ? "Steer running turn" : `Start ${modeLabel(mode)} turn`}

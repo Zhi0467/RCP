@@ -9,7 +9,9 @@ Auto-research-specific orchestration and graph branches are in
 
 Discuss and Work are explicit per-turn modes in one conversation. Submit time
 captures the mode; Pause, Resume, Retry, and correction preserve it. Changing the
-composer affects only the next ordinary turn.
+composer's mode or configuration affects only the next ordinary turn; while the
+running attempt can take live input, the composer's message steers that attempt
+instead, as described under conversation scratch and human input below.
 
 - **Discuss** reasons and answers with no repository mutation or active Patch.
 - **Work** authorizes operational execution within its exact project write

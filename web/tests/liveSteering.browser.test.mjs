@@ -84,19 +84,22 @@ test("the composer steers the running turn and renders stored receipts without r
     assert.equal(requests.length, 2);
     assert.notEqual(requests[0].message_id, requests[1].message_id);
 
-    // Typing while the receipt is awaited must survive; only the delivered text is consumed.
+    // While the receipt is awaited the composer is fenced, so the delivered text is
+    // exactly what is consumed and no later selection can leak into the next turn.
     outcome = "delivered";
     let open;
     gate = { promise: new Promise((resolve) => (open = resolve)) };
     await composer.fill("A slow steer");
     await sendSteer.click();
     while (requests.length < 3) await new Promise((resolve) => setTimeout(resolve, 10));
-    await composer.fill("Typed while awaiting the receipt");
+    assert.equal(await composer.isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Add files" }).isDisabled(), true);
     gate = null;
     open();
     await page.getByText("A slow steer", { exact: true }).waitFor();
     assert.equal(requests.length, 3);
-    assert.equal(await composer.inputValue(), "Typed while awaiting the receipt");
+    await page.locator('textarea[aria-label="Message"]:enabled').waitFor();
+    assert.equal(await composer.inputValue(), "");
 
     outcome = "disconnect";
     await composer.fill("A steer with a lost response");
