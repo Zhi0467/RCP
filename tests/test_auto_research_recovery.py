@@ -590,7 +590,9 @@ def test_recovery_admission_whose_launch_fails_records_a_durable_receipt(
         receipt.category: receipt.payload
         for receipt in store.agent_task_receipts(child.operation_id)
     }
-    assert receipts["auto_research_recovery_launch_failed"]["detail"] == "simulated launch refusal"
+    assert (
+        receipts["operation_launch_failed_after_admission"]["detail"] == "simulated launch refusal"
+    )
     admitted = store.auto_research_recovery("task:root")
     assert admitted is not None
     assert admitted.status == "admitted"
