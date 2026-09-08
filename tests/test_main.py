@@ -5,6 +5,7 @@ import re
 import signal
 import stat
 import sys
+import threading
 import urllib.error
 from argparse import Namespace
 from contextlib import contextmanager
@@ -22,6 +23,7 @@ from rcp.__main__ import (
     ExistingServerUnavailable,
     InstanceLockHeld,
     LaunchRefused,
+    _drain_worker_threads,
     _launch_automatically,
     _open_existing_server,
     _probe_owner,
@@ -31,6 +33,13 @@ from rcp.__main__ import (
     _serve_as_owner,
     instance_lock,
     main,
+)
+from rcp.limits import (
+    BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_THREAD_DRAIN_TIMEOUT_SECONDS,
+    WATCHER_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.models import ServerStepEvent
 from rcp.server_runtime import (
@@ -402,7 +411,7 @@ def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     _replace_existing_server(args, tmp_path)
 
     assert calls[0] == (4321, signal.SIGTERM)
-    assert calls[1] == (tmp_path, 45.0)
+    assert calls[1] == (tmp_path, SERVER_SHUTDOWN_TIMEOUT_SECONDS)
     assert calls[2] == ("serve", tmp_path)
 
 
@@ -436,6 +445,56 @@ def test_reload_prepares_watched_frontend_before_starting_uvicorn(tmp_path, monk
     assert calls[0] == ("assets", True, "source")
     assert calls[1][0] == ("rcp.__main__:reload_app",)
     assert calls[1][1]["reload"] is True
+
+
+def test_server_bounds_graceful_shutdown_below_the_replacement_window(
+    tmp_path, monkeypatch
+) -> None:
+    """A request stuck in a thread must not be able to defeat a server replacement."""
+
+    calls = []
+
+    @contextmanager
+    def fake_assets(*, watch, mode):
+        yield
+
+    monkeypatch.setattr("rcp.__main__.prepared_web_assets", fake_assets)
+    monkeypatch.setattr("rcp.__main__.uvicorn.run", lambda *_args, **kwargs: calls.append(kwargs))
+
+    _run_server(_serve_args(reload=True, web_assets="source"), _metadata(tmp_path))
+
+    assert calls[0]["timeout_graceful_shutdown"] == SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+    assert SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS < SERVER_SHUTDOWN_TIMEOUT_SECONDS
+
+
+def test_server_shutdown_budget_fits_the_replacement_window() -> None:
+    teardown = (
+        SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+        + 2 * (WATCHER_CHECK_TIMEOUT_SECONDS + 1)
+        + BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS
+        + SERVER_THREAD_DRAIN_TIMEOUT_SECONDS
+    )
+    assert teardown < SERVER_SHUTDOWN_TIMEOUT_SECONDS
+
+
+def test_drain_ends_the_process_only_while_a_request_thread_is_stuck(monkeypatch) -> None:
+    """A stuck non-daemon thread must not outlive the instance lock; an idle process exits normally."""
+
+    exits: list[int] = []
+    monkeypatch.setattr("rcp.__main__.os._exit", lambda code: exits.append(code))
+
+    _drain_worker_threads(timeout=0.2)
+    assert exits == []
+
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, name="stuck-request", daemon=False)
+    stuck.start()
+    try:
+        _drain_worker_threads(timeout=0.2)
+        assert exits == [0]
+    finally:
+        release.set()
+        stuck.join(timeout=5)
 
 
 def test_owner_publishes_metadata_after_lock_and_reports_owned(

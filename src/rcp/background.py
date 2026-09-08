@@ -17,7 +17,11 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import CHAT_ARTIFACT_MAX_COUNT, GRAPH_UPDATE_HISTORY_MAX_COUNT
+from rcp.limits import (
+    BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
+    CHAT_ARTIFACT_MAX_COUNT,
+    GRAPH_UPDATE_HISTORY_MAX_COUNT,
+)
 from rcp.providers import classify_terminal_error, require_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
@@ -841,7 +845,7 @@ class BackgroundAgentTasks:
         if control is not None:
             control.request_pause()
 
-    def shutdown(self, *, timeout: float = 7.0) -> None:
+    def shutdown(self, *, timeout: float = BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS) -> None:
         """Pause live subprocesses before the web process exits."""
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False

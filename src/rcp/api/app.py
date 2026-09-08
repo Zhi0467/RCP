@@ -187,7 +187,7 @@ from rcp.transfer.target import (
     TargetTransferActivationCoordinator,
     TargetTransferUploadCoordinator,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, StateUnavailable, fence_canonical_lock_waits
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
     WatcherDelivery,
@@ -1563,6 +1563,10 @@ def create_app(
                 app.state.startup_effect_release_task = release_task
             yield
         finally:
+            # Request threads blocked behind a contended canonical lock would
+            # otherwise outlive uvicorn's grace and hold the instance lock past
+            # the replacement window.
+            fence_canonical_lock_waits()
             if release_task is not None and not release_task.done():
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):

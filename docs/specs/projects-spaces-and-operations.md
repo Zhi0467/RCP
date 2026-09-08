@@ -288,10 +288,17 @@ chats, drafts, views, or paper content.
 One RCP process owns one data directory, enforced by an OS lock. `rcp open`
 reuses a healthy owner or gracefully replaces an unavailable one; explicit
 `rcp serve` performs the same takeover only after recoverable work is paused.
-The human is never asked to discover or kill the old process manually.
+The replaced server gives in-flight requests a bounded grace period shorter than
+the takeover wait and then aborts every pending canonical-lock wait, so one stuck
+request cannot defeat replacement. The human is
+never asked to discover or kill the old process manually.
 
-Remote canonical locks are process-held advisory files. Live contention waits.
-Process or connection death releases ownership. RCP may reclaim only a provably
+Remote canonical locks are process-held advisory files. Writers wait for live
+contention; a read-side refresh waits a bounded time and then reports canonical
+state unavailable, so one stuck writer cannot freeze a project's readers.
+Process death releases ownership. The remote holder releases the lock itself
+when its client stops heartbeating, so an orphaned holder cannot outlive a dead
+connection by more than the heartbeat timeout. RCP may reclaim only a provably
 empty legacy lock directory; populated, symlink, or special entries remain with
 an exact diagnostic and no instruction to delete them.
 

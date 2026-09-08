@@ -4,11 +4,13 @@ RCP ships this module with the shared artifact-replacement helper prepended and
 runs the result with ``python -c``. Keeping the executable source in real modules
 lets ruff, the formatter, and ``tests/test_remote_scripts.py`` see it.
 
-Lock protocol. ``argv[1]`` is the lock path. The holder prints one status word on
+Lock protocol. ``argv[1]`` is the lock path; ``argv[2]`` is the heartbeat timeout.
+The holder prints one status word on
 stdout — ``legacy-directory``, ``unsafe-entry``, or ``error`` and exits, or
 ``contended`` followed by ``acquired`` once the wait finishes. It then reads one
 JSON command per line from stdin and prints one JSON response per line, holding
-the lock for as long as stdin stays open. ``replace-run-artifact`` is instead a
+the lock while its client remains live. Heartbeats produce no response.
+``replace-run-artifact`` is instead a
 one-shot command for task scratch, which has its own per-artifact mutation owner.
 """
 
@@ -18,11 +20,17 @@ import hashlib
 import json
 import os
 import re
+import select
 import shutil
 import stat
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
+
+if "STATE_LOCK_POLL_INTERVAL_SECONDS" not in globals():
+    from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
 
 if "replace_regular_file_in_open_directory" not in globals():
     from rcp.artifact_replace import (
@@ -596,6 +604,112 @@ def replace_run_artifact() -> None:
             os.close(descriptor)
 
 
+class Liveness:
+    """The client's heartbeat deadline, shared by the input loop and the watchdog."""
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+        self.deadline = time.monotonic() + timeout
+
+    def refresh(self) -> None:
+        self.deadline = time.monotonic() + self.timeout
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
+
+def watch_liveness(liveness: Liveness) -> None:
+    """Exit while a command runs if the client falls silent; closing the fd releases the lock.
+
+    The input loop checks the same deadline between lines, but a synchronous
+    command cannot, and a dead client must never keep the lock past the timeout.
+    """
+
+    while True:
+        remaining = liveness.remaining()
+        if remaining <= 0:
+            print(
+                "Lock holder released the lock because its client stopped heartbeating.",
+                file=sys.stderr,
+                flush=True,
+            )
+            os._exit(3)
+        time.sleep(min(STATE_LOCK_POLL_INTERVAL_SECONDS, remaining))
+
+
+def lock_input_lines(liveness: Liveness):
+    """Poll complete lines without hiding buffered input or blocking on a partial line.
+
+    Expiry belongs to the watchdog alone, so a silent client produces exactly one
+    diagnostic and one exit path whether or not a command is running.
+    """
+    pending = b""
+    while True:
+        if b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            liveness.refresh()
+            yield line
+            continue
+        ready, _, _ = select.select([sys.stdin], [], [], STATE_LOCK_POLL_INTERVAL_SECONDS)
+        if ready:
+            chunk = os.read(sys.stdin.fileno(), 65536)
+            if not chunk:
+                if pending:
+                    yield pending
+                return
+            pending += chunk
+        else:
+            yield None
+
+
+def hold_lock(handle, lock_path: str, heartbeat_timeout: float) -> None:
+    liveness = Liveness(heartbeat_timeout)
+    threading.Thread(target=watch_liveness, args=(liveness,), daemon=True).start()
+    lines = lock_input_lines(liveness)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("contended", flush=True)
+        for line in lines:
+            if line is not None:
+                try:
+                    if json.loads(line).get("op") != "heartbeat":
+                        raise ValueError("only heartbeat is allowed before lock acquisition")
+                except Exception as exc:
+                    print("error", flush=True)
+                    print(f"Lock-holder protocol error: {exc}", file=sys.stderr, flush=True)
+                    raise SystemExit(1) from exc
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                continue
+        else:
+            return
+    print("acquired", flush=True)
+    for line in lines:
+        if line is None:
+            continue
+        try:
+            command = json.loads(line)
+            if command.get("op") == "heartbeat":
+                continue
+            if command.get("op") == "apply":
+                response = apply_staged(command, lock_path)
+            elif command.get("op") == "restore-exact":
+                response = restore_exact(command, lock_path)
+            elif command.get("op") in {"keep-view", "keep-artifact"}:
+                response = keep_staged_view(command, lock_path)
+            elif command.get("op") == "replace-artifact":
+                response = replace_staged_artifact(command, lock_path)
+            else:
+                raise ValueError("unsupported lock-holder command")
+        except Exception as exc:
+            response = {"ok": False, "commit_status": None, "error": str(exc)[:1000]}
+        print(json.dumps(response, separators=(",", ":")), flush=True)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def main() -> None:
     if sys.argv[1:2] == ["replace-run-artifact"]:
         try:
@@ -605,6 +719,7 @@ def main() -> None:
             raise SystemExit(44) from exc
         return
     lock_path = sys.argv[1]
+    heartbeat_timeout = float(sys.argv[2])
     try:
         mode = os.lstat(lock_path).st_mode
     except FileNotFoundError:
@@ -640,29 +755,7 @@ def main() -> None:
         print("unsafe-entry", flush=True)
         raise SystemExit(0)
     with os.fdopen(descriptor, "a+") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("contended", flush=True)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        print("acquired", flush=True)
-        for line in sys.stdin:
-            try:
-                command = json.loads(line)
-                if command.get("op") == "apply":
-                    response = apply_staged(command, lock_path)
-                elif command.get("op") == "restore-exact":
-                    response = restore_exact(command, lock_path)
-                elif command.get("op") in {"keep-view", "keep-artifact"}:
-                    response = keep_staged_view(command, lock_path)
-                elif command.get("op") == "replace-artifact":
-                    response = replace_staged_artifact(command, lock_path)
-                else:
-                    raise ValueError("unsupported lock-holder command")
-            except Exception as exc:
-                response = {"ok": False, "commit_status": None, "error": str(exc)[:1000]}
-            print(json.dumps(response, separators=(",", ":")), flush=True)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        hold_lock(handle, lock_path, heartbeat_timeout)
 
 
 if __name__ == "__main__":
