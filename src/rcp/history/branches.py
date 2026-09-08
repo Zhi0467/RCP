@@ -853,8 +853,8 @@ class BranchHistoryManager:
         return list(self.manifest.project.truth_scope), None
 
     def _require_branch_patch(self, patch: Patch) -> None:
-        if patch.kind in {"identity", "approval"} or patch.project_identity is not None:
-            raise ValueError("human authority and project identity patches target main only")
+        if patch.kind == "identity" or patch.project_identity is not None:
+            raise ValueError("project identity patches target main only")
         if patch.branch_merge is not None:
             raise ValueError("a branch merge Patch targets main, never its source branch")
         if patch.processed_cursors:
@@ -865,11 +865,15 @@ class BranchHistoryManager:
     def _require_prepared_branch_patch(self, patch: Patch) -> None:
         if patch.transition is not None and patch.transition.pre_head.target != self.graph_target:
             raise ValueError("prepared branch Patch names a different graph target")
-        # Admission already checks the canonical task's exact Apply target and
-        # stamps its episode provenance. A child Experiment owns its own episode,
-        # while its graph target belongs to the parent Auto-research episode.
-        if self.parent.require_attribution and patch.episode_id is None:
-            raise ValueError("branch Patches require canonical episode attribution")
+        if (
+            self.parent.require_attribution
+            and patch.kind == "experiment_loop"
+            and patch.episode_id is None
+        ):
+            raise ValueError("Experiment-loop patches require canonical episode attribution")
+        # Human Sync and ordinary Work also write branches. Admission supplies
+        # their human/task attribution and exact target; an operational episode
+        # id belongs only to work actually owned by that episode.
 
     def _require_receipt_identity(self, receipt: BranchMergeReceipt) -> None:
         provenance = receipt.provenance
@@ -1448,27 +1452,42 @@ def open_branch(
     *,
     expected_episode_id: str | None = None,
     expected_project_id: str | None = None,
+    initialize: bool = True,
 ) -> BranchHistoryManager:
     canonical_branch_id(branch_id)
-    root = _safe_branch_root(parent.root, branch_id, create=False)
-    try:
-        _require_regular_file(root / "branch.json", "graph branch metadata")
-        metadata = GraphBranchMetadata.model_validate_json(
-            (root / "branch.json").read_text(encoding="utf-8")
+    with parent._process_lock:
+        main = None
+        if not initialize:
+            if not parent.workspace.refresh_if_stale():
+                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
+            parent._reload_manifest()
+            main = parent.materialize(write_outputs=False)
+            parent.require_writable(main.state)
+        root = _safe_branch_root(parent.root, branch_id, create=False)
+        try:
+            _require_regular_file(root / "branch.json", "graph branch metadata")
+            metadata = GraphBranchMetadata.model_validate_json(
+                (root / "branch.json").read_text(encoding="utf-8")
+            )
+        except FileNotFoundError:
+            raise KeyError(branch_id) from None
+        if metadata.branch_id != branch_id:
+            raise ValueError("graph branch path disagrees with branch.json identity")
+        if expected_episode_id is not None and metadata.episode_id != expected_episode_id:
+            raise ValueError("graph branch belongs to a different episode")
+        if expected_project_id is not None and metadata.project_id != expected_project_id:
+            raise ValueError("graph branch belongs to a different project")
+        _require_parent_identity(
+            parent,
+            metadata,
+            allow_historical_home=True,
+            materialization=main,
         )
-    except FileNotFoundError:
-        raise KeyError(branch_id) from None
-    if metadata.branch_id != branch_id:
-        raise ValueError("graph branch path disagrees with branch.json identity")
-    if expected_episode_id is not None and metadata.episode_id != expected_episode_id:
-        raise ValueError("graph branch belongs to a different episode")
-    if expected_project_id is not None and metadata.project_id != expected_project_id:
-        raise ValueError("graph branch belongs to a different project")
-    _require_parent_identity(parent, metadata, allow_historical_home=True)
-    branch = BranchHistoryManager(parent, metadata)
-    branch._metadata = branch._read_metadata()
-    branch.initialize()
-    return branch
+        branch = BranchHistoryManager(parent, metadata)
+        branch._metadata = branch._read_metadata()
+        if initialize:
+            branch.initialize()
+        return branch
 
 
 def _require_parent_identity(

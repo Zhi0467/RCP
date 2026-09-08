@@ -12762,3 +12762,128 @@ button.relation-map-node:hover {
     width: calc(100% - 20px);
   }
 }
+
+.branch-graph-banner,
+.branch-graph-banner > span,
+.branch-graph-banner > div,
+.branch-graph-controls,
+.branch-change-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.branch-graph-banner {
+  justify-content: space-between;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.branch-graph-controls {
+  margin: 12px 0;
+}
+.branch-graph-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.branch-change-legend {
+  margin-left: auto;
+}
+.branch-change-badge {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: capitalize;
+}
+.branch-change-badge.created {
+  color: var(--moss);
+}
+.branch-change-badge.updated {
+  color: var(--mustard);
+}
+.branch-change-badge.removed {
+  color: var(--coral);
+}
+.dag-node .eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.dag-node.branch-created {
+  outline: 2px solid var(--moss);
+}
+.dag-node.branch-updated {
+  outline: 2px solid var(--mustard);
+}
+.dag-node.branch-removed {
+  outline: 2px dashed var(--coral);
+}
+.dag-node.branch-removed strong {
+  text-decoration: line-through;
+}
+.dag-edge-group.branch-created .dag-edge {
+  stroke: var(--moss);
+  stroke-width: 3;
+}
+.dag-edge-group.branch-updated .dag-edge {
+  stroke: var(--mustard);
+  stroke-width: 3;
+}
+.dag-edge-group.branch-removed .dag-edge {
+  stroke: var(--coral);
+  stroke-dasharray: 6 4;
+  stroke-width: 3;
+}
+.branch-change-detail {
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+.branch-change-detail h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.branch-change-fields {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.branch-change-fields th,
+.branch-change-fields td {
+  border: 1px solid var(--line);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.branch-change-fields th:first-child {
+  width: 22%;
+}
+.branch-change-history {
+  padding-left: 22px;
+  margin: 14px 0 0;
+}
+.branch-change-history li {
+  margin: 10px 0;
+}
+.branch-change-history p {
+  margin: 4px 0 8px;
+  overflow-wrap: anywhere;
+}
+.branch-edge-changes {
+  margin: 12px 0;
+}
+.branch-edge-changes article {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}

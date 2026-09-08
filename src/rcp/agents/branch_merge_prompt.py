@@ -9,6 +9,7 @@ def branch_merge_task_contract(
     context_id: str,
     patch_path: str,
     validator_command: str,
+    review_contract_json: str,
 ) -> str:
     """Describe one fresh semantic rebase without exposing repositories."""
 
@@ -35,6 +36,37 @@ current main graph. Preserve compatible main-side changes. Resolve every listed 
 explicitly from the supplied graph semantics; never resolve one by silently preferring an entire
 branch or main object. If the intended outcome cannot be represented legally, leave a precise
 diagnostic in your final response and do not invent authority.
+
+The exact review policy used by validation is:
+```json
+{review_contract_json}
+```
+Carry protected graph changes as pending main Proposals. Their approval is a later human
+action in main's Inbox; never copy branch Proposal approvals or rejections. A branch-resolved
+Proposal's actual node and relation effects are separate source changes that still need to
+be carried. Only live pending source Proposals retain their IDs and contents. A source Proposal
+made stale by later branch edits remains in branch history; carry the actual node/relation
+change independently instead of recreating that stale review in main.
+
+For new review Proposals, RCP derives a stable ID from this branch, the last delivered source
+head (or the immutable base before the first merge), and the exact semantic operation;
+candidate IDs are temporary. Retries reuse that ID; a new change after an intervening delivery
+can receive a fresh review even when it restores an earlier value. Reuse an equivalent live
+pending main review from any earlier delivery by omitting its duplicate.
+Standing changes and a status_change with human_edit cause require an exact
+matching human_changes fact in the policy above; do not invent a human cause.
+When several protected edits target the same node, use the policy's same_node_bundle:
+one Proposal may contain at most one content_change, one status_change, and one standing_change
+for that same ResearchQuestion or Hypothesis. This keeps their approval atomic. An explicit
+standing_change is applied exactly; otherwise normal content/status approval accepts the node's
+standing. Keep different nodes and structural actions in separate Proposals.
+If the source removed an ordinary node that is still accepted on main, carry that exact
+one-node removal in a pending removal Proposal; the merge cannot remove it directly.
+
+When previous_merge_receipt and previous_branch_graph are present, they prove which source
+head was already delivered. Merge only changes since that exact source snapshot, preserving
+main's subsequent human decisions. The full immutable-base semantic_delta remains historical
+context. Never recreate unchanged changes from that earlier merged head.
 
 Only permitted file output:
 - Write exactly one JSON object to `{patch_path}` matching the orchestrator agent Patch schema in

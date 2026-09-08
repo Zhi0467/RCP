@@ -1,3 +1,5 @@
+import { MAIN_GRAPH } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import {
@@ -38,6 +40,7 @@ export interface ChatStateSnapshot {
 interface UseChatStateOptions {
   projectId: string | null;
   apiBase: string;
+  graphTarget?: GraphTargetRef;
   selectedExperimentChatId: string | null;
   isActiveProject: (projectId: string) => boolean;
   visibleTranscriptIds: (selectedChatId: string | null, floatingChatId: string | null) => string[];
@@ -94,6 +97,7 @@ export function shouldLoadVisibleChatTranscript(
 export function useChatState({
   projectId,
   apiBase,
+  graphTarget = MAIN_GRAPH,
   selectedExperimentChatId,
   isActiveProject,
   visibleTranscriptIds,
@@ -145,7 +149,7 @@ export function useChatState({
       ) {
         return;
       }
-      void loadChatTranscript(apiBase, chatId, api)
+      void loadChatTranscript(apiBase, chatId, api, graphTarget)
         .then((transcript) => {
           if (cancelled) return;
           setChatTranscripts((current) => new Map(current).set(chatId, transcript));
@@ -161,7 +165,7 @@ export function useChatState({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, selectedExperimentChatId, visibleChatVersions]);
+  }, [apiBase, graphTarget, selectedExperimentChatId, visibleChatVersions]);
 
   const selectChat = useCallback((chatId: string | null) => {
     selectedChatIdRef.current = chatId;
@@ -218,7 +222,7 @@ export function useChatState({
       const generation = ++chatSummaryRefreshGeneration.current;
       setChatSummariesLoading(true);
       try {
-        const page = await loadChatSummaryPage(base, 0, api);
+        const page = await loadChatSummaryPage(base, 0, api, graphTarget);
         if (
           !isActiveProject(requestedProjectId) ||
           generation !== chatSummaryRefreshGeneration.current
@@ -238,7 +242,7 @@ export function useChatState({
           !page.items.some((summary) => summary.chat_id === selectedId)
         ) {
           try {
-            validation = await loadChatTranscript(base, selectedId, api);
+            validation = await loadChatTranscript(base, selectedId, api, graphTarget);
           } catch (error) {
             if (error instanceof ApiError && error.status === 404) validation = null;
             else throw error;
@@ -288,7 +292,7 @@ export function useChatState({
         }
       }
     },
-    [isActiveProject],
+    [graphTarget, isActiveProject],
   );
 
   const loadMoreChatSummaries = useCallback(async () => {
@@ -299,7 +303,7 @@ export function useChatState({
     const offset = chatSummaryNextOffset;
     setChatSummariesLoading(true);
     try {
-      const page = await loadChatSummaryPage(apiBase, offset, api);
+      const page = await loadChatSummaryPage(apiBase, offset, api, graphTarget);
       if (
         !isActiveProject(requestedProjectId) ||
         generation !== chatSummaryRefreshGeneration.current
@@ -327,7 +331,14 @@ export function useChatState({
         setChatSummariesLoading(false);
       }
     }
-  }, [apiBase, chatSummariesLoading, chatSummaryNextOffset, chatSummaryTotal, projectId]);
+  }, [
+    apiBase,
+    graphTarget,
+    chatSummariesLoading,
+    chatSummaryNextOffset,
+    chatSummaryTotal,
+    projectId,
+  ]);
 
   const recordTaskUpdates = useCallback((tasks: AgentTask[], visibleChatId: string | null) => {
     const previousStatuses = chatTaskStatuses.current;

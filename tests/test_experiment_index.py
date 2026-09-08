@@ -944,7 +944,7 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert entry["control"]["episode_id"] == child.episode_id
 
         ambiguous_stop = client.post(f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop")
-        assert ambiguous_stop.status_code == 409
+        assert ambiguous_stop.status_code == 404
         exact_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop",
             params={"episode_id": child.episode_id},

@@ -279,6 +279,7 @@ RCP prepares a closed graph-only context containing:
 - current main graph and exact head;
 - a typed semantic base-to-branch delta;
 - bounded branch Patch summaries and provenance;
+- relevant canonical human actions and previously delivered source heads;
 - transition schema and validation command; and
 - deterministic conflicts found before provider launch.
 
@@ -291,6 +292,35 @@ The agent authors one typed semantic Patch against current main. The transition
 manager validates it and commits one attributable main transition or nothing.
 Conflict diagnostics enter the same bounded native-session correction loop;
 there is no manual node conflict viewer.
+
+The same transition may apply legal direct changes and create pending main
+Proposals for protected changes. A human judgment on the branch is not approval
+authority for the merge agent: the human reviews the resulting Proposal again in
+main's ordinary Inbox. Related content, status, and standing changes to one
+protected node may form one atomic review so approving one cannot invalidate the
+rest. The merge can also propose removal of an accepted ordinary node, retaining
+the explicit human removal gate on main.
+
+Every proposed effect must represent the exact branch delta without unrelated
+changes. Special human status/standing facts come from canonical human Patch
+authorship and initiating operations, never report wording or inferred intent.
+Live pending source Proposals retain their identity and content. Resolved or
+stale source Proposals stay in branch history; their resulting node/relationship
+changes are represented independently. The source Proposal history is unchanged.
+
+Proposal identity is deterministic for its branch, semantic operations, and the
+last delivered source head (the immutable base before the first merge).
+Validated prior merge receipts and their exact branch snapshots identify already
+delivered source changes. An unchanged change is not proposed again on a later
+branch head, including after a human rejects it on main. A genuinely new source
+change still requires the normal merge and review path.
+
+Merge remains limited to main's supported semantic actions and review forms.
+Ontology changes, human-only extension-field edits on ordinary nodes, and
+structural/content combinations whose separate reviews invalidate one another
+produce an explicit merge validation failure. They are not silently omitted or
+partially committed. Both histories remain available for inspection; graph
+branching does not grant the merge agent project-configuration authority.
 
 The append path compares the exact main head used for preparation. If main
 advances, RCP rebuilds the context and semantically re-prepares against current
@@ -321,14 +351,36 @@ shows:
 - the ordinary merge task/output/correction/recovery history; and
 - the episode report or final report error.
 
-Main project graph views always show main. Selecting the exact branch Experiment
-route may show its branch-bound Runs history and transcript, but branch chat is
-read-only: there is no generic fresh composer or repair action that could create
-a main-target conversation from a branch-bound session. A malformed or partial
-branch route cannot restore a cached main Experiment selection.
+**Open graph** opens the episode's persistent branch in the ordinary Research
+workspace. The initial changes view shows the semantic difference from its
+immutable base, with neighboring context, created/updated/removed markers,
+before/after content, and canonical Patch/task provenance. A task filter focuses
+the changes attributed to one task. Expanding context or showing the full graph
+changes the display lens; editing and node pickers always use the full branch.
+Removed objects remain inspectable history without current-node controls.
 
-There is no branch graph viewer, branch switcher, conflict editor, cherry-pick,
-discard, repository-branch control, or automatic merge.
+The branch has the same manual node/relationship edits, Sync, Inbox, and ordinary
+node/project Discuss and Work controls as main. Those actions remain available
+while Auto-research runs and after it settles. Each ordinary conversation owns
+its own native session, stage, and human authorization. It neither reuses the
+orchestrator session nor acquires an Auto-research budget or parent route.
+Standalone human-started Experiment loops likewise keep their own episodes.
+
+Human Sync and ordinary Work preserve their actual authorship in branch history.
+Only episode-owned work receives that episode id; graph target alone does not
+imply operational ownership. Resume, Retry, repair, steering, and watcher wakes
+retain the original exact graph target. Main and branch chats are separate.
+Merge admission waits for graph writers, and an active merge fences new writes.
+
+The selected target persists through Research, Inbox, and Chats. **Main graph**
+returns to main. Drafts, selections, request fences, viewport, and chat state are
+scoped by project and graph target, even at equal numerical revisions. A missing
+or foreign branch fails explicitly; it never substitutes main state or a main
+conversation. Historical episode reports remain immutable, so later branch
+edits are visible through the graph and its provenance.
+
+There is no general branch manager, conflict editor, cherry-pick, discard,
+repository-branch control, or automatic merge.
 
 ## Verification contract
 
@@ -337,5 +389,6 @@ protected-belief boundary, [S78](../acceptance/S78-one-budget-one-stop.md) owns
 bounded orchestrator budget/Stop behavior,
 [S113](../acceptance/S113-campaign-attribution.md) owns episode lineage, and
 [S125](../acceptance/S125-auto-research-graph-branch-merge.md) owns graph-branch
-isolation and semantic merge. Single-turn orchestration and child harvesting
+isolation and semantic merge. [S138](../acceptance/S138-edit-and-discuss-an-episode-graph.md)
+owns editing and ordinary conversations on an episode graph. Single-turn orchestration and child harvesting
 remain focused implementation contracts under this specification.

@@ -467,6 +467,7 @@ export function NodeChat({
     scope,
     relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
     !readOnly,
+    project.graph_target,
   );
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");

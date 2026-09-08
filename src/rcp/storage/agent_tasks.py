@@ -174,6 +174,8 @@ class AgentTaskStoreMixin:
     def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         """Admit one human-dispatched, graph-only merge without spending episode budget."""
 
+        from rcp.runs.task_policy import task_graph_capable
+
         if (
             record.kind != "branch_merge"
             or record.episode_id is None
@@ -233,7 +235,7 @@ class AgentTaskStoreMixin:
                 ):
                     raise ValueError("an Auto-research branch must be quiescent before merge")
                 if any(
-                    task.kind not in {"branch_merge", "episode_report"}
+                    task.kind != "branch_merge" and task_graph_capable(task.kind, task.request)
                     for task in self._unsettled_graph_target_tasks_in_connection(
                         connection, record.project_id, record.graph_target
                     )
@@ -261,6 +263,7 @@ class AgentTaskStoreMixin:
         record = self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
+        self._require_graph_branch_admission_open(connection, record)
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -330,6 +333,12 @@ class AgentTaskStoreMixin:
             created_at=record.created_at,
         )
 
+    def validate_agent_task_graph_target(self, record: AgentTaskRecord) -> None:
+        """Recheck the same durable target contract immediately before dispatch."""
+
+        with self.connection() as connection:
+            self._validate_graph_target_insert(connection, record)
+
     @staticmethod
     def _validate_graph_target_insert(
         connection: sqlite3.Connection,
@@ -338,8 +347,29 @@ class AgentTaskStoreMixin:
         """Bind every graph-capable continuation to its durable target."""
 
         if record.episode_id is None:
-            if record.graph_target.kind != "main":
-                raise ValueError("a branch-target task requires its episode lineage")
+            if record.graph_target.kind == "branch":
+                if (
+                    record.kind not in {"node_chat", "project_chat"}
+                    or record.request.get("patch_kind", "work") != "work"
+                    or record.request.get("control_episode_id") is not None
+                ):
+                    raise ValueError(
+                        "only an ordinary conversation may independently target a branch"
+                    )
+                branch = connection.execute(
+                    "SELECT project_id, mode, graph_target_json FROM episodes WHERE episode_id = ?",
+                    (record.graph_target.branch_id,),
+                ).fetchone()
+                if (
+                    branch is None
+                    or branch["project_id"] != record.project_id
+                    or branch["mode"] != "auto_research"
+                    or GraphTargetRef.model_validate_json(branch["graph_target_json"])
+                    != record.graph_target
+                ):
+                    raise ValueError(
+                        "a branch conversation requires its exact project graph branch"
+                    )
         else:
             episode = connection.execute(
                 "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
@@ -365,6 +395,34 @@ class AgentTaskStoreMixin:
             return
         if json.loads(parent["graph_target_json"]) != record.graph_target.model_dump(mode="json"):
             raise ValueError("a task continuation cannot change its graph target")
+
+    @staticmethod
+    def _require_graph_branch_admission_open(
+        connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> None:
+        """Serialize new graph writers with merge while admitting read-only tasks."""
+
+        from rcp.runs.task_policy import task_graph_capable
+
+        if (
+            record.graph_target.kind != "branch"
+            or record.kind == "branch_merge"
+            or not task_graph_capable(record.kind, record.request)
+        ):
+            return
+        merging = connection.execute(
+            """
+            SELECT 1 FROM graph_runs
+            WHERE project_id = ? AND graph_target_json = ?
+              AND kind = 'branch_merge' AND status IN ('queued', 'running', 'pausing')
+            LIMIT 1
+            """,
+            (record.project_id, record.graph_target.model_dump_json()),
+        ).fetchone()
+        if merging is not None:
+            raise AgentTaskAdmissionConflict(
+                "The graph branch is being merged. Try again after the merge settles."
+            )
 
     @classmethod
     def _contains_legacy_lineage_key(cls, value: object) -> bool:
@@ -581,12 +639,6 @@ class AgentTaskStoreMixin:
 
         if record.kind not in {"node_chat", "project_chat"}:
             return record
-        # Resume, Retry, provider handoff, and Experiment recovery already carry
-        # an exact server-owned stage. They are authoritative and may
-        # deliberately replace an older binding; only a missing binding is
-        # recovered from the durable conversation ledger here.
-        if record.stage_root is not None:
-            return record
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record
@@ -606,6 +658,10 @@ class AgentTaskStoreMixin:
             raise ValueError(
                 "This conversation belongs to another graph target and cannot continue here."
             )
+        # Recovery carries a server-owned stage, but must still prove that the
+        # stable conversation has not moved to a different graph target.
+        if record.stage_root is not None:
+            return record
         session_id = record.request.get("session_id")
         watcher_ids = record.request.get("watcher_ids")
         if isinstance(session_id, str) and session_id:
@@ -1306,6 +1362,7 @@ class AgentTaskStoreMixin:
         *,
         limit: int = AGENT_TASK_LIST_DEFAULT_LIMIT,
         include_hidden: bool = False,
+        graph_target: GraphTargetRef | None = None,
     ) -> list[AgentTaskRecord]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -1321,12 +1378,15 @@ class AgentTaskStoreMixin:
                        ) AS recovery_abandoned
                 FROM graph_runs
                 WHERE project_id = ? AND (? OR visible = 1)
+                  AND (? IS NULL OR graph_target_json = ?)
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
                 (
                     project_id,
                     int(include_hidden),
+                    graph_target.model_dump_json() if graph_target is not None else None,
+                    graph_target.model_dump_json() if graph_target is not None else None,
                     max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
                 ),
             ).fetchall()
@@ -1424,7 +1484,7 @@ class AgentTaskStoreMixin:
                   AND NOT EXISTS (
                     SELECT 1 FROM graph_runs AS child
                     WHERE child.parent_operation_id = run.operation_id
-                      AND child.episode_id = run.episode_id
+                      AND child.episode_id IS run.episode_id
                       AND child.attempt = run.attempt + 1
                   )
                   AND NOT EXISTS (
@@ -1529,6 +1589,31 @@ class AgentTaskStoreMixin:
                 ),
             ).fetchone()
         return row is not None
+
+    def chat_graph_target(self, project_id: str, chat_id: str) -> GraphTargetRef | None:
+        """Resolve a conversation's target from durable task and native-session bindings."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_target_json FROM graph_runs
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                  AND json_extract(request_json, '$.chat_id') = ?
+                UNION
+                SELECT run.graph_target_json FROM chat_session_contexts AS context
+                JOIN graph_runs AS run ON run.operation_id = context.committed_operation_id
+                WHERE context.project_id = ? AND context.chat_id = ?
+                """,
+                (project_id, chat_id, project_id, chat_id),
+            ).fetchall()
+        targets = {
+            target.key: target
+            for row in rows
+            for target in [GraphTargetRef.model_validate_json(row["graph_target_json"])]
+        }
+        if len(targets) > 1:
+            raise ValueError("This conversation has conflicting graph target bindings.")
+        return next(iter(targets.values()), None)
 
     def chat_session_context(
         self,

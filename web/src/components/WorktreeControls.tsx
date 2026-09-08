@@ -2,7 +2,12 @@ import { AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { errorMessage } from "../errors";
-import type { ConversationWorktreeState, WorktreeIntegrationOption } from "../types";
+import { graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
+import type {
+  ConversationWorktreeState,
+  GraphTargetRef,
+  WorktreeIntegrationOption,
+} from "../types";
 import "./WorktreeControls.css";
 
 export function useConversationWorktree(
@@ -14,13 +19,14 @@ export function useConversationWorktree(
   scope: string[],
   taskRevision: string,
   enabled: boolean,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ) {
   const path = `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/worktree`;
   const query = new URLSearchParams({ run_on: runOn, chat_scope: chatScope });
   if (nodeId) query.set("node_id", nodeId);
   if (scope.length === 0) query.append("run_truth_scope", "");
   scope.forEach((alias) => query.append("run_truth_scope", alias));
-  const url = `${path}?${query}`;
+  const url = graphTargetUrl(`${path}?${query}`, graphTarget);
   const [result, setResult] = useState<{
     url: string;
     state: ConversationWorktreeState | null;
@@ -69,7 +75,7 @@ export function useConversationWorktree(
       setResult({ url, state, error: null });
     },
     remove: async () => {
-      await api<ConversationWorktreeState>(path, { method: "DELETE" });
+      await api<ConversationWorktreeState>(graphTargetUrl(path, graphTarget), { method: "DELETE" });
       refresh();
     },
   };

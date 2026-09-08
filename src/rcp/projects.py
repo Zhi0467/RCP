@@ -45,7 +45,7 @@ from rcp.core.attention import (
 )
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Experiment, GraphState
-from rcp.core.transition_models import GraphAttentionProjection, GraphTargetRef
+from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
@@ -93,7 +93,7 @@ from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, AgentTaskRequest
 
-_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 4
+_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 5
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
 _LOGGER = logging.getLogger(__name__)
@@ -102,6 +102,9 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "home_space_id",
     "name",
     "revision",
+    "graph_target",
+    "graph_head",
+    "graph_changes",
     "snapshot_freshness",
     "last_remote_sync_at",
     "state_repository",
@@ -470,6 +473,7 @@ def restored_project_owners(
         data_dir=data_dir,
         project_id=record.project_id,
         task_continuation_session=store.agent_task_continuation_session_id,
+        chat_graph_target=store.chat_graph_target,
     )
     return RestoredProjectOwners(manifest, workspace, history, paper, service)
 
@@ -1076,6 +1080,7 @@ class ProjectCatalog:
                 project_id=project_id,
                 repository_inventory=self.repository_ownership_inventory,
                 task_continuation_session=self.store.agent_task_continuation_session_id,
+                chat_graph_target=self.store.chat_graph_target,
             )
             snapshot = _snapshot_payload(service.project_snapshot(state=materialization.state))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1494,6 +1499,7 @@ class ProjectCatalog:
             project_id=transfer.project_id,
             repository_inventory=self.repository_ownership_inventory,
             task_continuation_session=self.store.agent_task_continuation_session_id,
+            chat_graph_target=self.store.chat_graph_target,
         )
 
     def discard_retired_transfer_source(self, request_id: str) -> None:
@@ -2113,7 +2119,7 @@ class ProjectCatalog:
             "snapshot",
         }:
             patch_log_head = None
-        elif schema_version in {2, 3, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
+        elif schema_version in {2, 3, 4, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
             "schema_version",
             "project_id",
             "canonical_patch_head",
@@ -2145,6 +2151,13 @@ class ProjectCatalog:
             return "invalid", None
         try:
             graph = GraphState.model_validate(graph_payload)
+            if schema_version < 5:
+                # These shipped cache schemas predate selectable graph targets.
+                snapshot["graph_target"] = GraphTargetRef().model_dump(mode="json")
+                snapshot["graph_head"] = GraphHeadRef(revision=graph.revision).model_dump(
+                    mode="json"
+                )
+                snapshot["graph_changes"] = None
             expected_attention = project_graph_attention(graph)
             attention_payload = snapshot.get("attention")
             counts = snapshot.get("counts")
@@ -2250,6 +2263,7 @@ class ProjectCatalog:
             project_id=project_id,
             repository_inventory=self.repository_ownership_inventory,
             task_continuation_session=self.store.agent_task_continuation_session_id,
+            chat_graph_target=self.store.chat_graph_target,
         )
         return service, initialized_state
 
@@ -2539,7 +2553,10 @@ class ProjectDisplayCache:
         """Combine one graph/head projection with matching run controls."""
 
         payload = projection.model_dump(mode="json")
-        control_snapshot: dict[str, object] = {"graph": payload["graph"]}
+        control_snapshot: dict[str, object] = {
+            "graph": payload["graph"],
+            "graph_target": projection.head.target.model_dump(mode="json"),
+        }
         if reconcile_operational:
             control_snapshot = self.complete_transition_control(
                 project_id,
@@ -2553,7 +2570,7 @@ class ProjectDisplayCache:
             read_models = self._store.experiment_control_projection_snapshots(
                 project_id,
                 experiment_ids,
-                graph_target=GraphTargetRef(),
+                graph_target=projection.head.target,
             )
             controls: dict[str, object] = {}
             for experiment_id in experiment_ids:
@@ -2649,11 +2666,12 @@ class ProjectDisplayCache:
         """
 
         state = GraphState.model_validate(snapshot["graph"])
+        target = GraphTargetRef.model_validate(snapshot.get("graph_target", {}))
         experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
         read_models = self._store.experiment_control_projection_snapshots(
             project_id,
             experiment_ids,
-            graph_target=GraphTargetRef(),
+            graph_target=target,
         )
         snapshot["experiment_control"] = self._controls_from_read_models(
             project_id,
@@ -2953,6 +2971,18 @@ def _valid_display_snapshot(
             return False
     revision = snapshot.get("revision")
     if type(revision) is not int or revision < 0:
+        return False
+    try:
+        target = GraphTargetRef.model_validate(snapshot["graph_target"])
+        head = GraphHeadRef.model_validate(snapshot["graph_head"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        target != GraphTargetRef()
+        or head.target != target
+        or head.revision != revision
+        or snapshot["graph_changes"] is not None
+    ):
         return False
     auto_research_ceiling = snapshot.get("default_auto_research_invocation_ceiling")
     if type(auto_research_ceiling) is not int or auto_research_ceiling < 1:

@@ -11,6 +11,7 @@ from rcp.core.operations import (
     ProposalMergeOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
+    ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
 )
@@ -112,6 +113,22 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
             text=proposal.card.decision_needed or "Review the stored proposal action."
         )
     ]
+    if 2 <= len(proposal.ops) <= 3 and all(
+        isinstance(
+            operation,
+            (
+                ProposalContentChangeOperation,
+                ProposalStatusChangeOperation,
+                ProposalStandingChangeOperation,
+            ),
+        )
+        for operation in proposal.ops
+    ):
+        return [
+            line
+            for operation in proposal.ops
+            for line in _proposal_action(proposal.model_copy(update={"ops": [operation]}), state)
+        ]
     if len(proposal.ops) != 1:
         return fallback
     operation = proposal.ops[0]
@@ -188,6 +205,15 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
                 text = _relation_text(state, edge.source, edge.target, edge.relation)
                 if text:
                     lines = [ProposalActionLine(label="Remove relation", text=text)]
+    elif isinstance(operation, ProposalStandingChangeOperation):
+        node = state.nodes.get(operation.node_id)
+        if node is not None:
+            lines = [
+                ProposalActionLine(label="Node", text=node.title),
+                ProposalActionLine(
+                    label="Standing", text=f"{node.standing} → {operation.standing}"
+                ),
+            ]
     elif isinstance(operation, ProposalStatusChangeOperation):
         if not operation.nodes:
             return fallback

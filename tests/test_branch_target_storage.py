@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -19,7 +24,8 @@ from rcp.storage import (
     WatcherRecord,
 )
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, wait_for_task
+from .test_background import _done_stream
 
 
 def _store(tmp_path: Path) -> AppStore:
@@ -409,3 +415,171 @@ def test_branch_merge_task_requires_ended_quiescent_branch_and_exact_authority(
 
     with pytest.raises(ValueError, match="another merge is already active"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-duplicate"))
+
+
+def _ordinary_branch_chat(store, episode, *, status="succeeded", parent=None, mode="work"):
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_id=parent.request["chat_id"] if parent else str(uuid.uuid4()),
+        chat_scope="project",
+        message="Review the episode branch.",
+        mode=mode,
+    )
+    now = store.now()
+    return AgentTaskRecord(
+        operation_id=str(uuid.uuid4()),
+        project_id=episode.project_id,
+        graph_target=episode.graph_target,
+        kind="project_chat",
+        status=status,
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="Ordinary branch review.",
+        authorized_by=episode.authorized_by,
+        dispatch_authority=resolve_dispatch_authority("project_chat", request),
+        parent_operation_id=parent.operation_id if parent else None,
+        attempt=parent.attempt + 1 if parent else 1,
+    )
+
+
+def test_ordinary_branch_recovery_settles_and_merge_fences_new_chat(tmp_path):
+    store = _store(tmp_path)
+    episode, root = _create_auto_episode(store)
+    previous = store.create_agent_task(_ordinary_branch_chat(store, episode, status="paused"))
+    assert previous.episode_id is None
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.mark_episode_stop_skipped(episode.episode_id)
+    with pytest.raises(ValueError, match="active writer"):
+        store.create_branch_merge_task(_merge_task(store, episode, "merge-before-recovery"))
+    recovered = store.create_agent_task(
+        _ordinary_branch_chat(store, episode, parent=previous), continuation_cause="retry"
+    )
+    assert recovered.episode_id is None
+    assert store.unsettled_graph_target_tasks(episode.project_id, episode.graph_target) == []
+    merge = store.create_branch_merge_task(_merge_task(store, episode, "merge-after-recovery"))
+    with pytest.raises(ValueError, match="being merged"):
+        store.create_agent_task(_ordinary_branch_chat(store, episode, status="queued"))
+    store.complete_agent_task(merge.operation_id, applied_revision=None, result={})
+    accepted = store.create_agent_task(_ordinary_branch_chat(store, episode, status="queued"))
+    assert accepted.episode_id is None
+    assert accepted.graph_target == episode.graph_target
+
+
+def test_active_branch_merge_admits_discuss_and_refuses_work(tmp_path):
+    store = _store(tmp_path)
+    episode, root = _create_auto_episode(store)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.mark_episode_stop_skipped(episode.episode_id)
+    merge = store.create_branch_merge_task(_merge_task(store, episode, "held-merge"))
+
+    discuss = store.create_agent_task(
+        _ordinary_branch_chat(store, episode, status="queued", mode="discuss")
+    )
+    assert discuss.episode_id is None
+    assert discuss.graph_target == episode.graph_target
+    assert discuss.request["mode"] == "discuss"
+    assert discuss.dispatch_authority.task_contract == "discuss"
+    assert discuss.dispatch_authority.scope.patch_kind is None
+    assert store.agent_task(merge.operation_id).status == "queued"
+    with pytest.raises(ValueError, match="being merged"):
+        store.create_agent_task(_ordinary_branch_chat(store, episode, status="queued"))
+
+
+def test_task_list_filters_graph_target_before_its_page_limit(tmp_path):
+    store = _store(tmp_path)
+    episode, _root = _create_auto_episode(store)
+    branch_task = store.create_agent_task(_ordinary_branch_chat(store, episode))
+    main_task = store.create_agent_task(
+        _ordinary_branch_chat(store, episode).model_copy(update={"graph_target": GraphTargetRef()})
+    )
+    assert store.agent_tasks(episode.project_id, limit=1)[0].operation_id == main_task.operation_id
+    assert (
+        store.agent_tasks(episode.project_id, limit=1, graph_target=episode.graph_target)[
+            0
+        ].operation_id
+        == branch_task.operation_id
+    )
+
+
+def test_ordinary_branch_watcher_wakes_after_episode_ends_without_episode_budget(tmp_path):
+    store = _store(tmp_path)
+    episode, root = _create_auto_episode(store)
+    origin = store.create_agent_task(_ordinary_branch_chat(store, episode))
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.mark_episode_stop_skipped(episode.episode_id)
+    watcher = WatcherRecord(
+        watcher_id="ordinary-branch-watcher",
+        project_id=episode.project_id,
+        origin_operation_id=origin.operation_id,
+        origin_task_kind=origin.kind,
+        chat_id=origin.request["chat_id"],
+        graph_target=episode.graph_target,
+        execution_host="",
+        check_command="true",
+        log_path="/tmp/branch-review.log",
+        cwd="/tmp",
+        continuation=WatcherContinuation(
+            provider="codex", run_on="laptop", run_truth_scope=["repo-a"]
+        ),
+        status="completed",
+        created_at=store.now(),
+        completed_at=store.now(),
+    )
+    store.create_watchers([watcher])
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    request = RunRequest.model_validate(
+        {**origin.request, "trigger": "watcher", "watcher_ids": [watcher.watcher_id]}
+    )
+    wake = start_watcher_notification(
+        tasks,
+        episode.project_id,
+        origin.kind,
+        request,
+        [watcher.watcher_id],
+        authorized_by=episode.authorized_by,
+    )
+    assert wake is not None
+    finished = wait_for_task(store, wake.operation_id)
+    assert finished.status == "succeeded", finished.error
+    assert finished.graph_target == episode.graph_target
+    assert finished.episode_id is None
+    assert store.watcher(watcher.watcher_id).notified
+
+
+@pytest.mark.parametrize("winner", ["chat", "merge"])
+def test_ordinary_branch_work_and_merge_admission_are_atomic(tmp_path, monkeypatch, winner):
+    store = _store(tmp_path)
+    episode, root = _create_auto_episode(store)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.mark_episode_stop_skipped(episode.episode_id)
+    chat = _ordinary_branch_chat(store, episode, status="queued")
+    merge = _merge_task(store, episode, "merge-race")
+    entered = threading.Event()
+    release = threading.Event()
+    original_insert = store._insert_agent_task
+    first_id = chat.operation_id if winner == "chat" else merge.operation_id
+
+    def hold_winner(connection, record, **kwargs):
+        if record.operation_id == first_id:
+            entered.set()
+            assert release.wait(10)
+        return original_insert(connection, record, **kwargs)
+
+    monkeypatch.setattr(store, "_insert_agent_task", hold_winner)
+    admissions = {
+        "chat": lambda: store.create_agent_task(chat),
+        "merge": lambda: store.create_branch_merge_task(merge),
+    }
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(admissions[winner])
+        try:
+            assert entered.wait(10)
+            second = pool.submit(admissions["merge" if winner == "chat" else "chat"])
+        finally:
+            release.set()
+        assert first.result().operation_id == first_id
+        with pytest.raises(ValueError, match="active writer|being merged"):
+            second.result()

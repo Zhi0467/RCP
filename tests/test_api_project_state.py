@@ -495,7 +495,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert len(cached_files) == 1
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert initial_envelope["schema_version"] == 4
+    assert initial_envelope["schema_version"] == 5
     assert initial_envelope["canonical_patch_head"] == 1
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
@@ -523,6 +523,33 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert list((data_dir / "project-snapshots").iterdir()) == [cache_path]
     assert json.loads(cache_path.read_text(encoding="utf-8")) == initial_envelope
     assert client.get(f"/api/projects/{project_id}/cached").json() == initial.json()
+
+
+def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch(
+    manifest, tmp_path
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    initial = client.get(f"/api/projects/{project_id}").json()
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text())
+    envelope["schema_version"] = 4
+    for field in ("graph_target", "graph_head", "graph_changes"):
+        del envelope["snapshot"][field]
+    cache_path.write_text(json.dumps(envelope))
+    restored = client.get(f"/api/projects/{project_id}/cached")
+    assert restored.status_code == 200
+    assert restored.json() == initial
+
+    envelope["schema_version"] = 5
+    envelope["snapshot"] = restored.json()
+    target = {"kind": "branch", "branch_id": str(uuid.uuid4())}
+    envelope["snapshot"]["graph_target"] = target
+    envelope["snapshot"]["graph_head"]["target"] = target
+    cache_path.write_text(json.dumps(envelope))
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
 def test_cached_project_rejects_malformed_mismatched_and_oversize_files(

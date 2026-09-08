@@ -123,3 +123,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S134](S134-steer-the-running-human-chat.md) | Steer the running human chat with a durable delivery receipt | blocked-external | pytest + api + browser + ssh |
 | [S135](S135-supervisor-recovers-automatically-after-reboot.md) | Recover interrupted deployment before admitting work after reboot | pending | pytest + ssh + systemd + vm |
 | [S136](S136-long-running-compute-outlives-the-agent.md) | Long-running compute outlives the agent and wakes it | pending | pytest + ssh + real Codex |
+| [S138](S138-edit-and-discuss-an-episode-graph.md) | Inspect, edit, and discuss an episode graph with ordinary controls | implemented | pytest + browser |

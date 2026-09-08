@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_catalog,
-    get_project_service,
+    get_graph_service,
     get_store,
     require_project_membership,
 )
@@ -33,10 +33,11 @@ def history(
     project_id: str,
     from_revision: int = 1,
     to_revision: int | None = None,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
 ):
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     return service.history.slice(from_revision, to_revision)
 
 
@@ -45,11 +46,12 @@ def history_summaries(
     project_id: str,
     from_revision: int = 1,
     to_revision: int | None = None,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
 ):
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     summaries = service.history.revision_summaries(from_revision, to_revision)
     episode_ids = {
         episode_id
@@ -76,10 +78,11 @@ def history_summaries(
 @router.get("/api/projects/{project_id}/transition-manifest")
 def graph_transition_manifest(
     project_id: str,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
 ):
-    get_project_service(catalog, project_id)
+    get_graph_service(catalog, project_id, branch_id, initialize=False)
     return transition_trigger_manifest().model_dump(mode="json")
 
 

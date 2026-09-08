@@ -19,8 +19,10 @@ from rcp.runs.branch_merge import (
     BranchMergeSemanticConflict,
     BranchMergeStage,
     BranchPatchSummary,
+    branch_human_review_changes,
     branch_merge_can_resolve_without_patch,
     branch_merge_id,
+    branch_merge_receipt_from_committed_patch,
     parse_branch_merge_candidate,
     prepare_branch_merge_with_history,
     stream_branch_merge_run,
@@ -164,16 +166,56 @@ async def stream_branch_merge_task(
                 for patch in branch.load_patches()
                 if metadata.base_head.revision < patch.revision <= branch_head.revision
             ]
+            base_graph = branch.base_state()
+            receipts = [
+                *branch.validated_merge_receipts(),
+                *(
+                    branch_merge_receipt_from_committed_patch(patch)
+                    for patch in main.patches
+                    if patch.admission == "accepted"
+                    and patch.branch_merge is not None
+                    and patch.branch_merge.branch_id == metadata.branch_id
+                ),
+            ]
+            previous_receipt = max(
+                receipts, key=lambda item: item.provenance.branch_head.revision, default=None
+            )
+            previous_graph = None
+            if previous_receipt is not None:
+                source_head = previous_receipt.provenance.branch_head
+                if source_head.revision == metadata.base_head.revision:
+                    previous_graph = base_graph
+                else:
+                    _result, boundaries = branch.accepted_patch_boundaries()
+                    previous_graph = next(
+                        (
+                            state
+                            for _before, patch, state in boundaries
+                            if patch.revision == source_head.revision
+                            and patch.transition is not None
+                            and patch.transition.transition_id == source_head.transition_id
+                        ),
+                        None,
+                    )
+                if previous_graph is None:
+                    raise StateUnavailable(
+                        "The prior merge receipt lost its exact canonical source snapshot."
+                    )
             return BranchMergeContext.create(
                 merge_task_id=task.operation_id,
                 authorized_by=task.authorized_by,
                 metadata=metadata,
                 eligibility=eligibility,
-                base_graph=branch.base_state(),
+                base_graph=base_graph,
                 branch_graph=branch_result.state,
                 main_head=main_head,
                 main_graph=main.state,
                 run_truth_scope=sorted(set(request.run_truth_scope or ())),
+                human_review_changes=branch_human_review_changes(
+                    patches, previous_graph or base_graph, branch_result.state
+                ),
+                previous_merge_receipt=previous_receipt,
+                previous_branch_graph=previous_graph,
                 branch_patch_summaries=[
                     BranchPatchSummary(
                         revision=patch.revision,

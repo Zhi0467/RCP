@@ -256,6 +256,13 @@ class ProposalStatusChangeOperation(_StrictPayload):
     nodes: list[NodeUpdate]
 
 
+class ProposalStandingChangeOperation(_StrictPayload):
+    op: Literal["set_standing"]
+    intent: Literal["standing_change"]
+    node_id: str
+    standing: Literal["asserted", "accepted", "contested"]
+
+
 class ProposalRemovalOperation(_StrictPayload):
     op: Literal["remove_nodes"]
     intent: Literal["removal"]
@@ -371,6 +378,7 @@ class LegacyProposalSetCoverageOperation(_StrictPayload):
 ProposalOperation: TypeAlias = Annotated[
     ProposalContentChangeOperation
     | ProposalStatusChangeOperation
+    | ProposalStandingChangeOperation
     | ProposalRemovalOperation
     | ProposalSupersedeOperation
     | ProposalMergeOperation

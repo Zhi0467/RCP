@@ -2,7 +2,7 @@
 id: episode-report
 kind: skill
 label: Episode report
-version: 1.0.0
+version: 1.1.0
 description: Create the required durable visual HTML wrap-up for an RCP episode, explaining its work, evidence, limits, ending, and next human decision without changing project or graph state.
 dependencies:
 ---
@@ -12,6 +12,14 @@ dependencies:
 Produce one self-contained, valid HTML report at the exact output path in the
 episode wrap-up instruction. This is a retrospective for a researcher taking
 over from the episode, not another operational research turn.
+
+Start with the research outcome in plain language: what question was pursued,
+what changed, what evidence supports that change, and what the human needs to
+decide next. A reader should understand that opening without knowing the task
+ids, internal protocol, or preceding conversation. Use concrete node titles and
+research terms; keep identifiers and execution details in supporting provenance.
+Explain an unfamiliar term when it first matters. Prefer a few short paragraphs
+and direct labels over a dense chronology or a wall of status tables.
 
 Make the report inherently visual. Use an intentional visual hierarchy plus the
 charts, diagrams, timelines, matrices, annotated evidence maps, or other visual
@@ -41,6 +49,12 @@ research graph, Decisions made or awaiting authority, delegated-agent and worker
 orchestration, what progressed or failed, unresolved uncertainty, and a concise
 briefing that lets the researcher resume control without reconstructing the
 episode chronology.
+
+Show the meaningful before/after research changes when the supplied context
+supports them, with evidence and unresolved questions beside each conclusion.
+Distinguish results recorded on the episode branch from changes already merged
+to main. Use a small task/dependency diagram only when known relationships help
+explain the result; do not invent an execution trace from a list of task ids.
 
 ## Authority boundary
 

@@ -10,7 +10,7 @@ def test_episode_report_skill_is_versioned_visual_mode_aware_and_packaged() -> N
     package = registry.package("skill", "episode-report")
     body = registry.package_body("skill", "episode-report")
 
-    assert package.version == "1.0.0"
+    assert package.version == "1.1.0"
     assert "inherently visual" in body
     assert "Experiment-loop guide" in body
     assert "Auto-research guide" in body

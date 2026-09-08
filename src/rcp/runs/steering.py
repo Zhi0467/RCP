@@ -26,7 +26,6 @@ def chat_steering_visible(store: AppStore, record: AgentTaskRecord) -> bool:
         record.kind in {"node_chat", "project_chat"}
         and record.request.get("trigger", "human") == "human"
         and record.episode_id is None
-        and record.graph_target.kind == "main"
         and store.auto_research_child_work_for_operation(record.operation_id) is None
     )
 

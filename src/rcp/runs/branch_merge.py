@@ -37,11 +37,21 @@ from rcp.core.models import (
     GlossaryTerm,
     GraphBranchMetadata,
     GraphState,
+    Hypothesis,
     Patch,
     ProjectNode,
     Proposal,
 )
-from rcp.core.operations import SetStandingOperation, UpdateNodesOperation
+from rcp.core.operations import (
+    CreateProposalsOperation,
+    HumanEditCause,
+    ProposalOperation,
+    ProposalStandingChangeOperation,
+    ProposalStatusChangeOperation,
+    SetStandingOperation,
+    UpdateNodesOperation,
+    graph_operations_from_proposal,
+)
 from rcp.core.transition_models import (
     GraphHeadRef,
     TransitionConflictDetail,
@@ -50,10 +60,12 @@ from rcp.core.transition_models import (
 from rcp.core.transitions import (
     TRANSITION_RULESET_TAG,
     CommittedTransition,
+    GraphTransitionManager,
     PreparedTransition,
     project_transition_projection,
     transition_trigger_manifest,
 )
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import (
     BranchMergeAlreadyCommitted,
     BranchMergeAlreadyResolved,
@@ -73,7 +85,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _task_token,
 )
-from rcp.service import RunRequest
+from rcp.service import RunRequest, _proposal_judgment_patch
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
@@ -103,6 +115,26 @@ class BranchPatchSummary(_StrictMergeModel):
     change_summary: list[str] = Field(default_factory=list)
     task_id: str | None = None
     profile: Literal["ordinary", "orchestrator"] | None = None
+
+
+class BranchHumanReviewChange(_StrictMergeModel):
+    revision: int = Field(ge=1)
+    operation_index: int = Field(ge=0)
+    operation: ProposalStandingChangeOperation | ProposalStatusChangeOperation
+
+
+class BranchMergeReviewContract(_StrictMergeModel):
+    protected_changes: Literal["pending_main_proposals"] = "pending_main_proposals"
+    source_resolutions: Literal["remain_on_branch"] = "remain_on_branch"
+    source_stale_proposals: Literal["remain_on_branch"] = "remain_on_branch"
+    repeat_review: Literal["once_per_source_baseline_and_semantic_operation"] = (
+        "once_per_source_baseline_and_semantic_operation"
+    )
+    same_node_bundle: Literal["one_content_one_status_one_standing"] = (
+        "one_content_one_status_one_standing"
+    )
+    accepted_ordinary_removal: Literal["pending_main_proposal"] = "pending_main_proposal"
+    human_changes: list[BranchHumanReviewChange] = Field(default_factory=list)
 
 
 class BranchMergeEligibility(_StrictMergeModel):
@@ -269,6 +301,15 @@ class BranchMergeContext(_StrictMergeModel):
     branch_patch_summaries: list[BranchPatchSummary] = Field(default_factory=list)
     deterministic_conflicts: list[BranchMergeConflict] = Field(default_factory=list)
     transition_contract: BranchMergeTransitionContract
+    review_contract: BranchMergeReviewContract = Field(default_factory=BranchMergeReviewContract)
+    previous_merge_receipt: BranchMergeReceipt | None = None
+    previous_branch_graph: GraphState | None = None
+
+    @property
+    def review_base_head(self) -> GraphHeadRef:
+        if self.previous_merge_receipt is not None:
+            return self.previous_merge_receipt.provenance.branch_head
+        return self.metadata.base_head
 
     @model_validator(mode="after")
     def require_exact_snapshots(self) -> BranchMergeContext:
@@ -297,9 +338,29 @@ class BranchMergeContext(_StrictMergeModel):
         )
         if self.semantic_delta != expected_delta:
             raise ValueError("branch merge semantic delta does not match its graph snapshots")
+        if (self.previous_merge_receipt is None) != (self.previous_branch_graph is None):
+            raise ValueError(
+                "previous merge proof requires both its receipt and exact source graph"
+            )
+        if self.previous_merge_receipt is not None:
+            receipt = self.previous_merge_receipt
+            assert self.previous_branch_graph is not None
+            if (
+                receipt.provenance.branch_id != self.metadata.branch_id
+                or receipt.provenance.episode_id != self.metadata.episode_id
+                or receipt.provenance.branch_base_head != self.metadata.base_head
+                or receipt.provenance.branch_head.target != self.metadata.head.target
+                or receipt.provenance.branch_head.revision != self.previous_branch_graph.revision
+                or self.previous_branch_graph.revision > self.branch_graph.revision
+                or receipt.result_main_head.revision > self.main_graph.revision
+            ):
+                raise ValueError(
+                    "previous merge receipt does not match this source lineage and main"
+                )
+        merge_base = self.previous_branch_graph or self.base_graph
         expected_conflicts = detect_branch_merge_conflicts(
-            self.base_graph,
-            self.branch_graph,
+            merge_base,
+            _merge_branch_graph(merge_base, self.branch_graph),
             self.main_graph,
         )
         if self.deterministic_conflicts != expected_conflicts:
@@ -314,6 +375,14 @@ class BranchMergeContext(_StrictMergeModel):
             raise ValueError("branch Patch summary lies outside the exact branch lineage")
         if self.transition_contract != BranchMergeTransitionContract.current():
             raise ValueError("branch merge context uses a stale transition-manager contract")
+        for change in self.review_contract.human_changes:
+            if (
+                not self.metadata.base_head.revision
+                < change.revision
+                <= self.metadata.head.revision
+            ):
+                raise ValueError("human review change lies outside the exact branch lineage")
+            _require_source_human_change(merge_base, self.branch_graph, change.operation)
         expected_id = _context_id(self.model_dump(mode="json", exclude={"context_id"}))
         if self.context_id != expected_id:
             raise ValueError("branch merge context id does not match its canonical content")
@@ -333,6 +402,9 @@ class BranchMergeContext(_StrictMergeModel):
         main_graph: GraphState,
         run_truth_scope: list[str],
         branch_patch_summaries: list[BranchPatchSummary] | None = None,
+        human_review_changes: list[BranchHumanReviewChange] | None = None,
+        previous_merge_receipt: BranchMergeReceipt | None = None,
+        previous_branch_graph: GraphState | None = None,
     ) -> BranchMergeContext:
         if run_truth_scope != sorted(set(run_truth_scope)) or not run_truth_scope:
             raise ValueError("branch merge run truth scope must be non-empty, sorted, and unique")
@@ -356,11 +428,16 @@ class BranchMergeContext(_StrictMergeModel):
             "semantic_delta": delta,
             "branch_patch_summaries": list(branch_patch_summaries or ()),
             "deterministic_conflicts": detect_branch_merge_conflicts(
-                base_graph,
-                branch_graph,
+                previous_branch_graph or base_graph,
+                _merge_branch_graph(previous_branch_graph or base_graph, branch_graph),
                 main_graph,
             ),
             "transition_contract": BranchMergeTransitionContract.current(),
+            "review_contract": BranchMergeReviewContract(
+                human_changes=list(human_review_changes or ())
+            ),
+            "previous_merge_receipt": previous_merge_receipt,
+            "previous_branch_graph": previous_branch_graph,
         }
         encoded = _jsonable(payload)
         return cls.model_validate({**payload, "context_id": _context_id(encoded)})
@@ -512,6 +589,141 @@ def build_semantic_delta(
     )
 
 
+def branch_human_review_changes(
+    patches: list[Patch], base: GraphState, branch: GraphState
+) -> list[BranchHumanReviewChange]:
+    """Retain exact human initiating writes, never generated actions or summary claims."""
+
+    latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
+    for patch in patches:
+        if patch.author != "human" or patch.admission != "accepted":
+            continue
+        indexes = (
+            sorted(
+                index
+                for group in patch.transition.initiating_groups
+                for index in group.operation_indexes
+            )
+            if patch.transition is not None
+            else range(len(patch.ops))
+        )
+        for index in indexes:
+            operation = patch.ops[index]
+            review_ops: list[ProposalStandingChangeOperation | ProposalStatusChangeOperation] = []
+            if isinstance(operation, SetStandingOperation):
+                review_ops.append(
+                    ProposalStandingChangeOperation(
+                        op="set_standing",
+                        intent="standing_change",
+                        node_id=operation.node_id,
+                        standing=operation.standing,
+                    )
+                )
+            elif isinstance(operation, UpdateNodesOperation):
+                for update in operation.nodes:
+                    if "status" in update.changes and isinstance(
+                        branch.nodes.get(update.id), Hypothesis
+                    ):
+                        review_ops.append(
+                            ProposalStatusChangeOperation(
+                                op="update_nodes",
+                                intent="status_change",
+                                nodes=[
+                                    {
+                                        "id": update.id,
+                                        "changes": {"status": update.changes["status"]},
+                                        "cause": {"kind": "human_edit"},
+                                    }
+                                ],
+                            )
+                        )
+            for review_op in review_ops:
+                node_id, field, _value = _human_review_value(review_op)
+                latest[(node_id, field)] = BranchHumanReviewChange(
+                    revision=patch.revision, operation_index=index, operation=review_op
+                )
+    result = []
+    for key in sorted(latest):
+        change = latest[key]
+        try:
+            _require_source_human_change(base, branch, change.operation)
+        except ValueError:
+            continue  # A later branch edit superseded this human value.
+        result.append(change)
+    return result
+
+
+def _human_review_value(
+    operation: ProposalStandingChangeOperation | ProposalStatusChangeOperation,
+) -> tuple[str, str, object]:
+    if isinstance(operation, ProposalStandingChangeOperation):
+        return operation.node_id, "standing", operation.standing
+    if len(operation.nodes) != 1 or set(operation.nodes[0].changes) != {"status"}:
+        raise ValueError("a human review fact must name one exact status change")
+    update = operation.nodes[0]
+    if not isinstance(update.cause, HumanEditCause):
+        raise ValueError("a human source status fact must carry its human_edit cause")
+    return update.id, "status", update.changes["status"]
+
+
+def _require_source_human_change(
+    base: GraphState,
+    branch: GraphState,
+    operation: ProposalStandingChangeOperation | ProposalStatusChangeOperation,
+) -> None:
+    node_id, field, value = _human_review_value(operation)
+    before, after = base.nodes.get(node_id), branch.nodes.get(node_id)
+    if after is None or getattr(after, field, _MISSING) != value:
+        raise ValueError("human review fact does not match the final source branch value")
+    if before is not None and getattr(before, field, _MISSING) == value:
+        raise ValueError("human review fact is not a change from the branch base")
+
+
+def _merge_branch_graph(base: GraphState, branch: GraphState) -> GraphState:
+    """Branch review decisions stay local; their actual graph effects merge separately."""
+
+    proposals = dict(branch.proposals)
+    for identity, proposal in branch.proposals.items():
+        if proposal.status == "pending" and not proposal_is_stale(branch, proposal):
+            continue
+        if identity in base.proposals:
+            proposals[identity] = base.proposals[identity]
+        else:
+            proposals.pop(identity)
+    return branch.model_copy(update={"proposals": proposals})
+
+
+def branch_merge_review_proposal_id(
+    branch_id: str, proposal: Proposal, *, source_base_head: GraphHeadRef
+) -> str:
+    """Stable for one source baseline; a later delivered cycle gets a fresh review."""
+
+    occurrence = _canonical_sha256(source_base_head.model_dump(mode="json"))[:32]
+    return f"{_branch_review_semantic_id(branch_id, proposal)}-{occurrence}"
+
+
+def _branch_review_semantic_id(branch_id: str, proposal: Proposal) -> str:
+    return (
+        "prop/branch-review-"
+        + _canonical_sha256(
+            {
+                "branch_id": branch_id,
+                "ops": [
+                    operation.model_dump(mode="json", exclude_none=True)
+                    for operation in _ordered_review_ops(proposal)
+                ],
+            }
+        )[:32]
+    )
+
+
+def _ordered_review_ops(proposal: Proposal) -> list[ProposalOperation]:
+    order = {"content_change": 0, "status_change": 1, "standing_change": 2}
+    if all(operation.intent in order for operation in proposal.ops):
+        return sorted(proposal.ops, key=lambda operation: order[operation.intent])
+    return list(proposal.ops)
+
+
 def detect_branch_merge_conflicts(
     base: GraphState,
     branch: GraphState,
@@ -651,12 +863,16 @@ def validate_branch_merge_candidate_conformance(
 
     if prepared.transition is None:
         raise BranchMergeSemanticConflict("Prepared branch merge has no transition trace.")
-    allowed = _graph_semantic_write_paths(context.base_graph, context.branch_graph)
+    merge_base = context.previous_branch_graph or context.base_graph
+    merge_branch = _merge_branch_graph(merge_base, context.branch_graph)
+    allowed = _graph_semantic_write_paths(merge_base, merge_branch)
     conflicts = _branch_conflict_paths(context.deterministic_conflicts)
     mandatory = {
         path for path in allowed if not any(_semantic_path_covers(item, path) for item in conflicts)
     }
     timeline = current_main
+    review_proposals: list[Proposal] = []
+    restoring_standing: set[SemanticWritePath] = set()
     initiating_indexes = sorted(
         index
         for group in prepared.transition.initiating_groups
@@ -664,10 +880,38 @@ def validate_branch_merge_candidate_conformance(
     )
     for operation_index in initiating_indexes:
         operation = prepared.ops[operation_index]
+        operation_allowed = allowed | restoring_standing
+        if isinstance(operation, CreateProposalsOperation):
+            for proposal in operation.proposals:
+                source = merge_branch.proposals.get(proposal.id)
+                if source is not None:
+                    continue
+                if proposal.id != branch_merge_review_proposal_id(
+                    context.metadata.branch_id, proposal, source_base_head=context.review_base_head
+                ):
+                    raise BranchMergeSemanticConflict(
+                        "Merge review Proposal lacks its stable identity."
+                    )
+                if any(
+                    _same_proposal_ops(proposal, existing)
+                    for existing in _main_review_proposals(context, current_main)
+                ):
+                    raise BranchMergeSemanticConflict(
+                        "This source change is already represented by a main Proposal; omit its duplicate."
+                    )
+                _require_human_review_provenance(context, proposal)
+                if graph.proposals[proposal.id].status != "pending":
+                    raise BranchMergeSemanticConflict(
+                        "A new merge review Proposal must remain pending."
+                    )
+                review_proposals.append(proposal)
+                operation_allowed.add(("proposals", proposal.id, "$"))
         undeclared = sorted(
             path
             for path in _declared_bookkeeping_sensitive_write_paths(operation)
-            if not any(_semantic_path_authorizes_declared_write(item, path) for item in allowed)
+            if not any(
+                _semantic_path_authorizes_declared_write(item, path) for item in operation_allowed
+            )
         )
         if undeclared:
             rendered = ", ".join(_render_semantic_path(path) for path in undeclared[:8])
@@ -687,10 +931,36 @@ def validate_branch_merge_candidate_conformance(
             raise BranchMergeSemanticConflict(
                 f"Prepared branch merge action {operation_index} could not be replayed: {exc}"
             ) from exc
+        # An ordinary human content edit preserves accepted standing. Agent
+        # assertion resets it, so allow only that exact reset plus restoration
+        # to the source value through existing orchestrator authority.
+        if isinstance(operation, UpdateNodesOperation):
+            for update in operation.nodes:
+                old = timeline.nodes.get(update.id)
+                new = next_state.nodes.get(update.id)
+                source = merge_branch.nodes.get(update.id)
+                if (
+                    old is not None
+                    and new is not None
+                    and source is not None
+                    and old.standing == source.standing != new.standing
+                    and new.standing == "asserted"
+                ):
+                    path = ("nodes", update.id, "standing")
+                    restoring_standing.add(path)
+                    operation_allowed.add(path)
+        if isinstance(operation, SetStandingOperation):
+            path = ("nodes", operation.node_id, "standing")
+            if path in restoring_standing:
+                source = merge_branch.nodes[operation.node_id]
+                if operation.standing != source.standing:
+                    raise BranchMergeSemanticConflict(
+                        "Standing restoration must match the source branch."
+                    )
         unexpected = sorted(
             path
             for path in _graph_semantic_write_paths(timeline, next_state)
-            if not any(_semantic_path_covers(item, path) for item in allowed)
+            if not any(_semantic_path_covers(item, path) for item in operation_allowed)
         )
         if unexpected:
             rendered = ", ".join(_render_semantic_path(path) for path in unexpected[:8])
@@ -699,12 +969,22 @@ def validate_branch_merge_candidate_conformance(
             )
         timeline = next_state
 
-    branch_document = _graph_semantic_document(context.branch_graph)
+    mandatory |= restoring_standing
+    reviewed_paths = _review_proposal_coverage(
+        context,
+        graph,
+        allowed,
+        mandatory,
+        review_proposals,
+        existing=list(_main_review_proposals(context, current_main)),
+    )
+    branch_document = _graph_semantic_document(merge_branch)
     result_document = _graph_semantic_document(graph)
     missing = sorted(
         path
         for path in mandatory
-        if _semantic_path_value(branch_document, path)
+        if path not in reviewed_paths
+        and _semantic_path_value(branch_document, path)
         != _semantic_path_value(result_document, path)
     )
     if missing:
@@ -717,17 +997,178 @@ def validate_branch_merge_candidate_conformance(
 def branch_merge_can_resolve_without_patch(context: BranchMergeContext) -> bool:
     """Whether choosing current main on every conflict still carries all required changes."""
 
-    allowed = _graph_semantic_write_paths(context.base_graph, context.branch_graph)
+    merge_base = context.previous_branch_graph or context.base_graph
+    branch = _merge_branch_graph(merge_base, context.branch_graph)
+    allowed = _graph_semantic_write_paths(merge_base, branch)
     conflicts = _branch_conflict_paths(context.deterministic_conflicts)
     mandatory = {
         path for path in allowed if not any(_semantic_path_covers(item, path) for item in conflicts)
     }
-    branch_document = _graph_semantic_document(context.branch_graph)
+    reviewed_paths = _review_proposal_coverage(
+        context,
+        context.main_graph,
+        allowed,
+        mandatory,
+        [],
+        existing=list(_main_review_proposals(context, context.main_graph)),
+    )
+    branch_document = _graph_semantic_document(branch)
     main_document = _graph_semantic_document(context.main_graph)
     return all(
-        _semantic_path_value(branch_document, path) == _semantic_path_value(main_document, path)
+        path in reviewed_paths
+        or _semantic_path_value(branch_document, path) == _semantic_path_value(main_document, path)
         for path in mandatory
     )
+
+
+def _branch_merge_is_represented(context: BranchMergeContext) -> bool:
+    merge_base = context.previous_branch_graph or context.base_graph
+    branch = _merge_branch_graph(merge_base, context.branch_graph)
+    allowed = _graph_semantic_write_paths(merge_base, branch)
+    return allowed <= _review_proposal_coverage(
+        context,
+        context.main_graph,
+        allowed,
+        allowed,
+        [],
+        existing=list(_main_review_proposals(context, context.main_graph)),
+    )
+
+
+def _same_proposal_ops(left: Proposal, right: Proposal) -> bool:
+    return _ordered_review_ops(left) == _ordered_review_ops(right)
+
+
+def _main_review_proposals(context: BranchMergeContext, main: GraphState):
+    for proposal in main.proposals.values():
+        if proposal.status != "pending" or proposal_is_stale(main, proposal):
+            continue
+        source = context.branch_graph.proposals.get(proposal.id)
+        semantic_id, _, occurrence = proposal.id.rpartition("-")
+        same_source_review = (
+            semantic_id == _branch_review_semantic_id(context.metadata.branch_id, proposal)
+            and len(occurrence) == 32
+            and all(character in "0123456789abcdef" for character in occurrence)
+        )
+        if same_source_review or (source is not None and _same_proposal_ops(source, proposal)):
+            yield proposal
+
+
+def _require_human_review_provenance(context: BranchMergeContext, proposal: Proposal) -> None:
+    for operation in proposal.ops:
+        special = isinstance(operation, ProposalStandingChangeOperation) or (
+            isinstance(operation, ProposalStatusChangeOperation)
+            and any(isinstance(update.cause, HumanEditCause) for update in operation.nodes)
+        )
+        if special and not any(
+            operation == change.operation for change in context.review_contract.human_changes
+        ):
+            raise BranchMergeSemanticConflict(
+                "Merge review Proposal claims a human change absent from the canonical source operations."
+            )
+
+
+def _review_proposal_coverage(
+    context: BranchMergeContext,
+    graph: GraphState,
+    allowed: set[SemanticWritePath],
+    mandatory: set[SemanticWritePath],
+    proposals: list[Proposal],
+    *,
+    existing: list[Proposal],
+) -> set[SemanticWritePath]:
+    """Return only paths represented by pending human review, never a graph to commit.
+
+    The detached approval preview proves semantic effects. It never enters main
+    history or replaces the actual merge projection. Resolved Proposals are not
+    previewed; validated prior receipts account for previously delivered changes.
+    """
+
+    branch_document = _graph_semantic_document(context.branch_graph)
+    preview_graph = graph.model_copy(deep=True)
+    claimed: set[SemanticWritePath] = set()
+    for index, proposal in enumerate([*proposals, *existing]):
+        is_new = index < len(proposals)
+        if proposal.status != "pending":
+            raise BranchMergeSemanticConflict(
+                "Only pending Proposals may represent new merge changes."
+            )
+        if is_new and proposal_is_stale(preview_graph, proposal):
+            raise BranchMergeSemanticConflict(
+                "Merge review Proposals would make one another stale; combine same-node "
+                "content/status/standing changes or choose a compatible review order."
+            )
+        try:
+            operations = graph_operations_from_proposal(proposal.ops)
+            preview = Patch(
+                kind="approval",
+                author="human",
+                revision=preview_graph.revision + 1,
+                summary="Non-authoritative semantic review proof.",
+                ops=operations,
+            )
+            for operation in operations:
+                if any(
+                    not any(
+                        _semantic_path_authorizes_declared_write(item, path) for item in allowed
+                    )
+                    for path in _declared_bookkeeping_sensitive_write_paths(operation)
+                ):
+                    raise BranchMergeSemanticConflict(
+                        "Merge Proposal declares writes outside the source branch delta."
+                    )
+            direct = apply_valid_patch(preview_graph, preview)
+            paths = _graph_semantic_write_paths(preview_graph, direct)
+            if not paths:
+                if is_new:
+                    raise BranchMergeSemanticConflict(
+                        "Merge Proposal carries no unrepresented source change."
+                    )
+                continue
+            if any(
+                not any(_semantic_path_covers(item, path) for item in allowed) for path in paths
+            ):
+                raise BranchMergeSemanticConflict(
+                    "Merge Proposal writes outside the source branch delta."
+                )
+            direct_document = _graph_semantic_document(direct)
+            if any(
+                any(_semantic_path_covers(item, path) for item in mandatory)
+                and _semantic_path_value(direct_document, path)
+                != _semantic_path_value(branch_document, path)
+                for path in paths
+            ):
+                raise BranchMergeSemanticConflict(
+                    "Merge Proposal does not carry the exact non-conflicting source change."
+                )
+            if is_new and any(
+                _semantic_path_covers(left, right) or _semantic_path_covers(right, left)
+                for left in claimed
+                for right in paths
+            ):
+                raise BranchMergeSemanticConflict(
+                    "Merge review Proposals overlap the same source change."
+                )
+            judgment = _proposal_judgment_patch(
+                preview_graph, proposal, decision="approved", reason=None
+            ).model_copy(update={"revision": preview_graph.revision + 1})
+            projected = GraphTransitionManager().prepare_validated(preview_graph, [judgment])
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            if not is_new:
+                continue  # The pending review may address an older source value.
+            if isinstance(exc, BranchMergeSemanticConflict):
+                raise
+            raise BranchMergeSemanticConflict(
+                f"Merge review Proposal cannot be represented: {exc}"
+            ) from exc
+        preview_graph = projected.projection.graph
+        claimed.update(paths)
+    document = _graph_semantic_document(preview_graph)
+    return {
+        path
+        for path in mandatory
+        if _semantic_path_value(branch_document, path) == _semantic_path_value(document, path)
+    }
 
 
 def branch_merge_id(metadata: GraphBranchMetadata) -> str:
@@ -779,6 +1220,27 @@ def parse_branch_merge_candidate(value: str, context: BranchMergeContext) -> Pat
         source_operation_id=context.merge_task_id,
         profile="orchestrator",
     )
+    for operation in patch.ops:
+        if not isinstance(operation, CreateProposalsOperation):
+            continue
+        for index, proposal in enumerate(operation.proposals):
+            source = context.branch_graph.proposals.get(proposal.id)
+            if (
+                source is not None
+                and source.status == "pending"
+                and not proposal_is_stale(context.branch_graph, source)
+            ):
+                continue
+            operation.proposals[index] = proposal.model_copy(
+                update={
+                    "id": branch_merge_review_proposal_id(
+                        context.metadata.branch_id,
+                        proposal,
+                        source_base_head=context.review_base_head,
+                    ),
+                    "ops": _ordered_review_ops(proposal),
+                }
+            )
     return patch.model_copy(
         update={
             "revision": context.main_head.revision + 1,
@@ -935,6 +1397,9 @@ def classify_refreshed_context(
         and previous.run_truth_scope == current.run_truth_scope
         and previous.branch_patch_summaries == current.branch_patch_summaries
         and previous.transition_contract == current.transition_contract
+        and previous.review_contract == current.review_contract
+        and previous.previous_merge_receipt == current.previous_merge_receipt
+        and previous.previous_branch_graph == current.previous_branch_graph
     )
     if not stable:
         raise BranchMergeSourceChanged(
@@ -984,10 +1449,7 @@ async def stream_branch_merge_run(
     outcome.source_branch_head = context.metadata.head
     outcome.rebased_main_head = context.main_head
 
-    if context.semantic_delta.is_empty or semantic_delta_is_subsumed(
-        context.semantic_delta,
-        context.main_graph,
-    ):
+    if _branch_merge_is_represented(context):
         provenance = branch_merge_provenance(context)
         outcome.receipt = BranchMergeReceipt(
             outcome="no_change",
@@ -1002,7 +1464,7 @@ async def stream_branch_merge_run(
                 text=(
                     "The branch head has no net semantic graph change to merge."
                     if context.semantic_delta.is_empty
-                    else "Main already contains this branch head's semantic graph change."
+                    else "Main already contains or has received this branch head's graph changes for review."
                 ),
             )
         )
@@ -1027,6 +1489,7 @@ async def stream_branch_merge_run(
                 context_id=context.context_id,
                 patch_path=patch_path,
                 validator_command=validator_command,
+                review_contract_json=context.review_contract.model_dump_json(indent=2),
             )
             original_contract_path, prompt = _stage_task_contract(
                 stage.local_stage,

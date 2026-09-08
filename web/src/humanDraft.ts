@@ -1,3 +1,5 @@
+import { graphSessionKey, MAIN_GRAPH } from "./graphTarget";
+import type { GraphTargetRef } from "./types";
 import {
   proposalSemantics,
   type GraphNode,
@@ -558,8 +560,11 @@ export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanS
   };
 }
 
-export function humanDraftStorageKey(projectId: string): string {
-  return `rcp:human-draft:${projectId}`;
+export function humanDraftStorageKey(
+  projectId: string,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
+): string {
+  return `rcp:human-draft:${graphSessionKey(projectId, graphTarget)}`;
 }
 
 export function humanSyncFailure(error: unknown): {

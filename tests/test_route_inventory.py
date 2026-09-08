@@ -96,6 +96,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/cached/revision"),
     (("GET",), "/api/projects/{project_id}/readiness"),
     (("GET",), "/api/projects/{project_id}/graph"),
+    (("GET",), "/api/projects/{project_id}/graph/changes"),
     (("GET",), "/api/projects/{project_id}/revision"),
     (("HEAD",), "/api/projects/{project_id}/repositories/files/preview"),
     (("GET",), "/api/projects/{project_id}/repositories/files/preview"),
@@ -214,6 +215,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "get_identity": "src/rcp/api/team.py",
     "get_paper": "src/rcp/api/paper.py",
     "graph": "src/rcp/api/project_state.py",
+    "graph_changes": "src/rcp/api/project_state.py",
     "graph_transition_manifest": "src/rcp/api/history.py",
     "health": "src/rcp/api/health.py",
     "server_status": "src/rcp/api/server_status.py",
@@ -320,15 +322,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 133
-    assert len(_FROZEN_ROUTE_INVENTORY) == 133
+    assert len(entries) == 134
+    assert len(_FROZEN_ROUTE_INVENTORY) == 134
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 129
+    assert sum(isinstance(route, APIRoute) for route in routes) == 130
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -343,5 +345,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 121
+    assert len(observed) == 122
     assert observed == _HANDLER_MODULE_MAP

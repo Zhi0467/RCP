@@ -1030,9 +1030,16 @@ export interface ProposalStatusChangeOperation {
     {
       id: string;
       changes: { status: string };
-      cause: { kind: "evidence_edge"; ref_id: string };
+      cause: { kind: "evidence_edge"; ref_id: string } | { kind: "human_edit" };
     },
   ];
+}
+
+export interface ProposalStandingChangeOperation {
+  op: "set_standing";
+  intent: "standing_change";
+  node_id: string;
+  standing: "asserted" | "accepted" | "contested";
 }
 
 export interface ProposalRemovalOperation {
@@ -1076,6 +1083,7 @@ export interface ProposalRemoveProtectedRelationOperation {
 export type CanonicalProposalOperation =
   | ProposalContentChangeOperation
   | ProposalStatusChangeOperation
+  | ProposalStandingChangeOperation
   | ProposalRemovalOperation
   | ProposalSupersedeOperation
   | ProposalMergeOperation
@@ -1103,7 +1111,7 @@ interface ProposalRecord {
 
 export interface CanonicalProposal extends ProposalRecord {
   semantics: "canonical";
-  ops: [CanonicalProposalOperation];
+  ops: [CanonicalProposalOperation, ...CanonicalProposalOperation[]];
 }
 
 export interface LegacyProposal extends ProposalRecord {
@@ -1121,7 +1129,11 @@ export interface ProposalSemantics {
 export function decodeProposal(raw: Proposal): Proposal {
   const payload = raw as Proposal & { semantics?: unknown; ops?: unknown };
   const rawOps = Array.isArray(payload.ops) ? payload.ops : [];
-  const operation = rawOps.length === 1 ? decodeCanonicalProposalOperation(rawOps[0]) : null;
+  const operations = rawOps.map(decodeCanonicalProposalOperation);
+  const canonical =
+    operations.length > 0 &&
+    operations.every((operation) => operation !== null) &&
+    (operations.length === 1 || isSameNodeReviewBundle(operations as CanonicalProposalOperation[]));
   const common = {
     ...payload,
     related_node_ids: stringList(payload.related_node_ids),
@@ -1130,9 +1142,28 @@ export function decodeProposal(raw: Proposal): Proposal {
     raised_rev: Number.isInteger(payload.raised_rev) ? payload.raised_rev : 0,
     resolved_rev: Number.isInteger(payload.resolved_rev) ? payload.resolved_rev : null,
   };
-  return operation
-    ? { ...common, semantics: "canonical", ops: [operation] }
+  return canonical
+    ? {
+        ...common,
+        semantics: "canonical",
+        ops: operations as [CanonicalProposalOperation, ...CanonicalProposalOperation[]],
+      }
     : { ...common, semantics: "legacy", ops: rawOps };
+}
+
+function isSameNodeReviewBundle(operations: CanonicalProposalOperation[]): boolean {
+  if (operations.length > 3) return false;
+  const ids = operations.map((operation) =>
+    operation.op === "set_standing"
+      ? operation.node_id
+      : operation.op === "update_nodes"
+        ? operation.nodes[0].id
+        : null,
+  );
+  return (
+    ids.every((id) => id !== null && id === ids[0]) &&
+    new Set(operations.map((operation) => operation.intent)).size === operations.length
+  );
 }
 
 export function decodeGraphState(graph: GraphState): GraphState {
@@ -1275,6 +1306,9 @@ function proposalResourceKeys(
 
   let resourceKeys: string[];
   switch (operation.op) {
+    case "set_standing":
+      resourceKeys = [`node:${operation.node_id}`];
+      break;
     case "update_nodes":
       resourceKeys = [`node:${operation.nodes[0].id}`];
       break;
@@ -1337,12 +1371,22 @@ function decodeCanonicalProposalOperation(raw: unknown): CanonicalProposalOperat
       !hasExactKeys(changes, ["status"]) ||
       !isNonEmptyString(changes.status) ||
       !cause ||
-      !hasExactKeys(cause, ["kind", "ref_id"]) ||
-      cause.kind !== "evidence_edge" ||
-      !isNonEmptyString(cause.ref_id)
+      !(
+        (cause.kind === "evidence_edge" &&
+          hasExactKeys(cause, ["kind", "ref_id"]) &&
+          isNonEmptyString(cause.ref_id)) ||
+        (cause.kind === "human_edit" && hasExactKeys(cause, ["kind"]))
+      )
     )
       return null;
     return raw as unknown as ProposalStatusChangeOperation;
+  }
+  if (raw.op === "set_standing" && raw.intent === "standing_change") {
+    return hasExactKeys(raw, ["op", "intent", "node_id", "standing"]) &&
+      isNonEmptyString(raw.node_id) &&
+      ["asserted", "accepted", "contested"].includes(raw.standing as string)
+      ? (raw as unknown as ProposalStandingChangeOperation)
+      : null;
   }
   if (raw.op === "remove_nodes" && raw.intent === "removal") {
     return hasExactKeys(raw, ["op", "intent", "node_ids"]) && oneString(raw.node_ids)
@@ -1573,6 +1617,11 @@ export interface ProjectCounts {
 
 export type GraphMutationAvailability =
   { available: true; reason: null } | { available: false; reason: string };
+
+export interface GraphRevisionSnapshot {
+  revision: number;
+  graph_mutation?: GraphMutationAvailability;
+}
 
 export interface RevisionedTransitionGraph {
   revision: number;
@@ -2200,6 +2249,7 @@ export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) =>
 
 export interface ChatSummary {
   chat_id: string;
+  graph_target: GraphTargetRef;
   kind: "node_chat" | "project_chat";
   node_id: string | null;
   title: string;
@@ -2302,8 +2352,41 @@ export interface PaperSnapshot {
   canonical_available: boolean;
 }
 
+export interface GraphChangeSource {
+  revision: number;
+  producer: "human" | "agent" | "system";
+  summary: string;
+  task_id: string | null;
+  episode_id: string | null;
+}
+
+export interface GraphBranchChanges {
+  branch_id: string;
+  base_head: GraphHeadRef;
+  head: GraphHeadRef;
+  nodes: Array<{
+    node_id: string;
+    change: "created" | "updated" | "removed";
+    before: GraphNode | null;
+    after: GraphNode | null;
+    history: GraphChangeSource[];
+  }>;
+  edges: Array<{
+    edge_id: string;
+    change: "created" | "updated" | "removed";
+    before: Edge | null;
+    after: Edge | null;
+    history: GraphChangeSource[];
+  }>;
+  changed_node_ids: string[];
+  context_node_ids: string[];
+}
+
 export interface ProjectSnapshot {
   id: string;
+  graph_target: GraphTargetRef;
+  graph_head: GraphHeadRef;
+  graph_changes: GraphBranchChanges | null;
   home_space_id: string | null;
   name: string;
   revision: number;

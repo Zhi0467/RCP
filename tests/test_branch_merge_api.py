@@ -446,6 +446,7 @@ class _PatchWritingLauncher:
     def __init__(self, candidate: str) -> None:
         self.candidate = candidate
         self.calls = 0
+        self.session_id = f"merge-native-{uuid.uuid4()}"
 
     async def stream(
         self,
@@ -459,7 +460,7 @@ class _PatchWritingLauncher:
         self.calls += 1
         assert len(list(cwd.glob("rcp-command-*.credential.json"))) == 1
         (cwd / "patch.json").write_text(self.candidate, encoding="utf-8")
-        yield AgentEvent(event="session", session_id=session_id or "merge-native-session")
+        yield AgentEvent(event="session", session_id=session_id or self.session_id)
         yield AgentEvent(event="provider_exit", text='{"return_code":0}')
         yield AgentEvent(event="done")
 

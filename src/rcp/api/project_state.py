@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
+    get_graph_service,
     get_identity_access,
     get_project_display_cache,
     get_project_service,
@@ -19,11 +20,13 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.graph_changes import branch_changes, graph_mutation_availability
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.config import load_manifest
+from rcp.history.branches import BranchHistoryManager
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
 from rcp.repository_preview import (
@@ -97,14 +100,63 @@ def _project_snapshot(
     return snapshot
 
 
+def _branch_snapshot(
+    project_id: str,
+    branch_id: str,
+    project_display_cache: ProjectDisplayCache,
+    catalog: ProjectCatalog,
+    store: AppStore,
+) -> dict[str, object]:
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    assert isinstance(service.history, BranchHistoryManager)
+    materialization, changes = branch_changes(service.history)
+    snapshot = project_display_cache.complete_snapshot(
+        project_id,
+        service.project_snapshot(state=materialization.state, head=changes.head),
+        fresh=True,
+    )
+    snapshot["graph_changes"] = changes.model_dump(mode="json")
+    snapshot["graph_mutation"] = graph_mutation_availability(
+        store,
+        catalog.resolve_project_id(project_id),
+        service.history.graph_target,
+        materialization.state,
+    ).model_dump(mode="json")
+    return snapshot
+
+
+def _branch_revision(
+    project_id: str, branch_id: str, catalog: ProjectCatalog, store: AppStore
+) -> dict[str, object]:
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    with service.history.workspace.snapshot_lock:
+        if not service.history.workspace.refresh_if_stale():
+            raise StateUnavailable("The episode graph could not confirm a current snapshot.")
+        state = service.history.materialize(write_outputs=False).state
+        return {
+            "revision": state.revision,
+            "snapshot_freshness": "fresh",
+            "last_remote_sync_at": None,
+            "graph_mutation": graph_mutation_availability(
+                store, catalog.resolve_project_id(project_id), service.history.graph_target, state
+            ).model_dump(mode="json"),
+        }
+
+
 @router.get("/api/projects/{project_id}")
 async def project(
     project_id: str,
+    branch_id: str | None = None,
     *,
     project_display_cache: DisplayCacheDependency,
     catalog: CatalogDependency,
+    store: StoreDependency,
 ) -> dict[str, object]:
     try:
+        if branch_id is not None:
+            return await asyncio.to_thread(
+                _branch_snapshot, project_id, branch_id, project_display_cache, catalog, store
+            )
         return await asyncio.to_thread(
             _project_snapshot,
             project_id,
@@ -114,6 +166,8 @@ async def project(
     except _ProjectSnapshotNotFound as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except _ProjectSnapshotUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (OSError, ValueError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -190,9 +244,14 @@ def leave_project(
 @router.get("/api/projects/{project_id}/cached")
 def cached_project(
     project_id: str,
+    branch_id: str | None = None,
     *,
     project_display_cache: DisplayCacheDependency,
+    catalog: CatalogDependency,
 ) -> dict[str, object]:
+    if branch_id is not None:
+        get_graph_service(catalog, project_id, branch_id, initialize=False)
+        raise HTTPException(status_code=404, detail="Cached episode graph snapshot not found")
     snapshot = project_display_cache.cached_project_snapshot(project_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Cached project snapshot not found")
@@ -202,9 +261,14 @@ def cached_project(
 @router.get("/api/projects/{project_id}/cached/revision")
 async def cached_project_revision(
     project_id: str,
+    branch_id: str | None = None,
     *,
     project_display_cache: DisplayCacheDependency,
+    catalog: CatalogDependency,
+    store: StoreDependency,
 ) -> dict[str, object]:
+    if branch_id is not None:
+        return await asyncio.to_thread(_branch_revision, project_id, branch_id, catalog, store)
     snapshot = await asyncio.to_thread(
         project_display_cache.cached_project_snapshot,
         project_id,
@@ -237,19 +301,34 @@ def project_readiness(
 @router.get("/api/projects/{project_id}/graph")
 def graph(
     project_id: str,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
 ) -> dict[str, object]:
-    return get_project_service(catalog, project_id).graph_snapshot()
+    return get_graph_service(catalog, project_id, branch_id, initialize=False).graph_snapshot()
+
+
+@router.get("/api/projects/{project_id}/graph/changes")
+def graph_changes(
+    project_id: str,
+    branch_id: str,
+    *,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    assert isinstance(service.history, BranchHistoryManager)
+    _, changes = branch_changes(service.history)
+    return changes.model_dump(mode="json")
 
 
 @router.get("/api/projects/{project_id}/revision")
 def project_revision(
     project_id: str,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
 ) -> dict[str, int]:
-    service = get_project_service(catalog, project_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     return {"revision": service.history.current_accepted_revision()}
 
 

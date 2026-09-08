@@ -1,3 +1,5 @@
+import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import {
   humanDraftChangeCount,
   normalizeHumanDraft,
@@ -59,6 +61,7 @@ export type ProjectSessionManifestState =
 
 export interface ProjectSessionTabState {
   projectId: string | null;
+  graphTarget: GraphTargetRef;
   project: ProjectSnapshot | null;
   renderedRevision: number;
   humanDraft: HumanDraft | null;
@@ -81,15 +84,25 @@ export interface ProjectSessionState extends ProjectSessionTabState {
 }
 
 export type ProjectSessionAction =
-  | { kind: "activate"; project_id: string | null }
-  | { kind: "reset"; project_id: string | null; human_draft?: HumanDraft | null }
+  | { kind: "activate"; project_id: string | null; graph_target?: GraphTargetRef }
+  | {
+      kind: "reset";
+      project_id: string | null;
+      graph_target?: GraphTargetRef;
+      human_draft?: HumanDraft | null;
+    }
   | {
       kind: "restore_tab";
       project_id: string | null;
       state: ProjectSessionTabState;
       consumeDiscardedProposals?: boolean;
     }
-  | { kind: "snapshot_request_started"; project_id: string; request_id: number }
+  | {
+      kind: "snapshot_request_started";
+      project_id: string;
+      request_id: number;
+      graph_target?: GraphTargetRef;
+    }
   | {
       kind: "snapshot_applied";
       snapshot: ProjectSnapshot;
@@ -151,13 +164,15 @@ export function canonicalGraphHead(
 
 export function emptyProjectSessionState(
   initialProjectId: string | null = null,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): ProjectSessionState {
   return {
     projectId: initialProjectId,
+    graphTarget,
     project: null,
     renderedRevision: 0,
     humanDraft: null,
-    transitionHead: canonicalGraphHead(0),
+    transitionHead: { ...canonicalGraphHead(0), target: graphTarget },
     transitionRulesetTag: null,
     transitionManifestState: {
       status: "loading",
@@ -175,6 +190,7 @@ export function emptyProjectSessionState(
     transitionCoordinator: reduceProjectTransitionCoordinator(emptyProjectTransitionCoordinator(), {
       kind: "activate",
       project_id: initialProjectId,
+      graph_target: graphTarget,
     }),
     syncRequestSequence: 0,
   };
@@ -189,9 +205,10 @@ export function projectSessionReducer(
       return withTransitionCoordinator(state, {
         kind: "activate",
         project_id: action.project_id,
+        graph_target: action.graph_target ?? state.graphTarget,
       });
     case "reset": {
-      const empty = emptyProjectSessionState(action.project_id);
+      const empty = emptyProjectSessionState(action.project_id, action.graph_target);
       return {
         ...state,
         ...serializeProjectSessionTabState(empty),
@@ -200,6 +217,7 @@ export function projectSessionReducer(
         transitionCoordinator: reduceProjectTransitionCoordinator(state.transitionCoordinator, {
           kind: "activate",
           project_id: action.project_id,
+          graph_target: action.graph_target,
         }),
       };
     }
@@ -207,6 +225,7 @@ export function projectSessionReducer(
       let transitionCoordinator = reduceProjectTransitionCoordinator(state.transitionCoordinator, {
         kind: "activate",
         project_id: action.project_id,
+        graph_target: action.state.graphTarget ?? MAIN_GRAPH,
       });
       if (action.project_id && action.state.project) {
         transitionCoordinator = reduceProjectTransitionCoordinator(transitionCoordinator, {
@@ -238,7 +257,8 @@ export function projectSessionReducer(
         snapshotRequestSequence: action.request_id,
         latestSnapshotRequests: {
           ...state.latestSnapshotRequests,
-          [action.project_id]: action.request_id,
+          [graphSessionKey(action.project_id, action.graph_target ?? state.graphTarget)]:
+            action.request_id,
         },
       };
     case "snapshot_applied":
@@ -247,7 +267,8 @@ export function projectSessionReducer(
       if (
         action.project &&
         (action.project.id !== state.project?.id ||
-          action.project.graph.revision !== state.renderedRevision)
+          action.project.graph.revision !== state.renderedRevision ||
+          !sameGraphTarget(action.project.graph_target, state.graphTarget))
       ) {
         return state;
       }
@@ -258,13 +279,16 @@ export function projectSessionReducer(
     case "human_draft_updated": {
       if (state.projectId !== action.project_id) return state;
       const nextGeneration =
-        (state.transitionCoordinator.draft_generations[action.project_id] ?? 0) + 1;
+        (state.transitionCoordinator.draft_generations[
+          graphSessionKey(action.project_id, state.graphTarget)
+        ] ?? 0) + 1;
       const transitionCoordinator = reduceProjectTransitionCoordinator(
         state.transitionCoordinator,
         {
           kind: "observe_draft_generation",
           project_id: action.project_id,
           generation: nextGeneration,
+          graph_target: state.graphTarget,
         },
       );
       return { ...state, humanDraft: action.draft, transitionCoordinator };
@@ -359,7 +383,8 @@ export function projectSessionReducer(
         snapshotRequestSequence: action.snapshot_request_id,
         latestSnapshotRequests: {
           ...state.latestSnapshotRequests,
-          [action.fence.project_id]: action.snapshot_request_id,
+          [graphSessionKey(action.fence.project_id, action.fence.expected_head.target)]:
+            action.snapshot_request_id,
         },
         syncRequestSequence: action.sync_request_sequence,
         transitionCoordinator: reduceProjectTransitionCoordinator(state.transitionCoordinator, {
@@ -383,8 +408,14 @@ export function serializeProjectSessionTabState(
 export function projectDraftPreviewEffectInputs(
   state: Pick<ProjectSessionState, "projectId" | "project" | "humanDraft">,
   projectId: string | null,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): Pick<ProjectSessionState, "project" | "humanDraft"> {
-  if (!projectId || state.projectId !== projectId || state.project?.id !== projectId) {
+  if (
+    !projectId ||
+    state.projectId !== projectId ||
+    state.project?.id !== projectId ||
+    !sameGraphTarget(state.project.graph_target, graphTarget)
+  ) {
     return { project: null, humanDraft: null };
   }
   return { project: state.project, humanDraft: state.humanDraft };
@@ -427,11 +458,14 @@ export function latestSnapshotRequestCanApply(
 }
 
 export function projectSessionSnapshotRequestIsCurrent(
-  state: Pick<ProjectSessionState, "latestSnapshotRequests">,
+  state: Pick<ProjectSessionState, "latestSnapshotRequests"> & { graphTarget?: GraphTargetRef },
   projectId: string,
   requestId: number,
 ): boolean {
-  return latestSnapshotRequestCanApply(state.latestSnapshotRequests[projectId], requestId);
+  return latestSnapshotRequestCanApply(
+    state.latestSnapshotRequests[graphSessionKey(projectId, state.graphTarget)],
+    requestId,
+  );
 }
 
 export function cachedSnapshotCanReplace(
@@ -447,7 +481,11 @@ export function reconcileInactiveProjectSession(
   snapshot: ProjectSnapshot,
 ): ProjectSessionTabState {
   const decodedSnapshot = decodeProjectSnapshot(snapshot);
-  if (decodedSnapshot.id !== state.project?.id || decodedSnapshot.snapshot_freshness !== "fresh")
+  if (
+    decodedSnapshot.id !== state.project?.id ||
+    !sameGraphTarget(decodedSnapshot.graph_target, state.graphTarget) ||
+    decodedSnapshot.snapshot_freshness !== "fresh"
+  )
     return state;
   const session = {
     ...emptyProjectSessionState(state.project?.id ?? null),
@@ -490,11 +528,12 @@ export function persistProjectHumanDraft(
   storage: Pick<Storage, "setItem" | "removeItem">,
   projectId: string,
   draft: HumanDraft | null,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): void {
   if (draft && humanDraftChangeCount(draft) > 0) {
-    storage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(draft));
+    storage.setItem(humanDraftStorageKey(projectId, graphTarget), serializeHumanDraft(draft));
   } else {
-    storage.removeItem(humanDraftStorageKey(projectId));
+    storage.removeItem(humanDraftStorageKey(projectId, graphTarget));
   }
 }
 
@@ -513,7 +552,11 @@ function applyProjectSnapshot(
     return state;
   }
   const decodedProject = decodeProjectSnapshot(action.snapshot);
-  if (decodedProject.id !== state.projectId) return state;
+  if (
+    decodedProject.id !== state.projectId ||
+    !sameGraphTarget(decodedProject.graph_target, state.graphTarget)
+  )
+    return state;
   if (
     !cachedSnapshotCanReplace(
       state.project?.id ?? state.transitionCoordinator.active_project_id,
@@ -523,14 +566,34 @@ function applyProjectSnapshot(
   ) {
     return state;
   }
+  if (
+    decodedProject.graph_head &&
+    (!sameGraphTarget(decodedProject.graph_head.target, state.graphTarget) ||
+      decodedProject.graph_head.revision !== decodedProject.graph.revision)
+  )
+    return state;
+  if (
+    decodedProject.graph_changes &&
+    (!sameGraphTarget(decodedProject.graph_changes.head.target, state.graphTarget) ||
+      decodedProject.graph_changes.head.revision !== decodedProject.graph.revision ||
+      !transitionHeadsEqual(decodedProject.graph_changes.head, decodedProject.graph_head))
+  )
+    return state;
+  if (state.graphTarget.kind === "branch" && !decodedProject.graph_head) return state;
   const authoritative = decodedProject.snapshot_freshness === "fresh";
   const previousRevision = state.renderedRevision;
   const nextGraph = decodedProject.graph;
-  const observedHead = state.transitionCoordinator.canonical_heads[decodedProject.id];
+  const observedHead =
+    state.transitionCoordinator.canonical_heads[
+      graphSessionKey(decodedProject.id, state.graphTarget)
+    ];
   const nextHead =
-    observedHead?.target.kind === "main" && observedHead.revision === nextGraph.revision
+    decodedProject.graph_head ??
+    (observedHead &&
+    sameGraphTarget(observedHead.target, state.graphTarget) &&
+    observedHead.revision === nextGraph.revision
       ? observedHead
-      : canonicalGraphHead(nextGraph.revision);
+      : { ...canonicalGraphHead(nextGraph.revision), target: state.graphTarget });
   const reconciliation = state.humanDraft
     ? authoritative
       ? reconcileHumanDraft(state.humanDraft, nextGraph)
@@ -587,7 +650,7 @@ function applyCommittedTransition(
   if (
     !project ||
     project.id !== action.project_id ||
-    action.projection.head.target.kind !== "main" ||
+    !sameGraphTarget(action.projection.head.target, state.graphTarget) ||
     action.projection.head.revision < state.renderedRevision
   ) {
     return state;
@@ -612,6 +675,8 @@ function applyCommittedTransition(
     project: {
       ...project,
       graph: nextGraph,
+      graph_head: action.projection.head,
+      graph_changes: null,
       revision: nextGraph.revision,
       experiment_control: action.projection.experiment_control,
       attention: action.projection.attention,
@@ -656,6 +721,7 @@ function withTransitionCoordinator(
 function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSessionTabState {
   return {
     projectId: state.projectId,
+    graphTarget: state.graphTarget ?? MAIN_GRAPH,
     project: state.project,
     renderedRevision: state.renderedRevision,
     humanDraft: state.humanDraft,

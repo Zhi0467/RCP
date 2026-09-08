@@ -53,6 +53,18 @@ An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently
 continuing with the other target's authority.
 
+Opening an Auto-research branch exposes the ordinary node and project composers
+for that graph target, during and after the episode. These chats have independent
+human authorization and sessions; they do not route through the orchestrator or
+spend its budget. Canonical chat records carry their graph target. Older records
+resolve it from their durable task/session binding before appearing in a target's
+chat list. A branch id never upgrades Discuss or expands repository write scope.
+Every recovery and watcher continuation preserves that original target.
+
+A human may also start an ordinary Experiment loop on the branch. It owns a new
+Experiment episode and budget, without an Auto-research child route. Its Run,
+Stop, control projection, recovery, and watchers all use the exact branch target.
+
 ## Conversation worktrees
 
 Before a conversation has a Work turn, its composer may select **Work in a
