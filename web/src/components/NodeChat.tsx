@@ -70,6 +70,7 @@ import {
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
+  annotatableAnswerSelectionRange,
   parseStagedChatAnnotations,
   replaceTextSpan,
   stagedChatAnnotationsAreComplete,
@@ -1081,20 +1082,9 @@ export function NodeChat({
       CHAT_SCROLL_BOTTOM_TOLERANCE_PX;
   };
 
-  const openAnnotationComposer = (answer: HTMLElement) => {
+  const openAnnotationComposer = (range: Range) => {
     if (submitting) return;
-    const selection = window.getSelection();
-    if (
-      !selection ||
-      selection.isCollapsed ||
-      selection.rangeCount !== 1 ||
-      !selection.anchorNode ||
-      !selection.focusNode ||
-      !answer.contains(selection.anchorNode) ||
-      !answer.contains(selection.focusNode)
-    )
-      return;
-    const selectedText = selection.toString().trim();
+    const selectedText = range.toString().trim();
     if (!selectedText) return;
     if (selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) {
       setSubmitError(
@@ -1106,7 +1096,12 @@ export function NodeChat({
       setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
       return;
     }
-    const range = selection.getRangeAt(0);
+    // Show the reader the text that will be staged, not the overshoot.
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
     const rects = range.getClientRects();
     const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
     annotationOriginRef.current = null;
@@ -1120,6 +1115,24 @@ export function NodeChat({
     });
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
+
+  // The pointer often lifts outside the answer that was swept, so the release is
+  // observed on the document and the answer is resolved from the selection itself.
+  const openAnnotationComposerRef = useRef(openAnnotationComposer);
+  openAnnotationComposerRef.current = openAnnotationComposer;
+  useEffect(() => {
+    if (readOnly) return;
+    const onPointerUp = (event: PointerEvent) => {
+      // Clicks inside the open composer must not restart it over the same selection.
+      if (event.target instanceof Node && annotationComposerRef.current?.contains(event.target))
+        return;
+      const range = annotatableAnswerSelectionRange(window.getSelection(), chatLinesRef.current);
+      if (range) openAnnotationComposerRef.current(range);
+    };
+    // Capture phase: a release over a window resize corner stops propagation.
+    document.addEventListener("pointerup", onPointerUp, { capture: true });
+    return () => document.removeEventListener("pointerup", onPointerUp, { capture: true });
+  }, [readOnly]);
 
   const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
     if (submitting) return;
@@ -1679,12 +1692,7 @@ export function NodeChat({
               {line.role === "agent" ? (
                 line.text && (
                   <>
-                    <div
-                      className="chat-markdown chat-annotatable-answer"
-                      onPointerUp={(event) => {
-                        if (!readOnly && !submitting) openAnnotationComposer(event.currentTarget);
-                      }}
-                    >
+                    <div className="chat-markdown chat-annotatable-answer">
                       <MarkdownAnswer
                         text={line.text}
                         nodes={nodes}
@@ -1694,12 +1702,14 @@ export function NodeChat({
                           void openRepositoryFile(messageId, href)
                         }
                       />
-                      {repositoryFileErrors.get(messageId) && (
-                        <strong className="chat-repository-file-error" role="alert">
-                          {repositoryFileErrors.get(messageId)}
-                        </strong>
-                      )}
                     </div>
+                    {/* Outside the annotatable wrapper: a selection clamp or the
+                        keyboard flow must never stage this diagnostic as answer text. */}
+                    {repositoryFileErrors.get(messageId) && (
+                      <strong className="chat-repository-file-error" role="alert">
+                        {repositoryFileErrors.get(messageId)}
+                      </strong>
+                    )}
                     {!readOnly && (
                       <button
                         className="chat-answer-annotation-button"

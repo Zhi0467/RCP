@@ -114,3 +114,44 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     await server.close();
   }
 });
+
+test("a pointer selection opens the composer even when the pointer is released outside the answer", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 844, height: 520 } });
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
+    const answer = page.locator(".chat-annotatable-answer");
+    await answer.waitFor({ state: "visible" });
+    const box = await answer.boundingBox();
+    assert.ok(box);
+
+    // Drag from inside the answer text and release well below the answer element,
+    // as a reader does when sweeping a selection downward.
+    await page.mouse.move(box.x + 12, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 160, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.move(box.x + 160, box.y + box.height + 60, { steps: 4 });
+    await page.mouse.up();
+
+    const composer = page.getByRole("form", { name: "Add annotation" });
+    await composer.waitFor({ state: "visible", timeout: 2000 });
+    // The sweep overshot into the Comment button; the staged text stops at the answer's end.
+    const selectedText = await page.evaluate(() => window.getSelection()?.toString().trim());
+    assert.equal(
+      selectedText,
+      "he reported improvement needs a stronger comparison and a variance estimate.",
+    );
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
