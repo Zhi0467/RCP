@@ -4439,8 +4439,9 @@ export default function App() {
                     projectSettingsSavedProject(saved, current, retention),
                   );
                 else void reload();
-                const applied = getProjectSessionState().project;
-                if (applied) replaceRunScope(applied.default_run_truth_scope);
+                // The saved snapshot carries the new default; the session may still
+                // hold the pre-save branch snapshot while its reload is in flight.
+                replaceRunScope(saved.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
