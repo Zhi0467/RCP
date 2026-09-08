@@ -31,7 +31,12 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
-import { decideArtifactRevision, removeChatAttachment, uploadChatAttachment } from "../api";
+import {
+  decideArtifactRevision,
+  removeChatAttachment,
+  steerChatTurn,
+  uploadChatAttachment,
+} from "../api";
 import {
   artifactRevisionContentUrl,
   artifactUrl,
@@ -126,7 +131,6 @@ import {
 } from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
-import { LiveSteering } from "./LiveSteering";
 import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
@@ -408,13 +412,8 @@ export function NodeChat({
     chatId: string;
     messages: ChatMessage[];
   }>({ chatId, messages: [] });
-  const [steeringError, setSteeringError] = useState<{
-    chatId: string;
-    message: string | null;
-  }>({ chatId, message: null });
   useEffect(() => {
     setSteeringMessages({ chatId, messages: [] });
-    setSteeringError({ chatId, message: null });
   }, [chatId]);
   const displayedMessages = useMemo(() => {
     const messages = new Map(historyMessages.map((message) => [message.message_id, message]));
@@ -568,9 +567,13 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  // While the watched turn can take live input, the ordinary composer addresses
+  // that exact attempt instead of starting a new turn. There is no separate
+  // steering control; a runtime without an input channel leaves the composer
+  // unavailable exactly as any other running turn does.
   const steeringTask = [...relatedTasks]
     .reverse()
-    .find((task) => task.active && task.steer_visible);
+    .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
   const revisionReviewTask = revisionReview
     ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
     : null;
@@ -1208,8 +1211,53 @@ export function NodeChat({
     });
   };
 
+  const steer = async (task: AgentTask) => {
+    const text = assembleChatTurn(message, annotations);
+    if (!annotationsComplete) {
+      setAnnotationsOpen(true);
+      setSubmitError("Each staged annotation needs a comment.");
+      return;
+    }
+    if (!text || attachments.length || submitting || !task.steer_turn_id) return;
+    if (dictating) stopDictation(true);
+    shouldStickToBottomRef.current = true;
+    const request = {
+      message_id: crypto.randomUUID(),
+      attempt: task.attempt,
+      expected_turn_id: task.steer_turn_id,
+      message: text,
+    };
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      const receipt = await steerChatTurn(project.id, task.operation_id, request);
+      setSteeringMessages((current) =>
+        current.chatId !== chatId
+          ? current
+          : {
+              chatId,
+              messages: [
+                ...current.messages.filter((entry) => entry.message_id !== receipt.message_id),
+                receipt,
+              ],
+            },
+      );
+      setMessage("");
+      setAnnotations([]);
+      setAnnotationsOpen(false);
+      removeSessionStorage(annotationsKey);
+    } catch (error) {
+      setSubmitError(
+        `Steering receipt could not be read. Nothing was resent. ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const send = async () => {
     if (readOnly) return;
+    if (steeringTask) return steer(steeringTask);
     if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
         worktree.error ??
@@ -1842,38 +1890,7 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
-        {steeringError.chatId === chatId && steeringError.message && (
-          <div className="node-chat-line error" role="alert">
-            {steeringError.message}
-          </div>
-        )}
       </div>
-      {!readOnly && steeringTask && (
-        <LiveSteering
-          key={`${chatId}:${steeringTask.operation_id}:${steeringTask.attempt}:${steeringTask.steer_turn_id}`}
-          task={steeringTask}
-          onReceipt={(receipt) => {
-            setSteeringMessages((current) =>
-              current.chatId !== chatId
-                ? current
-                : {
-                    chatId,
-                    messages: [
-                      ...current.messages.filter(
-                        (message) => message.message_id !== receipt.message_id,
-                      ),
-                      receipt,
-                    ],
-                  },
-            );
-          }}
-          onError={(message) =>
-            setSteeringError((current) =>
-              current.chatId === chatId ? { chatId, message } : current,
-            )
-          }
-        />
-      )}
       {!readOnly && (
         <div
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
@@ -1898,69 +1915,6 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
-          <WorktreeControls
-            key={`${project.id}:${chatId}`}
-            state={worktree.state}
-            error={worktree.error}
-            chosen={worktree.chosen}
-            disabled={Boolean(
-              relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
-            )}
-            onChoose={worktree.choose}
-            onIntegrate={integrateWorktree}
-            onRemove={worktree.remove}
-            onPreviewRemove={worktree.previewRemoval}
-            onRefresh={worktree.refresh}
-          />
-          {computeConnections.length > 0 && (
-            <div className="chat-compute-picker">
-              <button
-                className="chat-compute-trigger"
-                type="button"
-                aria-expanded={computeMenuOpen}
-                onClick={() => setComputeMenuOpen((open) => !open)}
-              >
-                <Cpu size={13} />
-                Compute
-                {computeState.ids.length ? <strong>{computeState.ids.length}</strong> : null}
-                <ChevronUp size={12} />
-              </button>
-              {computeMenuOpen ? (
-                <fieldset className="chat-compute-menu" aria-label="Compute connections">
-                  {computeConnections.map((connection) => {
-                    const selected = computeState.ids.includes(connection.id);
-                    const probe = project.compute_status?.[config.run_on]?.[connection.id];
-                    const presentation = computeProbePresentation(probe);
-                    return (
-                      <label
-                        aria-label={`${connection.name}, ${presentation.label}`}
-                        key={connection.id}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={() => {
-                            setComputeState((current) => ({
-                              ids: selected
-                                ? current.ids.filter((id) => id !== connection.id)
-                                : [...current.ids, connection.id],
-                              pinned: true,
-                            }));
-                            setSubmitError(null);
-                          }}
-                        />
-                        <span
-                          className={`chat-compute-dot ${presentation.tone}`}
-                          aria-hidden="true"
-                        />
-                        <strong>{connection.name}</strong>
-                      </label>
-                    );
-                  })}
-                </fieldset>
-              ) : null}
-            </div>
-          )}
           {annotations.length > 0 && (
             <div className="chat-annotation-summary">
               <button
@@ -2130,6 +2084,69 @@ export function NodeChat({
                   </button>
                 ))}
               </div>
+              <WorktreeControls
+                key={`${project.id}:${chatId}`}
+                state={worktree.state}
+                error={worktree.error}
+                chosen={worktree.chosen}
+                disabled={Boolean(
+                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+                )}
+                onChoose={worktree.choose}
+                onIntegrate={integrateWorktree}
+                onRemove={worktree.remove}
+                onPreviewRemove={worktree.previewRemoval}
+                onRefresh={worktree.refresh}
+              />
+              {computeConnections.length > 0 && (
+                <div className="chat-compute-picker">
+                  <button
+                    className="chat-compute-trigger"
+                    type="button"
+                    aria-expanded={computeMenuOpen}
+                    onClick={() => setComputeMenuOpen((open) => !open)}
+                  >
+                    <Cpu size={13} />
+                    Compute
+                    {computeState.ids.length ? <strong>{computeState.ids.length}</strong> : null}
+                    <ChevronUp size={12} />
+                  </button>
+                  {computeMenuOpen ? (
+                    <fieldset className="chat-compute-menu" aria-label="Compute connections">
+                      {computeConnections.map((connection) => {
+                        const selected = computeState.ids.includes(connection.id);
+                        const probe = project.compute_status?.[config.run_on]?.[connection.id];
+                        const presentation = computeProbePresentation(probe);
+                        return (
+                          <label
+                            aria-label={`${connection.name}, ${presentation.label}`}
+                            key={connection.id}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => {
+                                setComputeState((current) => ({
+                                  ids: selected
+                                    ? current.ids.filter((id) => id !== connection.id)
+                                    : [...current.ids, connection.id],
+                                  pinned: true,
+                                }));
+                                setSubmitError(null);
+                              }}
+                            />
+                            <span
+                              className={`chat-compute-dot ${presentation.tone}`}
+                              aria-hidden="true"
+                            />
+                            <strong>{connection.name}</strong>
+                          </label>
+                        );
+                      })}
+                    </fieldset>
+                  ) : null}
+                </div>
+              )}
             </div>
             <div className="chat-send-actions">
               {desktop && (
@@ -2151,7 +2168,7 @@ export function NodeChat({
                   !assembleChatTurn(message, annotations) ||
                   !annotationsComplete ||
                   attachmentsUnready ||
-                  relatedActive ||
+                  (steeringTask ? attachments.length > 0 : relatedActive) ||
                   Boolean(pausedAttempt) ||
                   submitting ||
                   Boolean(repairingTaskId) ||
@@ -2160,7 +2177,7 @@ export function NodeChat({
                   !providerReady
                 }
                 onClick={() => void send()}
-                aria-label={`Start ${modeLabel(mode)} turn`}
+                aria-label={steeringTask ? "Steer running turn" : `Start ${modeLabel(mode)} turn`}
               >
                 <Send size={15} />
               </button>

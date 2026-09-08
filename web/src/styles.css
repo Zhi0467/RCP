@@ -6251,36 +6251,6 @@ button.relation-map-node:hover {
   padding: 8px 9px;
 }
 
-/* Live input belongs to the running attempt; the ordinary composer remains a draft. */
-.chat-live-steering {
-  align-items: center;
-  border-top: 1px solid var(--line);
-  display: grid;
-  flex: none;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 9px;
-}
-.chat-live-steering label,
-.chat-live-steering > strong {
-  font-size: 12px;
-  grid-column: 1 / -1;
-}
-.chat-live-steering textarea {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  font-size: 14px;
-  min-width: 0;
-  padding: 8px;
-  resize: vertical;
-}
-.chat-live-steering button {
-  gap: 6px;
-}
-.chat-live-steering > strong {
-  color: var(--oxblood);
-}
 .chat-steering-receipt {
   display: flex;
   flex-wrap: wrap;
@@ -6309,7 +6279,10 @@ button.relation-map-node:hover {
 .chat-composer-tools {
   align-items: center;
   display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   gap: 7px;
+  min-width: 0;
 }
 .chat-send-actions {
   align-items: center;
@@ -7192,7 +7165,6 @@ button.relation-map-node:hover {
   }
 }
 .chat-compute-picker {
-  flex-basis: 100%;
   position: relative;
 }
 .chat-compute-trigger {

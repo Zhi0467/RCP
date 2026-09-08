@@ -4,7 +4,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("live steering preserves the next-turn draft and renders stored receipts without retry", async () => {
+test("the composer steers the running turn and renders stored receipts without retry", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -46,11 +46,14 @@ test("live steering preserves the next-turn draft and renders stored receipts wi
       await route.fulfill({ json: receipt });
     });
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/liveSteering.html`);
-    const draft = page.getByRole("textbox", { name: "Message", exact: true });
-    const steer = page.getByRole("textbox", { name: "Steer running turn" });
-    await draft.fill("Keep this for my next turn");
-    await steer.fill("Use a shorter explanation.");
-    await page.getByRole("button", { name: "Send steer", exact: true }).click();
+    const composer = page.getByRole("textbox", { name: "Message", exact: true });
+    const sendSteer = page.getByRole("button", { name: "Steer running turn", exact: true });
+    const startTurn = page.getByRole("button", { name: "Start Discuss turn", exact: true });
+    // The running turn owns the ordinary composer: no separate steering control.
+    assert.equal(await page.getByRole("form", { name: "Steer running turn" }).count(), 0);
+    assert.equal(await startTurn.count(), 0);
+    await composer.fill("Use a shorter explanation.");
+    await sendSteer.click();
     await page.getByText("Delivered", { exact: true }).waitFor();
     assert.equal(requests.length, 1);
     assert.match(requests[0].message_id, /^[0-9a-f-]{36}$/);
@@ -63,32 +66,31 @@ test("live steering preserves the next-turn draft and renders stored receipts wi
         message: "Use a shorter explanation.",
       },
     );
-    assert.equal(await draft.inputValue(), "Keep this for my next turn");
+    assert.equal(await composer.inputValue(), "");
     assert.equal(await page.getByText("Original prompt", { exact: true }).count(), 1);
     assert.equal(await page.getByText("Use a shorter explanation.", { exact: true }).count(), 1);
 
     // Reopening uses the canonical message and must retain the same receipt.
     await page.evaluate((message) => window.reopenSteeringFixture([message]), receipt);
     await page.getByText("Delivered", { exact: true }).waitFor();
-    assert.equal(await draft.inputValue(), "Keep this for my next turn");
     assert.equal(requests.length, 1);
 
     outcome = "refused";
-    await steer.fill("A steer racing completion");
-    await page.getByRole("button", { name: "Send steer", exact: true }).click();
+    await composer.fill("A steer racing completion");
+    await sendSteer.click();
     await page.getByText("Completed before delivery", { exact: true }).waitFor();
     assert.equal(requests.length, 2);
     assert.notEqual(requests[0].message_id, requests[1].message_id);
 
     outcome = "disconnect";
-    await steer.fill("A steer with a lost response");
-    await page.getByRole("button", { name: "Send steer", exact: true }).click();
-    await page.getByRole("alert").filter({ hasText: "Nothing was resent" }).waitFor();
+    await composer.fill("A steer with a lost response");
+    await sendSteer.click();
+    await page.getByText("Nothing was resent").waitFor();
     assert.equal(requests.length, 3);
-    assert.equal(await steer.inputValue(), "A steer with a lost response");
-    assert.equal(await draft.inputValue(), "Keep this for my next turn");
+    assert.equal(await composer.inputValue(), "A steer with a lost response");
 
-    // The recorded runtime can be exec after a profile's app-server fallback.
+    // The recorded runtime can be exec after a profile's app-server fallback. The
+    // composer then stays unavailable like any running turn; no reason is rendered.
     await page.evaluate(() =>
       window.setSteeringFixture({
         can_steer: false,
@@ -97,16 +99,15 @@ test("live steering preserves the next-turn draft and renders stored receipts wi
         runtime_id: "exec",
       }),
     );
-    await page.getByText("Codex exec has no live input channel.", { exact: true }).waitFor();
-    assert.equal(await steer.isDisabled(), true);
-    assert.equal(
-      await page.getByRole("button", { name: "Send steer", exact: true }).isDisabled(),
-      true,
-    );
-    assert.equal(await draft.inputValue(), "Keep this for my next turn");
+    await startTurn.waitFor();
+    assert.equal(await sendSteer.count(), 0);
+    assert.equal(await startTurn.isDisabled(), true);
+    assert.equal(await page.getByText("Codex exec has no live input channel.").count(), 0);
+    assert.equal(await composer.inputValue(), "A steer with a lost response");
 
     await page.evaluate(() => window.setSteeringFixture({ steer_visible: false }));
-    await page.getByRole("form", { name: "Steer running turn" }).waitFor({ state: "detached" });
+    assert.equal(await sendSteer.count(), 0);
+    assert.equal(await startTurn.isDisabled(), true);
     assert.equal(requests.length, 3);
     assert.deepEqual(errors, []);
   } finally {
