@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import threading
 import time
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest,
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef
+from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -47,6 +49,7 @@ from rcp.storage import (
     NodeStatusGraphCondition,
     ProjectRecord,
 )
+from rcp.storage.models import _required_timestamp
 
 from .helpers import fabricated_authorizer, wait_for_task
 
@@ -339,6 +342,178 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
         (root.operation_id, "fresh", None),
         (wake.operation_id, "graph_condition_wake", "orchestrator-session"),
     ]
+
+
+@pytest.mark.parametrize("wake_source", ["graph_condition", "lifecycle"])
+def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
+    tmp_path, monkeypatch, wake_source
+) -> None:
+    store = _store(tmp_path)
+    clock = _required_timestamp(store.now())
+    monkeypatch.setattr(store, "now", lambda: clock.isoformat())
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    watcher = _arm_completed_graph_condition(store, episode, root)
+    notices = []
+    for index in range(2):
+        notices.append(
+            store.record_auto_research_lifecycle_notice(
+                AutoResearchLifecycleNoticeRecord(
+                    notice_id=f"notice-{index}",
+                    episode_id=episode.episode_id,
+                    source_kind="worker",
+                    source_id=f"worker-{index}",
+                    source_event="succeeded",
+                    payload={},
+                    created_at=store.now(),
+                )
+            )
+        )
+        if index == 0:
+            clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS)
+    mail = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=episode.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="Inspect both results.",
+    )
+    before = store.episode_budget_meter(episode.episode_id)
+    task_ids_before = [task.operation_id for task in store.auto_research_tasks(episode.episode_id)]
+
+    assert deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id) is None
+    assert store.episode_budget_meter(episode.episode_id) == before
+    assert [
+        task.operation_id for task in store.auto_research_tasks(episode.episode_id)
+    ] == task_ids_before
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == notices
+    if wake_source == "graph_condition":
+        wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+        delivered_watcher = store.watcher(watcher.watcher_id)
+        assert delivered_watcher.notified
+        assert delivered_watcher.notification_operation_id == wake_id
+    else:
+        clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+        wake_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
+
+    assert wake_id is not None
+    wake = wait_for_task(store, wake_id, expect="succeeded")
+    assert wake.native_session_id == root.native_session_id
+    assert wake.stage_root == root.stage_root
+    assert [notice.notice_id for notice in store.auto_research_lifecycle_delivery(wake_id)] == [
+        notice.notice_id for notice in notices
+    ]
+    assert all(
+        notice.delivery_operation_id == wake_id
+        for notice in store.auto_research_lifecycle_delivery(wake_id)
+    )
+    assert store.auto_research_message(mail.message_id).delivery_operation_id == wake_id
+    clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+    assert deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id) is None
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == []
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == []
+    assert (
+        store.episode_budget_meter(episode.episode_id).invocations_used
+        == before.invocations_used + 1
+    )
+
+
+@pytest.mark.parametrize("changed_input", ["notice", "mail"])
+def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
+    tmp_path, monkeypatch, changed_input
+) -> None:
+    store = _store(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    watcher = _arm_completed_graph_condition(store, episode, root)
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice",
+            episode_id=episode.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="succeeded",
+            payload={},
+            created_at=store.now(),
+        )
+    )
+    mail = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=episode.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="Result.",
+    )
+    before = store.episode_budget_meter(episode.episode_id)
+    real_admit = store.create_watcher_notification_task
+    attempted_ids = []
+
+    def change_prefix(record, watcher_ids, **kwargs):
+        attempted_ids.append(record.operation_id)
+        earlier = (_required_timestamp(notice.created_at) - timedelta(seconds=1)).isoformat()
+        if changed_input == "notice":
+            store.record_auto_research_lifecycle_notice(
+                notice.model_copy(
+                    update={
+                        "notice_id": "earlier-notice",
+                        "source_id": "earlier-worker",
+                        "created_at": earlier,
+                    }
+                )
+            )
+        else:
+            store.record_auto_research_message(
+                mail.model_copy(
+                    update={
+                        "message_id": "earlier-mail",
+                        "created_at": earlier,
+                    }
+                )
+            )
+        return real_admit(record, watcher_ids, **kwargs)
+
+    monkeypatch.setattr(store, "create_watcher_notification_task", change_prefix)
+    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
+    assert len(attempted_ids) == 1
+    assert store.agent_task(attempted_ids[0]) is None
+    assert store.episode_budget_meter(episode.episode_id) == before
+    assert not store.watcher(watcher.watcher_id).notified
+    assert store.watcher(watcher.watcher_id).notification_operation_id is None
+    assert notice in store.pending_auto_research_lifecycle_notices(episode.episode_id)
+    assert store.auto_research_message(mail.message_id).delivery_operation_id is None
+
+    monkeypatch.setattr(store, "create_watcher_notification_task", real_admit)
+    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="succeeded")
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == []
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == []
+    assert (
+        store.episode_budget_meter(episode.episode_id).invocations_used
+        == before.invocations_used + 1
+    )
 
 
 def test_committed_watcher_wake_reconciles_after_thread_start_failure(
@@ -942,7 +1117,10 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
             source_id="worker-one",
             source_event="succeeded",
             payload={"kind": "work", "status": "succeeded"},
-            created_at=store.now(),
+            created_at=(
+                _required_timestamp(store.now())
+                - timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+            ).isoformat(),
         )
     )
     message = record_auto_research_message(
@@ -1057,7 +1235,10 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
             source_id="worker-one",
             source_event="succeeded",
             payload={"kind": "work", "status": "succeeded"},
-            created_at=store.now(),
+            created_at=(
+                _required_timestamp(store.now())
+                - timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+            ).isoformat(),
         )
     )
     before = store.episode_budget_meter(auto_research.episode_id)
@@ -1104,7 +1285,9 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
     assert executions.count(wake_id) == 1
 
 
-def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(tmp_path) -> None:
+def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
+    tmp_path, monkeypatch
+) -> None:
     store = _store(tmp_path)
     root_stage = tmp_path / "auto_research-stage"
     child_stage = tmp_path / "child-work-stage"
@@ -1196,6 +1379,11 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(tmp_pa
 
     release_child.set()
     wait_for_task(store, child.operation_id, expect="succeeded")
+    after_grace = (
+        _required_timestamp(store.now())
+        + timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+    ).isoformat()
+    monkeypatch.setattr(store, "now", lambda: after_grace)
     wake_ids = reconcile_pending_auto_research_lifecycle(
         tasks,
         episode_id=auto_research.episode_id,
@@ -1261,7 +1449,10 @@ def test_busy_root_leaves_lifecycle_and_mail_unclaimed(tmp_path) -> None:
             source_id="worker-two",
             source_event="succeeded",
             payload={"kind": "work", "status": "succeeded"},
-            created_at=store.now(),
+            created_at=(
+                _required_timestamp(store.now())
+                - timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+            ).isoformat(),
         )
     )
     message = record_auto_research_message(
@@ -1318,7 +1509,10 @@ def test_uncheckpointed_root_leaves_lifecycle_notice_unclaimed(tmp_path) -> None
             source_id="worker-three",
             source_event="succeeded",
             payload={"kind": "work", "status": "succeeded"},
-            created_at=store.now(),
+            created_at=(
+                _required_timestamp(store.now())
+                - timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+            ).isoformat(),
         )
     )
     before = store.episode_budget_meter(auto_research.episode_id)

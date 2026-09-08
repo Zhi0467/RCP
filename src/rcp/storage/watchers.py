@@ -1167,6 +1167,8 @@ class WatcherStoreMixin:
         watcher_ids: list[str],
         *,
         continuation_cause: str = "fresh",
+        lifecycle_notice_ids: list[str] | None = None,
+        message_ids: list[str] | None = None,
     ) -> AgentTaskRecord | None:
         """Queue a wake and mark its completed watchers notified in one transaction.
 
@@ -1174,6 +1176,11 @@ class WatcherStoreMixin:
         watcher row changes, and the completed group can be retried later.
         """
 
+        claims_root_inputs = lifecycle_notice_ids is not None or message_ids is not None
+        if claims_root_inputs and (
+            record.kind != "auto_research" or record.request.get("role") != "orchestrator"
+        ):
+            raise ValueError("only a root Auto-research watcher wake may claim lifecycle and mail")
         ids = list(dict.fromkeys(watcher_ids))
         if not ids or len(ids) != len(watcher_ids):
             raise ValueError("a watcher notification requires unique watcher ids")
@@ -1250,6 +1257,16 @@ class WatcherStoreMixin:
                         role,
                         continuation_cause=continuation_cause,
                     )
+                    # Paid admission above proves the orchestrator is the episode root.
+                    if claims_root_inputs and not self._claim_auto_research_root_inputs(
+                        connection,
+                        episode,
+                        record,
+                        lifecycle_notice_ids=list(lifecycle_notice_ids or []),
+                        message_ids=list(message_ids or []),
+                    ):
+                        connection.rollback()
+                        return None
                 else:
                     self._insert_agent_task(
                         connection,

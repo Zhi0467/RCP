@@ -172,7 +172,9 @@ def _auto_research_commands(command_client: str) -> str:
   `inbox --harvest` to read and acknowledge a bounded batch, or `inbox --clear` to acknowledge the
   current snapshot without bodies. Neither action erases audit history. If Clear refuses because
   the complete snapshot cannot fit its response, it acknowledges nothing: use a new-key Harvest,
-  then retry Clear with another new key.
+  then retry Clear with another new key. Harvest once more immediately before your final `apply`
+  or before ending the turn, because a notice committed after the turn exits can only reach you
+  through a paid wake.
 - A graph condition is one JSON object in one of exactly two shapes:
   - `{{"node_id": "<id>", "status_in": ["<status>", ...]}}` wakes you when that node reaches any
     listed status. Listing several is normal and their order does not matter. Use statuses that

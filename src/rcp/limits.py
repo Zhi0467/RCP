@@ -71,6 +71,8 @@ CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 # stays well inside the reusable stage mailbox's per-file artifact ceiling.
 AUTO_RESEARCH_MAIL_MAX_MESSAGES = 64
 AUTO_RESEARCH_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
+# Let related settlements coalesce and graph-condition wakes claim their notices first.
+AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS = 20.0
 AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES = 50
 AUTO_RESEARCH_LIFECYCLE_MAX_BYTES = 256 * 1024
 # One authorized Auto-research turn may allocate this many child Experiments.

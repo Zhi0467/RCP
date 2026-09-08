@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import WatchGraphArguments
 from rcp.core.models import AuthorizedHuman, GraphState
-from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+from rcp.limits import (
+    AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
+    AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS,
+)
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_work_spawned,
@@ -30,6 +33,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     WatcherContinuation,
 )
+from rcp.storage.models import _required_timestamp
 from rcp.watchers import WatcherBinding, arm_watchers
 
 if TYPE_CHECKING:
@@ -277,6 +281,11 @@ def deliver_pending_auto_research_lifecycle(
         limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     )
     if not notices:
+        return None
+    newest_notice_at = max(_required_timestamp(notice.created_at) for notice in notices)
+    if (
+        _required_timestamp(store.now()) - newest_notice_at
+    ).total_seconds() < AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS:
         return None
     binding = store.auto_research_actor_binding(root_operation_id)
     if (
@@ -639,15 +648,61 @@ def deliver_auto_research_watcher_group(
         }
     )
 
+    store = background.store
+    episode = store.episode(binding.episode_id)
+    if episode is None:
+        raise KeyError(binding.episode_id)
+    is_root = (
+        binding.role == "orchestrator" and binding.actor_operation_id == episode.root_operation_id
+    )
+    notices = (
+        store.pending_auto_research_lifecycle_notices(
+            episode.episode_id, limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+        )
+        if is_root
+        else []
+    )
+    pending_mail = (
+        pending_auto_research_mail(
+            background,
+            episode_id=episode.episode_id,
+            recipient_task_id=binding.actor_operation_id,
+        )
+        if is_root
+        else None
+    )
+
     def admit(record, _role, cause):
         continuation_cause = {
             "watcher": "watcher_wake",
             "graph_condition": "graph_condition_wake",
         }[cause]
-        return background.store.create_watcher_notification_task(
+        notice_ids = None
+        message_ids = None
+        if is_root:
+            selected_notices = _lifecycle_claim_prefix(
+                episode_id=episode.episode_id,
+                recipient_task_id=binding.actor_operation_id,
+                delivery_operation_id=record.operation_id,
+                delivered_at=record.created_at,
+                notices=notices,
+            )
+            assert pending_mail is not None
+            selected_mail = auto_research_mail_claim_prefix(
+                episode_id=episode.episode_id,
+                recipient_task_id=binding.actor_operation_id,
+                delivery_operation_id=record.operation_id,
+                delivered_at=record.created_at,
+                messages=pending_mail.messages,
+            )
+            notice_ids = [notice.notice_id for notice in selected_notices]
+            message_ids = [message.message_id for message in selected_mail]
+        return store.create_watcher_notification_task(
             record,
             watcher_ids,
             continuation_cause=continuation_cause,
+            lifecycle_notice_ids=notice_ids,
+            message_ids=message_ids,
         )
 
     try:
