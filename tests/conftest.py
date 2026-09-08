@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 
 from rcp.config import Manifest, load_manifest
+
+
+@pytest.fixture(autouse=True)
+def fresh_canonical_lock_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test its own shutdown fence.
+
+    An app lifespan teardown sets the process-wide fence; without isolation a
+    later lock wait in the same worker would abort for no reason.
+    """
+
+    monkeypatch.setattr("rcp.transport.state._CANONICAL_LOCK_WAIT_FENCE", threading.Event())
 
 
 @pytest.fixture(autouse=True)

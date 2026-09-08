@@ -89,11 +89,21 @@ function deferredReadiness(generations, projectId) {
 
 const probedCompute = { local: { gpu: { status_label: "Reachable" } } };
 const probedProviders = { local: { codex: { provider: "codex", installed: true } } };
+const probedProfiles = {
+  project_chat: {
+    provider: "codex",
+    model: "",
+    effective_model: "gpt-5.6-sol",
+    reasoning: "medium",
+    run_on: "local",
+  },
+};
 const readinessResponse = {
   compute_status: probedCompute,
   provider_readiness: probedProviders,
   providers: probedProviders.local,
   provider_skill_inventories: {},
+  agent_profiles: probedProfiles,
 };
 
 test("a compute-settings save invalidates an older deferred readiness response", async () => {
@@ -134,10 +144,13 @@ test("a compute-settings save drops the matrix without dropping provider readine
   });
   probe.complete(readinessResponse);
 
+  // The effective profiles travel with the provider slice: a refresh that moves
+  // the catalog head re-exports the model each unnamed profile now resolves to.
   assert.deepEqual(await probe.applied, {
     provider_readiness: probedProviders,
     providers: probedProviders.local,
     provider_skill_inventories: {},
+    agent_profiles: probedProfiles,
   });
 });
 

@@ -20,7 +20,12 @@ from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
-from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
+from rcp.limits import (
+    SSH_SERVER_ALIVE_COUNT_MAX,
+    SSH_SERVER_ALIVE_INTERVAL_SECONDS,
+    STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS,
+    STATE_LOCK_POLL_INTERVAL_SECONDS,
+)
 from rcp.paper import PaperService
 from rcp.setup import ProjectSetupRequest, render_manifest
 from rcp.storage import AppStore
@@ -34,17 +39,21 @@ from rcp.transport import (
     prepare_state_workspace,
     repository_access,
 )
+from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import (
     _REMOTE_PATCH_LOG_HEAD_SCRIPT,
     RunLockCancelled,
     RunLockLease,
     RunLockOwnershipLost,
     _advisory_lock_holder_arguments,
+    _heartbeat_lock_holder,
+    _HolderLines,
     _process_advisory_lock,
     _remote_advisory_lock_command,
+    fence_canonical_lock_waits,
 )
 
-from .helpers import seed_patch
+from .helpers import seed_patch, wait_until
 
 _ARCHIVE_BRANCH_ID = "11111111-1111-4111-8111-111111111111"
 _ARCHIVE_MERGE_ID = "a" * 64
@@ -663,6 +672,65 @@ def test_remote_transaction_waits_past_handshake_timeout_after_contended(
     assert workspace.reachable is True
 
 
+def test_refresh_gives_up_on_a_lock_another_run_keeps(tmp_path, monkeypatch) -> None:
+    """A reader queued behind a holder that never releases must fail, not hang.
+
+    The stuck holder may belong to a connection that died mid-publication; every
+    reader of the project waits on the snapshot lock behind this refresh.
+    """
+
+    stuck_holder = 'import sys\nprint("contended", flush=True)\nfor line in sys.stdin:\n    pass\n'
+    workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+    )
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(
+        "rcp.transport.state._remote_advisory_lock_command",
+        lambda _host, _path: [sys.executable, "-c", stuck_holder],
+    )
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS", 0.3)
+
+    started = time.monotonic()
+    with pytest.raises(StateUnavailable, match="release canonical state"):
+        workspace.refresh_if_stale()
+
+    assert time.monotonic() - started < 5
+    assert workspace.reachable is True
+
+
+def test_ssh_sessions_notice_a_dead_peer() -> None:
+    arguments = ssh_arguments("research.example", "true", strict_host_key_checking=True)
+
+    assert f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}" in arguments
+    assert f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}" in arguments
+    assert SSH_SERVER_ALIVE_INTERVAL_SECONDS * SSH_SERVER_ALIVE_COUNT_MAX <= 90
+
+
+def test_shutdown_fence_aborts_a_contended_lock_wait(tmp_path) -> None:
+    """A request thread queued behind a held lock must unwind when the server stops."""
+
+    path = tmp_path / ".agent-run.lock"
+    arguments = _local_advisory_lock_arguments(path)
+    waiting = threading.Event()
+
+    def contend() -> None:
+        with _process_advisory_lock(arguments, str(path), on_wait=lambda _m: waiting.set()):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as pool, _process_advisory_lock(arguments, str(path)):
+        future = pool.submit(contend)
+        assert waiting.wait(timeout=5)
+        fence_canonical_lock_waits()
+        with pytest.raises(RunLockCancelled, match="cancelled while waiting"):
+            future.result(timeout=5)
+
+    with pytest.raises(RunLockCancelled), _process_advisory_lock(arguments, str(path)):
+        pass
+
+
 def test_process_advisory_lock_uses_one_waiter_during_long_contention(
     tmp_path, monkeypatch
 ) -> None:
@@ -798,12 +866,155 @@ def test_process_advisory_lock_holder_death_releases_ownership(tmp_path) -> None
         pass
 
 
+@pytest.mark.parametrize("partial_line", ["", '{"op":"heartbeat"'])
+def test_holder_without_heartbeats_releases_lock(tmp_path, monkeypatch, partial_line) -> None:
+    path = tmp_path / ".refresh.lock"
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS", 0.3)
+    arguments = _local_advisory_lock_arguments(path)
+    with subprocess.Popen(
+        arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    ) as holder:
+        lines = _HolderLines(holder)
+        assert lines.next_line(5) == "acquired"
+        holder.stdin.write(partial_line)
+        holder.stdin.flush()
+        assert holder.wait(timeout=5) == 3
+        assert lines.next_line(5) == ""
+        assert holder.stderr.read().splitlines() == [
+            "Lock holder released the lock because its client stopped heartbeating."
+        ]
+
+    with _process_advisory_lock(arguments, str(path)) as lease:
+        lease.assert_owned()
+
+
+def test_holder_silent_client_expires_during_a_slow_command(tmp_path) -> None:
+    """The watchdog releases the lock even while a synchronous command is running."""
+
+    path = tmp_path / ".refresh.lock"
+    script = (
+        "import sys, time\n"
+        "import rcp.transport.remote_lock_holder as holder\n"
+        "holder.apply_staged = lambda command, lock_path: time.sleep(30)\n"
+        f"sys.argv = ['holder', {str(path)!r}, '0.3']\n"
+        "holder.main()\n"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as holder:
+        lines = _HolderLines(holder)
+        assert lines.next_line(10) == "acquired"
+        started = time.monotonic()
+        holder.stdin.write('{"op":"apply"}\n')
+        holder.stdin.flush()
+        assert holder.wait(timeout=10) == 3
+        assert time.monotonic() - started < 5
+        assert lines.next_line(5) == ""
+        assert holder.stderr.read().splitlines() == [
+            "Lock holder released the lock because its client stopped heartbeating."
+        ]
+
+    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)) as lease:
+        lease.assert_owned()
+
+
+@pytest.mark.parametrize("ending", ["eof", "timeout", "command"])
+def test_contended_holder_abandons_lock_without_acquiring(tmp_path, monkeypatch, ending) -> None:
+    path = tmp_path / ".refresh.lock"
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS", 0.3)
+    with path.open("w") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with subprocess.Popen(
+            _local_advisory_lock_arguments(path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as holder:
+            lines = _HolderLines(holder)
+            assert lines.next_line(5) == "contended"
+            if ending == "eof":
+                holder.stdin.close()
+            elif ending == "command":
+                holder.stdin.write('{"op":"apply"}\n')
+                holder.stdin.flush()
+            assert holder.wait(timeout=5) == {"eof": 0, "timeout": 3, "command": 1}[ending]
+            if ending == "command":
+                assert lines.next_line(5) == "error"
+                assert "protocol error" in holder.stderr.read()
+            assert lines.next_line(5) == ""
+        fcntl.flock(owner, fcntl.LOCK_UN)
+    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)):
+        pass
+
+
+def test_process_heartbeats_keep_contended_and_acquired_holder_alive(tmp_path, monkeypatch) -> None:
+    root = tmp_path / ".research"
+    stage = root / ".publish" / "empty"
+    stage.mkdir(parents=True)
+    path = root / ".refresh.lock"
+    interval, timeout = 0.05, 0.5
+    monkeypatch.setattr(
+        "rcp.transport.state.STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS", interval
+    )
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS", timeout)
+    waiting = threading.Event()
+    acquired = threading.Event()
+    release = threading.Event()
+    arguments = _local_advisory_lock_arguments(path)
+
+    def contend() -> None:
+        with _process_advisory_lock(arguments, str(path), on_wait=lambda _: waiting.set()) as lease:
+            acquired.set()
+            assert release.wait(timeout=5)
+            lease.assert_owned()
+            # Delay receiving the real response: heartbeat writes must continue
+            # while the command waits, using the same stdin guard only for writes.
+            original_next_line = _HolderLines.next_line
+
+            def delayed_response(lines, wait):
+                started = time.monotonic()
+                wait_until(lambda: time.monotonic() - started >= 2 * timeout)
+                return original_next_line(lines, wait)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(_HolderLines, "next_line", delayed_response)
+                response = lease._run_owned_command(
+                    {"op": "apply", "root": str(root), "stage": str(stage), "paths": []}
+                )
+            assert response == {"ok": True, "commit_status": None}
+            lease.assert_owned()
+            # A distinct second response exposes any heartbeat response left queued.
+            response = lease._run_owned_command({"op": "nonsense"})
+            assert response["ok"] is False
+            assert "unsupported lock-holder command" in response["error"]
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            with _process_advisory_lock(arguments, str(path)):
+                future = pool.submit(contend)
+                assert waiting.wait(timeout=5)
+                started = time.monotonic()
+                wait_until(lambda: time.monotonic() - started >= 2 * timeout)
+                assert not acquired.is_set()
+            assert acquired.wait(timeout=5)
+        finally:
+            release.set()
+        future.result(timeout=5)
+    assert not stage.exists()
+
+
 def test_killed_acquired_holder_marks_lease_lost_once(tmp_path, monkeypatch) -> None:
     path = tmp_path / ".agent-run.lock"
     arguments = _local_advisory_lock_arguments(path)
     real_popen = subprocess.Popen
     holders: list[subprocess.Popen[str]] = []
     lost = threading.Event()
+    heartbeat_stopped = threading.Event()
     messages: list[str] = []
 
     def recording_popen(*args, **kwargs):
@@ -815,7 +1026,15 @@ def test_killed_acquired_holder_marks_lease_lost_once(tmp_path, monkeypatch) -> 
         messages.append(message)
         lost.set()
 
+    def heartbeat_until_channel_closes(*args):
+        _heartbeat_lock_holder(*args)
+        heartbeat_stopped.set()
+
     monkeypatch.setattr(subprocess, "Popen", recording_popen)
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(
+        "rcp.transport.state._heartbeat_lock_holder", heartbeat_until_channel_closes
+    )
 
     with (
         pytest.raises(RunLockOwnershipLost, match="exited unexpectedly"),
@@ -823,6 +1042,7 @@ def test_killed_acquired_holder_marks_lease_lost_once(tmp_path, monkeypatch) -> 
     ):
         holders[-1].kill()
         assert lost.wait(timeout=5)
+        assert heartbeat_stopped.wait(timeout=5)
         with pytest.raises(RunLockOwnershipLost, match="exited unexpectedly"):
             lease.assert_owned()
         lease.assert_owned()
@@ -947,7 +1167,7 @@ def test_remote_advisory_lock_command_quotes_the_exact_path() -> None:
     assert arguments[-2] == "research.example"
     remote_arguments = shlex.split(arguments[-1])
     assert remote_arguments[0:2] == ["python3", "-c"]
-    assert remote_arguments[-1] == lock_path
+    assert remote_arguments[-2:] == [lock_path, str(STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS)]
 
 
 def test_remote_archive_renames_canonical_tree_then_clears_only_stale_mirror(

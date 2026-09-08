@@ -287,6 +287,18 @@ def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, mo
             release.set()
 
 
+def test_lifespan_shutdown_fences_canonical_lock_waits(manifest, tmp_path) -> None:
+    """Teardown aborts lock waits so a blocked request cannot outlive the takeover window."""
+
+    import rcp.transport.state as state_module
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with TestClient(app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert state_module._CANONICAL_LOCK_WAIT_FENCE.is_set() is False
+    assert state_module._CANONICAL_LOCK_WAIT_FENCE.is_set() is True
+
+
 def test_startup_marks_all_skill_targets_then_refreshes_each_once(
     manifest, tmp_path, monkeypatch
 ) -> None:

@@ -9,6 +9,7 @@ from rcp.transport.state import (
     SSHStateWorkspace,
     StateUnavailable,
     StateWorkspace,
+    fence_canonical_lock_waits,
     prepare_state_workspace,
 )
 from rcp.transport.workspace_mailbox import (
@@ -21,6 +22,7 @@ __all__ = [
     "BatchPublishFailed",
     "LocalStateWorkspace",
     "RunLockCancelled",
+    "fence_canonical_lock_waits",
     "RunLockLease",
     "RunLockOwnershipLost",
     "SSHStateWorkspace",

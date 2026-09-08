@@ -71,6 +71,9 @@ CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 # stays well inside the reusable stage mailbox's per-file artifact ceiling.
 AUTO_RESEARCH_MAIL_MAX_MESSAGES = 64
 AUTO_RESEARCH_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
+# Let settlements that land together coalesce and let a graph-condition wake fired by the
+# same settlement claim the notices first; every lifecycle wake waits at most this long.
+AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS = 5.0
 AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES = 50
 AUTO_RESEARCH_LIFECYCLE_MAX_BYTES = 256 * 1024
 # One authorized Auto-research turn may allocate this many child Experiments.
@@ -178,13 +181,30 @@ PROJECT_TRANSFER_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
 PROJECT_TRANSFER_COPY_BUFFER_BYTES = 1024 * 1024
 PROJECT_TRANSFER_STABLE_READ_ATTEMPTS = 3
 
+# SSH clients notice a dead peer within about a minute after a network change.
+SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
+SSH_SERVER_ALIVE_COUNT_MAX = 4
+
 # Canonical-state advisory lock acquisition and holder lifecycle.
 STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
+# A read-side snapshot refresh gives up on a lock another run holds instead of
+# blocking every reader of the project behind one stuck writer.
+STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS = 20.0
 STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS = 5.0
 STATE_LOCK_POLL_INTERVAL_SECONDS = 0.2
+# Holder-enforced liveness tolerates command round trips and missed heartbeats.
+STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS = 10.0
+STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 
 # Server and frontend-build lifecycle timings.
-SERVER_SHUTDOWN_TIMEOUT_SECONDS = 45.0
+# Replacement outwaits request grace, both watcher joins, and background shutdown.
+SERVER_SHUTDOWN_TIMEOUT_SECONDS = 60.0
+# Request grace leaves room for lifespan teardown within the replacement window.
+SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 10
+# After uvicorn returns, request threads still in a bounded remote call get this
+# long; then the process ends while it still holds its instance lock.
+SERVER_THREAD_DRAIN_TIMEOUT_SECONDS = 5.0
+BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS = 7.0
 SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS = 0.0
 SERVER_LOCK_OWNER_READ_ATTEMPTS = 10
 SERVER_LOCK_POLL_INTERVAL_SECONDS = 0.05

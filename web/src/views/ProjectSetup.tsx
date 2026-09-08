@@ -630,6 +630,7 @@ function PersonalProjectSetup({
                               )
                             }
                           >
+                            {!profile.model && <option value="" disabled />}
                             {modelOptions(models, profile.model).map((option) => (
                               <option key={option.id} value={option.id}>
                                 {option.label}

@@ -39,8 +39,11 @@ from rcp.limits import (
     REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
+    STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS,
+    STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS,
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
+    STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.backup_models import (
     BACKUP_RESEARCH_CANONICAL_ROOTS,
@@ -56,6 +59,24 @@ from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
+# Set once when the server shuts down. Every canonical-lock wait polls it, so a
+# request thread blocked behind a contended lock unwinds instead of keeping the
+# old process alive past the replacement window.
+_CANONICAL_LOCK_WAIT_FENCE = threading.Event()
+
+
+def fence_canonical_lock_waits() -> None:
+    """Abort every pending canonical-lock wait; the server calls this at shutdown."""
+
+    _CANONICAL_LOCK_WAIT_FENCE.set()
+
+
+def _fenced(cancelled: Callable[[], bool] | None) -> Callable[[], bool]:
+    if cancelled is None:
+        return lambda: _CANONICAL_LOCK_WAIT_FENCE.is_set()
+    return lambda: _CANONICAL_LOCK_WAIT_FENCE.is_set() or cancelled()
+
+
 _SNAPSHOT_LOCKS: dict[str, threading.RLock] = {}
 
 _LOCK_ACQUIRED = "acquired"
@@ -99,7 +120,10 @@ def _remote_lock_holder_script() -> str:
     helper = (
         importlib.resources.files("rcp").joinpath("artifact_replace.py").read_text(encoding="utf-8")
     )
-    return f"{helper}\n{_remote_script('remote_lock_holder.py')}"
+    return (
+        f"{helper}\nSTATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}\n"
+        f"{_remote_script('remote_lock_holder.py')}"
+    )
 
 
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
@@ -1362,11 +1386,12 @@ class StateWorkspace:
         on_lost: Callable[[str], None] | None = None,
     ) -> Iterator[RunLockLease]:
         self.root.mkdir(parents=True, exist_ok=True)
+        cancelled = _fenced(cancelled)
         path = self.root / ".agent-run.lock"
         with path.open("a+", encoding="utf-8") as handle:
             waiting_reported = False
             while True:
-                if cancelled is not None and cancelled():
+                if cancelled():
                     raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1378,7 +1403,7 @@ class StateWorkspace:
                     time.sleep(STATE_LOCK_POLL_INTERVAL_SECONDS)
             lease = RunLockLease(str(path), on_lost=on_lost)
             try:
-                if cancelled is not None and cancelled():
+                if cancelled():
                     raise RunLockCancelled("Run-lock acquisition was cancelled after acquiring.")
                 yield lease
             finally:
@@ -1470,6 +1495,7 @@ def _advisory_lock_holder_arguments(
         "-c",
         _remote_lock_holder_script(),
         os.fspath(lock_path),
+        str(STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS),
     ]
 
 
@@ -1480,7 +1506,9 @@ def _remote_advisory_lock_command(host: str, lock_path: str | os.PathLike[str]) 
 
 def _stop_lock_holder(process: subprocess.Popen[str]) -> None:
     if process.stdin is not None and not process.stdin.closed:
-        process.stdin.close()
+        # A failed heartbeat flush can leave buffered bytes on a dead channel.
+        with suppress(BrokenPipeError, OSError, ValueError):
+            process.stdin.close()
     try:
         process.wait(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
         return
@@ -1638,7 +1666,6 @@ def _wait_for_lock_holder(
             continue
         if status == _LOCK_ACQUIRED:
             return
-        _stop_lock_holder(process)
         if status == _LOCK_LEGACY_DIRECTORY:
             raise _LegacyLockDirectory(
                 f"Canonical-state lock {location} is a legacy directory RCP could not reclaim. "
@@ -1689,6 +1716,7 @@ def _send_lock_holder_command(
     lines: _HolderLines,
     lease: RunLockLease,
     command: dict[str, object],
+    write_guard: threading.Lock,
 ) -> dict[str, object]:
     if process.stdin is None or process.stdout is None:
         _raise_holder_command_lost(
@@ -1697,8 +1725,9 @@ def _send_lock_holder_command(
             f"Canonical-state lock holder channel for {lease.location} is unavailable.",
         )
     try:
-        process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
-        process.stdin.flush()
+        with write_guard:
+            process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
+            process.stdin.flush()
     except (BrokenPipeError, OSError, ValueError) as exc:
         _raise_holder_command_lost(
             process,
@@ -1742,6 +1771,22 @@ def _send_lock_holder_command(
         return response
 
 
+def _heartbeat_lock_holder(
+    process: subprocess.Popen[str],
+    write_guard: threading.Lock,
+    stopped: threading.Event,
+) -> None:
+    while not stopped.wait(STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            with write_guard:
+                if stopped.is_set() or process.stdin is None:
+                    return
+                process.stdin.write('{"op":"heartbeat"}\n')
+                process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            return
+
+
 @contextmanager
 def _process_advisory_lock(
     process_arguments: list[str],
@@ -1751,7 +1796,8 @@ def _process_advisory_lock(
     cancelled: Callable[[], bool] | None = None,
     on_lost: Callable[[str], None] | None = None,
 ) -> Iterator[RunLockLease]:
-    if cancelled is not None and cancelled():
+    cancelled = _fenced(cancelled)
+    if cancelled():
         raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
     try:
         holder = subprocess.Popen(  # noqa: S603 - argv is constructed without a shell.
@@ -1766,50 +1812,64 @@ def _process_advisory_lock(
         raise StateUnavailable(
             f"Could not start canonical-state lock holder for {location}: {exc}"
         ) from exc
-    if holder.stdout is None:
-        _terminate_lock_holder(holder)
-        raise StateUnavailable(f"Lock holder for {location} did not expose an ownership signal.")
-    lines = _HolderLines(holder)
-    stderr = _HolderStderr(holder)
-    try:
-        _wait_for_lock_holder(
-            holder,
-            lines,
-            stderr,
-            location,
-            on_wait=on_wait,
-            cancelled=cancelled,
-        )
-    except BaseException:
-        _terminate_lock_holder(holder)
-        raise
-    if cancelled is not None and cancelled():
-        _raise_lock_cancelled(holder, acquired=True)
-    lease: RunLockLease
-
-    def owned_command(command: dict[str, object]) -> dict[str, object]:
-        return _send_lock_holder_command(holder, lines, lease, command)
-
-    lease = RunLockLease(
-        location,
-        on_lost=on_lost,
-        owned=lambda: holder.poll() is None,
-        command=owned_command,
-    )
-    supervisor_stop = threading.Event()
-    supervisor = threading.Thread(
-        target=_supervise_lock_holder,
-        args=(holder, lease, supervisor_stop),
+    write_guard = threading.Lock()
+    heartbeat_stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_lock_holder,
+        args=(holder, write_guard, heartbeat_stop),
         daemon=True,
     )
-    supervisor.start()
+    heartbeat.start()
     try:
-        yield lease
+        if holder.stdout is None:
+            _terminate_lock_holder(holder)
+            raise StateUnavailable(
+                f"Lock holder for {location} did not expose an ownership signal."
+            )
+        lines = _HolderLines(holder)
+        stderr = _HolderStderr(holder)
+        try:
+            _wait_for_lock_holder(
+                holder,
+                lines,
+                stderr,
+                location,
+                on_wait=on_wait,
+                cancelled=cancelled,
+            )
+        except BaseException:
+            _terminate_lock_holder(holder)
+            raise
+        if cancelled is not None and cancelled():
+            _raise_lock_cancelled(holder, acquired=True)
+        lease: RunLockLease
+
+        def owned_command(command: dict[str, object]) -> dict[str, object]:
+            return _send_lock_holder_command(holder, lines, lease, command, write_guard)
+
+        lease = RunLockLease(
+            location,
+            on_lost=on_lost,
+            owned=lambda: holder.poll() is None,
+            command=owned_command,
+        )
+        supervisor_stop = threading.Event()
+        supervisor = threading.Thread(
+            target=_supervise_lock_holder,
+            args=(holder, lease, supervisor_stop),
+            daemon=True,
+        )
+        supervisor.start()
+        try:
+            yield lease
+        finally:
+            lease._begin_release()
+            supervisor_stop.set()
+            supervisor.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
     finally:
-        lease._begin_release()
-        supervisor_stop.set()
+        heartbeat_stop.set()
+        heartbeat.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
         _stop_lock_holder(holder)
-        supervisor.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
 
 
 class SSHStateWorkspace(StateWorkspace):
@@ -1836,11 +1896,24 @@ class SSHStateWorkspace(StateWorkspace):
             refreshed = self._sync_remote_tree()
             self._publication_lease.assert_owned()
             return refreshed
-        with self._remote_advisory_lock(self.lock_dir) as lease:
-            lease.assert_owned()
-            refreshed = self._sync_remote_tree()
-            lease.assert_owned()
-            return refreshed
+        # A reader must not wait indefinitely behind a writer: the holder it is
+        # queued behind may belong to a connection that died mid-publication.
+        deadline = time.monotonic() + STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS
+        try:
+            with self._remote_advisory_lock(
+                self.lock_dir,
+                cancelled=lambda: time.monotonic() >= deadline,
+            ) as lease:
+                lease.assert_owned()
+                refreshed = self._sync_remote_tree()
+                lease.assert_owned()
+                return refreshed
+        except RunLockCancelled as exc:
+            raise StateUnavailable(
+                f"Timed out after {STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS:g} seconds waiting "
+                "for another graph-writing run to release canonical state at "
+                f"{self.host}:{self.lock_dir}."
+            ) from exc
 
     def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
         """Archive remote canonical state, then discard only its stale local mirror."""

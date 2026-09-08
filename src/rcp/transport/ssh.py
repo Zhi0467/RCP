@@ -6,6 +6,7 @@ import stat
 from contextlib import suppress
 from pathlib import Path
 
+from rcp.limits import SSH_SERVER_ALIVE_COUNT_MAX, SSH_SERVER_ALIVE_INTERVAL_SECONDS
 from rcp.ssh_validation import validate_ssh_destination
 
 # Options that do not require local filesystem preparation. A few strict
@@ -15,6 +16,10 @@ SSH_OPTIONS = [
     "BatchMode=yes",
     "-o",
     "ConnectTimeout=10",
+    "-o",
+    f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}",
+    "-o",
+    f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}",
 ]
 
 

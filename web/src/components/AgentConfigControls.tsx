@@ -41,6 +41,12 @@ interface Props {
     locked?: boolean;
     onChange?: (value: string) => void;
   };
+  /**
+   * The model the backend runs when `value.model` is empty, as the project
+   * projection exports it for this surface. Shown selected, never written into
+   * `value`: an unnamed profile stays unnamed and keeps following the catalog.
+   */
+  effectiveModel?: string;
   children?: ReactNode;
 }
 
@@ -74,6 +80,7 @@ export function AgentConfigControls({
   readinessPending = false,
   readinessError = null,
   runtime,
+  effectiveModel = "",
   children,
 }: Props) {
   const [expanded, setExpanded] = useState(!defaultCollapsed);
@@ -90,8 +97,11 @@ export function AgentConfigControls({
   // accept, and which reasoning efforts each of those models accepts.
   const models = readiness?.models ?? [];
   const providers = providerOptions(Object.values(onMachine), value.provider);
-  const modelChoices = modelOptions(models, value.model);
-  const reasoningChoices = reasoningOptions(models, value.model, value.reasoning);
+  // What the select shows is what runs: the chosen model, else the backend's
+  // exported effective model. An empty value with no known head shows blank.
+  const shownModel = value.model || effectiveModel;
+  const modelChoices = modelOptions(models, shownModel);
+  const reasoningChoices = reasoningOptions(models, shownModel, value.reasoning);
   const runtimeChoices = runtimeOptions(readiness, runtime?.value ?? "");
 
   const contents = (
@@ -141,10 +151,11 @@ export function AgentConfigControls({
         <label>
           <span>Model</span>
           <select
-            value={value.model}
+            value={shownModel}
             disabled={locked}
             onChange={(event) => update(modelChange(models, event.target.value, value.reasoning))}
           >
+            {!shownModel && <option value="" disabled />}
             {modelChoices.map(({ id, label }) => (
               <option value={id} key={id}>
                 {label}

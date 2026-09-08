@@ -1453,6 +1453,181 @@ def test_lifecycle_wake_spends_once_and_atomically_claims_notice_and_root_mail(
     assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == [late]
 
 
+@pytest.mark.parametrize(
+    "invalid_input",
+    ["missing", "delivered_notice", "delivered_mail", "foreign_notice", "foreign_mail"],
+)
+def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_input) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice",
+            episode_id=parent.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="succeeded",
+            payload={},
+            created_at=store.now(),
+        )
+    )
+    mail = store.record_auto_research_message(
+        AutoResearchMessageRecord(
+            message_id="mail",
+            episode_id=parent.episode_id,
+            sender_role="human",
+            authorized_by=parent.authorized_by,
+            recipient_task_id=root.operation_id,
+            body="Inspect the result.",
+            created_at=store.now(),
+        )
+    )
+    notice_ids = [notice.notice_id]
+    message_ids = [mail.message_id]
+    if invalid_input == "missing":
+        notice_ids = ["missing-notice"]
+    elif invalid_input == "delivered_notice":
+        store.claim_auto_research_lifecycle_notices(parent.episode_id, root.operation_id)
+    elif invalid_input == "delivered_mail":
+        admitted = store.create_auto_research_lifecycle_wake_task(
+            _orchestrator_wake(store, parent, root),
+            lifecycle_notice_ids=notice_ids,
+            message_ids=message_ids,
+        )
+        store.complete_agent_task(admitted.operation_id, applied_revision=None, result={})
+        root = admitted
+        notice = store.record_auto_research_lifecycle_notice(
+            notice.model_copy(
+                update={
+                    "notice_id": "new-notice",
+                    "source_id": "new-worker",
+                    "created_at": store.now(),
+                }
+            )
+        )
+        notice_ids = [notice.notice_id]
+    else:
+        # A second project's live episode supplies real foreign records.
+        other_project = store.project("project").model_copy(
+            update={
+                "project_id": "other-project",
+                "locator": str(tmp_path / "other" / "research.yaml"),
+                "state_location": str(tmp_path / "other" / ".research"),
+            }
+        )
+        store.upsert_project(other_project)
+        now = store.now()
+        other_episode = parent.model_copy(
+            update={
+                "episode_id": "other-episode",
+                "project_id": "other-project",
+                "root_operation_id": None,
+                "status": "queued",
+                "invocations_used": 0,
+                "graph_target": GraphTargetRef(kind="branch", branch_id="other-episode"),
+            }
+        )
+        other_root = root.model_copy(
+            update={
+                "operation_id": "other-root",
+                "dispatch_authority": root.dispatch_authority.model_copy(
+                    update={
+                        "scope": root.dispatch_authority.scope.model_copy(
+                            update={"episode_id": "other-episode"}
+                        ),
+                    }
+                ),
+                "episode_id": "other-episode",
+                "project_id": "other-project",
+                "graph_target": other_episode.graph_target,
+                "status": "queued",
+                "finished_at": None,
+                "request": {
+                    **root.request,
+                    "episode_id": "other-episode",
+                    "actor_operation_id": "other-root",
+                },
+            }
+        )
+        store.create_auto_research_episode_with_root_task(
+            other_episode,
+            AutoResearchStateRecord(episode_id="other-episode", created_at=now, updated_at=now),
+            other_root,
+        )
+        if invalid_input == "foreign_notice":
+            foreign = store.record_auto_research_lifecycle_notice(
+                notice.model_copy(
+                    update={
+                        "notice_id": "foreign-notice",
+                        "episode_id": "other-episode",
+                    }
+                )
+            )
+            notice_ids = [foreign.notice_id]
+        else:
+            foreign = store.record_auto_research_message(
+                mail.model_copy(
+                    update={
+                        "message_id": "foreign-mail",
+                        "episode_id": "other-episode",
+                        "recipient_task_id": "other-root",
+                    }
+                )
+            )
+            message_ids = [foreign.message_id]
+    before = store.episode_budget_meter(parent.episode_id)
+    notices_before = store.auto_research_lifecycle_notices(parent.episode_id)
+    messages_before = store.auto_research_messages(parent.episode_id)
+    wake = _orchestrator_wake(store, parent, root)
+
+    if invalid_input in {"delivered_notice", "delivered_mail"}:
+        # A lost race is not a caller bug: the wake is refused and a later pass re-reads.
+        assert (
+            store.create_auto_research_lifecycle_wake_task(
+                wake,
+                lifecycle_notice_ids=notice_ids,
+                message_ids=message_ids,
+            )
+            is None
+        )
+    else:
+        with pytest.raises(ValueError, match="missing|crosses an episode"):
+            store.create_auto_research_lifecycle_wake_task(
+                wake,
+                lifecycle_notice_ids=notice_ids,
+                message_ids=message_ids,
+            )
+
+    assert store.agent_task(wake.operation_id) is None
+    assert store.episode_budget_meter(parent.episode_id) == before
+    assert store.auto_research_lifecycle_notices(parent.episode_id) == notices_before
+    assert store.auto_research_messages(parent.episode_id) == messages_before
+
+
+@pytest.mark.parametrize("kind, role", [("node_chat", None), ("auto_research", "worker")])
+@pytest.mark.parametrize("claim_argument", ["lifecycle_notice_ids", "message_ids"])
+def test_non_root_watcher_wake_refuses_even_empty_root_claims(
+    tmp_path, kind, role, claim_argument
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store)
+    record = root.model_copy(
+        update={
+            "kind": kind,
+            "request": {**root.request, "role": role},
+        }
+    )
+    before = store.episode_budget_meter(parent.episode_id)
+
+    with pytest.raises(ValueError, match="only a root Auto-research watcher wake"):
+        store.create_watcher_notification_task(record, [], **{claim_argument: []})
+
+    assert store.episode_budget_meter(parent.episode_id) == before
+
+
 def test_lifecycle_wake_busy_or_exhausted_rolls_back_notice_claim(tmp_path) -> None:
     busy_store = AppStore(tmp_path / "busy.sqlite3")
     _project(busy_store)

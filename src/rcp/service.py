@@ -101,6 +101,7 @@ from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
+    ModelChoice,
     ProviderId,
     ProviderSkillReference,
     configured_runtime,
@@ -1474,10 +1475,7 @@ class ProjectService:
         attention = project_graph_attention(state)
         counts = project_counts(state, attention)
         refresh_profile = self.manifest.agent_profile("refresh")
-        profiles = {
-            surface: self.manifest.agent_profile(surface).model_dump(mode="json")
-            for surface in _SETTINGS_SURFACES
-        }
+        profiles = self.effective_profiles(self.manifest, self.launcher)
         return _ProjectSnapshotDraft(
             {
                 "name": self.manifest.name,
@@ -1530,6 +1528,7 @@ class ProjectService:
 
     def readiness_snapshot(self, *, refresh: bool = False) -> dict[str, object]:
         snapshot = self.readiness_for(self.manifest, self.launcher, refresh=refresh)
+        snapshot["agent_profiles"] = self.effective_profiles(self.manifest, self.launcher)
         self.wait_for_provider_skill_inventories()
         snapshot["provider_skill_inventories"] = self.provider_skill_inventory_snapshot()
         return snapshot
@@ -2492,7 +2491,68 @@ class ProjectService:
                     f"{state_machine!r}"
                 )
             updates["run_on"] = run_on
-        return base.model_copy(update=updates)
+        return self._with_catalog_head(
+            self.manifest, self.launcher, base.model_copy(update=updates)
+        )
+
+    @classmethod
+    def effective_profiles(
+        cls,
+        manifest: Manifest,
+        launcher: AgentLauncher,
+    ) -> dict[AgentExecutionProfile, dict[str, object]]:
+        """Every settings profile with the model it would run, for both projections.
+
+        `model` stays the manifest value, so an unnamed profile is saved back
+        unnamed and keeps following the catalog. `effective_model` is what runs:
+        the catalog head once that provider's readiness is cached, else the
+        manifest value. A readiness refresh re-exports these with the refreshed
+        catalog, so no surface derives the head itself.
+        """
+        profiles: dict[AgentExecutionProfile, dict[str, object]] = {}
+        for surface in _SETTINGS_SURFACES:
+            saved = manifest.agent_profile(surface)
+            exported = saved.model_dump(mode="json")
+            exported["effective_model"] = cls._with_catalog_head(manifest, launcher, saved).model
+            profiles[surface] = exported
+        return profiles
+
+    @staticmethod
+    def _with_catalog_head(
+        manifest: Manifest,
+        launcher: AgentLauncher,
+        profile: AgentSurfaceConfig,
+    ) -> AgentSurfaceConfig:
+        """Fill an unnamed model with the first model the provider CLI vendors on that machine.
+
+        There is no "provider default" choice: a profile or request that names no
+        model runs the head of the catalog the readiness probe already collected.
+        Only an already-cached probe is consulted, so admission never launches a
+        CLI; an unknown catalog leaves the model empty and the CLI picks its own.
+        """
+        if profile.model:
+            return profile
+        machine = manifest.machine_map.get(profile.run_on)
+        if machine is None:
+            return profile
+        readiness = launcher.cached_readiness(
+            profile.provider,
+            host=machine.host,
+            binary=machine.provider_paths.get(profile.provider),
+        )
+        if readiness is None or not readiness.models:
+            return profile
+        head: ModelChoice = readiness.models[0]
+        filled: dict[str, object] = {"model": head.id}
+        # The effort was chosen without a model; keep it only if the head accepts it,
+        # and trust the catalog's default only when the head's own list contains it.
+        if head.reasoning and profile.reasoning not in head.reasoning:
+            filled["reasoning"] = (
+                head.default_reasoning
+                if head.default_reasoning in head.reasoning
+                else head.reasoning[0]
+            )
+        return profile.model_copy(update=filled)
 
     def assemble_run(
         self,

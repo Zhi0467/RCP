@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from rcp.agents.launcher import ProviderReadiness
 from rcp.config import AgentSurfaceConfig, Manifest
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
+from rcp.providers import ModelChoice
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
@@ -91,7 +93,77 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
         model="claude-opus-4-1",
     )
 
+    # No readiness probe has run, so the catalog is unknown and the model stays empty.
     assert provider_default.provider == "claude"
     assert provider_default.model == ""
     assert explicit.provider == "claude"
     assert explicit.model == "claude-opus-4-1"
+
+
+def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) -> None:
+    history = HistoryManager(manifest)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    paper = PaperService(manifest, store, history.workspace, project_id="project")
+    service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
+    machine = manifest.machine_map[manifest.agent_profile("project_chat").run_on]
+    probed: list[tuple[str, str, str | None]] = []
+
+    def cached_readiness(provider: str, *, host: str = "", binary: str | None = None):
+        probed.append((provider, host, binary))
+        if provider != "codex":
+            return None
+        return ProviderReadiness(
+            provider="codex",
+            installed=True,
+            authenticated=True,
+            models=[
+                ModelChoice(
+                    id="gpt-5.6-sol",
+                    label="GPT-5.6-Sol",
+                    reasoning=["low", "high"],
+                    # A catalog default the head itself does not list must not be used.
+                    default_reasoning="medium",
+                ),
+                ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "medium", "high"]),
+            ],
+        )
+
+    service.launcher.cached_readiness = cached_readiness  # type: ignore[method-assign]
+
+    resolved = service.resolve_agent_profile("project_chat", provider="codex", model="")
+    kept_effort = service.resolve_agent_profile(
+        "project_chat", provider="codex", model="", reasoning="low"
+    )
+    explicit = service.resolve_agent_profile(
+        "project_chat", provider="codex", model="gpt-5.5", reasoning="medium"
+    )
+    unknown_catalog = service.resolve_agent_profile("project_chat", provider="claude", model="")
+
+    assert resolved.model == "gpt-5.6-sol"
+    # The profile's `medium` was chosen with no model; the head rejects it and its
+    # advertised default is not in its own list, so the first accepted effort is used.
+    assert resolved.reasoning == "low"
+    assert kept_effort.model == "gpt-5.6-sol"
+    assert kept_effort.reasoning == "low"
+    assert explicit.model == "gpt-5.5"
+    assert explicit.reasoning == "medium"
+    assert unknown_catalog.model == ""
+
+    # Both projections export the manifest model unchanged beside the model that
+    # runs, so an unnamed profile is never pinned by a display and a readiness
+    # refresh re-exports the current head.
+    effective = ProjectService.effective_profiles(manifest, service.launcher)
+    assert effective["project_chat"]["model"] == ""
+    assert effective["project_chat"]["effective_model"] == "gpt-5.6-sol"
+    assert effective["project_chat"]["reasoning"] == "medium"
+    assert effective["seed"]["effective_model"] == "gpt-5.6-sol"
+    assert set(effective) == {
+        "seed",
+        "refresh",
+        "node_chat",
+        "project_chat",
+        "paper_coach",
+        "orchestrator",
+    }
+    # Only the already-cached probe for that machine's exact executable is read.
+    assert probed[0] == ("codex", machine.host, machine.provider_paths.get("codex"))

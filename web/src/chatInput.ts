@@ -111,6 +111,27 @@ export function chatAnnotationTextControlSelection(
   return control.value.slice(start, end).trim();
 }
 
+/**
+ * The selected range clamped to the annotatable answer where the selection began,
+ * or null when the selection did not begin inside an answer under `root`. A sweep
+ * that lifts past the answer's edge into neighbouring controls keeps the answer text.
+ */
+export function annotatableAnswerSelectionRange(
+  selection: Selection | null,
+  root: Element | null,
+): Range | null {
+  if (!root || !selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+  const anchor = selection.anchorNode;
+  if (!anchor) return null;
+  const origin = anchor instanceof Element ? anchor : anchor.parentElement;
+  const answer = origin?.closest<HTMLElement>(".chat-annotatable-answer") ?? null;
+  if (!answer || !root.contains(answer)) return null;
+  const range = selection.getRangeAt(0).cloneRange();
+  if (!answer.contains(range.startContainer)) range.setStart(answer, 0);
+  if (!answer.contains(range.endContainer)) range.setEnd(answer, answer.childNodes.length);
+  return range.collapsed ? null : range;
+}
+
 export function chatAnnotationViewportMetrics(
   layoutViewport: { width: number; height: number },
   visualViewport?: {

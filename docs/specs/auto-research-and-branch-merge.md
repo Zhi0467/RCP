@@ -142,7 +142,8 @@ work already changed a repository.
 ## Mail and lifecycle notices
 
 Agent mail is star topology: the orchestrator may address workers it spawned,
-and those workers may reply. The human messages the orchestrator, not a child.
+and those workers may reply. The orchestrator addresses a spawned worker by its
+stable child worker id. The human messages the orchestrator, not a child.
 Mail is Markdown hearsay and carries no graph authority; `patch.json` remains the
 only graph channel.
 
@@ -156,10 +157,12 @@ addresses only an ordinary human-triggered Discuss or Work turn. It does not
 address episode workers or give agents a live messaging channel.
 
 Sleeping-actor delivery claims a bounded notice batch atomically with one B
-allocation. A running orchestrator may harvest or clear its inbox without a
-separate wake. Budget exhaustion retains notices but cannot create an
-unauthorized turn. Clear refuses before acknowledgment if even its compact full
-response exceeds the bound.
+allocation. A graph-condition wake of the root orchestrator also claims pending
+lifecycle notices and root-addressed mail within the delivery bounds. Lifecycle
+wakes wait a short grace window so notices arriving together share one allocation.
+A running orchestrator may harvest or clear its inbox without a separate wake.
+Budget exhaustion retains notices but cannot create an unauthorized turn. Clear
+refuses before acknowledgment if even its compact full response exceeds the bound.
 
 A completed child watcher group wakes the same child route and native session,
 never the root. Watchers retain the episode id and route worker id. One atomic

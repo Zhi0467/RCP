@@ -919,26 +919,42 @@ def _auto_research_message_matches(
         return False
     try:
         sender = store.auto_research_actor_binding(context.task.operation_id)
-        recipient = store.auto_research_actor_binding(recipient_task_id)
     except KeyError:
         return False
+    # Routed child Work has no actor binding; its stable id is the route's worker id.
+    route = store.auto_research_child_work(recipient_task_id)
+    if (
+        route is not None
+        and route.episode_id == context.episode.episode_id
+        and route.worker_id == recipient_task_id
+    ):
+        recipient_role = "worker"
+    else:
+        try:
+            recipient = store.auto_research_actor_binding(recipient_task_id)
+        except KeyError:
+            return False
+        if (
+            recipient.episode_id != context.episode.episode_id
+            or recipient.actor_operation_id != recipient_task_id
+        ):
+            return False
+        recipient_role = recipient.role
     expected_actor_id = context.request.actor_operation_id or context.task.operation_id
     if (
         sender.episode_id != context.episode.episode_id
         or sender.actor_operation_id != expected_actor_id
         or sender.role != context.request.role
         or store.auto_research_invocation_role(context.task.operation_id) != sender.role
-        or recipient.episode_id != context.episode.episode_id
-        or recipient.actor_operation_id != recipient_task_id
     ):
         return False
     if sender.role == "worker":
         if (
-            recipient.role != "orchestrator"
+            recipient_role != "orchestrator"
             or recipient_task_id != context.episode.root_operation_id
         ):
             return False
-    elif recipient.role != "worker":
+    elif recipient_role != "worker":
         return False
     return (
         saved.episode_id == context.episode.episode_id

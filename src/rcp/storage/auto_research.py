@@ -426,112 +426,19 @@ class AutoResearchStoreMixin:
         *,
         lifecycle_notice_ids: list[str],
         message_ids: list[str] | None = None,
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
     ) -> AgentTaskRecord | None:
         """Spend one root allocation and bind one exact lifecycle/mail prefix to it."""
 
         if record.episode_id is None:
             raise ValueError("an Auto-research lifecycle wake must carry its episode id")
-        if (
-            not lifecycle_notice_ids
-            or len(lifecycle_notice_ids) != len(set(lifecycle_notice_ids))
-            or len(lifecycle_notice_ids) > AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
-        ):
-            raise ValueError(
-                "an Auto-research lifecycle wake needs at most "
-                f"{AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES} unique notices"
-            )
-        coalesced_message_ids = list(message_ids or [])
-        if len(coalesced_message_ids) != len(set(coalesced_message_ids)):
-            raise ValueError("an Auto-research lifecycle wake requires unique mail ids")
-        if len(coalesced_message_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
-            raise ValueError(
-                "an Auto-research lifecycle wake may claim at most "
-                f"{AUTO_RESEARCH_MAIL_MAX_MESSAGES} messages"
-            )
-        notice_placeholders = ",".join("?" for _ in lifecycle_notice_ids)
-        message_placeholders = ",".join("?" for _ in coalesced_message_ids)
+        if not lifecycle_notice_ids:
+            raise ValueError("an Auto-research lifecycle wake requires a non-empty notice prefix")
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 episode = self._load_auto_research_episode(connection, record.episode_id)
-                if episode.root_operation_id is None:
-                    raise ValueError("the Auto-research lifecycle wake has no root recipient")
-                notices = connection.execute(
-                    f"""
-                    SELECT notice_id, episode_id, delivered_at, delivery_operation_id,
-                           acknowledged_at
-                    FROM auto_research_lifecycle_notices
-                    WHERE notice_id IN ({notice_placeholders})
-                    """,
-                    lifecycle_notice_ids,
-                ).fetchall()
-                if {str(item["notice_id"]) for item in notices} != set(lifecycle_notice_ids):
-                    raise ValueError("Auto-research lifecycle delivery names a missing notice")
-                if any(item["episode_id"] != record.episode_id for item in notices):
-                    raise ValueError("Auto-research lifecycle delivery crosses an episode")
-                if any(
-                    item["delivered_at"] is not None
-                    or item["delivery_operation_id"] is not None
-                    or item["acknowledged_at"] is not None
-                    for item in notices
-                ):
-                    return None
-                pending_notice_prefix = connection.execute(
-                    """
-                    SELECT notice_id FROM auto_research_lifecycle_notices
-                    WHERE episode_id = ? AND delivered_at IS NULL
-                      AND acknowledged_at IS NULL
-                    ORDER BY created_at, notice_id LIMIT ?
-                    """,
-                    (record.episode_id, len(lifecycle_notice_ids)),
-                ).fetchall()
-                if [str(item["notice_id"]) for item in pending_notice_prefix] != (
-                    lifecycle_notice_ids
-                ):
-                    return None
-                if coalesced_message_ids:
-                    messages = connection.execute(
-                        f"""
-                        SELECT message_id, episode_id, recipient_task_id,
-                               delivered_at, delivery_operation_id
-                        FROM auto_research_messages
-                        WHERE message_id IN ({message_placeholders})
-                        """,
-                        coalesced_message_ids,
-                    ).fetchall()
-                    if {str(item["message_id"]) for item in messages} != set(coalesced_message_ids):
-                        raise ValueError("Auto-research mail delivery names a missing message")
-                    if any(
-                        item["episode_id"] != record.episode_id
-                        or item["recipient_task_id"] != episode.root_operation_id
-                        for item in messages
-                    ):
-                        raise ValueError(
-                            "Auto-research lifecycle mail crosses an episode or root recipient"
-                        )
-                    if any(
-                        item["delivered_at"] is not None
-                        or item["delivery_operation_id"] is not None
-                        for item in messages
-                    ):
-                        return None
-                    pending_message_prefix = connection.execute(
-                        """
-                        SELECT message_id FROM auto_research_messages
-                        WHERE episode_id = ? AND recipient_task_id = ?
-                          AND delivered_at IS NULL AND delivery_operation_id IS NULL
-                        ORDER BY created_at, message_id LIMIT ?
-                        """,
-                        (
-                            record.episode_id,
-                            episode.root_operation_id,
-                            len(coalesced_message_ids),
-                        ),
-                    ).fetchall()
-                    if [str(item["message_id"]) for item in pending_message_prefix] != (
-                        coalesced_message_ids
-                    ):
-                        return None
                 self._insert_paid_auto_research_task(
                     connection,
                     episode,
@@ -539,38 +446,185 @@ class AutoResearchStoreMixin:
                     "orchestrator",
                     continuation_cause="lifecycle_wake",
                 )
-                connection.execute(
-                    f"""
-                    UPDATE auto_research_lifecycle_notices
-                    SET state = 'delivered', delivered_at = ?, delivery_operation_id = ?
-                    WHERE notice_id IN ({notice_placeholders})
-                      AND delivered_at IS NULL AND acknowledged_at IS NULL
-                    """,
-                    (
-                        record.created_at,
-                        record.operation_id,
-                        *lifecycle_notice_ids,
-                    ),
-                )
-                if coalesced_message_ids:
-                    connection.execute(
-                        f"""
-                        UPDATE auto_research_messages
-                        SET delivered_at = ?, delivery_operation_id = ?
-                        WHERE message_id IN ({message_placeholders})
-                          AND delivered_at IS NULL
-                        """,
-                        (
-                            record.created_at,
-                            record.operation_id,
-                            *coalesced_message_ids,
-                        ),
-                    )
+                if not self._claim_auto_research_root_inputs(
+                    connection,
+                    episode,
+                    record,
+                    lifecycle_notice_ids=lifecycle_notice_ids,
+                    message_ids=list(message_ids or []),
+                    expected_pending_notice_ids=expected_pending_notice_ids,
+                    expected_pending_message_ids=expected_pending_message_ids,
+                ):
+                    connection.rollback()
+                    return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the Auto-research lifecycle wake task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def _claim_auto_research_root_inputs(
+        self,
+        connection: sqlite3.Connection,
+        episode: EpisodeRecord,
+        record: AgentTaskRecord,
+        *,
+        lifecycle_notice_ids: list[str],
+        message_ids: list[str],
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
+    ) -> bool:
+        """Verify and claim bounded root inputs; False requires admission rollback.
+
+        ``expected_pending_*`` is the caller's whole pending snapshot when the
+        delivery bounds did not cut its prefix. Any row that appeared since then
+        would fit in this wake, so the claim is refused and a later pass re-reads.
+        """
+
+        if episode.root_operation_id is None:
+            raise ValueError("the Auto-research wake has no root recipient")
+        if (
+            len(lifecycle_notice_ids) != len(set(lifecycle_notice_ids))
+            or len(lifecycle_notice_ids) > AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+        ):
+            raise ValueError(
+                "an Auto-research root wake needs at most "
+                f"{AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES} unique notices"
+            )
+        if len(message_ids) != len(set(message_ids)):
+            raise ValueError("an Auto-research root wake requires unique mail ids")
+        if len(message_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+            raise ValueError(
+                "an Auto-research root wake may claim at most "
+                f"{AUTO_RESEARCH_MAIL_MAX_MESSAGES} messages"
+            )
+        notice_placeholders = ",".join("?" for _ in lifecycle_notice_ids)
+        message_placeholders = ",".join("?" for _ in message_ids)
+        notices = connection.execute(
+            f"""
+            SELECT notice_id, episode_id, delivered_at, delivery_operation_id,
+                   acknowledged_at
+            FROM auto_research_lifecycle_notices
+            WHERE notice_id IN ({notice_placeholders})
+            """,
+            lifecycle_notice_ids,
+        ).fetchall()
+        if {str(item["notice_id"]) for item in notices} != set(lifecycle_notice_ids):
+            raise ValueError("Auto-research lifecycle delivery names a missing notice")
+        if any(item["episode_id"] != record.episode_id for item in notices):
+            raise ValueError("Auto-research lifecycle delivery crosses an episode")
+        if any(
+            item["delivered_at"] is not None
+            or item["delivery_operation_id"] is not None
+            or item["acknowledged_at"] is not None
+            for item in notices
+        ):
+            # Another delivery or an in-turn harvest won the race; a later pass re-reads.
+            return False
+        pending_notice_prefix = connection.execute(
+            """
+            SELECT notice_id FROM auto_research_lifecycle_notices
+            WHERE episode_id = ? AND delivered_at IS NULL
+              AND acknowledged_at IS NULL
+            ORDER BY created_at, notice_id LIMIT ?
+            """,
+            (record.episode_id, len(lifecycle_notice_ids)),
+        ).fetchall()
+        if [str(item["notice_id"]) for item in pending_notice_prefix] != (lifecycle_notice_ids):
+            return False
+        if expected_pending_notice_ids is not None:
+            pending_notices = connection.execute(
+                """
+                SELECT notice_id FROM auto_research_lifecycle_notices
+                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                """,
+                (record.episode_id,),
+            ).fetchall()
+            if {str(item["notice_id"]) for item in pending_notices} != set(
+                expected_pending_notice_ids
+            ):
+                return False
+        if message_ids:
+            messages = connection.execute(
+                f"""
+                SELECT message_id, episode_id, recipient_task_id,
+                       delivered_at, delivery_operation_id
+                FROM auto_research_messages
+                WHERE message_id IN ({message_placeholders})
+                """,
+                message_ids,
+            ).fetchall()
+            if {str(item["message_id"]) for item in messages} != set(message_ids):
+                raise ValueError("Auto-research mail delivery names a missing message")
+            if any(
+                item["episode_id"] != record.episode_id
+                or item["recipient_task_id"] != episode.root_operation_id
+                for item in messages
+            ):
+                raise ValueError(
+                    "Auto-research lifecycle mail crosses an episode or root recipient"
+                )
+            if any(
+                item["delivered_at"] is not None or item["delivery_operation_id"] is not None
+                for item in messages
+            ):
+                return False
+            pending_message_prefix = connection.execute(
+                """
+                SELECT message_id FROM auto_research_messages
+                WHERE episode_id = ? AND recipient_task_id = ?
+                  AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                ORDER BY created_at, message_id LIMIT ?
+                """,
+                (
+                    record.episode_id,
+                    episode.root_operation_id,
+                    len(message_ids),
+                ),
+            ).fetchall()
+            if [str(item["message_id"]) for item in pending_message_prefix] != (message_ids):
+                return False
+        if expected_pending_message_ids is not None:
+            pending_messages = connection.execute(
+                """
+                SELECT message_id FROM auto_research_messages
+                WHERE episode_id = ? AND recipient_task_id = ?
+                  AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                """,
+                (record.episode_id, episode.root_operation_id),
+            ).fetchall()
+            if {str(item["message_id"]) for item in pending_messages} != set(
+                expected_pending_message_ids
+            ):
+                return False
+        connection.execute(
+            f"""
+            UPDATE auto_research_lifecycle_notices
+            SET state = 'delivered', delivered_at = ?, delivery_operation_id = ?
+            WHERE notice_id IN ({notice_placeholders})
+              AND delivered_at IS NULL AND acknowledged_at IS NULL
+            """,
+            (
+                record.created_at,
+                record.operation_id,
+                *lifecycle_notice_ids,
+            ),
+        )
+        if message_ids:
+            connection.execute(
+                f"""
+                UPDATE auto_research_messages
+                SET delivered_at = ?, delivery_operation_id = ?
+                WHERE message_id IN ({message_placeholders})
+                  AND delivered_at IS NULL
+                """,
+                (
+                    record.created_at,
+                    record.operation_id,
+                    *message_ids,
+                ),
+            )
+        return True
 
     def _insert_paid_auto_research_task(
         self,

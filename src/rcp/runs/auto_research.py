@@ -1123,7 +1123,15 @@ class AutoResearchCommandDispatcher:
             outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
         except (AutoResearchCommandUnavailable, OSError) as exc:
             outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
-        except (KeyError, ValueError) as exc:
+        except KeyError as exc:
+            outcome = AutoResearchCommandEffectResult(
+                status="invalid",
+                message=(
+                    f"Agent command {request.verb} referenced an unknown record: "
+                    f"{exc.args[0] if exc.args else exc}"
+                ),
+            )
+        except ValueError as exc:
             outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
         if outcome.status == "invalid" and child_admission is not None:
             self._cancel_known_child_admission(child_admission.admission_id)
@@ -1772,12 +1780,20 @@ class AutoResearchCommandDispatcher:
                         "The Auto-research orchestrator must name the worker it is messaging."
                     )
                 worker = self._require_worker(context, recipient_task_id)
+                route = self.store.auto_research_child_work(recipient_task_id)
                 if (
-                    recipient_task_id
-                    != self.store.auto_research_actor_binding(
-                        worker.operation_id
-                    ).actor_operation_id
+                    route is not None
+                    and route.episode_id == context.episode.episode_id
+                    and route.worker_id == recipient_task_id
                 ):
+                    return self.effects.message(context, request.arguments, planned_message_id)
+                try:
+                    binding = self.store.auto_research_actor_binding(worker.operation_id)
+                except KeyError as exc:
+                    raise AutoResearchCommandInvalid(
+                        f"{recipient_task_id} is not a worker of this Auto-research episode."
+                    ) from exc
+                if recipient_task_id != binding.actor_operation_id:
                     raise AutoResearchCommandInvalid(
                         "The Auto-research orchestrator must address a worker by its stable worker ID."
                     )

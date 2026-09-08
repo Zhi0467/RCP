@@ -494,6 +494,13 @@ def _selection_script() -> str:
     return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
 
 
+_KEEP_SAVE_HANDLERS_JS = (
+    # Shared by both viewer shells; each defines `config` with keepUrl/saveUrl and `notice`.
+    "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,{method:'POST',credentials:'same-origin'});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
+    "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,{method:'POST',credentials:'same-origin'});if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
+)
+
+
 def artifact_viewer_document(
     *,
     preview_url: str,
@@ -533,38 +540,55 @@ def artifact_viewer_document(
         else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
         '<div id="boxLayer" aria-hidden="true"></div>'
     )
-    if chat_id is None and source == "task":
+    if chat_id is None:
         readonly_preview = (
             f'<iframe id="preview" sandbox="allow-scripts" src={js(preview_url)} '
             f"title={js(descriptor.name)}></iframe>"
             if descriptor.media_type == "text/html"
             else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
         )
+        # No originating chat can receive selections: keep ordinary browser gestures and
+        # draw no selection rail. Save copy and Keep remain available.
         readonly_keep = (
             '<button id="keep" type="button">Keep</button>'
             if keep_url and descriptor.kept_filename is None
             else ""
         )
+        readonly_save = '<button id="save" type="button">Save copy</button>' if save_url else ""
+        readonly_state = (
+            "report"
+            if source == "episode_report"
+            else "kept"
+            if descriptor.kept_filename
+            else "temporary"
+        )
         readonly_script = (
-            f"""<script>(()=>{{const keep=document.getElementById('keep');keep?.addEventListener('click',async()=>{{keep.disabled=true;try{{const response=await fetch({js(keep_url)},{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();}}catch{{keep.disabled=false;}}}});}})();</script>"""
-            if readonly_keep
+            f"""<script>(()=>{{const config={js({"keepUrl": keep_url, "saveUrl": save_url})};const notice=document.getElementById('notice');
+{_KEEP_SAVE_HANDLERS_JS}}})();</script>"""
+            if readonly_keep or readonly_save
             else ""
         )
         document = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(descriptor.name)}</title>
 <style>
-:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--panel:#fbfaf5}}
+:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
 *{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
 body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
-header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}header .state{{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}header button{{margin-left:auto;border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;font:inherit;cursor:pointer}}
+header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}header .state{{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
+header .notice{{color:var(--accent);font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.spacer{{flex:1}}
+header button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}header button:hover{{border-color:var(--accent);color:var(--accent)}}header button:disabled{{opacity:.45;cursor:default}}
 main{{min-height:0;background:white}}iframe{{display:block;border:0;width:100%;height:100%}}main>img{{display:block;width:100%;height:100%;object-fit:contain}}
 </style></head><body>
-<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span>{readonly_keep}</header>
+<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{readonly_state}</span><span id="notice" class="notice" role="status"></span><span class="spacer"></span>{readonly_save}{readonly_keep}</header>
 <main>{readonly_preview}</main>{readonly_script}</body></html>"""
         csp = (
             "default-src 'none'; "
-            + ("script-src 'unsafe-inline'; connect-src 'self'; " if readonly_keep else "")
+            + (
+                "script-src 'unsafe-inline'; connect-src 'self'; "
+                if readonly_keep or readonly_save
+                else ""
+            )
             + "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; "
             "base-uri 'none'; form-action 'none'; object-src 'none'"
         )
@@ -630,8 +654,7 @@ add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent
   try{{const channel=new BroadcastChannel('rcp-artifact-context');channel.postMessage(payload);channel.close();}}catch{{}}
   notice.textContent='Added to the originating chat draft.';
 }});
-const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{{keep.disabled=true;notice.textContent='';try{{const response=await fetch(config.keepUrl,{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}}catch(error){{keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}}}});
-const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{{save.disabled=true;notice.textContent='';try{{const response=await fetch(config.saveUrl,{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${{result.path}}`;}}catch(error){{notice.textContent=error instanceof Error?error.message:String(error);}}finally{{save.disabled=false;}}}});
+{_KEEP_SAVE_HANDLERS_JS}
 }})();</script></body></html>"""
     csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "

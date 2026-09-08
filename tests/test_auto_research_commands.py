@@ -35,6 +35,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 from rcp.runs.auto_research import (
+    AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
     AutoResearchCommandEffectResult,
     AutoResearchCommandEffects,
@@ -43,6 +44,8 @@ from rcp.runs.auto_research import (
     auto_research_completion_signal,
     request_auto_research_stop,
 )
+from rcp.runs.auto_research_delivery import record_auto_research_message
+from rcp.runs.auto_research_effects import _auto_research_message_matches
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -2343,6 +2346,131 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
     assert refused.status == "unavailable"
     assert "deterministic effect id" in (refused.message or "")
     assert effects.reconcile_calls == []
+
+
+def test_orchestrator_messages_spawned_child_work_by_stable_worker_id(tmp_path) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    worker = _routed_worker(
+        store,
+        episode,
+        admitted_by=root,
+        worker_id="child-worker",
+        seat_node_id="blk/result",
+        instruction="Inspect the result.",
+    )
+    effects = _Effects(store, episode, root)
+
+    def message(context, arguments, planned_message_id):
+        record_auto_research_message(
+            store,
+            message_id=planned_message_id,
+            episode_id=episode.episode_id,
+            sender_role="orchestrator",
+            sender_task_id=context.task.operation_id,
+            authorized_by=None,
+            recipient_task_id=arguments.recipient_task_id,
+            body=arguments.body,
+        )
+        return effects.message(context, arguments, planned_message_id)
+
+    dispatcher = _dispatcher(store, replace(effects.bundle(), message=message))
+    arguments = MessageArguments(
+        recipient_task_id=worker.operation_id, body="Coordinate with the sibling's result."
+    )
+    response = dispatcher.dispatch(
+        root.operation_id,
+        MessageCommandRequest(
+            mailbox_id=MAILBOX_ID,
+            request_id="2" * 32,
+            credential=CREDENTIAL,
+            verb="message",
+            idempotency_key="message-child",
+            arguments=arguments,
+        ),
+    )
+
+    assert response.status == "ok"
+    messages = store.auto_research_messages(episode.episode_id)
+    assert len(messages) == 1
+    assert messages[0].recipient_task_id == worker.operation_id
+    assert effects.message_calls == [arguments]
+
+
+def test_interrupted_child_work_message_replays_as_the_same_effect(tmp_path) -> None:
+    """Reconciliation must recognise a routed child recipient, not only bound actors."""
+
+    store, episode, root = _setup_auto_research(tmp_path)
+    worker = _routed_worker(
+        store,
+        episode,
+        admitted_by=root,
+        worker_id="child-worker",
+        seat_node_id="blk/result",
+        instruction="Inspect the result.",
+    )
+    arguments = MessageArguments(recipient_task_id=worker.operation_id, body="Hold your job.")
+    saved = record_auto_research_message(
+        store,
+        message_id="message-child",
+        episode_id=episode.episode_id,
+        sender_role="orchestrator",
+        sender_task_id=root.operation_id,
+        authorized_by=None,
+        recipient_task_id=worker.operation_id,
+        body=arguments.body,
+    )
+    context = AutoResearchCommandContext(
+        episode=episode,
+        task=root,
+        request=AutoResearchRunRequest.model_validate(root.request),
+    )
+
+    assert _auto_research_message_matches(store, context, arguments, saved) is True
+    assert (
+        _auto_research_message_matches(
+            store,
+            context,
+            MessageArguments(recipient_task_id="unknown-worker", body=arguments.body),
+            saved,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("missing_binding", [False, True])
+def test_unknown_message_recipient_has_readable_diagnostic(tmp_path, missing_binding) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, episode, root)
+    unknown_id = "unknown-worker"
+
+    def lookup(_context, worker_id):
+        if missing_binding:
+            return root.model_copy(update={"operation_id": worker_id})
+        raise KeyError(worker_id)
+
+    dispatcher = _dispatcher(store, replace(effects.bundle(), worker_lookup=lookup))
+    before = store.episode_budget_meter(episode.episode_id)
+    response = dispatcher.dispatch(
+        root.operation_id,
+        MessageCommandRequest(
+            mailbox_id=MAILBOX_ID,
+            request_id="2" * 32,
+            credential=CREDENTIAL,
+            verb="message",
+            idempotency_key="unknown-worker",
+            arguments={"recipient_task_id": unknown_id, "body": "Inspect the result."},
+        ),
+    )
+
+    assert response.status == "invalid"
+    assert unknown_id in response.message
+    assert response.message != repr(unknown_id)
+    if missing_binding:
+        assert "not a worker of this" in response.message
+    else:
+        assert "Agent command message referenced an unknown record:" in response.message
+    assert effects.message_calls == []
+    assert store.episode_budget_meter(episode.episode_id) == before
 
 
 def test_orchestrator_message_requires_the_stable_worker_actor_id_before_effect_or_spend(
