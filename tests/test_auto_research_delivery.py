@@ -1701,6 +1701,24 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
         ]
         for notice in store.auto_research_lifecycle_notices(auto_research.episode_id):
             lines.append(f"notice={notice!r}")
+        import sqlite3 as _sqlite3
+
+        from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES as _MAX
+
+        lines.append(f"sqlite={_sqlite3.sqlite_version} max_notices={_MAX!r}")
+        pending = store.pending_auto_research_lifecycle_notices(
+            auto_research.episode_id, limit=_MAX
+        )
+        lines.append(f"pending_count={len(pending)}")
+        lines.append(f"pending_episode_ids={store.pending_auto_research_lifecycle_episode_ids()!r}")
+        lines.append(f"current_task_exists={store.agent_task('root') is not None}")
+        with store.connection() as connection:
+            for row in connection.execute(
+                "SELECT notice_id, episode_id, delivered_at, acknowledged_at, "
+                "typeof(delivered_at) AS td, typeof(acknowledged_at) AS ta, created_at "
+                "FROM auto_research_lifecycle_notices"
+            ).fetchall():
+                lines.append(f"raw={dict(row)!r}")
         for task in store.auto_research_tasks(auto_research.episode_id):
             lines.append(
                 f"task={task.operation_id} status={task.status} attempt={task.attempt} "
