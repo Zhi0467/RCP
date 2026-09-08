@@ -2,15 +2,16 @@
 id: evidence-triage
 kind: skill
 label: Evidence triage
-version: 3.0.0
+version: 3.1.0
 description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
 
 # Evidence triage
 
-Decide what a record establishes before writing or relying on Evidence. Keep observations narrower
-than their sources and separate empirical results from project authority.
+Decide what a record establishes before writing or relying on Evidence. Keep observations within
+what their sources establish and separate empirical results from project authority. Follow the
+current task's output and authority contract; in an audit, report findings without writing a Patch.
 
 ## Prefer sources in this order
 
@@ -26,8 +27,8 @@ Use a summary to locate evidence, not as the sole support for an empirical Evide
 
 Write `observation` as what the artifact or record directly states: run, step, value, absence, and
 time boundary. Write `interpretation` as what that observation licenses here and, when useful, what
-it does not license. Do not promote apparatus checks, partial runs, or calibration results into
-scientific conclusions.
+it does not license. Do not use apparatus checks, partial runs, or calibration results to claim
+effects they did not test.
 
 If the interpretation merely repeats the observation, consider keeping the information in the
 Experiment summary instead of creating Evidence.
@@ -40,8 +41,9 @@ Experiment summary instead of creating Evidence.
   observation. Use `diagnostic` when the observation primarily localizes, disambiguates, or debugs
   a phenomenon. Role says what kind of observation this is, not how strongly it bears on a claim.
   Never author the retired node-global `strength` or replay-only `legacy_strength` fields.
-- Set `validity` to `valid`, `qualified`, `invalid`, or `superseded`. Use `qualified` when the
-  interpretation contains a material boundary such as “only,” “pending,” or “still required.”
+- Set `validity` to `valid`, `qualified`, `invalid`, or `superseded` based on the observation's
+  methodological limits. A completed calibration can be valid within its measured scope. An
+  incomplete run may justify only a qualified snapshot; it does not establish the missing result.
 
 ## Assess each Hypothesis relation
 
@@ -62,7 +64,7 @@ Hypothesis-to-Hypothesis `contradicts` edge or any action, seam, meta, or custom
 ## Preserve action semantics and authority
 
 - Use `informs` when Evidence bears on a Decision. The edge does not select an option or close the
-  Decision; record the human selection separately through the authorized path. It carries no
+  Decision; selection is a separate action under the current task's authority. It carries no
   Evidence-to-Hypothesis assessment.
 - Use `addresses` when Evidence bears on whether a Blocker is cleared, preserved, or narrowed. The
   edge does not itself change Blocker status; the lifecycle record carries that consequence. It
@@ -71,6 +73,8 @@ Hypothesis-to-Hypothesis `contradicts` edge or any action, seam, meta, or custom
   bears on a Hypothesis, and calibrate its claim-relative assessment honestly. Do not use a smoke
   or calibration result on downstream science merely because it enables the main run.
 - Keep Experiment `produces` Evidence separate from the Evidence handoff to a Decision or Blocker.
+  Before the result exists, record the intended observation in the Experiment plan, not an Evidence
+  node or a `produces` edge.
 
 ## Check claim boundaries and citations
 

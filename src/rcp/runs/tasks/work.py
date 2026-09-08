@@ -75,7 +75,6 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
-    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
     _protected_run_stage_roots,
@@ -149,13 +148,8 @@ _WorkPatchFailure = _DeliverableFailure
 def _read_correction_patch(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
-    *,
-    pre_launch_digest: str | None,
 ) -> _CorrectionPatchRead:
-    return read_correction_patch(
-        lambda: _read_chat_patch(workspace, remote_stage),
-        pre_launch_digest=pre_launch_digest,
-    )
+    return read_correction_patch(lambda: _read_chat_patch(workspace, remote_stage))
 
 
 def _work_patch_source_operation_id(
@@ -530,11 +524,7 @@ def _stage_retry_diagnostics(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
 ) -> str | None:
-    if (
-        turn.execution is None
-        or turn.uses_master_protocol
-        or not (turn.execution.retry_feedback or turn.retry_attempt)
-    ):
+    if turn.execution is None or not (turn.execution.retry_feedback or turn.retry_attempt):
         return None
     return _stage_json_task_input(
         turn.local_stage,
@@ -554,9 +544,13 @@ def _compose_resume_prompt(
         turn.local_stage,
         turn.remote_stage,
     )
+    current_contract_path = _stage_work_contract(turn, staged)
     contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
         mode="resume",
+        turn_mode="work",
+        write_scope=turn.write_scope,
+        current_contract_path=current_contract_path,
         patch_path=turn.patch_inputs.patch_path,
         watch_path=turn.patch_inputs.watch_path,
         validator_command=turn.patch_inputs.validator_command,
@@ -587,8 +581,66 @@ def _compose_resume_prompt(
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=original_contract_path,
+        base_contract_path=current_contract_path,
     )
+
+
+def _stage_work_contract(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    *,
+    retry_diagnostics_path: str | None = None,
+) -> str:
+    """Stage current guidance without resetting the native session's assignment."""
+
+    assert turn.request.message is not None
+    focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
+    compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
+    human_request_path = _stage_task_input(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-human-request.txt",
+        turn.request.message,
+    )
+    contract = PromptFactory.work_task_contract(
+        execution_instructions=_work_execution_instructions(turn),
+        project_name=turn.context.project_name,
+        ontology_path=f"{turn.context.graph_path}#ontology",
+        ontology_extensions=turn.context.ontology_extensions,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        focused_node_id=focused_node_id,
+        repositories=staged.repositories,
+        introduction_path=turn.context.introduction_path,
+        human_request_path=human_request_path,
+        patch_path=turn.patch_inputs.patch_path,
+        artifact_path=str(staged.artifact_directory),
+        output_schema_path=turn.patch_inputs.schema_path,
+        retry_diagnostics_path=retry_diagnostics_path,
+        watch_path=turn.patch_inputs.watch_path,
+        execution_host=turn.execution_host,
+        experiment_watcher_resources=staged.experiment_resource_pointers,
+        validator_command=turn.patch_inputs.validator_command,
+        write_scope=turn.write_scope,
+        skill_pointers=staged.skill_pointers,
+        invoked_skill_pointers=invoked_package_pointers(
+            staged.skill_pointers,
+            workflow_ids=turn.request.invoked_workflow_ids,
+            skill_ids=turn.request.invoked_skill_ids,
+        ),
+        invoked_provider_skills=turn.request.resolved_provider_skills,
+        attachments=staged.attachment_pointers,
+        compute_connections=compute_profiles,
+    )
+    contract_path, _ = _stage_task_contract(
+        turn.local_stage,
+        turn.remote_stage,
+        f"task-{staged.token}-{'base' if turn.retry_attempt or turn.reusing_checkpoint else 'initial'}.md",
+        contract,
+        execution=turn.execution,
+        role="work_retry_base" if turn.retry_attempt else "work",
+    )
+    return contract_path
 
 
 def _compose_fresh_prompt(
@@ -601,53 +653,12 @@ def _compose_fresh_prompt(
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
     compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
     if not turn.uses_master_protocol:
-        human_request_path = _stage_task_input(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-human-request.txt",
-            turn.request.message,
-        )
-        contract = PromptFactory.work_task_contract(
-            execution_instructions=_work_execution_instructions(turn),
-            project_name=turn.context.project_name,
-            ontology_path=f"{turn.context.graph_path}#ontology",
-            ontology_extensions=turn.context.ontology_extensions,
-            graph_path=turn.context.graph_path,
-            research_path=turn.context.research_md_path,
-            focused_node_id=focused_node_id,
-            repositories=staged.repositories,
-            introduction_path=turn.context.introduction_path,
-            human_request_path=human_request_path,
-            patch_path=turn.patch_inputs.patch_path,
-            artifact_path=str(staged.artifact_directory),
-            output_schema_path=turn.patch_inputs.schema_path,
-            retry_diagnostics_path=retry_diagnostics_path,
-            watch_path=turn.patch_inputs.watch_path,
-            execution_host=turn.execution_host,
-            experiment_watcher_resources=staged.experiment_resource_pointers,
-            validator_command=turn.patch_inputs.validator_command,
-            write_scope=turn.write_scope,
-            skill_pointers=staged.skill_pointers,
-            invoked_skill_pointers=invoked_package_pointers(
-                staged.skill_pointers,
-                workflow_ids=turn.request.invoked_workflow_ids,
-                skill_ids=turn.request.invoked_skill_ids,
-            ),
-            invoked_provider_skills=turn.request.resolved_provider_skills,
-            attachments=staged.attachment_pointers,
-            compute_connections=compute_profiles,
-        )
-        contract_path, prompt = _stage_task_contract(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-{'base' if turn.retry_attempt else 'initial'}.md",
-            contract,
-            execution=turn.execution,
-            role="work_retry_base" if turn.retry_attempt else "work",
+        contract_path = _stage_work_contract(
+            turn, staged, retry_diagnostics_path=retry_diagnostics_path
         )
         return _ComposedWorkPrompt(
             contract_path=contract_path,
-            prompt=prompt,
+            prompt=PromptFactory.launch_prompt(contract_path),
             base_contract_path=contract_path,
         )
 
@@ -729,44 +740,28 @@ def _compose_retry_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
-    resumed_retry = turn.retrying and turn.reusing_checkpoint
-    explicit_contract = not turn.uses_master_protocol and not resumed_retry
-    current: _ComposedWorkPrompt | None = None
-    if explicit_contract:
-        current = _compose_fresh_prompt(
-            turn,
-            staged,
-            retry_diagnostics_path=retry_diagnostics_path,
-        )
+    current_contract_path = _stage_work_contract(
+        turn, staged, retry_diagnostics_path=retry_diagnostics_path
+    )
     result_view_handoff = bool(
         turn.continuation == "handoff" and staged.prepared_result_view is not None
     )
-    if result_view_handoff:
-        if current is None:
-            raise ValueError("The result view create handoff lost its current Work contract.")
-        original_contract_path = current.contract_path
-        continuation_contract_path = None
-    else:
-        original_contract_path = _parent_task_contract_path(
-            turn.execution,
-            turn.local_stage,
-            turn.remote_stage,
-        )
-        continuation_contract_path = current.contract_path if current is not None else None
-    base_contract_path = (
-        original_contract_path if resumed_retry or current is None else current.base_contract_path
+    original_contract_path = (
+        current_contract_path
+        if result_view_handoff
+        else _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
-        current_contract_path=continuation_contract_path,
+        current_contract_path=current_contract_path,
+        turn_mode="work",
+        write_scope=turn.write_scope,
         diagnostics_path=retry_diagnostics_path,
         patch_path=turn.patch_inputs.patch_path,
         watch_path=turn.patch_inputs.watch_path,
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
-        output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
-        skill_pointers=staged.skill_pointers if resumed_retry else None,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -793,7 +788,7 @@ def _compose_retry_prompt(
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=base_contract_path,
+        base_contract_path=current_contract_path,
     )
 
 
@@ -953,6 +948,9 @@ def _patch_correction_contract(
     return PromptFactory.continuation_task_contract(
         original_contract_path=composed.base_contract_path,
         mode="work_patch_correction",
+        turn_mode="work",
+        write_scope=turn.write_scope,
+        output_schema_path=turn.patch_inputs.schema_path,
         patch_path=turn.patch_inputs.patch_path,
         diagnostics_path=diagnostics_path,
         validator_command=validator_command,
@@ -961,23 +959,16 @@ def _patch_correction_contract(
 
 def _read_corrected_patch_deliverable(
     turn: WorkTurn,
-    pre_launch_digest: str | None,
     previous: _DeliverableFailure,
 ) -> _DeliverableRead:
     corrected = _read_correction_patch(
         turn.workspace,
         turn.remote_stage,
-        pre_launch_digest=pre_launch_digest,
     )
     if corrected.problem == "unreadable":
         message = f"The corrected patch could not be read: {corrected.detail}"
     elif corrected.problem == "missing":
         message = "The correction completed without writing patch.json."
-    elif corrected.problem == "unchanged":
-        message = (
-            f"{previous.message} The correction left patch.json byte-identical; rewrite it "
-            "with the required changes."
-        )
     else:
         assert corrected.text is not None
         return _DeliverableRead(text=corrected.text)
@@ -1272,10 +1263,6 @@ async def _settle_patch_deliverable(
                 execution=turn.execution,
                 role=f"work_patch_correction_{correction_rounds}",
             )
-            pre_launch_digest = _existing_exact_patch_digest(
-                turn.workspace,
-                turn.remote_stage,
-            )
             _record_agent_launch_receipt(
                 turn.execution,
                 turn.request,
@@ -1344,7 +1331,6 @@ async def _settle_patch_deliverable(
             continue
         corrected = _read_corrected_patch_deliverable(
             turn,
-            pre_launch_digest,
             failure,
         )
         text = corrected.text
@@ -2067,6 +2053,9 @@ async def _stream_work_graph_repair(
         contract = PromptFactory.continuation_task_contract(
             original_contract_path=original_contract_path,
             mode="work_patch_correction",
+            turn_mode="work",
+            write_scope=write_scope,
+            output_schema_path=patch_inputs.schema_path,
             patch_path=patch_path,
             diagnostics_path=diagnostics_path,
             validator_command=validator_command,
@@ -2079,7 +2068,6 @@ async def _stream_work_graph_repair(
             execution=execution,
             role="work_patch_repair",
         )
-        pre_launch_digest = _existing_exact_patch_digest(workspace, remote_stage)
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -2134,7 +2122,6 @@ async def _stream_work_graph_repair(
     repair = settle_graph_repair_patch(
         outcome,
         provider=request.provider,
-        pre_launch_digest=pre_launch_digest,
         read_patch=lambda: _read_chat_patch(workspace, remote_stage),
         apply_patch=lambda text: _apply_work_patch(
             service,

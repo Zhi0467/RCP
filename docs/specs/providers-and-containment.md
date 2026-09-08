@@ -104,6 +104,9 @@ launch. It binds:
 - protected RCP-owned write paths; and
 - a stable fingerprint of the canonicalized contract.
 
+Work and Auto-research root prompts render these same resolved roots and
+protected paths. Repository pointers do not supply a separate write allowlist.
+
 Only RCP derives the scope from the manifest, project catalog, repository
 pointers, task/episode lineage, and run scope. A browser, prompt, request body,
 provider, or staged file cannot add a root. Scope construction requires a
@@ -196,6 +199,15 @@ Experiment, watcher wake, and correction paths. There is no permissive fallback
 for a continuation's project, host, stage, graph target, or write scope. The
 pre-prompt provider-runtime fallback above changes none of those bindings and
 resumes the same native session id.
+
+Recovery retains the original assignment and completed native-session progress.
+Current task guidance, graph inputs, output schema and locations, validator, and
+command metadata replace the corresponding earlier instructions. This refresh
+does not widen the captured task authority or authorize repeating completed
+external effects; historical diagnostics remain failure reports, not policy.
+After a completed Work-like Patch correction, RCP revalidates the retained candidate
+against current state even if its bytes did not change. A stale rejection does not
+require cosmetic edits; current schema and authority validation still govern Apply.
 
 ## One graph output channel
 
@@ -526,12 +538,19 @@ Only selected packages are staged to the execution machine as immutable,
 content-addressed directories. The agent receives compact id, version,
 description, dependency, and exact pointer metadata; package bodies are never
 embedded into launch prose. Slash completion inserts only the visible token and
-a per-turn invocation pointer. Packages cannot widen surface capability.
+a per-turn invocation pointer. Packages supply methods and examples under the
+current task contract; they do not replace its authority, output channels, or
+filesystem boundary. The same method may serve an ordinary worker, a bounded
+Experiment, or the orchestrator without importing another role's permissions.
 
-The graph-authoring contract always includes the local causal check. Optional
-`graph-audit`, `experiment-causality`, and `evidence-triage` packages provide
-progressively deeper guidance. Programmatic quality advice belongs to the existing
-live Patch validator, not a separate mandatory scanner package or model call.
+Graph-writing contracts include shared authoring methods and a local causal
+check, using only inputs the task permits. A planned empirical prerequisite
+names its precursor Experiment and intended handoff; it does not create Evidence
+before an observation exists. For example, plan a calibration before recording
+its measured Evidence and the Decision that Evidence informs. Optional
+`graph-audit`, `experiment-causality`, and `evidence-triage` packages add deeper
+methods and examples. Programmatic quality advice belongs to the existing live
+Patch validator, not a separate mandatory scanner package or model call.
 Nonblocking flags return in a valid result's `messages` with exit code zero;
 blocking errors take priority while the Patch is invalid. Quality advice does
 not require another provider turn and cannot change acceptance or graph authority.

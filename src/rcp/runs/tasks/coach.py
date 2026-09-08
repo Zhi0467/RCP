@@ -178,12 +178,72 @@ async def stream_coach(
                 "The continued paper-coach task has no native agent session; retry it from a "
                 "clean attempt instead."
             )
-        if resuming:
+        pointers, read_dirs = service.coach_context(request, draft_override)
+        token = _task_token(execution)
+        retry_diagnostics_path = (
+            _stage_json_task_input(
+                local_stage,
+                None,
+                f"task-{token}-retry-diagnostics.json",
+                {"prior_attempt_diagnostics": list(execution.retry_feedback)},
+            )
+            if execution is not None and retry_attempt
+            else None
+        )
+        raw_repositories = pointers["truth_repositories"]
+        assert isinstance(raw_repositories, list)
+        human_request_path = _stage_task_input(
+            local_stage,
+            None,
+            f"task-{token}-human-request.txt",
+            request.message,
+        )
+        contract = PromptFactory.paper_coach_task_contract(
+            introduction_path=str(pointers["introduction"]),
+            graph_path=str(pointers["graph"]),
+            research_path=str(pointers["research_md"]),
+            repositories=[
+                {
+                    "alias": str(item["alias"]),
+                    "host": str(item["host"]),
+                    "path": str(item["path"]),
+                }
+                for item in raw_repositories
+                if isinstance(item, dict)
+            ],
+            human_request_path=human_request_path,
+            retry_diagnostics_path=retry_diagnostics_path,
+            skill_pointers=skill_pointers,
+            invoked_skill_pointers=invoked_package_pointers(
+                skill_pointers,
+                workflow_ids=request.invoked_workflow_ids,
+                skill_ids=request.invoked_skill_ids,
+            ),
+            invoked_provider_skills=request.resolved_provider_skills,
+        )
+        current_contract_path, current_prompt = _stage_task_contract(
+            local_stage,
+            None,
+            f"task-{token}-{'base' if resuming or retry_attempt else 'initial'}.md",
+            contract,
+            execution=execution,
+            role=(
+                "paper_coach_resume_base"
+                if resuming
+                else "paper_coach_retry_base"
+                if retry_attempt
+                else "paper_coach"
+            ),
+        )
+        if resuming or retrying:
             assert execution is not None
             original_contract_path = _parent_task_contract_path(execution, local_stage, None)
-            contract = PromptFactory.continuation_task_contract(
+            recovery_mode = "resume" if resuming else "retry"
+            continuation_contract = PromptFactory.continuation_task_contract(
                 original_contract_path=original_contract_path,
-                mode="resume",
+                current_contract_path=current_contract_path,
+                diagnostics_path=retry_diagnostics_path,
+                mode=recovery_mode,
                 invoked_skill_pointers=invoked_package_pointers(
                     skill_pointers,
                     workflow_ids=request.invoked_workflow_ids,
@@ -194,98 +254,14 @@ async def stream_coach(
             contract_path, prompt = _stage_task_contract(
                 local_stage,
                 None,
-                f"task-{_task_token(execution)}-resume.md",
-                contract,
+                f"task-{token}-{recovery_mode}.md",
+                continuation_contract,
                 execution=execution,
-                role="paper_coach_resume",
+                role=f"paper_coach_{recovery_mode}",
             )
-            read_dirs = [service.manifest.research_dir, local_stage / "inputs"]
         else:
-            pointers, read_dirs = service.coach_context(request, draft_override)
-            token = _task_token(execution)
-            retry_diagnostics_path = (
-                _stage_json_task_input(
-                    local_stage,
-                    None,
-                    f"task-{token}-retry-diagnostics.json",
-                    {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-                )
-                if execution is not None and (execution.retry_feedback or retry_attempt)
-                else None
-            )
-            raw_repositories = pointers["truth_repositories"]
-            assert isinstance(raw_repositories, list)
-            # A retry that still holds its native session already has the contract in the
-            # conversation; it gets a follow-up naming what changed, not a rebuilt contract.
-            resumed_retry = retrying and reusing_checkpoint
-            current_contract_path = None
-            current_prompt = None
-            if not resumed_retry:
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    None,
-                    f"task-{token}-human-request.txt",
-                    request.message,
-                )
-                contract = PromptFactory.paper_coach_task_contract(
-                    introduction_path=str(pointers["introduction"]),
-                    graph_path=str(pointers["graph"]),
-                    research_path=str(pointers["research_md"]),
-                    repositories=[
-                        {
-                            "alias": str(item["alias"]),
-                            "host": str(item["host"]),
-                            "path": str(item["path"]),
-                        }
-                        for item in raw_repositories
-                        if isinstance(item, dict)
-                    ],
-                    human_request_path=human_request_path,
-                    retry_diagnostics_path=retry_diagnostics_path,
-                    skill_pointers=skill_pointers,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    None,
-                    f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
-                    contract,
-                    execution=execution,
-                    role="paper_coach_retry_base" if retry_attempt else "paper_coach",
-                )
-            if retrying:
-                assert execution is not None
-                assert retry_diagnostics_path is not None
-                original_contract_path = _parent_task_contract_path(execution, local_stage, None)
-                retry_contract = PromptFactory.continuation_task_contract(
-                    original_contract_path=original_contract_path,
-                    current_contract_path=current_contract_path,
-                    diagnostics_path=retry_diagnostics_path,
-                    mode="retry",
-                    skill_pointers=skill_pointers if resumed_retry else None,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                )
-                contract_path, prompt = _stage_task_contract(
-                    local_stage,
-                    None,
-                    f"task-{token}-retry.md",
-                    retry_contract,
-                    execution=execution,
-                    role="paper_coach_retry",
-                )
-            else:
-                contract_path, prompt = current_contract_path, current_prompt
-            read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])
+            contract_path, prompt = current_contract_path, current_prompt
+        read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])
     except (StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return

@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent
 from rcp.api.app import _generic_watcher_delivery_request
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.providers import ProviderSkillReference
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research, start_auto_research_child_work
 from rcp.runs.tasks import auto_research_child_work as child_work
@@ -40,6 +41,15 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     staged_turns = []
+    child_turns = []
+    original_stage = child_work._stage_auto_research_child_work_turn
+
+    async def capture_turn(*args, **kwargs):
+        result = await original_stage(*args, **kwargs)
+        child_turns.append(result[:2])
+        return result
+
+    monkeypatch.setattr(child_work, "_stage_auto_research_child_work_turn", capture_turn)
     monkeypatch.setattr(
         work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
     )
@@ -123,6 +133,32 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 )
             if len(self.calls) == 3:
                 self.wake_contract = Path(prompt.splitlines()[1]).read_text()
+                turn, inputs = child_turns[-1]
+                assert "This is a Work turn." in self.wake_contract
+                assert turn.patch_inputs.validator_command in self.wake_contract
+                assert child_turns[0][0].patch_inputs.validator_command not in self.wake_contract
+                for path in (
+                    turn.patch_inputs.patch_path,
+                    turn.patch_inputs.watch_path,
+                    turn.patch_inputs.schema_path,
+                    str(inputs.artifact_directory),
+                    *turn.write_scope.writable_roots,
+                    *turn.write_scope.protected_write_paths,
+                ):
+                    assert path in self.wake_contract
+                for package in inputs.skill_pointers:
+                    assert str(package["path"]) in self.wake_contract
+                assert "Invoked for this turn" in self.wake_contract
+                assert "skill `graph-audit`" in self.wake_contract
+                assert "Invoked provider-native skill this turn" in self.wake_contract
+                assert '"name": "native-review"' in self.wake_contract
+                assert self.wake_contract.endswith(
+                    child_work._auto_research_child_work_contract(
+                        turn,
+                        inputs,
+                        store.auto_research_child_work_for_operation(turn.execution.operation_id),
+                    )
+                )
                 assert not (workspace / "watch.json").exists()
             yield AgentEvent(event="session", session_id="child-compute-session")
             yield AgentEvent(event="answer", text="Computation handed off.")
@@ -169,6 +205,19 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             mode="work",
             trigger="orchestrator",
             patch_kind="work",
+            skill_ids=["graph-audit"],
+            invoked_skill_ids=["graph-audit"],
+            resolved_provider_skills=[
+                ProviderSkillReference(
+                    provider="codex",
+                    machine="laptop",
+                    provider_version="test-provider",
+                    inventory_hash="captured-test-inventory",
+                    name="native-review",
+                    label="Native review",
+                    description="Review the observed result.",
+                )
+            ],
         ),
         admitted_by_operation_id=root.operation_id,
         worker_id="00000000-0000-4000-8000-000000000991",

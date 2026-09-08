@@ -26,6 +26,8 @@ from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.prompts import _authoring_rules, write_scope_section
+from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -85,6 +87,19 @@ from .helpers import (
 )
 
 
+def _prompt_scope() -> ProjectWriteScope:
+    return ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="laptop",
+        execution_host="",
+        capability="orchestrate",
+        stage_root="/stage",
+        workspace_root="/stage",
+        repositories=[],
+        protected_write_paths=["/stage/inputs"],
+    )
+
+
 def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty() -> None:
     contract = auto_research_orchestrator_task_contract(
         project_name="project",
@@ -95,6 +110,7 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
         output_schema_path="/stage/schema.json",
         validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
+        write_scope=_prompt_scope(),
     )
 
     assert "Give every worker a clear, executable assignment" in contract
@@ -176,6 +192,7 @@ def test_root_prompts_expose_the_same_exact_callable_surface_and_lifecycle_bound
         output_schema_path="/stage/schema.json",
         validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
+        write_scope=_prompt_scope(),
         lifecycle_path="/stage/lifecycle.json",
     )
     contracts = (
@@ -231,6 +248,7 @@ def test_auto_research_workers_cannot_orchestrate_or_wake_themselves() -> None:
         output_schema_path="/stage/schema.json",
         validator_command="/stage/rcp-agent validate",
         reply_command="/stage/rcp-agent reply --key reply-once",
+        write_scope=_prompt_scope(),
     )
     contracts = (
         auto_research_worker_task_contract(
@@ -270,6 +288,7 @@ def test_the_orchestrator_prefers_apply_while_the_worker_is_never_told_to_apply(
         patch_path="/stage/patch.json",
         output_schema_path="/stage/schema.json",
         validator_command="/stage/rcp-agent validate",
+        write_scope=_prompt_scope(),
     )
     orchestrator = auto_research_orchestrator_task_contract(
         project_name="project",
@@ -304,6 +323,7 @@ def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_epis
         output_schema_path="/stage/schema.json",
         validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
+        write_scope=_prompt_scope(),
     )
     contracts = (
         auto_research_orchestrator_task_contract(project_name="project", **common),
@@ -315,31 +335,35 @@ def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_epis
     )
 
     for contract in contracts:
+        normalized = " ".join(contract.split())
         assert (
-            "Settled children are a prerequisite for finish, not a\n  reason to finish" in contract
-        )
-        assert "because a\n  Blocker remains" in contract
-        # Capacity contention states its own remedy instead of riding along with two
-        # conditions that have none. An orchestrator finished an episode with most of
-        # its budget unspent because the cluster was full, having already identified
-        # the scheduler as the way around it.
-        assert "Capacity contention is never a reason to finish" in contract
-        assert "seat a worker or kick off the Experiment to\n  submit the queued work" in contract
-        assert "temporary resource or capacity contention" not in contract
-        assert (
-            "without new human judgment, credentials,\n  approval, privileged action, or "
-            "coordination with another person" in contract
+            "Settled children are a prerequisite for finish, not a reason to finish" in normalized
         )
         assert (
-            "Act directly, delegate\n  executable work, or arrange an observable continuation"
-            in contract
+            "temporary capacity contention does not by itself end the research goal" in normalized
         )
-        assert "Do not turn a self-service step into a recommended human next step" in contract
+        # Both supported execution routes need a workable continuation; only the
+        # scheduler route can assume queued admission while devices are occupied.
+        assert "a scheduler can accept a job into its queue" in normalized
+        assert "a direct process host may need a worker to diagnose capacity" in normalized
+        assert "assume every host has a scheduler" in normalized
+        assert "submit the queued work rather than waiting" not in normalized
         assert (
-            "complete all self-service diagnosis, preparation,\n  and prerequisites first"
-            in contract
+            "new human judgment, credentials, approval, privileged action, or coordination "
+            "with another person" in normalized
         )
-        assert "only at that true human-only\n  boundary" in contract
+        assert (
+            "act directly, delegate an executable assignment, or arrange an observable continuation"
+            in normalized
+        )
+        assert "Do not turn a self-service step into a recommended human next step" in normalized
+        assert (
+            "Complete self-service diagnosis, preparation, and prerequisites before a human-only "
+            "boundary" in normalized
+        )
+        assert "every admitted child obligation is explicitly settled" in normalized
+        assert _authoring_rules(False) in contract
+        assert render_agent_graph_authority_contract() not in contract
 
 
 def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
@@ -690,6 +714,9 @@ class _WorkerLauncher:
             workspace = Path(kwargs["cwd"])
             contract = _contract(prompt)
             self.contracts.append(contract)
+            # Exercise fresh, recovered, waking, and correcting production paths with
+            # the exact scope resolved for the actual provider launch.
+            assert write_scope_section(kwargs["write_scope"]) in contract
             if self.writer is not None:
                 result = self.writer(contract, workspace)
                 if asyncio.iscoroutine(result):
@@ -1698,6 +1725,19 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     )
     assert continuation_events[-1].event == "done"
     assert continuation_launcher.requested_session_ids == ["orchestrator-session"]
+    fresh_contract = fresh_launcher.contracts[0]
+    continuation_contract = continuation_launcher.contracts[0]
+    fresh_prefix = re.search(r"Command prefix for this turn: `([^`]+)`", fresh_contract)
+    continuation_prefix = re.search(
+        r"Command prefix for this turn: `([^`]+)`", continuation_contract
+    )
+    assert fresh_prefix is not None and continuation_prefix is not None
+    assert continuation_prefix.group(1) != fresh_prefix.group(1)
+    assert fresh_prefix.group(1) not in continuation_contract
+    assert _authoring_rules(False) in fresh_contract
+    assert _authoring_rules(False) in continuation_contract
+    assert "supersede earlier instructions" in continuation_contract
+    assert render_agent_graph_authority_contract() not in continuation_contract
     assert all(
         not (stage / name).exists() for name in ("patch.json", "watch.json", "messages.json")
     )
@@ -3174,6 +3214,7 @@ def test_orchestrator_receives_the_project_settings_packages(manifest) -> None:
         output_schema_path="/s/schema.json",
         validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
+        write_scope=_prompt_scope(),
     )
     contract = auto_research_orchestrator_task_contract(
         project_name="project", repositories=[], skill_pointers=pointers, **common

@@ -185,6 +185,13 @@ surface supports:
 - keyed inbox harvest or clear; and
 - keyed guarded finish.
 
+Native continuations retain the assignment and completed work while refreshing
+the exact command prefix and callable vocabulary, graph inputs, Patch schema,
+validator, and resolved write boundary. Current instructions supersede earlier
+ones on those subjects. Graph correction supplies a fresh validate-only command
+credential; earlier coordination or Apply commands do not remain available to
+that correction.
+
 Keyed Apply is the orchestrator's preferred graph channel. Applying inside the
 turn returns the new revision and refreshed canonical paths while that turn can
 still act on them. An unconsumed final `patch.json` still applies at turn
@@ -208,9 +215,10 @@ does not defend against an arbitrary hostile same-UID process.
 Broker authority is separate from episode identity: ordinary Work and
 Experiment-loop use the same turn binding, while every Auto-research request
 retains its episode id and signature. Generalizing that binding does not widen
-the root's command policy: it has no compute launch, status, or cancel verbs.
-Child Work serves those three verbs through the same turn-bound compute handler
-as Work. Its existing validation and reply commands retain their policy.
+the root's command policy: it has no compute helper verbs. Child Work follows
+the same execution route as ordinary Work: the generic process route exposes
+only `launch`, while the scheduler route submits directly and exposes no helper
+verbs. Its existing validation and reply commands retain their policy.
 
 Apply uses the ordinary transition-manager path on the branch target, with
 idempotent source effect identity and refreshed graph pointers. Guarded finish
@@ -228,6 +236,10 @@ Experiment is not completion while existing agent authority and tools can still
 resolve the prerequisite. The orchestrator must act, delegate, or arrange an
 observable continuation. It may pause for a human only after naming the exact
 new judgment, credential, privileged action, approval, or coordination needed.
+Capacity handling follows the actual execution route: a scheduler can accept
+queued work, while a direct process host may require diagnosis and an observable
+continuation before launch. Neither route justifies inventing a scheduler or
+repeating an uncertain submission.
 
 At budget exhaustion or non-Stop ending, admitted children settle, the parent
 fences new work, and the common visual report resumes the exact branch-bound
