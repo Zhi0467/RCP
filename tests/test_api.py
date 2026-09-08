@@ -2986,8 +2986,9 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
     assert "progress_handoff_unavailable" in categories
 
 
-def test_same_provider_retry_reuses_its_session_with_a_followup_only(
-    manifest, tmp_path, monkeypatch
+@pytest.mark.parametrize("recovery", ["resume", "retry"])
+def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
+    manifest, tmp_path, monkeypatch, recovery: str
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
@@ -3022,7 +3023,10 @@ def test_same_provider_retry_reuses_its_session_with_a_followup_only(
             )
             if len(self.calls) == 1:
                 yield AgentEvent(event="session", session_id="owned-seed-session")
-                yield AgentEvent(event="error", text="provider connection dropped")
+                yield AgentEvent(
+                    event="paused" if recovery == "resume" else "error",
+                    text="provider connection dropped",
+                )
                 return
             (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
             yield AgentEvent(event="session", session_id="owned-seed-session")
@@ -3048,8 +3052,16 @@ def test_same_provider_retry_reuses_its_session_with_a_followup_only(
         json={"provider": "codex", "run_truth_scope": ["repo-a"]},
     )
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
+    assert failed["status"] == ("paused" if recovery == "resume" else "failed")
+    original_contract = service.graph_task_contract
+    updated_guidance = "Current guidance: preserve planned work without inventing Evidence."
+
+    def updated_contract(kind, **kwargs):
+        return original_contract(kind, **kwargs) + "\n" + updated_guidance
+
+    monkeypatch.setattr(service, "graph_task_contract", updated_contract)
     retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
+        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/{recovery}", json={}
     )
     completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
 
@@ -3059,40 +3071,49 @@ def test_same_provider_retry_reuses_its_session_with_a_followup_only(
     retry_prompt = str(launcher.calls[1]["prompt"])
     retry_contract_path = Path(retry_prompt.splitlines()[1])
     assert retry_prompt == PromptFactory.launch_prompt(str(retry_contract_path))
-    retry_diagnostics = json.loads(
-        next(
+    if recovery == "retry":
+        retry_diagnostics = json.loads(
+            next(
+                value
+                for name, value in launcher.calls[1]["inputs"].items()
+                if name.endswith("retry-diagnostics.json")
+            )
+        )
+        assert retry_diagnostics == {
+            "prior_attempt_diagnostics": [
+                "Attempt 1 (failed) failed with: provider connection dropped"
+            ]
+        }
+    store = app.state.catalog.store
+    first_base = store.agent_task_contract(failed["operation_id"], "base")
+    retry_base = store.agent_task_contract(completed["operation_id"], "base")
+    retry_contract = store.agent_task_contract(completed["operation_id"], recovery)
+    assert first_base is not None
+    assert retry_contract is not None
+    assert retry_base is not None
+    assert updated_guidance in retry_base
+    assert updated_guidance not in first_base
+    assert f"task-{completed['operation_id']}-base.md" in retry_contract
+    assert (
+        "current contract replaces earlier authority, method, schema, and output" in retry_contract
+    )
+    assert "Retry context:" not in retry_contract
+    assert f"task-{failed['operation_id']}-initial.md" in retry_contract
+    # Current schema, validator, and package pointers supersede retained output guidance.
+    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_contract
+    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_contract
+    if recovery == "retry":
+        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_contract
+    assert "Patch-only correction authority" not in retry_contract
+    if recovery == "retry":
+        assert "provider connection dropped" in next(
             value
             for name, value in launcher.calls[1]["inputs"].items()
             if name.endswith("retry-diagnostics.json")
         )
-    )
-    assert retry_diagnostics == {
-        "prior_attempt_diagnostics": ["Attempt 1 (failed) failed with: provider connection dropped"]
-    }
-    store = app.state.catalog.store
-    first_base = store.agent_task_contract(failed["operation_id"], "base")
-    retry_base = store.agent_task_contract(completed["operation_id"], "base")
-    retry_contract = store.agent_task_contract(completed["operation_id"], "retry")
-    assert first_base is not None
-    assert retry_contract is not None
-    # The session still holds the original contract, so this attempt rebuilds nothing.
-    assert retry_base is None
-    assert "Retry context:" not in retry_contract
-    assert "same native session that ran the previous attempt" in retry_contract
-    assert f"task-{failed['operation_id']}-initial.md" in retry_contract
-    # It names only what changed for this attempt.
-    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_contract
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_contract
-    assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_contract
-    assert "Patch-only correction authority" not in retry_contract
-    assert "provider connection dropped" in next(
-        value
-        for name, value in launcher.calls[1]["inputs"].items()
-        if name.endswith("retry-diagnostics.json")
-    )
     launches = [item for item in completed["debug_receipts"] if item["category"] == "agent_launch"]
-    assert launches[0]["payload"]["continuation_cause"] == "retry"
-    assert launches[0]["payload"]["launch_kind"] == "retry"
+    assert launches[0]["payload"]["continuation_cause"] == recovery
+    assert launches[0]["payload"]["launch_kind"] == recovery
 
 
 def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> None:
@@ -4860,8 +4881,15 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
     assert "This is a Work turn." in launcher.prompts[0]
     resume_contract = _local_task_contract(launcher.prompts[1])
     assert "# RCP resume contract" in resume_contract
-    assert "This is a Work turn." not in launcher.prompts[1]
-    assert not list((launcher.workspaces[1] / "inputs").glob("*human-request.txt"))
+    assert "This is a Work turn." in resume_contract
+    assert "Current authority and output contract" in resume_contract
+    assert "Patch JSON Schema" in Path(
+        next(
+            line.split("`", 2)[1]
+            for line in resume_contract.splitlines()
+            if line.startswith("- Current authority and output contract:")
+        )
+    ).read_text(encoding="utf-8")
     assert not any(path.name == "conversations" for path in launcher.read_dirs[1])
     assert launcher.workspaces[1].is_dir()
     assert [item.name for item in (launcher.workspaces[1] / "turns").iterdir()] == [operation_id]
@@ -5741,14 +5769,20 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
     assert graph_update["repairable"] is False
     assert launcher.calls == 3
     assert service.history.state().revision == 2
-    # The agent rewrote nothing, so the second correction must say so instead of
-    # repeating the first diagnostic as though the file had changed.
+    # An unchanged candidate still goes through live validation. This one remains
+    # invalid, so correction stays bounded and reports the substantive diagnostic.
     second_correction = next(
         content
         for name, content in launcher.input_snapshots[2].items()
         if name.endswith("work-correction-2.json")
     )
-    assert "byte-identical" in second_correction
+    first_correction = next(
+        content
+        for name, content in launcher.input_snapshots[1].items()
+        if name.endswith("work-correction-1.json")
+    )
+    assert json.loads(second_correction)["problem"] == json.loads(first_correction)["problem"]
+    assert "byte-identical" not in second_correction
 
 
 @pytest.mark.asyncio
@@ -8335,6 +8369,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
         "skill/evidence-triage/SKILL.md",
         "skill/evidence-triage/references/worked-examples.md",
         "skill/experiment-causality/SKILL.md",
+        "skill/experiment-causality/references/worked-examples.md",
         "skill/graph-audit/SKILL.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]

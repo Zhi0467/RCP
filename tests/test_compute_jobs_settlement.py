@@ -20,6 +20,7 @@ from .test_experiment_loop_agent_io import (
     _events,
     _execution,
     _experiment_patch,
+    _graph_update_from_events,
     _loop_request,
 )
 
@@ -243,7 +244,12 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
         )
     )
     assert not [event.text for event in events if event.event == "error"]
-    assert len(launcher.calls) == 3
+    graph_update = _graph_update_from_events(events)
+    expected_corrections = 1 if rewrite_patch else experiment_loop.PATCH_CORRECTION_MAX_ROUNDS
+    assert graph_update["status"] == ("none" if rewrite_patch else "rejected")
+    assert graph_update["correction_rounds"] == expected_corrections
+    # One initial turn, bounded Patch corrections, and one watcher correction.
+    assert len(launcher.calls) == expected_corrections + 2
     assert len(commands.backend.starts) == 1
     watchers = execution.store.watchers(app.state.default_project_id)
     assert [item.check_command for item in watchers] == [launcher.watcher["check_command"]]

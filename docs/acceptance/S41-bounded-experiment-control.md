@@ -98,10 +98,10 @@ Confirmed by the human on 2026-08-05.
   automatically, another episode start is refused; ordinary Work remains
   available.
 - Inspect the staged contract file. It contains the normal RCP ontology,
-  authority, focused-node/one-hop context, repository pointers, and exact Patch,
-  validator, watcher, schema, and artifact paths. It points separately to one
-  small loop-control JSON file containing only phase, episode and invocation
-  counts, pinned decisions, live drift, completion criteria, and delivered
+  focused Experiment authority, focused-node/one-hop context, repository
+  pointers, and exact Patch, validator, watcher, schema, and artifact paths. It
+  points separately to one small loop-control JSON file containing only phase,
+  episode and invocation counts, pinned decisions, live drift, completion criteria, and delivered
   watcher or group ids, plus one watcher-state JSON path. Attempts remain in the
   Experiment inside canonical `graph.json` and use the existing Patch schema;
   RCP does not duplicate them into another loop input or schema. No prior chat
@@ -114,17 +114,19 @@ Confirmed by the human on 2026-08-05.
   semantic attempt with the pinned decisions. The agent follows the staged
   attempt schema and recording protocol, but RCP does not infer attempt
   boundaries from job or watcher counts. Every loop invocation also writes the
-  exact `watch.json`: strict observers may carry an Experiment-only group label,
-  and a staged compatible observer may be retired with a reasoned stop item.
-  After those dispositions, `[]` or a stop-only list that leaves no live observer
-  is valid only when the same Patch explicitly records success, a Proposal, or a
-  Blocker that exits or pauses the loop.
+  exact `watch.json` object with `external` and `graph` lists. External observers
+  may carry an Experiment-only group label, and a staged compatible observer may
+  be retired with a reasoned stop item in `external`. Both lists empty, or a
+  retirement-only handoff that leaves no live observer, is valid only when the
+  same Patch explicitly records completion or a permitted Decision, Proposal,
+  or Blocker pause for human authority.
 - Omit `watch.json`, then provide a malformed or initially uncheckable watcher.
-  Separately, provide `[]` without an explicit exit Patch. RCP keeps the same
-  episode and invocation and asks the same native session to inspect
-  authoritative external state and correct the loop handoff. The correction
-  writes valid watchers for work that exists, or writes `[]` and a validated
-  success/Proposal/Blocker Patch when the loop should exit; it never resubmits.
+  Separately, provide `{"external": [], "graph": []}` without an explicit exit
+  Patch. RCP keeps the same episode and invocation and asks the same native
+  session to inspect authoritative external state and correct the loop handoff.
+  The correction writes valid watchers for work that exists, or writes both
+  lists empty and a validated completion or human-authority pause Patch when the
+  loop should exit; it never resubmits.
   If correction cannot establish either state, the task fails visibly and
   remains Retryable instead of silently losing the work.
 - Deliver completion through S42's watcher machinery. The attributed watcher
@@ -272,7 +274,7 @@ Confirmed by the human on 2026-08-05.
 - `corrections_receive_narrow_context_and_cannot_repeat_operational_work`
 - `every_loop_invocation_records_an_explicit_watcher_disposition`
 - `missing_or_invalid_watcher_handoff_is_corrected_inside_the_same_invocation`
-- `empty_watcher_list_requires_an_explicit_success_proposal_or_blocker_exit`
+- `empty_watcher_handoff_requires_explicit_completion_or_human_authority_pause`
 - `unrecoverable_watcher_handoff_fails_visibly_and_remains_retryable`
 - `joint_handoff_recovery_never_duplicates_patch_or_watchers`
 - `ceiling_pauses_automatic_wakes_without_discarding_completion`

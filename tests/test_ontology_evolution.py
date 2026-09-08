@@ -526,7 +526,7 @@ def test_extension_authoring_rules_appear_only_for_a_project_with_extensions() -
     with_extensions = _work_contract(ontology_extensions=True)
     without = _work_contract(ontology_extensions=False)
 
-    assert "materialized ontology carries extension definitions" in with_extensions
+    assert "supplied graph carries extension definitions" in with_extensions
     assert "`extension_fields`" in with_extensions
     assert "graph.json#ontology" in with_extensions
 

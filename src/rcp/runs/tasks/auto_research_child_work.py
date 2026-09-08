@@ -25,10 +25,18 @@ from rcp.agents.command_protocol import (
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
+    _authoring_rules,
+    _invoked_package_section,
+    _patch_validator_rules,
+    _repository_pointers,
     invoked_package_pointers,
+    invoked_provider_skill_section,
+    selected_skill_section,
+    write_scope_section,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
+from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
@@ -85,6 +93,7 @@ from rcp.runs.tasks.work import (
     _settle_watch_deliverable,
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
+    _stage_work_contract,
     _StagedWorkInputs,
     _stream_work_graph_repair,
     _validate_work_patch_live,
@@ -283,9 +292,17 @@ def _compose_child_resume_prompt(
         turn.local_stage,
         turn.remote_stage,
     )
+    current_contract_path = _stage_work_contract(
+        replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
+        staged,
+    )
     contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
+        current_contract_path=current_contract_path,
         mode="resume",
+        turn_mode="work",
+        write_scope=turn.write_scope,
+        output_schema_path=turn.patch_inputs.schema_path,
         patch_path=turn.patch_inputs.patch_path,
         watch_path=turn.patch_inputs.watch_path,
         execution_instructions=_work_execution_instructions(turn),
@@ -322,27 +339,70 @@ def _compose_child_resume_prompt(
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=original_contract_path,
+        base_contract_path=current_contract_path,
     )
 
 
-def _compose_child_message_wake_prompt(
+def _compose_child_wake_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     route: AutoResearchChildWorkRecord,
-    mail_path: str,
+    *,
+    mail_path: str | None,
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
+    if turn.continuation == "watcher_wake":
+        if not turn.request.message or not turn.request.watcher_ids:
+            raise ValueError("Child Work watcher wake is missing its observer payload.")
+        update = f"RCP delivered these observer results:\n\n{turn.request.message}"
+        label = "watch"
+        role = "auto_research_child_watcher_wake"
+    else:
+        if mail_path is None:
+            raise ValueError("Child Work message wake is missing its routed mail handoff.")
+        update = (
+            "The newly claimed agent mail is staged separately from the task contract. "
+            "Read it, continue the bounded assignment, and reply only if useful."
+        )
+        label = "mail"
+        role = "auto_research_child_message_wake"
     original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
+        turn.execution, turn.local_stage, turn.remote_stage
     )
-    contract = f"""
-Continue the exact Auto-research child Work assignment from `{original_contract_path}` in the
-same native provider session. The newly claimed agent mail is staged separately from the task
-contract. Read it, continue the bounded assignment, and reply only if useful.
+    invoked_skills = invoked_package_pointers(
+        staged.skill_pointers,
+        workflow_ids=turn.request.invoked_workflow_ids,
+        skill_ids=turn.request.invoked_skill_ids,
+    )
+    contract = f"""# RCP Auto-research child Work wake
 
+This is a Work turn. Continue the original child assignment in the same native provider session.
+Retain completed work and the original objective; the update below is continuation context.
+The retained contract is `{original_contract_path}` if needed.
+
+{update}
+
+Current turn paths:
+- Ontology: `{turn.context.graph_path}#ontology`
+- Current graph: `{turn.context.graph_path}`
+- Current research rendering: `{turn.context.research_md_path}`
+- Patch output: `{turn.patch_inputs.patch_path}`
+- Watcher output: `{turn.patch_inputs.watch_path}`
+- Patch JSON Schema: `{turn.patch_inputs.schema_path}`
+- Optional preview files: `{staged.artifact_directory}`
+
+The current authority, methods, paths, commands, and package pointers below replace earlier
+instructions. Keep the original assignment and completed progress.
+
+Current repository inputs:
+{_repository_pointers(staged.repositories)}
+{write_scope_section(turn.write_scope)}
+{render_agent_graph_authority_contract()}
+{_authoring_rules(turn.context.ontology_extensions)}
+{selected_skill_section(staged.skill_pointers) or "No official skills or workflows are selected for this turn."}
+{_invoked_package_section(invoked_skills)}
+{invoked_provider_skill_section(turn.request.resolved_provider_skills)}
+{_patch_validator_rules(turn.patch_inputs.validator_command)}
 {_CURRENT_OPERATIONAL_INSTRUCTIONS}
 {_work_execution_instructions(turn)}
 {_EXTERNAL_WATCHER_FORMS}
@@ -352,48 +412,10 @@ contract. Read it, continue the bounded assignment, and reply only if useful.
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
-        f"task-{staged.token}-auto-research-child-mail.md",
+        f"task-{staged.token}-auto-research-child-{label}.md",
         contract,
         execution=turn.execution,
-        role="auto_research_child_message_wake",
-    )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=original_contract_path,
-    )
-
-
-def _compose_child_watcher_wake_prompt(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
-    route: AutoResearchChildWorkRecord,
-) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    if not turn.request.message or not turn.request.watcher_ids:
-        raise ValueError("Child Work watcher wake is missing its observer payload.")
-    original_contract_path = _parent_task_contract_path(
-        turn.execution, turn.local_stage, turn.remote_stage
-    )
-    contract = f"""
-Continue the exact Auto-research child Work assignment from `{original_contract_path}` in the
-same native provider session. RCP delivered these observer results:
-
-{turn.request.message}
-
-{_CURRENT_OPERATIONAL_INSTRUCTIONS}
-{_work_execution_instructions(turn)}
-{_EXTERNAL_WATCHER_FORMS}
-
-{_auto_research_child_work_contract(turn, staged, route)}
-""".strip()
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-auto-research-child-watch.md",
-        contract,
-        execution=turn.execution,
-        role="auto_research_child_watcher_wake",
+        role=role,
     )
     return _ComposedWorkPrompt(contract_path, prompt, original_contract_path)
 
@@ -794,46 +816,31 @@ def _compose_child_retry_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
-    resumed_retry = turn.retrying and turn.reusing_checkpoint
-    explicit_contract = not turn.uses_master_protocol and not resumed_retry
-    current: _ComposedWorkPrompt | None = None
-    if explicit_contract:
-        current = _compose_child_fresh_prompt(
-            turn,
-            staged,
-            route,
-            mail_path=mail_path,
-            retry_diagnostics_path=retry_diagnostics_path,
-        )
+    current_contract_path = _stage_work_contract(
+        replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
+        staged,
+        retry_diagnostics_path=retry_diagnostics_path,
+    )
     result_view_handoff = bool(
         turn.continuation == "handoff" and staged.prepared_result_view is not None
     )
-    if result_view_handoff:
-        if current is None:
-            raise ValueError("The result view create handoff lost its current Work contract.")
-        original_contract_path = current.contract_path
-        continuation_contract_path = None
-    else:
-        original_contract_path = _parent_task_contract_path(
-            turn.execution,
-            turn.local_stage,
-            turn.remote_stage,
-        )
-        continuation_contract_path = current.contract_path if current is not None else None
-    base_contract_path = (
-        original_contract_path if resumed_retry or current is None else current.base_contract_path
+    original_contract_path = (
+        current_contract_path
+        if result_view_handoff
+        else _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
-        current_contract_path=continuation_contract_path,
+        current_contract_path=current_contract_path,
+        turn_mode="work",
+        write_scope=turn.write_scope,
         diagnostics_path=retry_diagnostics_path,
         patch_path=turn.patch_inputs.patch_path,
         watch_path=turn.patch_inputs.watch_path,
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
-        output_schema_path=turn.patch_inputs.schema_path if resumed_retry else None,
-        skill_pointers=staged.skill_pointers if resumed_retry else None,
+        output_schema_path=turn.patch_inputs.schema_path,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -866,7 +873,7 @@ def _compose_child_retry_prompt(
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=base_contract_path,
+        base_contract_path=current_contract_path,
     )
 
 
@@ -884,12 +891,8 @@ def _compose_child_prompt(
             route,
             mail_path=mail_path,
         )
-    if turn.continuation == "watcher_wake":
-        return _compose_child_watcher_wake_prompt(turn, staged, route)
-    if turn.continuation == "message_wake":
-        if mail_path is None:
-            raise ValueError("Child Work message wake is missing its routed mail handoff.")
-        return _compose_child_message_wake_prompt(turn, staged, route, mail_path)
+    if turn.continuation in {"watcher_wake", "message_wake"}:
+        return _compose_child_wake_prompt(turn, staged, route, mail_path=mail_path)
     if turn.retrying or turn.continuation == "handoff":
         return _compose_child_retry_prompt(
             turn,

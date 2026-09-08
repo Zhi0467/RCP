@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -56,7 +55,7 @@ class DeliverableFailure:
 @dataclass(frozen=True)
 class CorrectionPatchRead:
     text: str | None
-    problem: Literal["unreadable", "missing", "unchanged"] | None = None
+    problem: Literal["unreadable", "missing"] | None = None
     detail: str | None = None
 
 
@@ -606,10 +605,8 @@ def apply_work_patch(
 
 def read_correction_patch(
     read_patch: Callable[[], str | None],
-    *,
-    pre_launch_digest: str | None,
 ) -> CorrectionPatchRead:
-    """Classify one correction round's patch output without applying owner policy."""
+    """Read a completed correction's candidate for live validation by its owner."""
 
     try:
         corrected = read_patch()
@@ -617,11 +614,6 @@ def read_correction_patch(
         return CorrectionPatchRead(text=None, problem="unreadable", detail=str(exc))
     if corrected is None:
         return CorrectionPatchRead(text=None, problem="missing")
-    if (
-        pre_launch_digest is not None
-        and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
-    ):
-        return CorrectionPatchRead(text=None, problem="unchanged")
     return CorrectionPatchRead(text=corrected)
 
 
@@ -629,7 +621,6 @@ def settle_graph_repair_patch(
     outcome: _ProviderOutcome,
     *,
     provider: str,
-    pre_launch_digest: str | None,
     read_patch: Callable[[], str | None],
     apply_patch: Callable[[str], tuple[GraphUpdateResult | None, DeliverableFailure | None]],
     bounded_messages: Callable[..., list[str]],
@@ -659,20 +650,6 @@ def settle_graph_repair_patch(
     if patch_text is None:
         return GraphRepairPatchResult(
             frames=(_sse(AgentEvent(event="error", text="The repair did not write patch.json.")),)
-        )
-    if (
-        pre_launch_digest is not None
-        and hashlib.sha256(patch_text.encode("utf-8")).hexdigest() == pre_launch_digest
-    ):
-        return GraphRepairPatchResult(
-            frames=(
-                _sse(
-                    AgentEvent(
-                        event="error",
-                        text="The repair left patch.json byte-identical to the rejected patch.",
-                    )
-                ),
-            )
         )
     try:
         graph_update, failure = apply_patch(patch_text)

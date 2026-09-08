@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -9,7 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
+from rcp.agents.prompts import _authoring_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
+from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.models import (
     AuthorizedHuman,
     Blocker,
@@ -426,6 +430,7 @@ class _FakeLauncher:
         self.patch_text = patch_text
         self.sessions: list[str | None] = []
         self.write_dirs: list[list[Path]] = []
+        self.contracts: list[str] = []
 
     async def stream(
         self,
@@ -439,6 +444,11 @@ class _FakeLauncher:
     ) -> AsyncIterator[AgentEvent]:
         self.sessions.append(session_id)
         self.write_dirs.append(write_dirs)
+        contract_path = re.search(
+            r"Open and follow the immutable RCP task contract at:\s*([^\n]+)", _prompt
+        )
+        assert contract_path is not None
+        self.contracts.append(Path(contract_path.group(1)).read_text(encoding="utf-8"))
         (cwd / "patch.json").write_text(self.patch_text, encoding="utf-8")
         yield AgentEvent(event="session", session_id=session_id or "native-session")
         yield AgentEvent(event="provider_exit", text='{"return_code":0}')
@@ -792,6 +802,13 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path:
     assert outcome.receipt.provenance.rebased_main_head == second.main_head
     assert launcher.sessions == [None, "native-session"]
     assert launcher.write_dirs == [[], []]
+    assert orchestrator_graph_authority_contract() in launcher.contracts[0]
+    for contract in launcher.contracts:
+        assert _authoring_rules(False) in contract
+        assert render_agent_graph_authority_contract() not in contract
+        assert "inspect no repositories" in contract or "inspect any repository" in contract
+        assert "only after inspecting the run-scope repositories" not in " ".join(contract.split())
+        assert "Reach it by SSH" not in contract
     assert any('"event":"done"' in frame for frame in frames)
 
 

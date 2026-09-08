@@ -31,7 +31,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
-from rcp.agents.prompts import PromptFactory
+from rcp.agents.prompts import PromptFactory, write_scope_section
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -238,6 +238,17 @@ async def stream_auto_research_orchestrator_run(
             ),
         ):
             validator_command = staged_commands.client_command("validate", patch_path)
+            write_scope = _project_write_scope(
+                context,
+                service,
+                turn.request.run_on or "",
+                local_stage=stage.local,
+                workspace=stage.workspace,
+                remote_stage=stage.remote,
+                data_dir=data_dir,
+                execution=execution,
+                capability="orchestrate",
+            )
             contract_path, prompt = _orchestrator_prompt(
                 execution,
                 turn,
@@ -252,6 +263,7 @@ async def stream_auto_research_orchestrator_run(
                 messages_path=messages_path,
                 lifecycle_path=lifecycle_path,
                 skill_pointers=orchestrator_skill_pointers,
+                write_scope=write_scope,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -259,17 +271,6 @@ async def stream_auto_research_orchestrator_run(
                 stage.remote,
                 service,
                 turn.request.run_on or "",
-            )
-            write_scope = _project_write_scope(
-                context,
-                service,
-                turn.request.run_on or "",
-                local_stage=stage.local,
-                workspace=stage.workspace,
-                remote_stage=stage.remote,
-                data_dir=data_dir,
-                execution=execution,
-                capability="orchestrate",
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
@@ -487,6 +488,17 @@ async def stream_auto_research_worker_run(
                 "--key",
                 _worker_reply_key(turn),
             )
+            write_scope = _project_write_scope(
+                context,
+                service,
+                turn.request.run_on or "",
+                local_stage=stage.local,
+                workspace=stage.workspace,
+                remote_stage=stage.remote,
+                data_dir=data_dir,
+                execution=execution,
+                capability="work_auto",
+            )
             contract_path, prompt = _worker_prompt(
                 service,
                 execution,
@@ -500,6 +512,7 @@ async def stream_auto_research_worker_run(
                 validator_command=validator_command,
                 reply_command=reply_command,
                 messages_path=messages_path,
+                write_scope=write_scope,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -507,17 +520,6 @@ async def stream_auto_research_worker_run(
                 stage.remote,
                 service,
                 turn.request.run_on or "",
-            )
-            write_scope = _project_write_scope(
-                context,
-                service,
-                turn.request.run_on or "",
-                local_stage=stage.local,
-                workspace=stage.workspace,
-                remote_stage=stage.remote,
-                data_dir=data_dir,
-                execution=execution,
-                capability="work_auto",
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
@@ -1238,6 +1240,7 @@ def _orchestrator_prompt(
     messages_path: str | None,
     lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
+    write_scope: ProjectWriteScope,
 ) -> tuple[str, str]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1273,6 +1276,8 @@ def _orchestrator_prompt(
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             skill_pointers=skill_pointers,
+            write_scope=write_scope,
+            ontology_extensions=context.ontology_extensions,
         )
         role = (
             "auto_research_orchestrator"
@@ -1314,6 +1319,8 @@ def _orchestrator_prompt(
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=retry_diagnostics_path,
             skill_pointers=skill_pointers,
+            write_scope=write_scope,
+            ontology_extensions=context.ontology_extensions,
         )
         role = f"auto_research_orchestrator_{execution.continuation}"
     return _stage_task_contract(
@@ -1340,6 +1347,7 @@ def _worker_prompt(
     validator_command: str,
     reply_command: str,
     messages_path: str | None,
+    write_scope: ProjectWriteScope,
 ) -> tuple[str, str]:
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
@@ -1375,6 +1383,8 @@ def _worker_prompt(
             validator_command=validator_command,
             reply_command=reply_command,
             messages_path=messages_path,
+            write_scope=write_scope,
+            ontology_extensions=context.ontology_extensions,
         )
         role = "auto_research_worker"
     else:
@@ -1406,6 +1416,8 @@ def _worker_prompt(
             reply_command=reply_command,
             messages_path=messages_path,
             retry_diagnostics_path=retry_diagnostics_path,
+            write_scope=write_scope,
+            ontology_extensions=context.ontology_extensions,
         )
         role = f"auto_research_worker_{execution.continuation}"
     return _stage_task_contract(
@@ -1811,6 +1823,12 @@ async def _settle_worker_patch(
                 validator_command=correction_validator_command,
                 output_schema_path=schema_path,
             )
+            correction_contract += (
+                "\nThe current Auto-research command credential permits only Patch validation. "
+                "It replaces every earlier command prefix; do not Apply, send mail, dispatch "
+                "children, register watchers, or finish the episode during this correction.\n"
+                + write_scope_section(write_scope)
+            )
             correction_path, correction_prompt = _stage_task_contract(
                 stage.local,
                 stage.remote,
@@ -1819,7 +1837,6 @@ async def _settle_worker_patch(
                 execution=execution,
                 role=f"auto_research_{_actor_role}_patch_correction_{correction_rounds}",
             )
-            pre_launch_digest = _existing_exact_patch_digest(stage.workspace, stage.remote)
             _record_agent_launch_receipt(
                 execution,
                 cast(RunRequest, turn.request),
@@ -1895,7 +1912,6 @@ async def _settle_worker_patch(
         corrected: _CorrectionPatchRead = _read_correction_patch(
             stage.workspace,
             stage.remote,
-            pre_launch_digest=pre_launch_digest,
         )
         if corrected.problem == "unreadable":
             failure = _WorkPatchFailure(
@@ -1908,14 +1924,6 @@ async def _settle_worker_patch(
         elif corrected.problem == "missing":
             failure = _WorkPatchFailure(
                 "The correction completed without writing patch.json.",
-                correctable=True,
-                change_summary=failure.change_summary,
-                proposal_ids=failure.proposal_ids,
-            )
-            patch_text = None
-        elif corrected.problem == "unchanged":
-            failure = _WorkPatchFailure(
-                f"{failure.message} The correction left patch.json byte-identical.",
                 correctable=True,
                 change_summary=failure.change_summary,
                 proposal_ids=failure.proposal_ids,

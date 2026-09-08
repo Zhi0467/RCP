@@ -565,7 +565,12 @@ async def test_operational_continuation_renders_current_launch_client(
         turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
         if owner is child_module:
             composed = child_module._compose_child_prompt(
-                turn, staged, SimpleNamespace(worker_id="child-1"), mail_path="/inputs/mail.json"
+                turn,
+                staged,
+                SimpleNamespace(
+                    worker_id="child-1", instruction="Complete the bounded child check."
+                ),
+                mail_path="/inputs/mail.json",
             )
         elif owner is loop_module:
             turn.request = turn.request.model_copy(
@@ -577,6 +582,7 @@ async def test_operational_continuation_renders_current_launch_client(
                 }
             )
             prepared = SimpleNamespace(
+                episode_context_baseline={},
                 loop_control_path="/inputs/loop-control.json",
                 watcher_state_path="/inputs/watcher-state.json",
                 context_replacement=None,
@@ -601,6 +607,9 @@ async def test_operational_continuation_renders_current_launch_client(
             )
             composed = compose(turn, staged)
         contract = Path(composed.contract_path).read_text()
+        scope_context = composed.prompt + "\n" + contract
+        for path in (*turn.write_scope.writable_roots, *turn.write_scope.protected_write_paths):
+            assert path in scope_context
         if owner is work_module and continuation == "message_wake":
             assert turn.patch_inputs.validator_staged.client_command(*launch_args) not in contract
             tooling = list((turn.local_stage / "inputs").glob("task-*-execution.md"))

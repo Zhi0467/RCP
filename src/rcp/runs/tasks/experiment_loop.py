@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 from rcp.agents import (
     AgentEvent,
     AgentLauncher,
-    PromptFactory,
     parse_agent_patch_json,
     prepare_agent_patch,
     validate_agent_patch_shape,
@@ -80,7 +79,6 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
-    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
     _protected_run_stage_roots,
@@ -554,6 +552,12 @@ def _compose_resume_prompt(
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
+        write_scope=turn.write_scope,
+        artifact_path=str(staged.artifact_directory),
+        ontology_extensions=turn.context.ontology_extensions,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        context_replacement=prepared.episode_context_baseline,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -610,12 +614,16 @@ def _compose_wake_prompt(
         validator_command=turn.patch_inputs.validator_command,
         execution_host=turn.execution_host,
         context_replacement=prepared.context_replacement,
+        write_scope=turn.write_scope,
+        artifact_path=str(staged.artifact_directory),
+        ontology_extensions=turn.context.ontology_extensions,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
             skill_ids=turn.request.invoked_skill_ids,
         ),
     )
+    contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -753,6 +761,12 @@ def _compose_retry_prompt(
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
         diagnostics_path=retry_diagnostics_path,
+        write_scope=turn.write_scope,
+        artifact_path=str(staged.artifact_directory),
+        ontology_extensions=turn.context.ontology_extensions,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        context_replacement=prepared.episode_context_baseline,
         invoked_skill_pointers=invoked_package_pointers(
             staged.skill_pointers,
             workflow_ids=turn.request.invoked_workflow_ids,
@@ -1426,6 +1440,7 @@ async def _apply_experiment_loop_turn(
                     patch_path=turn.patch_inputs.patch_path,
                     watch_path=turn.patch_inputs.watch_path,
                     validator_command=loop_validator_command,
+                    output_schema_path=turn.patch_inputs.schema_path,
                 )
                 correction_path, correction_prompt = _stage_task_contract(
                     turn.local_stage,
@@ -1434,10 +1449,6 @@ async def _apply_experiment_loop_turn(
                     correction_contract,
                     execution=turn.execution,
                     role=(f"experiment_loop_patch_correction_{loop_patch_correction_rounds}"),
-                )
-                pre_launch_digest = _existing_exact_patch_digest(
-                    turn.workspace,
-                    turn.remote_stage,
                 )
                 _record_agent_launch_receipt(
                     turn.execution,
@@ -1491,7 +1502,6 @@ async def _apply_experiment_loop_turn(
                 continue
             corrected = read_correction_patch(
                 lambda: _read_chat_patch(turn.workspace, turn.remote_stage),
-                pre_launch_digest=pre_launch_digest,
             )
             if corrected.problem == "unreadable":
                 final_failure = _DeliverableFailure(
@@ -1500,9 +1510,9 @@ async def _apply_experiment_loop_turn(
                 )
                 final_patch_text = None
                 continue
-            if corrected.problem in {"missing", "unchanged"}:
+            if corrected.problem == "missing":
                 final_failure = _DeliverableFailure(
-                    "The loop Patch correction did not rewrite patch.json.",
+                    "The loop Patch correction did not leave patch.json.",
                     correctable=True,
                 )
                 final_patch_text = None
@@ -2101,12 +2111,14 @@ async def _stream_work_graph_repair(
                 "prior_correction_rounds": previous.correction_rounds,
             },
         )
-        contract = PromptFactory.continuation_task_contract(
+        contract = experiment_loop_patch_correction_contract(
             original_contract_path=original_contract_path,
-            mode="work_patch_correction",
             patch_path=patch_path,
+            watch_path=patch_inputs.watch_path,
             diagnostics_path=diagnostics_path,
             validator_command=validator_command,
+            output_schema_path=patch_inputs.schema_path,
+            write_scope=write_scope,
         )
         contract_path, prompt = _stage_task_contract(
             local_stage,
@@ -2116,7 +2128,6 @@ async def _stream_work_graph_repair(
             execution=execution,
             role="work_patch_repair",
         )
-        pre_launch_digest = _existing_exact_patch_digest(workspace, remote_stage)
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -2172,7 +2183,6 @@ async def _stream_work_graph_repair(
     repair = settle_graph_repair_patch(
         outcome,
         provider=request.provider,
-        pre_launch_digest=pre_launch_digest,
         read_patch=lambda: _read_chat_patch(workspace, remote_stage),
         apply_patch=lambda text: _apply_work_patch(
             service,

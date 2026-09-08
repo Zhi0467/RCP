@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, PromptFactory
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -101,7 +101,7 @@ def _assert_retry_contract(
     *,
     expected_failure: str,
 ) -> str:
-    """A retry that still holds its native session gets a follow-up, not a rebuilt contract."""
+    """Recovery retains progress while replacing stale method and output guidance."""
 
     assert launcher.sessions == [None, launcher.native_session_id]
     retry_contract_path = launcher.contract_paths[1]
@@ -115,15 +115,18 @@ def _assert_retry_contract(
     assert "Exact failure diagnostics" in retry_contract
     assert str(diagnostics_path) in retry_contract
     assert str(launcher.contract_paths[0]) in retry_contract
-    assert "same native session that ran the previous attempt" in retry_contract
+    current_contract_path = stage_inputs / f"{prefix}-base.md"
+    assert str(current_contract_path) in retry_contract
+    assert (
+        "current contract replaces earlier authority, method, schema, and output" in retry_contract
+    )
     assert "Retry authority and side-effect safety" in retry_contract
     assert "inspect the authoritative external state" in retry_contract
     assert "# RCP resume contract" not in retry_contract
     assert "Patch-only correction authority" not in retry_contract
-    # Nothing is rebuilt or restated for this attempt: no base contract, no human request.
-    assert not (stage_inputs / f"{prefix}-base.md").exists()
-    assert f"{prefix}-base.md" not in launcher.input_snapshots[1]
-    assert f"{prefix}-human-request.txt" not in launcher.input_snapshots[1]
+    assert current_contract_path.is_file()
+    assert f"{prefix}-base.md" in launcher.input_snapshots[1]
+    assert f"{prefix}-human-request.txt" in launcher.input_snapshots[1]
     assert "Retry context:" not in retry_contract
     assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
         "prior_attempt_diagnostics": expected_diagnostics
@@ -180,6 +183,8 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
 
     original_contract = _assert_retry_contract(launcher, expected_failure=failure)
     assert "This turn has no graph-change channel" in original_contract
+    assert "This is a Discuss turn." in launcher.contracts[1]
+    assert "This is a Work turn." not in launcher.contracts[1]
     assert launcher.workspaces[0] == launcher.workspaces[1]
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
@@ -257,6 +262,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
 
     original_contract = _assert_retry_contract(launcher, expected_failure=failure)
     assert "Operational authority" in original_contract
+    assert "This is a Work turn." in launcher.contracts[1]
     if legacy_layout:
         assert launcher.workspaces[1] == launcher.workspaces[0].parent
     else:
@@ -520,3 +526,96 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
     assert "Authorship contract" in original_contract
     assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
     _assert_retry_receipt(app, str(retried["operation_id"]))
+
+
+@pytest.mark.parametrize("kind", ["node_chat", "paper_coach"])
+@pytest.mark.parametrize("recovery", ["resume", "retry"])
+def test_recovery_delivers_current_guidance_in_the_retained_session(
+    manifest, tmp_path, monkeypatch, kind: str, recovery: str
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    service.paper.create()
+
+    class RecoveryLauncher(_FailThenSucceedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if recovery == "resume" and event.event == "error":
+                    yield AgentEvent(event="paused", text="Provider process paused.")
+                else:
+                    yield event
+
+    launcher = RecoveryLauncher("Provider stream disconnected.")
+
+    async def stream(_project_id, task_kind, request, execution):
+        assert task_kind == kind
+        frames = (
+            stream_coach(
+                service, launcher, service.paper, request, tmp_path / "data", execution=execution
+            )
+            if kind == "paper_coach"
+            else stream_discuss_run(
+                service, launcher, request, tmp_path / "data", execution=execution
+            )
+        )
+        async for frame in frames:
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    project_id = app.state.default_project_id
+    objective = "Explain the uncertainty in this research claim."
+    body = {"message": objective}
+    if kind == "node_chat":
+        body.update(
+            node_id="hyp/replanning-restores-plasticity",
+            chat_id=str(uuid.uuid4()),
+            run_truth_scope=["repo-a"],
+            mode="discuss",
+        )
+    with TestClient(app) as client:
+        response = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
+        assert response.status_code == 202
+        first = wait_for_task_response(
+            client,
+            project_id,
+            response.json()["operation_id"],
+            expect="paused" if recovery == "resume" else "failed",
+        )
+        factory_name = (
+            "paper_coach_task_contract" if kind == "paper_coach" else "discuss_task_contract"
+        )
+        original_factory = getattr(PromptFactory, factory_name)
+        updated_guidance = "Current guidance: preserve uncertainty in the explanation."
+
+        def updated_contract(**kwargs):
+            return original_factory(**kwargs) + "\n" + updated_guidance
+
+        monkeypatch.setattr(PromptFactory, factory_name, staticmethod(updated_contract))
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/{first['operation_id']}/{recovery}"
+        )
+        assert response.status_code == 202
+        completed = wait_for_task_response(
+            client, project_id, response.json()["operation_id"], expect="succeeded"
+        )
+
+    assert launcher.sessions == [None, launcher.native_session_id]
+    assert launcher.workspaces[0] == launcher.workspaces[1]
+    assert completed["parent_operation_id"] == first["operation_id"]
+    current_name = f"task-{completed['operation_id']}-base.md"
+    current_contract = launcher.input_snapshots[1][current_name]
+    assert updated_guidance in current_contract
+    assert updated_guidance not in launcher.contracts[0]
+    assert current_name in launcher.contracts[1]
+    assert str(launcher.contract_paths[0]) in launcher.contracts[1]
+    assert "Retain the original objective, input provenance, and completed" in launcher.contracts[1]
+    assert (
+        launcher.input_snapshots[1][f"task-{completed['operation_id']}-human-request.txt"]
+        == objective
+    )
+    if kind == "node_chat":
+        assert "This is a Discuss turn." in launcher.contracts[1]
+        assert "This is a Work turn." not in launcher.contracts[1]
+    else:
+        assert "Never draft replacement sentences or paragraphs" in current_contract

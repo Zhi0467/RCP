@@ -28,11 +28,13 @@ prior RCP transcript text. Provider-native session continuation may retain the
 provider's context without making the displayed transcript an RCP input.
 
 The first ordinary turn in an RCP-owned native session receives one master
-context containing the current graph target and head, focused node, exact
-run-scope repository pointers, enabled-package pointers, selected non-secret
-compute connection metadata, schemas, outputs, and both Discuss and Work
-contracts. Seeing both contracts grants no cumulative
-authority: each turn carries one explicit mode marker.
+context. It supplies shared project context once: the current graph target and
+head, focused node, exact run-scope repository pointers, enabled-package
+pointers, and selected non-secret compute connection metadata. Separate Discuss
+and Work contracts define their authority, schemas, and outputs against that
+shared context. Seeing both grants no cumulative authority: each turn carries
+one explicit mode marker. A refreshed master replaces earlier master
+instructions while retaining the conversation's native progress.
 
 Later ordinary resumes repeat only the master-context path, then send the marker,
 logical turn id, human message unchanged, resolved artifact directory, and a
@@ -232,7 +234,10 @@ current drift, completion criteria, and delivered watcher identities. Watcher
 state is a separate exact file. The provider never receives prior chat
 transcripts. An automatic wake repeats one path to the full Experiment contract
 that initialized its exact current native session; it does not tell the provider
-to reread that unchanged contract.
+to reread that unchanged contract. Current focused authority, causal guidance,
+execution instructions, control inputs, schema, and output/validator paths
+replace earlier instructions while the objective, attempt ledger, and completed
+native-session progress remain intact.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the

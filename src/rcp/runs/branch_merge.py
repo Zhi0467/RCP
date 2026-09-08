@@ -25,6 +25,7 @@ from rcp.agents.branch_merge_prompt import (
     branch_merge_rebase_contract,
     branch_merge_task_contract,
 )
+from rcp.agents.context import _has_ontology_extensions
 from rcp.agents.schema import OrchestratorAgentPatch, prepare_agent_patch
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.materialize import apply_valid_patch
@@ -1027,6 +1028,7 @@ async def stream_branch_merge_run(
                 context_id=context.context_id,
                 patch_path=patch_path,
                 validator_command=validator_command,
+                ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             original_contract_path, prompt = _stage_task_contract(
                 stage.local_stage,
@@ -1159,6 +1161,7 @@ async def stream_branch_merge_run(
                 context_id=context.context_id,
                 patch_path=_patch_path(stage),
                 validator_command=validator_command,
+                ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             contract_path, prompt = _stage_task_contract(
                 stage.local_stage,

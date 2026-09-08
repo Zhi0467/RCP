@@ -13,6 +13,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
+from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
@@ -867,28 +868,24 @@ def test_compact_wake_message_is_human_style_and_authority_truthful(execution_in
     assert "- watchers armed: watch/old-a, watch/old-b" in message
     assert "This turn was triggered by: watch/ready" in message
     normalized = " ".join(message.split())
-    assert "does not mean the work succeeded" in normalized
-    assert "submit a replacement only when the authoritative state shows" in normalized
+    assert "not that the work succeeded" in normalized
+    assert (
+        "Inspect the result and logs before interpreting it or launching a replacement"
+        in normalized
+    )
     assert "unexpected process exit (including SIGTERM)" in normalized
     assert "Two similar failures do not prove an external cause" in normalized
     assert "plausibly transient failure is uncertainty, not a Blocker" in normalized
-    assert (
-        "failed or repeatedly terminated process without that diagnosis stays on path 1"
-        in normalized
-    )
     assert " ".join(execution_instructions.split()) in normalized
     _assert_compute_handoff(message)
-    assert "do not wait or poll for detached work" not in message
-    assert "Merely observing that all jobs ended is not enough" in message
-    assert "2. You need human input." in message
-    assert "3. The Experiment is operationally finished." in message
-    assert (
-        "the scientific result may be successful, unsuccessful, inconclusive, or invalid"
-        in normalized
-    )
-    assert "`current_summary`, and `next_action`" in normalized
-    assert "use `next_action: null` when no further action remains" in normalized
-    assert "trying to write `current_summary` or `next_action`" not in normalized
+    assert "1. Continue useful authorized work now" in message
+    assert "2. Pause for an explicit human-authority boundary" in message
+    assert "3. Finish when no operational work remains" in message
+    assert "unsuccessful or inconclusive" in normalized
+    assert "`next_action` to null" in normalized
+    assert "Do not choose an option" in normalized
+    assert "Current Experiment-loop graph authority" in message
+    assert "do not invent Evidence" in message
     assert '"check_command"' in message
     assert "These context values replace" not in message
     assert "# RCP Experiment-loop task contract" not in message
@@ -1091,8 +1088,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
     (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
     # This schema-valid deliverable cannot update an unknown graph node. The
-    # provider keeps it byte-identical through correction, so RCP truthfully
-    # records a rejected graph handoff while retaining the valid watchers.
+    # provider keeps it byte-identical through correction. Live validation still
+    # rejects it while RCP retains the valid watchers.
     launcher.patch_payload = {
         "summary": "Tried to update an unavailable graph node.",
         "ops": [
@@ -1139,8 +1136,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert "These context values replace what this session was given:" in wake_contract
     replacement = wake_contract.split(
         "These context values replace what this session was given:\n", 1
-    )[1].split("\n\nFor this turn", 1)[0]
-    assert json.loads(replacement) == {"repositories": initial_baseline["repositories"]}
+    )[1]
+    replacement_values, _ = json.JSONDecoder().raw_decode(replacement)
+    assert replacement_values == {"repositories": initial_baseline["repositories"]}
     assert "task-loop-wake-experiment-control-watcher_wake.json" in wake_contract
     assert "task-loop-wake-experiment-watchers.json" in wake_contract
     assert str(service.manifest.research_dir / "graph.json") in wake_contract
@@ -1151,6 +1149,14 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert " --credential " not in wake_contract
     assert " --workspace " in wake_contract
     assert " validate " in wake_contract
+    from rcp.agents.prompts import write_scope_section
+
+    assert write_scope_section(launcher.write_scopes[1]) in wake_contract
+    assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
+    assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
+    assert "Current Experiment-loop graph authority" in wake_contract
+    assert "A downstream" in wake_contract
+    assert "do not invent Evidence" in wake_contract
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None
@@ -1356,6 +1362,152 @@ async def test_unbound_initial_handoff_does_not_claim_provider_switch_recovery(
     assert "provisional replacement provider session" not in contract
     assert "Exact prior failure diagnostics" not in contract
     assert store.agent_task_contract("loop-unbound-handoff", "work_retry_base") == contract
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair_mode", ["inline", "manual"])
+@pytest.mark.parametrize("evidence_arrives", [False, True])
+async def test_completed_loop_correction_revalidates_retained_patch_against_live_graph(
+    manifest,
+    tmp_path: Path,
+    repair_mode: str,
+    evidence_arrives: bool,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    initial_revision = service.history.state().revision
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    native_session_id = "retained-patch-session"
+    request = _loop_request(
+        "00000000-0000-4000-8000-000000000098",
+        "chat-retained-patch",
+        invocation=1,
+    )
+    execution = _execution(store, project_id, "retained-patch-turn", request)
+    missing_evidence_id = "ev/arrived-during-correction"
+    arriving_evidence = Patch(
+        kind="refresh",
+        author="agent",
+        summary="Recorded the completed analysis.",
+        run_truth_scope=["repo-a"],
+        ops=[
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": missing_evidence_id,
+                        "type": "evidence",
+                        "title": "Analysis of adaptation",
+                        "observation": "The derivation predicts recovery after replanning.",
+                        "origin": "analytic",
+                    }
+                ],
+            }
+        ],
+    )
+    patch_payload = {
+        "summary": "Assessed the analysis against the hypothesis.",
+        "ops": [
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "source": missing_evidence_id,
+                        "target": "hyp/replanning-restores-plasticity",
+                        "relation": "supports",
+                        "assessment": {
+                            "relevance": "direct",
+                            "weight": "limited",
+                            "qualifications": ["The prediction has not been tested empirically."],
+                        },
+                    }
+                ],
+            }
+        ],
+        "repositories_read": [],
+        "change_summary": ["Assessed the analysis against the hypothesis."],
+    }
+
+    class RetainedPatchLauncher(_LoopLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            if self.contracts:
+                # The correction completes without touching either retained file.
+                self.patch_payload = None
+                self.write_handoff = False
+                if len(self.contracts) == 1 and repair_mode == "inline" and evidence_arrives:
+                    append_fixture_patch(service, arriving_evidence)
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = RetainedPatchLauncher(native_session_id, tmp_path, write_handoff=True)
+    launcher.patch_payload = patch_payload
+    events = await _events(
+        stream_experiment_loop_task(service, launcher, request, data_dir, execution=execution)
+    )
+    graph_update = _graph_update_from_events(events)
+    if repair_mode == "manual":
+        assert graph_update["status"] == "rejected"
+        assert graph_update["correction_rounds"] == PATCH_CORRECTION_MAX_ROUNDS
+        assert graph_update["repairable"] is True
+        store.checkpoint_agent_task(
+            execution.operation_id,
+            native_session_id=native_session_id,
+            stage_root=execution.stage_root,
+        )
+        store.complete_agent_task(
+            execution.operation_id,
+            applied_revision=None,
+            result={"graph_update": graph_update},
+        )
+        store.claim_agent_task_graph_repair(execution.operation_id)
+        if evidence_arrives:
+            append_fixture_patch(service, arriving_evidence)
+        repair_request = request.model_copy(
+            update={"session_id": native_session_id, "message": None}
+        )
+        repair_execution = _execution(
+            store,
+            project_id,
+            "retained-patch-repair",
+            repair_request,
+            continuation="graph_repair",
+            stage_root=execution.stage_root,
+            parent_operation_id=execution.operation_id,
+        )
+        repair_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
+        events = await _events(
+            stream_experiment_loop_task(
+                service,
+                repair_launcher,
+                repair_request,
+                data_dir,
+                execution=repair_execution,
+            )
+        )
+        graph_update = _graph_update_from_events(events)
+        assert repair_launcher.sessions == [native_session_id]
+
+    assert not [event for event in events if event.event == "error"]
+    assert (launcher.workspaces[0] / "patch.json").read_text(encoding="utf-8") == json.dumps(
+        patch_payload
+    )
+    state = service.history.state()
+    if evidence_arrives:
+        assert graph_update["status"] == "applied", graph_update
+        assert state.revision == initial_revision + 2
+        assert any(edge.source == missing_evidence_id for edge in state.edges.values())
+        if repair_mode == "inline":
+            assert graph_update["correction_rounds"] == 1
+    else:
+        assert graph_update["status"] == "rejected"
+        assert missing_evidence_id in " ".join(graph_update["validation_messages"])
+        assert state.revision == initial_revision
+        assert len(launcher.contracts) == 1 + PATCH_CORRECTION_MAX_ROUNDS
 
 
 @pytest.mark.asyncio

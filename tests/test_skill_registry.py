@@ -19,14 +19,14 @@ def test_official_registry_exposes_workflows_and_skills_with_declared_dependenci
 
     workflow = registry.package("workflow", "research-graph-audit")
     assert [(item.id, item.version) for item in workflow.dependencies] == [
-        ("graph-audit", "3.0.0"),
-        ("experiment-causality", "1.0.0"),
-        ("evidence-triage", "3.0.0"),
+        ("graph-audit", "3.1.0"),
+        ("experiment-causality", "1.1.0"),
+        ("evidence-triage", "3.1.0"),
     ]
-    assert workflow.version == "3.0.0"
-    assert registry.package("skill", "graph-audit").version == "3.0.0"
-    assert registry.package("skill", "experiment-causality").version == "1.0.0"
-    assert registry.package("skill", "evidence-triage").version == "3.0.0"
+    assert workflow.version == "3.1.0"
+    assert registry.package("skill", "graph-audit").version == "3.1.0"
+    assert registry.package("skill", "experiment-causality").version == "1.1.0"
+    assert registry.package("skill", "evidence-triage").version == "3.1.0"
     assert {item["kind"] for item in registry.catalog()} == {"skill", "workflow"}
 
 
@@ -56,9 +56,9 @@ def test_experiment_causality_resolves_and_stages_as_an_official_skill(tmp_path:
     )
 
     assert [item["id"] for item in pointers] == ["experiment-causality"]
-    assert (
-        stage / "inputs" / "rcp-skills-attempt-1" / "skill" / "experiment-causality" / "SKILL.md"
-    ).is_file()
+    package = stage / "inputs" / "rcp-skills-attempt-1" / "skill" / "experiment-causality"
+    assert (package / "SKILL.md").is_file()
+    assert (package / "references" / "worked-examples.md").is_file()
 
 
 def test_workflow_resolution_is_ordered_and_deduplicates_shared_dependencies() -> None:
@@ -187,11 +187,11 @@ def test_official_skills_match_the_action_evidence_ontology() -> None:
 
     assert "read-only structural review" in graph.description
     assert "before creating or materially updating" in evidence.description
-    assert "Seed, Refresh, or graph-capable Work" in causality.description
+    assert "separating intended empirical handoffs from observed Evidence" in causality.description
 
     graph_body = registry.package_body("skill", "graph-audit")
-    assert "`tests`, `produces`, nor an action-gate chain" in graph_body
-    assert "Do not describe every lifecycle status correction as human-only" in graph_body
+    assert "do not\nrequire future Evidence" in graph_body
+    assert "authority for Decision choice, standing, and\nlifecycle updates" in graph_body
 
     evidence_body = registry.package_body("skill", "evidence-triage")
     assert "Use `informs` when Evidence bears on a Decision" in evidence_body
@@ -208,8 +208,8 @@ def test_official_skills_match_the_action_evidence_ontology() -> None:
         "**Duplicate:**",
     ):
         assert defect in causality_body
-    assert "Do not invent Experiments for human choices, external" in causality_body
-    assert "report\nfindings only" in causality_body
+    assert "Do not invent Experiments for choices, external" in causality_body
+    assert "report findings only" in causality_body
 
     workflow_body = registry.package_body("workflow", "research-graph-audit")
     assert workflow_body.index("## Pass 1: broad structure") < workflow_body.index(

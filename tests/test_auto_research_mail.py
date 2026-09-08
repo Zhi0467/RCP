@@ -16,6 +16,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.providers import ProviderSkillReference
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     resume_auto_research_child_work,
@@ -630,6 +631,7 @@ def test_claim_prefix_stops_at_the_shared_count_and_exact_wire_boundary(
 async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_authority(
     manifest,
     tmp_path,
+    monkeypatch,
     legacy_layout: bool,
     provider: str,
 ) -> None:
@@ -637,6 +639,15 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
+    child_turns = []
+    original_stage = child_work_module._stage_auto_research_child_work_turn
+
+    async def capture_turn(*args, **kwargs):
+        result = await original_stage(*args, **kwargs)
+        child_turns.append(result[:2])
+        return result
+
+    monkeypatch.setattr(child_work_module, "_stage_auto_research_child_work_turn", capture_turn)
     launcher = _SessionSequenceLauncher(
         [
             {},
@@ -700,6 +711,19 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             mode="work",
             trigger="orchestrator",
             patch_kind="work",
+            skill_ids=["graph-audit"],
+            invoked_skill_ids=["graph-audit"],
+            resolved_provider_skills=[
+                ProviderSkillReference(
+                    provider=provider,
+                    machine="laptop",
+                    provider_version="test-provider",
+                    inventory_hash="captured-test-inventory",
+                    name="native-review",
+                    label="Native review",
+                    description="Review the observed result.",
+                )
+            ],
         ),
         admitted_by_operation_id=root.operation_id,
         worker_id=worker_id,
@@ -778,6 +802,25 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert "same native provider session" in continuation_contract
     assert "newly claimed agent mail is staged separately" in continuation_contract
     assert "messages.json" in continuation_contract
+    wake_turn, wake_inputs = child_turns[1]
+    assert "This is a Work turn." in continuation_contract
+    assert wake_turn.patch_inputs.validator_command in continuation_contract
+    assert child_turns[0][0].patch_inputs.validator_command not in continuation_contract
+    for path in (
+        wake_turn.patch_inputs.patch_path,
+        wake_turn.patch_inputs.watch_path,
+        wake_turn.patch_inputs.schema_path,
+        str(wake_inputs.artifact_directory),
+        *wake_turn.write_scope.writable_roots,
+        *wake_turn.write_scope.protected_write_paths,
+    ):
+        assert path in continuation_contract
+    for package in wake_inputs.skill_pointers:
+        assert str(package["path"]) in continuation_contract
+    assert "Invoked for this turn" in continuation_contract
+    assert "skill `graph-audit`" in continuation_contract
+    assert "Invoked provider-native skill this turn" in continuation_contract
+    assert '"name": "native-review"' in continuation_contract
     assert "Do not invoke `apply`, `status`, `spawn`" in continuation_contract
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
@@ -840,6 +883,31 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert resumed.task is not None
     resumed_task = wait_for_task(store, resumed.task.operation_id, expect="failed")
     assert resumed_task.native_session_id == "resume-session"
+    resume_contract = Path(launcher.prompts[3].splitlines()[1]).read_text(encoding="utf-8")
+    resume_turn, resume_inputs = child_turns[3]
+    current_path = Path(
+        next(
+            line.split("`")[1]
+            for line in resume_contract.splitlines()
+            if line.startswith("- Current authority and output contract:")
+        )
+    )
+    current_contract = current_path.read_text(encoding="utf-8")
+    assert str(current_path) in resume_contract
+    assert "This is a Work turn." in resume_contract
+    assert resume_turn.patch_inputs.validator_command in resume_contract
+    assert resume_turn.patch_inputs.schema_path in resume_contract
+    assert str(resume_inputs.artifact_directory) in current_contract
+    assert (current_path.parent / f"task-{resume_inputs.token}-human-request.txt").read_text() == (
+        resume_instruction
+    )
+    assert resume_contract.endswith(
+        child_work_module._auto_research_child_work_contract(
+            resume_turn,
+            resume_inputs,
+            store.auto_research_child_work_for_operation(resumed_task.operation_id),
+        )
+    )
     assert any(
         receipt.category == "continuation_context_unavailable"
         and receipt.payload.get("reason") == "native_session_mismatch"
