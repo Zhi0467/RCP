@@ -1104,7 +1104,11 @@ class BackgroundAgentTasks:
                     task_record,
                     continuation_cause=continuation,
                 )
-        if isinstance(request, AutoResearchRunRequest) and request.wake_cause is not None:
+        # Only the wake admission itself takes the exact-wake launcher.  A retry or
+        # resume keeps its parent's wake_cause for the turn's input but reuses the
+        # paid allocation, which the wake validator rejects by design.
+        if auto_research_wake_admission is not None:
+            assert isinstance(request, AutoResearchRunRequest)
             return ensure_auto_research_wake_spawned(
                 self,
                 request.episode_id,

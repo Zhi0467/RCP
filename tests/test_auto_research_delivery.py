@@ -1600,3 +1600,56 @@ def test_not_yet_checkpointed_auto_research_actor_leaves_mail_pending(tmp_path) 
         message
     ]
     assert store.auto_research_messages(auto_research.episode_id) == [message]
+
+
+def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp_path) -> None:
+    """A retry keeps its parent's wake_cause but is not itself a wake admission."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "auto_research-stage"
+    stage.mkdir()
+    failed_wake = False
+
+    async def stream(_project_id, _kind, request, execution):
+        nonlocal failed_wake
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(
+            AgentEvent(
+                event="session",
+                session_id=request.session_id or "orchestrator-session",
+            )
+        )
+        if request.wake_cause == "lifecycle" and not failed_wake:
+            failed_wake = True
+            yield _sse(AgentEvent(event="error", text="provider unavailable"))
+            return
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    auto_research, _root = _start_auto_research(tasks)
+    store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="retry-lifecycle-notice",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker-one",
+            source_event="succeeded",
+            payload={"kind": "work", "status": "succeeded"},
+            created_at=store.now(),
+        )
+    )
+    deliver_pending_auto_research_lifecycle(
+        tasks,
+        episode_id=auto_research.episode_id,
+    )
+    claimed = store.auto_research_lifecycle_notices(auto_research.episode_id)[0]
+    wake_id = claimed.delivery_operation_id
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="failed")
+
+    retried = tasks.retry(wake_id)
+    assert retried.request["wake_cause"] == "lifecycle"
+    wait_for_task(store, retried.operation_id, expect="succeeded")
+    categories = [receipt.category for receipt in store.agent_task_receipts(retried.operation_id)]
+    assert "operation_dispatch_started" in categories

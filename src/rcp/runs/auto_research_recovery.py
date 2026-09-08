@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from rcp.runs.auto_research import (
@@ -8,6 +10,8 @@ from rcp.runs.auto_research import (
     auto_research_failure_signal,
 )
 from rcp.storage import EpisodeRecord
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -125,6 +129,19 @@ def reconcile_due_auto_research_recoveries(
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             task = store.agent_task(recovery.operation_id)
             if child is not None:
+                logger.warning(
+                    "Auto-research recovery %s admitted %s but its launch failed: %s",
+                    recovery.recovery_id,
+                    child.operation_id,
+                    exc,
+                )
+                with suppress(Exception):
+                    store.record_agent_task_receipt(
+                        child.operation_id,
+                        "auto_research_recovery_launch_failed",
+                        {"exception_type": type(exc).__name__, "detail": str(exc)[:2000]},
+                        tier="diagnostic",
+                    )
                 store.complete_auto_research_recovery(
                     recovery.recovery_id,
                     admitted_operation_id=child.operation_id,
