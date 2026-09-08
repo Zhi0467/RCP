@@ -22,10 +22,12 @@ test("the composer steers the running turn and renders stored receipts without r
     let requests = [];
     let outcome = "delivered";
     let receipt;
+    let gate = null;
     await page.route("**/api/projects/project/tasks/task/steer", async (route) => {
       const request = route.request().postDataJSON();
       requests.push(request);
       if (outcome === "disconnect") return route.abort("connectionfailed");
+      if (gate) await gate.promise;
       receipt = {
         message_id: request.message_id,
         operation_id: "task",
@@ -82,11 +84,25 @@ test("the composer steers the running turn and renders stored receipts without r
     assert.equal(requests.length, 2);
     assert.notEqual(requests[0].message_id, requests[1].message_id);
 
+    // Typing while the receipt is awaited must survive; only the delivered text is consumed.
+    outcome = "delivered";
+    let open;
+    gate = { promise: new Promise((resolve) => (open = resolve)) };
+    await composer.fill("A slow steer");
+    await sendSteer.click();
+    while (requests.length < 3) await new Promise((resolve) => setTimeout(resolve, 10));
+    await composer.fill("Typed while awaiting the receipt");
+    gate = null;
+    open();
+    await page.getByText("A slow steer", { exact: true }).waitFor();
+    assert.equal(requests.length, 3);
+    assert.equal(await composer.inputValue(), "Typed while awaiting the receipt");
+
     outcome = "disconnect";
     await composer.fill("A steer with a lost response");
     await sendSteer.click();
     await page.getByText("Nothing was resent").waitFor();
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 4);
     assert.equal(await composer.inputValue(), "A steer with a lost response");
 
     // The recorded runtime can be exec after a profile's app-server fallback. The
@@ -108,7 +124,7 @@ test("the composer steers the running turn and renders stored receipts without r
     await page.evaluate(() => window.setSteeringFixture({ steer_visible: false }));
     assert.equal(await sendSteer.count(), 0);
     assert.equal(await startTurn.isDisabled(), true);
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 4);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

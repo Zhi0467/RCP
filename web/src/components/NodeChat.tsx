@@ -1212,6 +1212,8 @@ export function NodeChat({
   };
 
   const steer = async (task: AgentTask) => {
+    const draftMessage = message;
+    const draftAnnotations = annotations;
     const text = assembleChatTurn(message, annotations);
     if (!annotationsComplete) {
       setAnnotationsOpen(true);
@@ -1242,10 +1244,16 @@ export function NodeChat({
               ],
             },
       );
-      setMessage("");
-      setAnnotations([]);
+      // The field stays editable while the receipt is awaited, so only the text
+      // that was actually delivered is consumed; newer typing survives. Skill
+      // and artifact selections describe the message that just left and must
+      // not attach themselves to the next ordinary turn.
+      setMessage((current) => (current === draftMessage ? "" : current));
+      setAnnotations((current) => (current === draftAnnotations ? [] : current));
       setAnnotationsOpen(false);
-      removeSessionStorage(annotationsKey);
+      skills.reset();
+      setArtifactContext(null);
+      lastArtifactContextRef.current = null;
     } catch (error) {
       setSubmitError(
         `Steering receipt could not be read. Nothing was resent. ${error instanceof Error ? error.message : String(error)}`,
