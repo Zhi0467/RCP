@@ -888,6 +888,40 @@ def test_holder_without_heartbeats_releases_lock(tmp_path, monkeypatch, partial_
         lease.assert_owned()
 
 
+def test_holder_silent_client_expires_during_a_slow_command(tmp_path) -> None:
+    """The watchdog releases the lock even while a synchronous command is running."""
+
+    path = tmp_path / ".refresh.lock"
+    script = (
+        "import sys, time\n"
+        "import rcp.transport.remote_lock_holder as holder\n"
+        "holder.apply_staged = lambda command, lock_path: time.sleep(30)\n"
+        f"sys.argv = ['holder', {str(path)!r}, '0.3']\n"
+        "holder.main()\n"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as holder:
+        lines = _HolderLines(holder)
+        assert lines.next_line(10) == "acquired"
+        started = time.monotonic()
+        holder.stdin.write('{"op":"apply"}\n')
+        holder.stdin.flush()
+        assert holder.wait(timeout=10) == 3
+        assert time.monotonic() - started < 5
+        assert lines.next_line(5) == ""
+        assert holder.stderr.read().splitlines() == [
+            "Lock holder released the lock because its client stopped heartbeating."
+        ]
+
+    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)) as lease:
+        lease.assert_owned()
+
+
 @pytest.mark.parametrize("ending", ["eof", "timeout", "command"])
 def test_contended_holder_abandons_lock_without_acquiring(tmp_path, monkeypatch, ending) -> None:
     path = tmp_path / ".refresh.lock"

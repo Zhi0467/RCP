@@ -24,6 +24,7 @@ import select
 import shutil
 import stat
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -603,17 +604,49 @@ def replace_run_artifact() -> None:
             os.close(descriptor)
 
 
-def lock_input_lines(heartbeat_timeout: float):
+class Liveness:
+    """The client's heartbeat deadline, shared by the input loop and the watchdog."""
+
+    def __init__(self, timeout: float) -> None:
+        self.timeout = timeout
+        self.deadline = time.monotonic() + timeout
+
+    def refresh(self) -> None:
+        self.deadline = time.monotonic() + self.timeout
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
+
+def watch_liveness(liveness: Liveness) -> None:
+    """Exit while a command runs if the client falls silent; closing the fd releases the lock.
+
+    The input loop checks the same deadline between lines, but a synchronous
+    command cannot, and a dead client must never keep the lock past the timeout.
+    """
+
+    while True:
+        remaining = liveness.remaining()
+        if remaining <= 0:
+            print(
+                "Lock holder released the lock because its client stopped heartbeating.",
+                file=sys.stderr,
+                flush=True,
+            )
+            os._exit(3)
+        time.sleep(min(STATE_LOCK_POLL_INTERVAL_SECONDS, remaining))
+
+
+def lock_input_lines(liveness: Liveness):
     """Poll complete lines without hiding buffered input or blocking on a partial line."""
     pending = b""
-    deadline = time.monotonic() + heartbeat_timeout
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = liveness.remaining()
         if remaining <= 0:
             raise TimeoutError("client stopped heartbeating")
         if b"\n" in pending:
             line, pending = pending.split(b"\n", 1)
-            deadline = time.monotonic() + heartbeat_timeout
+            liveness.refresh()
             yield line
             continue
         ready, _, _ = select.select(
@@ -626,12 +659,14 @@ def lock_input_lines(heartbeat_timeout: float):
                     yield pending
                 return
             pending += chunk
-        elif time.monotonic() < deadline:
+        elif liveness.remaining() > 0:
             yield None
 
 
 def hold_lock(handle, lock_path: str, heartbeat_timeout: float) -> None:
-    lines = lock_input_lines(heartbeat_timeout)
+    liveness = Liveness(heartbeat_timeout)
+    threading.Thread(target=watch_liveness, args=(liveness,), daemon=True).start()
+    lines = lock_input_lines(liveness)
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
