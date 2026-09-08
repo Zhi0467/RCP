@@ -116,10 +116,13 @@ def reconcile_due_auto_research_recoveries(
     for recovery in store.due_auto_research_recoveries(as_of=as_of):
         if recovery.status != "pending":
             continue
+        launch_failed = False
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:
+                launch_failed = True
                 child = background.retry(recovery.operation_id)
+                launch_failed = False
             store.complete_auto_research_recovery(
                 recovery.recovery_id,
                 admitted_operation_id=child.operation_id,
@@ -129,19 +132,23 @@ def reconcile_due_auto_research_recoveries(
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             task = store.agent_task(recovery.operation_id)
             if child is not None:
-                logger.warning(
-                    "Auto-research recovery %s admitted %s but its launch failed: %s",
-                    recovery.recovery_id,
-                    child.operation_id,
-                    exc,
-                )
-                with suppress(Exception):
-                    store.record_agent_task_receipt(
+                if launch_failed:
+                    # The admission committed a child row, but its dispatch raised.
+                    # Keep the reason durable; the row otherwise sits queued with
+                    # no receipt explaining why no worker started.
+                    logger.warning(
+                        "Auto-research recovery %s admitted %s but its launch failed: %s",
+                        recovery.recovery_id,
                         child.operation_id,
-                        "auto_research_recovery_launch_failed",
-                        {"exception_type": type(exc).__name__, "detail": str(exc)[:2000]},
-                        tier="diagnostic",
+                        exc,
                     )
+                    with suppress(Exception):
+                        store.record_agent_task_receipt(
+                            child.operation_id,
+                            "auto_research_recovery_launch_failed",
+                            {"exception_type": type(exc).__name__, "detail": str(exc)[:2000]},
+                            tier="diagnostic",
+                        )
                 store.complete_auto_research_recovery(
                     recovery.recovery_id,
                     admitted_operation_id=child.operation_id,

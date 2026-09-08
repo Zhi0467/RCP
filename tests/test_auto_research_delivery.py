@@ -1627,7 +1627,8 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    auto_research, _root = _start_auto_research(tasks)
+    auto_research, root = _start_auto_research(tasks)
+    wait_for_task(store, root.operation_id, expect="succeeded")
     store.record_auto_research_lifecycle_notice(
         AutoResearchLifecycleNoticeRecord(
             notice_id="retry-lifecycle-notice",
