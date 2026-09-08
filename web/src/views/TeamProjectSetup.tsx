@@ -36,8 +36,8 @@ import {
 } from "../desktopRuntime";
 import {
   modelChange,
+  defaultModelSelection,
   modelOptions,
-  selectedModel,
   providerChange,
   providerOptions,
   readinessFor,
@@ -181,16 +181,28 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         setAgents(
           (current) =>
             Object.fromEntries(
-              Object.entries(current).map(([surface, profile]) => [
-                surface,
-                known.some((item) => item.provider === profile.provider)
+              Object.entries(current).map(([surface, profile]) => {
+                const kept = known.some((item) => item.provider === profile.provider)
                   ? profile
                   : {
                       ...profile,
                       provider: fallback,
                       runtime: readinessFor(known, fallback)?.default_runtime ?? "",
-                    },
-              ]),
+                    };
+                // A profile that names no model takes the catalog head as its
+                // saved selection, the same model the backend would run for it.
+                return [
+                  surface,
+                  {
+                    ...kept,
+                    ...defaultModelSelection(
+                      readinessFor(known, kept.provider)?.models ?? [],
+                      kept.model,
+                      kept.reasoning,
+                    ),
+                  },
+                ];
+              }),
             ) as SetupAgents,
         );
       })
@@ -818,7 +830,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                       <label>
                         Model
                         <select
-                          value={selectedModel(models, profile.model)}
+                          value={profile.model}
                           onChange={(event) =>
                             updateAgent(
                               id,
@@ -826,13 +838,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                             )
                           }
                         >
-                          {modelOptions(models, selectedModel(models, profile.model)).map(
-                            (option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.label}
-                              </option>
-                            ),
-                          )}
+                          {modelOptions(models, profile.model).map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
                         </select>
                       </label>
                       <label>

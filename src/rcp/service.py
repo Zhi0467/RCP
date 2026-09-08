@@ -101,6 +101,7 @@ from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
+    ModelChoice,
     ProviderId,
     ProviderSkillReference,
     configured_runtime,
@@ -1474,8 +1475,10 @@ class ProjectService:
         attention = project_graph_attention(state)
         counts = project_counts(state, attention)
         refresh_profile = self.manifest.agent_profile("refresh")
+        # Export the profile as it would run: an unnamed model becomes the catalog
+        # head once that provider's readiness is cached, so no surface derives it.
         profiles = {
-            surface: self.manifest.agent_profile(surface).model_dump(mode="json")
+            surface: self.resolve_agent_profile(surface).model_dump(mode="json")
             for surface in _SETTINGS_SURFACES
         }
         return _ProjectSnapshotDraft(
@@ -2493,13 +2496,18 @@ class ProjectService:
                 )
             updates["run_on"] = run_on
         resolved = base.model_copy(update=updates)
-        if not resolved.model:
-            resolved = resolved.model_copy(
-                update={"model": self._first_catalog_model(resolved.provider, resolved.run_on)}
-            )
-        return resolved
+        if resolved.model:
+            return resolved
+        head = self._first_catalog_model(resolved.provider, resolved.run_on)
+        if head is None:
+            return resolved
+        filled: dict[str, object] = {"model": head.id}
+        # The effort was chosen without a model; keep it only if the head accepts it.
+        if head.reasoning and resolved.reasoning not in head.reasoning:
+            filled["reasoning"] = head.default_reasoning or head.reasoning[0]
+        return resolved.model_copy(update=filled)
 
-    def _first_catalog_model(self, provider: ProviderId, run_on: str) -> str:
+    def _first_catalog_model(self, provider: ProviderId, run_on: str) -> ModelChoice | None:
         """The first model the provider CLI vendors on that machine.
 
         There is no "provider default" choice: a profile or request that names no
@@ -2509,15 +2517,15 @@ class ProjectService:
         """
         machine = self.manifest.machine_map.get(run_on)
         if machine is None:
-            return ""
+            return None
         readiness = self.launcher.cached_readiness(
             provider,
             host=machine.host,
             binary=machine.provider_paths.get(provider),
         )
         if readiness is None or not readiness.models:
-            return ""
-        return readiness.models[0].id
+            return None
+        return readiness.models[0]
 
     def assemble_run(
         self,

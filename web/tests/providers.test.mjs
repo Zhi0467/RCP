@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  defaultModelSelection,
   firstModel,
   modelChange,
   modelOptions,
@@ -10,7 +11,6 @@ import {
   providerOptions,
   reasoningFor,
   reasoningOptions,
-  selectedModel,
 } from "../src/providers.ts";
 
 /** Shaped like a real `codex debug models` probe: efforts differ per model. */
@@ -85,14 +85,19 @@ test("only catalogued models are offered; there is no provider-default entry", (
   ]);
 });
 
-test("an empty saved model shows, and runs, as the first catalogued model", () => {
-  // The backend resolves an empty profile model to the head of the same catalog,
-  // so the select shows exactly what will run instead of a default placeholder.
+test("an empty model becomes a durable selection of the catalog head", () => {
+  // The backend fills the same head for an unnamed model, so selecting it into
+  // state keeps what the picker shows and what runs identical, and saves it.
   assert.equal(firstModel(CODEX.models), "gpt-5.6-sol");
-  assert.equal(selectedModel(CODEX.models, ""), "gpt-5.6-sol");
-  assert.equal(selectedModel(CODEX.models, "gpt-5.5"), "gpt-5.5");
-  // No catalog yet: nothing to show, and nothing is invented.
-  assert.equal(selectedModel([], ""), "");
+  assert.deepEqual(defaultModelSelection(CODEX.models, "", "high"), { model: "gpt-5.6-sol" });
+  // An effort the head rejects is reconciled to the head's own default.
+  assert.deepEqual(defaultModelSelection(CODEX.models, "", "medium"), {
+    model: "gpt-5.6-sol",
+    reasoning: "low",
+  });
+  // A named model, or no catalog yet, selects nothing and invents nothing.
+  assert.equal(defaultModelSelection(CODEX.models, "gpt-5.5", "high"), null);
+  assert.equal(defaultModelSelection([], "", "high"), null);
 });
 
 test("an unknown provider contributes no models instead of throwing", () => {

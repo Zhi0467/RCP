@@ -6,15 +6,15 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  defaultModelSelection,
   modelChange,
   modelOptions,
   providerChange,
   providerOptions,
   reasoningOptions,
   runtimeOptions,
-  selectedModel,
 } from "../providers";
 import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 
@@ -91,10 +91,19 @@ export function AgentConfigControls({
   // accept, and which reasoning efforts each of those models accepts.
   const models = readiness?.models ?? [];
   const providers = providerOptions(Object.values(onMachine), value.provider);
-  const model = selectedModel(models, value.model);
-  const modelChoices = modelOptions(models, model);
-  const reasoningChoices = reasoningOptions(models, model, value.reasoning);
+  const modelChoices = modelOptions(models, value.model);
+  const reasoningChoices = reasoningOptions(models, value.model, value.reasoning);
   const runtimeChoices = runtimeOptions(readiness, runtime?.value ?? "");
+
+  // A configuration that names no model takes the catalog head as soon as this
+  // machine's readiness is known, as a real selection the owner saves or sends.
+  // The backend fills the same head for an unnamed model, so nothing is derived
+  // for display alone.
+  const selection = locked ? null : defaultModelSelection(models, value.model, value.reasoning);
+  useEffect(() => {
+    if (selection) onChange({ ...value, ...selection });
+    // Re-run only when the catalog head or the empty model changes, not on every render.
+  }, [selection?.model, selection?.reasoning]);
 
   const contents = (
     <>
@@ -143,7 +152,7 @@ export function AgentConfigControls({
         <label>
           <span>Model</span>
           <select
-            value={model}
+            value={value.model}
             disabled={locked}
             onChange={(event) => update(modelChange(models, event.target.value, value.reasoning))}
           >

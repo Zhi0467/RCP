@@ -22,8 +22,8 @@ import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
 import {
   modelChange,
+  defaultModelSelection,
   modelOptions,
-  selectedModel,
   providerChange,
   providerOptions,
   readinessFor,
@@ -226,16 +226,28 @@ function PersonalProjectSetup({
         setAgents(
           (current) =>
             Object.fromEntries(
-              Object.entries(current).map(([surface, profile]) => [
-                surface,
-                known.some((item) => item.provider === profile.provider)
+              Object.entries(current).map(([surface, profile]) => {
+                const kept = known.some((item) => item.provider === profile.provider)
                   ? profile
                   : {
                       ...profile,
                       provider: fallback,
                       runtime: readinessFor(known, fallback)?.default_runtime ?? "",
-                    },
-              ]),
+                    };
+                // A profile that names no model takes the catalog head as its
+                // saved selection, the same model the backend would run for it.
+                return [
+                  surface,
+                  {
+                    ...kept,
+                    ...defaultModelSelection(
+                      readinessFor(known, kept.provider)?.models ?? [],
+                      kept.model,
+                      kept.reasoning,
+                    ),
+                  },
+                ];
+              }),
             ) as SetupAgents,
         );
       })
@@ -623,7 +635,7 @@ function PersonalProjectSetup({
                         <label>
                           Model
                           <select
-                            value={selectedModel(models, profile.model)}
+                            value={profile.model}
                             onChange={(event) =>
                               updateAgent(
                                 id,
@@ -631,13 +643,11 @@ function PersonalProjectSetup({
                               )
                             }
                           >
-                            {modelOptions(models, selectedModel(models, profile.model)).map(
-                              (option) => (
-                                <option key={option.id} value={option.id}>
-                                  {option.label}
-                                </option>
-                              ),
-                            )}
+                            {modelOptions(models, profile.model).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
                           </select>
                         </label>
                         <label>

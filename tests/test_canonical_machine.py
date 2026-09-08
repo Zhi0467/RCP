@@ -117,19 +117,35 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
             installed=True,
             authenticated=True,
             models=[
-                ModelChoice(id="gpt-5.6-sol", label="GPT-5.6-Sol", reasoning=["low", "high"]),
-                ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "high"]),
+                ModelChoice(
+                    id="gpt-5.6-sol",
+                    label="GPT-5.6-Sol",
+                    reasoning=["low", "high"],
+                    default_reasoning="high",
+                ),
+                ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "medium", "high"]),
             ],
         )
 
     service.launcher.cached_readiness = cached_readiness  # type: ignore[method-assign]
 
     resolved = service.resolve_agent_profile("project_chat", provider="codex", model="")
-    explicit = service.resolve_agent_profile("project_chat", provider="codex", model="gpt-5.5")
+    kept_effort = service.resolve_agent_profile(
+        "project_chat", provider="codex", model="", reasoning="low"
+    )
+    explicit = service.resolve_agent_profile(
+        "project_chat", provider="codex", model="gpt-5.5", reasoning="medium"
+    )
     unknown_catalog = service.resolve_agent_profile("project_chat", provider="claude", model="")
 
     assert resolved.model == "gpt-5.6-sol"
+    # The profile's `medium` was chosen with no model; the head rejects it, so the
+    # head's own default effort is used rather than launching a doomed turn.
+    assert resolved.reasoning == "high"
+    assert kept_effort.model == "gpt-5.6-sol"
+    assert kept_effort.reasoning == "low"
     assert explicit.model == "gpt-5.5"
+    assert explicit.reasoning == "medium"
     assert unknown_catalog.model == ""
     # Only the already-cached probe for that machine's exact executable is read.
     assert probed[0] == ("codex", machine.host, machine.provider_paths.get("codex"))
