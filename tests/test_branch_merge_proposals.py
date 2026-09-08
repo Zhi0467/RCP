@@ -905,3 +905,38 @@ def test_later_merge_replays_a_prior_source_head_that_ended_on_a_rejected_patch(
         rejected.revision,
         rejected.revision + 1,
     ]
+
+
+def test_human_review_fact_retires_when_an_agent_writes_the_field_last(review_branch):
+    harness = review_branch
+    base_revision = harness.branch.branch_metadata().base_head.revision
+    base = harness.branch.base_state()
+    human = _human_patch(
+        harness, {"op": "set_standing", "node_id": "hyp/review", "standing": "accepted"}
+    )
+    branch = harness.branch.state()
+    assert branch.nodes["hyp/review"].standing == "accepted"
+    assert human.revision > base_revision
+    assert [
+        change.operation.standing for change in branch_human_review_changes([human], base, branch)
+    ] == ["accepted"]
+    # A later non-human writer owns the field even when it restores the human's value.
+    agent_writes = [
+        Patch(
+            kind="work",
+            author="agent",
+            admission="accepted",
+            revision=human.revision + offset,
+            summary="Agent standing write.",
+            run_truth_scope=["repo-a"],
+            source_operation_id=harness.root.operation_id,
+            ops=[{"op": "set_standing", "node_id": "hyp/review", "standing": standing}],
+        )
+        for offset, standing in ((1, "asserted"), (2, "accepted"))
+    ]
+    assert branch_human_review_changes([human, *agent_writes], base, branch) == []
+    later_human = human.model_copy(update={"revision": human.revision + 3})
+    assert [
+        change.operation.standing
+        for change in branch_human_review_changes([human, *agent_writes, later_human], base, branch)
+    ] == ["accepted"]

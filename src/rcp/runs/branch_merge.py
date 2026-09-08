@@ -597,7 +597,19 @@ def branch_human_review_changes(
 
     latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
     for patch in patches:
-        if patch.author != "human" or patch.admission != "accepted":
+        if patch.admission != "accepted":
+            continue
+        if patch.author != "human":
+            # The final writer owns the fact: any later non-human write to the same
+            # field, initiating or derived, retires the human attribution even when
+            # it restores the human's value.
+            for operation in patch.ops:
+                if isinstance(operation, SetStandingOperation):
+                    latest.pop((operation.node_id, "standing"), None)
+                elif isinstance(operation, UpdateNodesOperation):
+                    for update in operation.nodes:
+                        if "status" in update.changes:
+                            latest.pop((update.id, "status"), None)
             continue
         indexes = (
             sorted(
