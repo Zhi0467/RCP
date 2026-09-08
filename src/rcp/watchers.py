@@ -943,8 +943,8 @@ class WatcherDelivery:
         if not self._retry.generation_is_current(retry_generation):
             return
         retry_needed = False
-        try:
-            with self._retry.lock_for(project_id):
+        with self._retry.lock_for(project_id):
+            try:
                 records = self._store.active_graph_watchers(project_id)
                 targets = {record.graph_target.key: record.graph_target for record in records}
                 if graph_target is not None:
@@ -966,25 +966,26 @@ class WatcherDelivery:
                             target.key,
                             exc,
                         )
-        except Exception as exc:
-            retry_needed |= self._graph_reconciliation_retryable(exc)
-            self._logger.warning(
-                "Could not reconcile graph conditions after %s for project %s: %s",
-                source,
-                project_id,
-                exc,
-            )
-        # A successful target-specific signal cannot clear another target's
-        # pending retry. Only a pass over all targets can retire that work.
-        if retry_needed:
-            if not self._retry.run_for_generation(
-                retry_generation, lambda: self._retry.schedule(project_id)
+            except Exception as exc:
+                retry_needed |= self._graph_reconciliation_retryable(exc)
+                self._logger.warning(
+                    "Could not reconcile graph conditions after %s for project %s: %s",
+                    source,
+                    project_id,
+                    exc,
+                )
+            # Retire retries before releasing the reconciliation lock, so an
+            # older success cannot clear a failure from a later pass. Only an
+            # all-target pass can retire work another target scheduled.
+            if retry_needed:
+                if not self._retry.run_for_generation(
+                    retry_generation, lambda: self._retry.schedule(project_id)
+                ):
+                    return
+            elif graph_target is None and not self._retry.run_for_generation(
+                retry_generation, lambda: self._retry.clear(project_id)
             ):
                 return
-        elif graph_target is None and not self._retry.run_for_generation(
-            retry_generation, lambda: self._retry.clear(project_id)
-        ):
-            return
         self.deliver_ready_graph_wake_groups(
             project_id,
             source=source,

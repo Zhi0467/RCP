@@ -364,6 +364,100 @@ def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
     assert sum(item.category == "operation_dispatch_attempt" for item in receipts) == 1
 
 
+@pytest.mark.parametrize("already_settled", [False, True])
+def test_member_pause_before_running_claim_never_dispatches_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    already_settled: bool,
+) -> None:
+    store = _store(tmp_path)
+    claiming = threading.Event()
+    release = threading.Event()
+    settled = threading.Event()
+    dispatched = threading.Event()
+    mark_running = store.mark_agent_task_running
+
+    def gated_mark_running(operation_id):
+        claiming.set()
+        assert release.wait(timeout=5)
+        return mark_running(operation_id)
+
+    monkeypatch.setattr(store, "mark_agent_task_running", gated_mark_running)
+
+    async def stream(*_args):
+        dispatched.set()
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(
+        store,
+        stream,
+        on_task_settled=lambda *_args: settled.set(),
+    )
+    task = _admitted_launch_task(store, operation_id="member-pause-before-running")
+    tasks.launch_admitted(task.operation_id)
+    try:
+        assert claiming.wait(timeout=5)
+        pausing = tasks.request_member_removal_pause(task.operation_id)
+        assert pausing.status == "pausing"
+        if already_settled:
+            store.pause_agent_task(task.operation_id, detail="Member removal settled the task.")
+        release.set()
+        assert settled.wait(timeout=5)
+        assert not dispatched.is_set()
+        paused = store.agent_task(task.operation_id)
+        assert paused is not None and paused.status == "paused"
+        if already_settled:
+            assert paused.status_message == "Member removal settled the task."
+    finally:
+        release.set()
+        tasks.shutdown()
+
+
+def test_shutdown_fences_a_launch_that_has_not_claimed_a_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    claiming = threading.Event()
+    release = threading.Event()
+    dispatched = threading.Event()
+
+    async def stream(*_args):
+        dispatched.set()
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="shutdown-before-worker-claim")
+    spawn = tasks._spawn_record
+
+    def gated_spawn(*args, **kwargs):
+        claiming.set()
+        assert release.wait(timeout=5)
+        return spawn(*args, **kwargs)
+
+    monkeypatch.setattr(tasks, "_spawn_record", gated_spawn)
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        launch = callers.submit(tasks.launch_admitted, task.operation_id)
+        try:
+            assert claiming.wait(timeout=5)
+            tasks.shutdown()
+            release.set()
+            deferred = launch.result(timeout=5)
+            assert deferred.status == "queued"
+            assert tasks.runtime_is_idle()
+            assert not dispatched.is_set()
+            assert store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+        finally:
+            release.set()
+            tasks.shutdown()
+
+    tasks.recover_at_startup()
+    recovered = store.agent_task(task.operation_id)
+    assert recovered is not None and recovered.status == "interrupted"
+    assert recovered.can_retry
+    assert not dispatched.is_set()
+
+
 @pytest.mark.parametrize("intent_state", ["missing", "malformed"])
 def test_launch_admitted_rejects_missing_or_malformed_intent_before_dispatch(
     tmp_path: Path,
@@ -2178,6 +2272,65 @@ def _report_allocation(store: AppStore, tmp_path: Path) -> AgentTaskRecord:
     )
     assert admission.task is not None
     return admission.task
+
+
+def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    started = threading.Event()
+    report_started = threading.Event()
+    allocated: list[AgentTaskRecord] = []
+
+    async def stream(_project_id, kind, request, execution):
+        if kind != "episode_report":
+            started.set()
+            assert await asyncio.to_thread(execution.control.pause_requested.wait, 5)
+            yield _sse(AgentEvent(event="paused"))
+            return
+        report_started.set()
+        attempt = store.allocate_episode_report_attempt(request.episode_id)
+        store.mark_episode_report_attempt_running(attempt.attempt_id)
+        html = "<html><body><figure>Evidence map</figure></body></html>"
+        store.finish_episode_report_ready(
+            attempt.attempt_id,
+            EpisodeReportRecord(
+                report_id="shutdown-report",
+                episode_id=request.episode_id,
+                attempt_id=attempt.attempt_id,
+                allocation_operation_id=execution.operation_id,
+                ending="completed",
+                sha256=hashlib.sha256(html.encode()).hexdigest(),
+                html=html,
+                created_at=store.now(),
+            ),
+        )
+        yield _sse(AgentEvent(event="done"))
+
+    def settled(*_args):
+        allocated.append(_report_allocation(store, tmp_path))
+        start_episode_report(tasks, "report-episode")
+
+    tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
+    task = _admitted_launch_task(store, operation_id="shutdown-before-report")
+    tasks.launch_admitted(task.operation_id)
+    try:
+        assert started.wait(timeout=5)
+        tasks.shutdown()
+        assert len(allocated) == 1
+        assert not report_started.is_set()
+        hidden = store.agent_task(allocated[0].operation_id)
+        assert hidden is not None and hidden.status == "queued"
+        episode = store.episode("report-episode")
+        assert episode is not None and episode.wrapup_state == "pending"
+        assert episode.wrapup_error is None
+        assert store.agent_task_dispatch_was_proven_not_started(hidden.operation_id)
+
+        tasks.recover_at_startup()
+        wait_for_task(store, hidden.operation_id, expect="succeeded")
+        assert report_started.is_set()
+        recovered_episode = store.episode("report-episode")
+        assert recovered_episode is not None and recovered_episode.wrapup_state == "ready"
+    finally:
+        tasks.shutdown()
 
 
 @pytest.mark.parametrize("prior_status", ["interrupted", "paused"])
