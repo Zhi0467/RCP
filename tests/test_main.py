@@ -32,6 +32,10 @@ from rcp.__main__ import (
     instance_lock,
     main,
 )
+from rcp.limits import (
+    SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
+    SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+)
 from rcp.server_ops.models import ServerStepEvent
 from rcp.server_runtime import (
     ServerMetadata,
@@ -436,6 +440,26 @@ def test_reload_prepares_watched_frontend_before_starting_uvicorn(tmp_path, monk
     assert calls[0] == ("assets", True, "source")
     assert calls[1][0] == ("rcp.__main__:reload_app",)
     assert calls[1][1]["reload"] is True
+
+
+def test_server_bounds_graceful_shutdown_below_the_replacement_window(
+    tmp_path, monkeypatch
+) -> None:
+    """A request stuck in a thread must not be able to defeat a server replacement."""
+
+    calls = []
+
+    @contextmanager
+    def fake_assets(*, watch, mode):
+        yield
+
+    monkeypatch.setattr("rcp.__main__.prepared_web_assets", fake_assets)
+    monkeypatch.setattr("rcp.__main__.uvicorn.run", lambda *_args, **kwargs: calls.append(kwargs))
+
+    _run_server(_serve_args(reload=True, web_assets="source"), _metadata(tmp_path))
+
+    assert calls[0]["timeout_graceful_shutdown"] == SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+    assert SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS < SERVER_SHUTDOWN_TIMEOUT_SECONDS
 
 
 def test_owner_publishes_metadata_after_lock_and_reports_owned(

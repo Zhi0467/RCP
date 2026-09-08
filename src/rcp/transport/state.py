@@ -41,6 +41,7 @@ from rcp.limits import (
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
+    STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.backup_models import (
     BACKUP_RESEARCH_CANONICAL_ROOTS,
@@ -1836,11 +1837,24 @@ class SSHStateWorkspace(StateWorkspace):
             refreshed = self._sync_remote_tree()
             self._publication_lease.assert_owned()
             return refreshed
-        with self._remote_advisory_lock(self.lock_dir) as lease:
-            lease.assert_owned()
-            refreshed = self._sync_remote_tree()
-            lease.assert_owned()
-            return refreshed
+        # A reader must not wait indefinitely behind a writer: the holder it is
+        # queued behind may belong to a connection that died mid-publication.
+        deadline = time.monotonic() + STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS
+        try:
+            with self._remote_advisory_lock(
+                self.lock_dir,
+                cancelled=lambda: time.monotonic() >= deadline,
+            ) as lease:
+                lease.assert_owned()
+                refreshed = self._sync_remote_tree()
+                lease.assert_owned()
+                return refreshed
+        except RunLockCancelled as exc:
+            raise StateUnavailable(
+                f"Timed out after {STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS:g} seconds waiting "
+                "for another graph-writing run to release canonical state at "
+                f"{self.host}:{self.lock_dir}."
+            ) from exc
 
     def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
         """Archive remote canonical state, then discard only its stale local mirror."""

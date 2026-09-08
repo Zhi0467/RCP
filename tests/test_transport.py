@@ -20,7 +20,11 @@ from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
-from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
+from rcp.limits import (
+    SSH_SERVER_ALIVE_COUNT_MAX,
+    SSH_SERVER_ALIVE_INTERVAL_SECONDS,
+    STATE_LOCK_POLL_INTERVAL_SECONDS,
+)
 from rcp.paper import PaperService
 from rcp.setup import ProjectSetupRequest, render_manifest
 from rcp.storage import AppStore
@@ -34,6 +38,7 @@ from rcp.transport import (
     prepare_state_workspace,
     repository_access,
 )
+from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import (
     _REMOTE_PATCH_LOG_HEAD_SCRIPT,
     RunLockCancelled,
@@ -661,6 +666,43 @@ def test_remote_transaction_waits_past_handshake_timeout_after_contended(
         pass
 
     assert workspace.reachable is True
+
+
+def test_refresh_gives_up_on_a_lock_another_run_keeps(tmp_path, monkeypatch) -> None:
+    """A reader queued behind a holder that never releases must fail, not hang.
+
+    The stuck holder may belong to a connection that died mid-publication; every
+    reader of the project waits on the snapshot lock behind this refresh.
+    """
+
+    stuck_holder = 'import sys\nprint("contended", flush=True)\nfor line in sys.stdin:\n    pass\n'
+    workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+    )
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(
+        "rcp.transport.state._remote_advisory_lock_command",
+        lambda _host, _path: [sys.executable, "-c", stuck_holder],
+    )
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS", 0.3)
+
+    started = time.monotonic()
+    with pytest.raises(StateUnavailable, match="release canonical state"):
+        workspace.refresh_if_stale()
+
+    assert time.monotonic() - started < 5
+    assert workspace.reachable is True
+
+
+def test_ssh_sessions_notice_a_dead_peer() -> None:
+    arguments = ssh_arguments("research.example", "true", strict_host_key_checking=True)
+
+    assert f"ServerAliveInterval={SSH_SERVER_ALIVE_INTERVAL_SECONDS}" in arguments
+    assert f"ServerAliveCountMax={SSH_SERVER_ALIVE_COUNT_MAX}" in arguments
+    assert SSH_SERVER_ALIVE_INTERVAL_SECONDS * SSH_SERVER_ALIVE_COUNT_MAX <= 90
 
 
 def test_process_advisory_lock_uses_one_waiter_during_long_contention(

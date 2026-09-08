@@ -178,13 +178,24 @@ PROJECT_TRANSFER_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
 PROJECT_TRANSFER_COPY_BUFFER_BYTES = 1024 * 1024
 PROJECT_TRANSFER_STABLE_READ_ATTEMPTS = 3
 
+# SSH sessions notice a dead peer within about a minute so remote lock holders
+# and pollers do not outlive a stalled connection after a network change.
+SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
+SSH_SERVER_ALIVE_COUNT_MAX = 4
+
 # Canonical-state advisory lock acquisition and holder lifecycle.
 STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
+# A read-side snapshot refresh gives up on a lock another run holds instead of
+# blocking every reader of the project behind one stuck writer.
+STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS = 20.0
 STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS = 5.0
 STATE_LOCK_POLL_INTERVAL_SECONDS = 0.2
 
 # Server and frontend-build lifecycle timings.
 SERVER_SHUTDOWN_TIMEOUT_SECONDS = 45.0
+# In-flight requests get this long after SIGTERM; it stays below the replacement
+# window above so a stuck request can never defeat a server replacement.
+SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 30
 SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS = 0.0
 SERVER_LOCK_OWNER_READ_ATTEMPTS = 10
 SERVER_LOCK_POLL_INTERVAL_SECONDS = 0.05

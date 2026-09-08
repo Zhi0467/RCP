@@ -27,6 +27,7 @@ from rcp.api import create_app
 from rcp.api.app import default_data_dir
 from rcp.limits import (
     BROWSER_OPEN_DELAY_SECONDS,
+    SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
     SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS,
     SERVER_LOCK_OWNER_READ_ATTEMPTS,
@@ -439,6 +440,7 @@ def _run_server(
             uvicorn_options: dict[str, object] = {
                 "host": args.host,
                 "port": args.port,
+                "timeout_graceful_shutdown": SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
             }
             if server_fd is not None:
                 uvicorn_options["fd"] = server_fd
