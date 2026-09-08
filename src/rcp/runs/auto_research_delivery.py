@@ -283,9 +283,11 @@ def deliver_pending_auto_research_lifecycle(
     )
     if not notices:
         return None
-    newest_notice_at = max(_required_timestamp(notice.created_at) for notice in notices)
+    # Measured from the oldest pending notice, so a steady stream of arrivals
+    # cannot push the wake out indefinitely; the wait is at most one grace window.
+    oldest_notice_at = min(_required_timestamp(notice.created_at) for notice in notices)
     if (
-        _required_timestamp(store.now()) - newest_notice_at
+        _required_timestamp(store.now()) - oldest_notice_at
     ).total_seconds() < AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS:
         return None
     binding = store.auto_research_actor_binding(root_operation_id)

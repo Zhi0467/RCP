@@ -35,6 +35,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 from rcp.runs.auto_research import (
+    AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
     AutoResearchCommandEffectResult,
     AutoResearchCommandEffects,
@@ -44,6 +45,7 @@ from rcp.runs.auto_research import (
     request_auto_research_stop,
 )
 from rcp.runs.auto_research_delivery import record_auto_research_message
+from rcp.runs.auto_research_effects import _auto_research_message_matches
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -2392,6 +2394,47 @@ def test_orchestrator_messages_spawned_child_work_by_stable_worker_id(tmp_path) 
     assert len(messages) == 1
     assert messages[0].recipient_task_id == worker.operation_id
     assert effects.message_calls == [arguments]
+
+
+def test_interrupted_child_work_message_replays_as_the_same_effect(tmp_path) -> None:
+    """Reconciliation must recognise a routed child recipient, not only bound actors."""
+
+    store, episode, root = _setup_auto_research(tmp_path)
+    worker = _routed_worker(
+        store,
+        episode,
+        admitted_by=root,
+        worker_id="child-worker",
+        seat_node_id="blk/result",
+        instruction="Inspect the result.",
+    )
+    arguments = MessageArguments(recipient_task_id=worker.operation_id, body="Hold your job.")
+    saved = record_auto_research_message(
+        store,
+        message_id="message-child",
+        episode_id=episode.episode_id,
+        sender_role="orchestrator",
+        sender_task_id=root.operation_id,
+        authorized_by=None,
+        recipient_task_id=worker.operation_id,
+        body=arguments.body,
+    )
+    context = AutoResearchCommandContext(
+        episode=episode,
+        task=root,
+        request=AutoResearchRunRequest.model_validate(root.request),
+    )
+
+    assert _auto_research_message_matches(store, context, arguments, saved) is True
+    assert (
+        _auto_research_message_matches(
+            store,
+            context,
+            MessageArguments(recipient_task_id="unknown-worker", body=arguments.body),
+            saved,
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize("missing_binding", [False, True])

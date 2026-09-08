@@ -379,7 +379,7 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
             )
         )
         if index == 0:
-            clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS)
+            clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS / 2)
     mail = record_auto_research_message(
         store,
         episode_id=episode.episode_id,
