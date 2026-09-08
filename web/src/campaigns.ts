@@ -64,12 +64,16 @@ export function mergeEpisode(episodes: Episode[], nextEpisode: Episode): Episode
 export function runsEpisodeCards(
   episodes: Episode[],
   currentExperimentEpisodeIds: ReadonlySet<string>,
+  showArchived = false,
 ): Episode[] {
   return [...episodes]
     .sort(compareEpisodesNewestFirst)
     .filter(
       (episode) =>
-        episode.mode === "auto_research" || currentExperimentEpisodeIds.has(episode.episode_id),
+        (!episode.archived || showArchived) &&
+        (episode.mode === "auto_research" ||
+          currentExperimentEpisodeIds.has(episode.episode_id) ||
+          (episode.archived && showArchived)),
     );
 }
 

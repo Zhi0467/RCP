@@ -72,6 +72,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (10, "external_watcher_actions_v1"),
         (11, "child_work_watchers_v1"),
         (12, "compute_job_labels_v1"),
+        (13, "episode_archives_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -226,7 +227,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
         )
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (7,), (8,), (9,), (10,), (11,), (12,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (7,), (8,), (9,), (10,), (11,), (12,), (13,)]
 
     reopened = AppStore(path)
 
@@ -2042,6 +2043,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "episode_report_attempts": 0,
         "episode_wrapups": 0,
         "episode_invocations": 0,
+        "episode_archives": 0,
         "episodes": 0,
         "agent_usage": 0,
         "graph_run_outputs": 1,

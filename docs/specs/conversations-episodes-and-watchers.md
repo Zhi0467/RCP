@@ -180,6 +180,28 @@ Only operational provider turns spend the operational ceiling. Validation,
 same-invocation Patch/watcher correction, exact Resume/Retry, and hidden report
 generation do not consume another operational unit.
 
+### Episode archive
+
+A project member may archive an ended, settled episode and unarchive it later.
+The archive is shared by every member of the project in personal and team
+spaces. It records the acting human and time independently of the episode's
+original authorizer. It changes presentation only: lifecycle, budgets, reports,
+tasks, watchers, retained stages, and canonical graph history remain intact.
+Archive does not stop or settle work. The backend refuses it while the episode
+or its admitted work remains unresolved or its report is still running.
+
+Archive applies to the selected episode. A child Experiment has its own archive
+control; archiving its parent does not archive the child. Starting another
+episode creates an unarchived run. Existing archives survive restart, backup,
+and project transfer without conferring authority on historical identities.
+
+`POST /api/projects/{project_id}/episodes/{episode_id}/archive` accepts exactly
+`{"archived": true}` or `{"archived": false}` under ordinary human project
+membership and write admission. It checks current eligibility atomically with
+the archive mutation and returns the episode. Episode projections export
+`archived` and `can_archive`; the browser never infers eligibility from status.
+Lists retain archived records for the explicit **Show archived** view.
+
 ## Experiment readiness and budget
 
 An Experiment can start a new bounded episode only when:

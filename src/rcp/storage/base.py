@@ -46,6 +46,7 @@ class AppStoreBase:
         (10, "external_watcher_actions_v1"),
         (11, "child_work_watchers_v1"),
         (12, "compute_job_labels_v1"),
+        (13, "episode_archives_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -501,6 +502,12 @@ class AppStoreBase:
             version=12,
             name="compute_job_labels_v1",
             migration=self._migrate_compute_job_labels,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=13,
+            name="episode_archives_v1",
+            migration=self._migrate_episode_archives,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1931,6 +1938,7 @@ class AppStoreBase:
         self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
         self._migrate_compute_job_labels(connection)
+        self._migrate_episode_archives(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1949,6 +1957,21 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_episode_archives(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS episode_archives (
+                episode_id TEXT PRIMARY KEY,
+                archived_space_id TEXT NOT NULL,
+                archived_user_id TEXT NOT NULL,
+                archived_display_name TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+                FOREIGN KEY(episode_id) REFERENCES episodes(episode_id) ON DELETE CASCADE
+            )
+            """
+        )
 
     @staticmethod
     def _migrate_compute_job_labels(connection: sqlite3.Connection) -> None:

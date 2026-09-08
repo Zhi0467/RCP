@@ -112,7 +112,7 @@ def advance_source_project_transfer(
         raise ValueError("source transfer requires both human confirmations")
     if transfer.phase == "source_released":
         service = catalog.open_transfer_source(request_id)
-        _require_reviewed_source_unchanged(service, transfer)
+        _require_reviewed_source_unchanged(store, service, transfer)
         store.settle_source_transfer_tasks(request_id)
         attributions = _source_attributions(transfer)
         # This exact projection is the source-of-truth settlement check. It
@@ -121,7 +121,7 @@ def advance_source_project_transfer(
             transfer.project_id,
             attributions=attributions,
         )
-        _require_reviewed_source_unchanged(service, transfer)
+        _require_reviewed_source_unchanged(store, service, transfer)
         materialized = service.history.current_materialization()
         identity = service.history.project_identity(materialized)
         if identity is None or identity.project_id != transfer.project_id:
@@ -149,7 +149,7 @@ def advance_source_project_transfer(
             readback = read_transfer_archive(destination)
         else:
             service = catalog.open_transfer_source(request_id)
-            _require_reviewed_source_unchanged(service, transfer)
+            _require_reviewed_source_unchanged(store, service, transfer)
             attributions = _source_attributions(transfer)
             records = store.export_project_transfer_records(
                 transfer.project_id,
@@ -365,7 +365,7 @@ def _capture_and_seal_source_archive(
                         expected_size=bundle.stat().st_size,
                     )
                 )
-            _require_reviewed_source_unchanged(service, transfer)
+            _require_reviewed_source_unchanged(store, service, transfer)
         entries.append(
             _write_capture_bytes(
                 final_root,
@@ -463,12 +463,14 @@ def _capture_canonical_history(
 
 
 def _require_reviewed_source_unchanged(
+    store: AppStore,
     service: ProjectService,
     transfer: ProjectTransferRequestRecord,
 ) -> None:
     current, _head = capture_project_transfer_source(
         service,
         include_local_commits=transfer.source_configuration.includes_local_commits,
+        record_schema_version=store.project_transfer_record_schema_version(transfer.project_id),
     )
     if transfer.source_configuration is None or current != transfer.source_configuration:
         raise ValueError("source configuration changed after the reviewed transfer boundary")

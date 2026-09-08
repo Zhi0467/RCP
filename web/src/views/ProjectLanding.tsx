@@ -1,6 +1,7 @@
 import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
+import type { ArchiveEpisodeAction } from "../components/EpisodeRunControls";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
@@ -22,6 +23,7 @@ interface Props {
   spaceRuns: SpaceRunIndexEntry[];
   onOpen: (projectId: string) => void;
   onOpenExperiment: (projectId: string, experimentRoute?: string) => void;
+  onArchiveEpisode: ArchiveEpisodeAction;
   onCreate: () => void;
   projectCreation: ProjectCreationControl;
   onMovePersonalProjectToTeam?: (projectId: string) => void;
@@ -178,6 +180,7 @@ export function ProjectLanding({
   spaceRuns,
   onOpen,
   onOpenExperiment,
+  onArchiveEpisode,
   onCreate,
   projectCreation,
   onMovePersonalProjectToTeam,
@@ -389,7 +392,7 @@ export function ProjectLanding({
           />
         )}
 
-        <SpaceRuns entries={spaceRuns} onOpen={onOpenExperiment} />
+        <SpaceRuns entries={spaceRuns} onOpen={onOpenExperiment} onArchive={onArchiveEpisode} />
       </main>
 
       {deleteProject && (

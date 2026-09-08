@@ -958,6 +958,14 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
     project_truth_scope: tuple[str, ...] = Field(min_length=1, max_length=64)
     default_run_truth_scope: tuple[str, ...] = Field(min_length=1, max_length=64)
     source_manifest_sha256: str
+    record_schema_version: int | None = Field(default=None, ge=2)
+
+    @model_serializer(mode="wrap")
+    def serialize_record_capability(self, handler):
+        payload = handler(self)
+        if self.record_schema_version is None:
+            payload.pop("record_schema_version", None)
+        return payload
 
     @field_validator("source_rcp_version")
     @classmethod
@@ -2308,6 +2316,15 @@ class EpisodeRecord(BaseModel):
         return max(0, self.invocation_ceiling - self.invocations_used)
 
 
+class EpisodeArchiveState(BaseModel):
+    """Shared Runs visibility and the current lifecycle admission decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
+    can_archive: bool
+
+
 class AutoResearchSpaceRunEpisodeState(BaseModel):
     """Only the parent fields needed by the five-second space projection."""
 
@@ -2318,6 +2335,7 @@ class AutoResearchSpaceRunEpisodeState(BaseModel):
     mode: Literal["auto_research"]
     graph_target: GraphTargetRef
     root_operation_id: str | None
+    authorized_by: AuthorizedHuman | None = None
     status: EpisodeStatus
     stop_requested_at: str | None
     ending: EpisodeEnding | None
@@ -3522,6 +3540,7 @@ __all__ = [
     "ExperimentEpisodeProjectionSnapshot",
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
+    "EpisodeArchiveState",
     "EpisodeBudgetMeter",
     "EpisodeEnding",
     "EpisodeInvocationCeilingReached",

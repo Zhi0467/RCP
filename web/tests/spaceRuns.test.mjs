@@ -35,6 +35,9 @@ function run(fields = {}) {
     health_label: "Needs action",
     health_tone: "actionable",
     run_section: "actionable",
+    archived: false,
+    can_archive: false,
+    authorized_by: null,
     ...fields,
   };
 }
@@ -146,7 +149,9 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
       opened.push([projectId, selection]);
     },
   });
-  React.Children.only(row.props.children).props.onClick();
+  React.Children.toArray(row.props.children)
+    .find((child) => child.type === "button")
+    .props.onClick();
 
   assert.equal(
     href,
@@ -157,6 +162,37 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
   const html = renderToStaticMarkup(row);
   assert.match(html, /dateTime="2026-09-01T09:00:00Z"/);
   assert.doesNotMatch(html, /dateTime="2026-09-02T12:10:00Z"/);
+});
+
+test("archived space runs stay out of default cards and attention counts", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(SpaceRuns, {
+      entries: [run({ title: "Obsolete failure", archived: true })],
+      onOpen() {},
+      onArchive() {},
+    }),
+  );
+  assert.doesNotMatch(html, /Obsolete failure/);
+  assert.match(html, /0 needs action · 0 in progress/);
+  assert.match(html, /Show archived/);
+});
+
+test("space run profiles name the recorded starter and leave unattributed history unnamed", () => {
+  const render = (entry) =>
+    renderToStaticMarkup(
+      React.createElement(SpaceRunRow, {
+        entry,
+        theme: "light",
+        onOpen() {},
+        onArchive() {},
+      }),
+    );
+  const named = render(
+    run({ authorized_by: { space_id: "space", user_id: "ada", display_name: "Ada Lovelace" } }),
+  );
+  assert.match(named, /title="Started by Ada Lovelace"/);
+  assert.match(named, /episode-author-avatar[^>]*>A<\/span>/);
+  assert.doesNotMatch(render(run()), /episode-author|Started by/);
 });
 
 function contrastRatio(foreground, background) {

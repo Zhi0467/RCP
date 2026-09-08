@@ -411,6 +411,9 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
     parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
+    store = app.state.background_tasks.store
+    authorizer = authorized_human(store)
+    store.rename_space_user(authorizer.user_id, "Changed display name")
     client = TestClient(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
@@ -425,6 +428,7 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     }
     assert all(entry["project_id"] == project_id for entry in entries)
     assert all(entry["project_name"] == manifest.name for entry in entries)
+    assert all(entry["authorized_by"] == authorizer.model_dump(mode="json") for entry in entries)
     experiment = next(entry for entry in entries if entry["episode_id"] == current_episode)
     assert experiment["experiment_id"] == "exp/launched"
     assert experiment["run_section"] == "actionable"
@@ -465,6 +469,149 @@ def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
         _space_run_is_visible(entry(cutoff - timedelta(days=30), "actionable"), as_of=as_of) is True
     )
     assert _space_run_is_visible(entry(cutoff - timedelta(days=30), "running"), as_of=as_of) is True
+    archived = entry(cutoff - timedelta(days=30), "completed").model_copy(update={"archived": True})
+    assert _space_run_is_visible(archived, as_of=as_of) is True
+
+
+def test_experiment_indexes_overlay_shared_archive_state_without_mutating_cached_controls(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, episode_id = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.request_episode_stop(episode_id)
+    store.mark_episode_stop_skipped(episode_id)
+    client = TestClient(app)
+    response = client.get(f"/api/projects/{project_id}")
+    assert response.status_code == 200, response.text
+    cached = response.json()
+    cached["experiment_control"]["exp/launched"]["episode"].update(
+        {"archived": False, "can_archive": False}
+    )
+    before = json.dumps(cached, sort_keys=True)
+    monkeypatch.setattr(
+        app.state.services.project_display_cache,
+        "complete_cached_transition_control",
+        lambda *_args, **_kwargs: cached,
+    )
+    authorizer = authorized_human(store)
+    for archived in (True, False):
+        store.set_episode_archived(project_id, episode_id, authorizer.user_id, archived=archived)
+        for path in (
+            "/api/episodes?mode=experiment_loop",
+            f"/api/projects/{project_id}/experiment-episodes?mode=experiment_loop",
+        ):
+            response = client.get(path)
+            assert response.status_code == 200, response.text
+            entry = response.json()[0]
+            assert entry["episode"]["episode_id"] == episode_id
+            assert entry["episode"]["archived"] is archived
+            assert entry["episode"]["can_archive"] is True
+            assert entry["control"]["episode"] == entry["episode"]
+        response = client.get("/api/space/runs")
+        assert response.status_code == 200, response.text
+        entry = next(item for item in response.json() if item["episode_id"] == episode_id)
+        assert entry["archived"] is archived
+        assert entry["can_archive"] is True
+    assert json.dumps(cached, sort_keys=True) == before
+
+
+def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_ttl(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode_id = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    authorizer = authorized_human(store)
+    older_task = store.agent_task("older-loop")
+    assert older_task is not None and older_task.episode_id is not None
+    parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
+    for episode in (child, parent):
+        for task in store.episode_tasks(episode.episode_id):
+            store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+        store.request_episode_stop(episode.episode_id)
+        store.mark_episode_stop_skipped(episode.episode_id)
+    replacement_id = str(uuid.uuid4())
+    _record_loop(
+        store,
+        project_id,
+        episode_id=replacement_id,
+        operation_id="replacement-loop",
+        created_at=store.now(),
+        node_id="exp/never-run",
+    )
+    archived_ids = {older_task.episode_id, parent.episode_id, child.episode_id}
+    # Keep archived history older than both the clock and the seeded current run.
+    history_before = min(
+        datetime.fromisoformat(store.now()), datetime.fromisoformat(older_task.created_at)
+    )
+    old_timestamp = (history_before - timedelta(days=30)).isoformat()
+    with store.connection() as connection:
+        connection.executemany(
+            """
+            UPDATE episodes SET created_at = ?, updated_at = ?, ended_at = ?
+            WHERE episode_id = ?
+            """,
+            [(old_timestamp, old_timestamp, old_timestamp, item) for item in archived_ids],
+        )
+    for episode_id in archived_ids:
+        store.set_episode_archived(project_id, episode_id, authorizer.user_id, archived=True)
+
+    hidden_project_id = str(uuid.uuid4())
+    store.upsert_project(
+        ProjectRecord(
+            project_id=hidden_project_id,
+            home_space_id=store.space_id,
+            locator=str(tmp_path / "hidden" / "manifest.toml"),
+            name="Hidden project",
+            state_location=str(tmp_path / "hidden" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    store.seat_project_member(hidden_project_id, authorizer.user_id)
+    hidden_episode_id = str(uuid.uuid4())
+    _record_loop(
+        store,
+        hidden_project_id,
+        episode_id=hidden_episode_id,
+        operation_id="hidden-loop",
+        created_at=old_timestamp,
+    )
+    store.request_episode_stop(hidden_episode_id)
+    store.mark_episode_stop_skipped(hidden_episode_id)
+    store.set_episode_archived(
+        hidden_project_id, hidden_episode_id, authorizer.user_id, archived=True
+    )
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members WHERE project_id = ?", (hidden_project_id,))
+
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    def reject_old_branch_load(*_args, **_kwargs):
+        raise AssertionError("archived history must not rehydrate old branch graphs")
+
+    monkeypatch.setattr(app.state.service, "for_graph_target", reject_old_branch_load)
+    response = client.get("/api/space/runs")
+    assert response.status_code == 200, response.text
+    entries = {item["episode_id"]: item for item in response.json()}
+    assert set(entries) == archived_ids | {current_episode_id, replacement_id}
+    assert all(entries[item]["archived"] for item in archived_ids)
+    assert all(entries[item]["can_archive"] for item in archived_ids)
+    assert all(entries[item]["run_section"] == "completed" for item in archived_ids)
+    assert all(
+        entries[item]["authorized_by"] == authorizer.model_dump(mode="json")
+        for item in archived_ids
+    )
+    assert entries[older_task.episode_id]["title"] == "Launched loop"
+    assert entries[older_task.episode_id]["experiment_id"] == "exp/launched"
+    assert entries[parent.episode_id]["title"] == "Auto-research"
+    assert entries[parent.episode_id]["graph_target"] == parent.graph_target.model_dump(mode="json")
+    assert entries[child.episode_id]["title"] == "Experiment history"
+    assert entries[child.episode_id]["graph_target"] == child.graph_target.model_dump(mode="json")
+    assert entries[child.episode_id]["parent_episode_id"] == parent.episode_id
+    assert entries[child.episode_id]["experiment_id"] == "exp/never-run"
 
 
 def test_space_runs_filters_old_completed_auto_research_before_hydration(
@@ -689,6 +836,10 @@ def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
 
     assert response.status_code == 200, response.text
     assert terminal_episode_id in {entry["episode_id"] for entry in response.json()}
+    terminal = next(
+        entry for entry in response.json() if entry["episode_id"] == terminal_episode_id
+    )
+    assert terminal["authorized_by"] is None
     assert batch_calls == 1
 
 

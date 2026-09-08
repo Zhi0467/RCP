@@ -212,17 +212,21 @@ until the human explicitly reconnects. An unavailable or incompatible team
 connection leaves personal work usable and shows its cached cards as
 unavailable.
 
-The current desktop range is `[3, 3]` and server range is `[1, 3]`. The desktop
-selects `3` with a current server and refuses older servers before enrollment
-or transfer, instructing the member to update the server from `origin/main`
-containing protocol 3. Updated servers still accept older protocol-1/2 clients.
+The current desktop range is `[3, 4]` and server range is `[1, 4]`. The desktop
+selects `4` with a current server, keeps protocol-3 connections, and refuses
+servers below protocol 3 before enrollment or transfer. Updated servers still
+accept older protocol-1/2/3 clients.
 Protocol 1 keeps team
 project cards non-deletable. Protocol 2 adds team deletion: cards may advertise
 `can_delete=true` together with the exact `delete_confirmation`, and a team DELETE
 is refused with the protocol-mismatch response unless the caller selected 2 or newer.
 Protocol 3 preserves that contract and adds native transfer relay support for
 optional reviewed `source_commit` fields and `rcp-transfer-v2` Git archives;
-legacy omitted-commit requests and v1 archives remain accepted. A breaking
+legacy omitted-commit requests and v1 archives remain accepted. Protocol 4 adds
+the optional `record_schema_version=2` source-configuration field so episode
+archives travel with operational history. Archive-free transfers retain the
+previous configuration and record bytes. Older clients or targets that cannot
+decode the extension refuse preparation before source release. A breaking
 change adds a new immutable per-version contract before either end advertises
 it. Narrowing a range is explicit retirement, not an automatic current-plus-
 previous or time-based rule. The native handshake ends after
@@ -562,6 +566,24 @@ commentary. Each Experiment's backend control selects its one current
 `episode_id`, so repeated work produces one card for that Experiment node. Older
 episodes remain reachable through project History instead of appearing as
 sibling Runs cards.
+
+Each episode card and space run row shows a compact initials avatar and the
+recorded human authorizer's name, labelled **Started by**. This is historical
+episode attribution, including the inherited authorizer on an Auto-research
+child; it does not claim live presence or enumerate contributors. Missing legacy
+attribution never borrows the current viewer's identity.
+
+An eligible episode offers **Archive**; an archived episode offers
+**Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
+is shared across the project. Archived episodes are absent from default Runs
+cards, section counts, and nested child-Experiment links. **Show archived** adds
+a separate **Archived** section without changing the active section counts.
+An archived older Experiment episode remains available there with its own
+identity, History entrance, and Unarchive control even after a newer episode
+owns the Experiment's operational controls. Archives remain discoverable beyond
+the recent-episode list limit and the space ledger's seven-day completed window.
+Archive metadata on cached controls is refreshed from current storage before
+being published; cached graph state cannot reverse an archive choice.
 
 The episode index is an explicit typed projection whose current `episode` is
 non-null. Main-target entries consume the completed project snapshot's

@@ -720,7 +720,7 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     assert AppStore(store.path).space_user(member["user_id"]) is not None
 
 
-@pytest.mark.parametrize("selected", ["1", "2", "3"])
+@pytest.mark.parametrize("selected", ["1", "2", "3", "4"])
 def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path, selected) -> None:
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     metadata = ServerMetadata.create(
@@ -744,13 +744,13 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
     mismatch = client.post(
         "/api/team/enroll",
         json={"code": bootstrap, "display_name": "Alice"},
-        headers={header: "4"},
+        headers={header: "5"},
     )
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"] == {
         "code": "team_shell_protocol_mismatch",
         "message": "The selected team-shell protocol is not supported by this server.",
-        "server_protocol": {"minimum": 1, "maximum": 3},
+        "server_protocol": {"minimum": 1, "maximum": 4},
         "action": (
             "Update and rebuild RCP desktop from merged main, or have the server operator "
             "install a compatible promoted RCP release."

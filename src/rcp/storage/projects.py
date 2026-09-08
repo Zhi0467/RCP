@@ -525,6 +525,7 @@ class ProjectStoreMixin:
                     "episode_report_attempts",
                     "episode_wrapups",
                     "episode_invocations",
+                    "episode_archives",
                 ):
                     counts[table] = connection.execute(
                         f"""

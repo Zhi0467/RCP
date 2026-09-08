@@ -225,6 +225,7 @@ class ProjectTransferRepositorySourceRequest(_StrictModel):
 class ProjectTransferSourceConfigurationRequest(_StrictModel):
     source_rcp_version: str
     source_schema_generation: int = Field(ge=1)
+    record_schema_version: Literal[2] | None = None
     supported_archive_codecs: list[str] = Field(min_length=1, max_length=16)
     machine_aliases: list[str] = Field(min_length=1, max_length=32)
     repositories: list[ProjectTransferRepositorySourceRequest] = Field(
@@ -589,6 +590,7 @@ def create_source_project_transfer_request(
             configuration, _head = capture_project_transfer_source(
                 service,
                 include_local_commits=body.include_local_commits,
+                record_schema_version=store.project_transfer_record_schema_version(body.project_id),
             )
         else:
             configuration = existing.source_configuration
@@ -787,6 +789,9 @@ def read_source_project_transfer_release_boundary(
             configuration, source_head = capture_project_transfer_source(
                 service,
                 include_local_commits=current.source_configuration.includes_local_commits,
+                record_schema_version=store.project_transfer_record_schema_version(
+                    current.project_id
+                ),
             )
     except HTTPException:
         raise
@@ -827,6 +832,9 @@ def release_source_project_transfer_request(
                 configuration, source_head = capture_project_transfer_source(
                     service,
                     include_local_commits=transfer.source_configuration.includes_local_commits,
+                    record_schema_version=store.project_transfer_record_schema_version(
+                        transfer.project_id
+                    ),
                 )
                 if (
                     project_transfer_source_configuration_sha256(configuration)

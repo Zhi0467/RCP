@@ -14,6 +14,7 @@ from rcp.service import ProjectService
 from rcp.storage import ProjectTransferRepositorySource, ProjectTransferSourceConfiguration
 from rcp.transfer import TRANSFER_ARCHIVE_CODEC
 from rcp.transfer.archive import TRANSFER_ARCHIVE_GIT_CODEC
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 from rcp.transport.ssh import ssh_arguments
 
 PROJECT_TRANSFER_SCHEMA_GENERATION = 1
@@ -24,9 +25,12 @@ def capture_project_transfer_source(
     service: ProjectService,
     *,
     include_local_commits: bool = False,
+    record_schema_version: int = 1,
 ) -> tuple[ProjectTransferSourceConfiguration, GraphHeadRef]:
     """Read the live manifest, repository identities, and canonical main head."""
 
+    if record_schema_version not in {1, TRANSFER_RECORD_SCHEMA_VERSION}:
+        raise ValueError("source does not support the required transfer record schema")
     materialization = service.history.current_materialization()
     head = service.history.head_ref(materialization)
     manifest = service.history.manifest
@@ -64,6 +68,7 @@ def capture_project_transfer_source(
         project_truth_scope=tuple(manifest.project.truth_scope),
         default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
         source_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        record_schema_version=record_schema_version if record_schema_version != 1 else None,
     )
     return configuration, head
 

@@ -86,6 +86,7 @@ PROJECT_LINKED_TABLES = {
     "compute_backend_probes",
     "conversation_worktrees",
     "episode_invocations",
+    "episode_archives",
     "episode_report_attempts",
     "episode_reports",
     "episode_wrapups",
