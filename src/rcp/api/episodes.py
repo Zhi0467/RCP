@@ -19,6 +19,7 @@ from rcp.storage import (
     AutoResearchRecoveryStatus,
     AutoResearchSpaceRunProjectionSnapshot,
     AutoResearchSpaceRunTaskState,
+    EpisodeArchiveState,
     EpisodeBudgetMeter,
     EpisodeEnding,
     EpisodeMode,
@@ -258,6 +259,8 @@ class EpisodeResponse(BaseModel):
     created_at: str
     updated_at: str
     ended_at: str | None
+    archived: bool = False
+    can_archive: bool = False
     tasks: list[EpisodeTaskResponse]
     report: EpisodeReportSummary | None
     can_stop: bool
@@ -311,11 +314,14 @@ def serialize_episode(
     branch_summary: BranchSummaryResolver | None = None,
     projection_snapshot: ExperimentEpisodeProjectionSnapshot | None = None,
     include_graph_branch: bool = True,
+    archive_state: EpisodeArchiveState | None = None,
 ) -> EpisodeResponse:
     """Serialize one project-owned parent from its current durable ledgers."""
 
     if episode.project_id != project_id:
         raise KeyError(episode.episode_id)
+    if archive_state is None:
+        archive_state = store.episode_archive_states(project_id).get(episode.episode_id)
     if projection_snapshot is not None and (
         episode.mode != "experiment_loop" or projection_snapshot.episode != episode
     ):
@@ -423,6 +429,8 @@ def serialize_episode(
         created_at=episode.created_at,
         updated_at=episode.updated_at,
         ended_at=episode.ended_at,
+        archived=archive_state.archived if archive_state is not None else False,
+        can_archive=archive_state.can_archive if archive_state is not None else False,
         tasks=tasks,
         report=report,
         can_stop=(
@@ -457,6 +465,17 @@ def serialize_episodes(
     selected = [episode for episode in episodes if mode is None or episode.mode == mode][
         :bounded_limit
     ]
+    # Retained archives remain discoverable after newer episodes fill the recent list.
+    selected_by_id = {episode.episode_id: episode for episode in selected}
+    for episode in store.archived_episodes(project_id):
+        if mode is None or episode.mode == mode:
+            selected_by_id[episode.episode_id] = episode
+    selected = sorted(
+        selected_by_id.values(),
+        key=lambda episode: (episode.created_at, episode.episode_id),
+        reverse=True,
+    )
+    archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
         branch_episodes = [
@@ -481,6 +500,7 @@ def serialize_episodes(
             project_id,
             episode,
             branch_summary=branch_summary,
+            archive_state=archive_states.get(episode.episode_id),
         )
         for episode in selected
     ]

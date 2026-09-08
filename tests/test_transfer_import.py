@@ -17,6 +17,7 @@ from rcp.providers import configured_runtime_id
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.storage import (
     AppStore,
+    EpisodeRecord,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineIntent,
     ProjectProvisioningProviderCheckRecord,
@@ -74,7 +75,7 @@ def _target_actor(store: AppStore) -> AuthorizedHuman:
 
 
 def _source_configuration(
-    service, *, include_local_commits=False
+    service, *, include_local_commits=False, record_schema_version=1
 ) -> ProjectTransferSourceConfiguration:
     manifest = service.history.manifest
     repositories = tuple(
@@ -102,6 +103,7 @@ def _source_configuration(
         project_truth_scope=tuple(manifest.project.truth_scope),
         default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
         source_manifest_sha256=hashlib.sha256(manifest.path.read_bytes()).hexdigest(),
+        record_schema_version=record_schema_version if record_schema_version != 1 else None,
     )
 
 
@@ -227,6 +229,7 @@ def _archive_fixture(
     *,
     seal_archive: bool = False,
     include_local_commits: bool = False,
+    include_episode_archive: bool = False,
 ):
     service, records, artifact, artifact_name, view, view_name = _finished_project(
         manifest,
@@ -235,6 +238,33 @@ def _archive_fixture(
     _write_canonical_sources(service, records.tasks[0].operation_id)
     source = service.paper.store
     source_actor = authorized_human(source)
+    if include_episode_archive:
+        source.seat_project_member(records.project_id, source_actor.user_id)
+        episode_id = str(uuid.uuid4())
+        now = source.now()
+        source.create_episode(
+            EpisodeRecord(
+                episode_id=episode_id,
+                project_id=records.project_id,
+                mode="experiment_loop",
+                control_node_id="retained-experiment",
+                status="queued",
+                invocation_ceiling=1,
+                authorized_by=source_actor,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        with source.connection() as connection:
+            connection.execute(
+                "INSERT INTO experiment_episode_state (episode_id, created_at, updated_at) "
+                "VALUES (?, ?, ?)",
+                (episode_id, now, now),
+            )
+        source.end_episode_without_report(episode_id, ending="failed")
+        source.set_episode_archived(
+            records.project_id, episode_id, source_actor.user_id, archived=True
+        )
     target_data = tmp_path / "target-data"
     target = AppStore(target_data / "rcp.sqlite3", space_kind="team")
     target_actor = _target_actor(target)
@@ -246,7 +276,9 @@ def _archive_fixture(
             _git(path, "add", "revision.txt")
             _git(path, "commit", "-m", "Reviewed source commit")
     source_configuration = _source_configuration(
-        service, include_local_commits=include_local_commits
+        service,
+        include_local_commits=include_local_commits,
+        record_schema_version=source.project_transfer_record_schema_version(records.project_id),
     )
     source_request = source.create_source_project_transfer_request(
         project_id=records.project_id,
@@ -495,14 +527,20 @@ def _archive_fixture(
 
 
 @pytest.mark.parametrize("include_local_commits", [False, True])
+@pytest.mark.parametrize("include_episode_archive", [False, True])
 def test_target_import_publishes_exact_history_but_does_not_activate(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     include_local_commits: bool,
+    include_episode_archive: bool,
 ) -> None:
     fixture = _archive_fixture(
-        manifest, tmp_path, monkeypatch, include_local_commits=include_local_commits
+        manifest,
+        tmp_path,
+        monkeypatch,
+        include_local_commits=include_local_commits,
+        include_episode_archive=include_episode_archive,
     )
 
     receipt = import_project_transfer(
@@ -517,6 +555,11 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
     archive = fixture["archive"]
     assert receipt.status == "complete"
     assert target.project(archive.project_id) is None
+    assert bool(target.archived_episodes(archive.project_id)) == include_episode_archive
+    if include_episode_archive:
+        assert target.archived_episodes(archive.project_id) == fixture["source"].archived_episodes(
+            archive.project_id
+        )
     imported_tasks = target.agent_tasks(archive.project_id)
     assert len(imported_tasks) == 1
     assert imported_tasks[0].history_only is True

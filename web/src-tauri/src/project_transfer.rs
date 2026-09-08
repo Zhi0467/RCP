@@ -412,6 +412,8 @@ pub struct ProjectTransferSourceConfiguration {
     pub project_truth_scope: Vec<String>,
     pub default_run_truth_scope: Vec<String>,
     pub source_manifest_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_schema_version: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2414,6 +2416,11 @@ fn validate_source_configuration(
         120,
         true,
     )?;
+    if configuration.record_schema_version.is_some()
+        && configuration.record_schema_version != Some(2)
+    {
+        return Err("the desktop does not support the source transfer record schema".into());
+    }
     if configuration.source_schema_generation == 0
         || configuration.supported_archive_codecs.is_empty()
         || configuration.machine_aliases.is_empty()
@@ -4281,6 +4288,34 @@ mod tests {
     }
 
     #[test]
+    fn archived_record_capability_round_trips_and_rejects_unsupported_versions() {
+        let protocol: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v4.json"
+        ))
+        .unwrap();
+        let legacy = safe_transfer_payload()["source_configuration"].clone();
+        let parsed: ProjectTransferSourceConfiguration =
+            serde_json::from_value(legacy.clone()).unwrap();
+        validate_source_configuration(&parsed).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+        let mut included = legacy;
+        included["record_schema_version"] = serde_json::json!(2);
+        let parsed = serde_json::from_value(included.clone()).unwrap();
+        validate_source_configuration(&parsed).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), included);
+        assert_eq!(
+            protocol["native_transfer"]["record_schema_field"],
+            "record_schema_version"
+        );
+        assert_eq!(protocol["native_transfer"]["record_schema_version"], 2);
+        for unsupported in [1, 3] {
+            included["record_schema_version"] = serde_json::json!(unsupported);
+            let parsed = serde_json::from_value(included.clone()).unwrap();
+            assert!(validate_source_configuration(&parsed).is_err());
+        }
+    }
+
+    #[test]
     fn preparation_refuses_a_source_that_changes_local_commit_inclusion() {
         let mut request = prepare_request();
         let mut source = decision_record("source", REQUEST_ID);
@@ -4349,6 +4384,7 @@ mod tests {
             project_truth_scope: vec!["state".into()],
             default_run_truth_scope: vec!["state".into()],
             source_manifest_sha256: "a".repeat(64),
+            record_schema_version: None,
         };
         assert_eq!(
             choose_archive_codec(&configuration).unwrap(),
@@ -4463,6 +4499,7 @@ mod tests {
             project_truth_scope: vec!["state".into()],
             default_run_truth_scope: vec!["state".into()],
             source_manifest_sha256: "a".repeat(64),
+            record_schema_version: None,
         }
     }
 

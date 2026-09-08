@@ -129,6 +129,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("DELETE",), "/api/projects/{project_id}/chats/{chat_id}/worktree"),
     (("GET",), "/api/projects/{project_id}/episodes"),
     (("POST",), "/api/projects/{project_id}/episodes"),
+    (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/archive"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/stop"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/merge"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/reauthorize"),
@@ -180,6 +181,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "agent_tasks": "src/rcp/api/tasks.py",
     "agent_usage": "src/rcp/api/project_state.py",
     "answer_project_invitation": "src/rcp/api/index.py",
+    "archive_episode": "src/rcp/api/episode_routes.py",
     "browse_project_setup_ssh_paths": "src/rcp/api/index.py",
     "cached_project": "src/rcp/api/project_state.py",
     "cached_project_revision": "src/rcp/api/project_state.py",
@@ -322,15 +324,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 134
-    assert len(_FROZEN_ROUTE_INVENTORY) == 134
+    assert len(entries) == 135
+    assert len(_FROZEN_ROUTE_INVENTORY) == 135
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 130
+    assert sum(isinstance(route, APIRoute) for route in routes) == 131
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -345,5 +347,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 122
+    assert len(observed) == 123
     assert observed == _HANDLER_MODULE_MAP

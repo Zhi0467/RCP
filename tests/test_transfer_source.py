@@ -29,6 +29,7 @@ from .test_project_transfer_request_storage import (
     _incoming_request,
     _ready_incoming,
 )
+from .test_transfer_episode_archive_compatibility import _ended_episode
 
 
 def _released_source(
@@ -36,6 +37,7 @@ def _released_source(
     *,
     task_statuses: tuple[AgentTaskStatus, ...] = (),
     release_source: bool = True,
+    archived_episode: bool = False,
 ):
     source_data = tmp_path / "personal"
     source_app = create_named_app(data_dir=source_data)
@@ -43,7 +45,12 @@ def _released_source(
     source_actor = _actor(source, "Z")
     project_id = _source_project(source_app, source_data)
     service = source_app.state.catalog.open(project_id)
-    configuration, source_head = capture_project_transfer_source(service)
+    if archived_episode:
+        episode_id = _ended_episode(source, project_id, source_actor)
+        source.set_episode_archived(project_id, episode_id, source_actor.user_id, archived=True)
+    configuration, source_head = capture_project_transfer_source(
+        service, record_schema_version=source.project_transfer_record_schema_version(project_id)
+    )
 
     target = AppStore(tmp_path / "team" / "rcp.sqlite3", space_kind="team")
     target_actor = _actor(target, "Alice")
@@ -116,9 +123,12 @@ def _released_source(
     )
 
 
-def test_confirmed_source_transfer_closes_paused_attempt_without_losing_history(tmp_path: Path):
+@pytest.mark.parametrize("archived_episode", [False, True])
+def test_confirmed_source_transfer_closes_paused_attempt_without_losing_history(
+    tmp_path: Path, archived_episode: bool
+):
     data, app, source, _target, request, _target_request, _head = _released_source(
-        tmp_path, task_statuses=("paused",)
+        tmp_path, task_statuses=("paused",), archived_episode=archived_episode
     )
     scratch = data / "retained-scratch"
     scratch.mkdir()
@@ -131,6 +141,8 @@ def test_confirmed_source_transfer_closes_paused_attempt_without_losing_history(
 
     completed = advance_source_project_transfer(source, app.state.catalog, request.request_id)
     assert completed.phase == "archive_bound"
+    assert completed.source_configuration.record_schema_version == (2 if archived_episode else None)
+    assert bool(source.archived_episodes(request.project_id)) == archived_episode
     after = source.agent_task(operation_id)
     assert before is not None and after is not None
     assert after.status == "interrupted"

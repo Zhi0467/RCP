@@ -851,6 +851,9 @@ export interface SpaceRunIndexEntry {
   health_label: string;
   health_tone: SpaceRunHealthTone;
   run_section: SpaceRunSection;
+  archived: boolean;
+  can_archive: boolean;
+  authorized_by: AuthorizedHuman | null;
 }
 
 export interface WatcherContinuation {
@@ -2163,6 +2166,8 @@ export interface Episode {
   ended_at: string | null;
   tasks: EpisodeTask[];
   report: EpisodeReportSummary | null;
+  archived: boolean;
+  can_archive: boolean;
   can_stop: boolean;
   can_reauthorize: boolean;
   can_message: boolean;

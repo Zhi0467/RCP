@@ -16,17 +16,20 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from rcp.transfer.archive import (
+    TransferArchiveActor,
     TransferArchiveAttribution,
     TransferGraphHead,
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 1
+TRANSFER_RECORD_SCHEMA_VERSION = 2
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -46,6 +49,7 @@ TRANSFER_RECORD_TABLES = frozenset(
         "auto_research_messages",
         "auto_research_recoveries",
         "episode_invocations",
+        "episode_archives",
         "episode_report_attempts",
         "episode_reports",
         "episode_wrapups",
@@ -923,6 +927,11 @@ class TransferAutoResearchHistory(_StrictTransferRecord):
     commands: tuple[TransferAutoResearchCommand, ...] = ()
 
 
+class TransferEpisodeArchiveRecord(_StrictTransferRecord):
+    archived_by: TransferArchiveActor
+    archived_at: AwareTimestamp
+
+
 class TransferEpisodeRecord(_StrictTransferRecord):
     episode_id: str = Field(min_length=1)
     mode: Literal["auto_research", "experiment_loop"]
@@ -948,6 +957,7 @@ class TransferEpisodeRecord(_StrictTransferRecord):
     created_at: AwareTimestamp
     updated_at: AwareTimestamp
     ended_at: AwareTimestamp
+    archive: TransferEpisodeArchiveRecord | None = None
     invocations: tuple[TransferEpisodeInvocation, ...] = ()
     report_attempts: tuple[TransferEpisodeReportAttempt, ...] = ()
     wrapup: TransferEpisodeWrapup | None = None
@@ -1024,7 +1034,7 @@ class TransferPaperDraft(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[TRANSFER_RECORD_SCHEMA_VERSION] = TRANSFER_RECORD_SCHEMA_VERSION
+    schema_version: Literal[1, TRANSFER_RECORD_SCHEMA_VERSION] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1041,6 +1051,8 @@ class TransferRecordBundle(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_bundle(self) -> TransferRecordBundle:
+        if self.schema_version == 1 and any(episode.archive for episode in self.episodes):
+            raise ValueError("episode archive state requires transfer record schema version 2")
         attribution_ids = {item.archive_actor_id for item in self.attributions}
         references = {
             item.authorized_by_attribution_id
@@ -1130,6 +1142,16 @@ class TransferRecordBundle(_StrictTransferRecord):
                     require=require,
                 )
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        data = handler(self)
+        if self.schema_version == 1:
+            # The canonical v1 payload predates this field. Preserve its exact
+            # shape so decoding an old archive preserves its canonical bytes.
+            for episode in data.get("episodes", []):
+                episode.pop("archive", None)
+        return data
 
     @staticmethod
     def _validate_auto_research_references(

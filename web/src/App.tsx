@@ -53,6 +53,7 @@ import {
 } from "./chatWorkspace";
 import {
   api,
+  archiveEpisode,
   ApiError,
   loadEpisodes,
   loadProjectReadiness,
@@ -875,6 +876,8 @@ export default function App() {
     loadProjectIndex,
     refreshExperimentLoops,
     refreshProjectExperimentLoops,
+    refreshSpaceRuns,
+    replaceEpisodeRunArchive,
     applyHashRoute,
     clearProjectRoute,
     openSetup,
@@ -1143,6 +1146,7 @@ export default function App() {
     apiBase,
     selectedAutoResearchEpisodeId,
     isActiveProject,
+    runsVisible: view === "execution",
   });
   const activeBranchEpisode =
     graphTarget.kind === "branch"
@@ -3109,6 +3113,38 @@ export default function App() {
     }
   };
 
+  const requestEpisodeArchive = async (
+    requestedProjectId: string,
+    episodeId: string,
+    archived: boolean,
+  ) => {
+    const finishEpisodeAction = beginEpisodeAction(`archive:${episodeId}`);
+    if (!finishEpisodeAction) throw new Error("Wait for the current episode action to finish.");
+    try {
+      const nextEpisode = await archiveEpisode(
+        `/api/projects/${encodeURIComponent(requestedProjectId)}`,
+        episodeId,
+        archived,
+      );
+      replaceEpisode(nextEpisode);
+      replaceEpisodeRunArchive(nextEpisode);
+      try {
+        if (isActiveProject(requestedProjectId)) {
+          await Promise.all([refreshEpisodes(), refreshProjectExperimentLoops(requestedProjectId)]);
+        } else {
+          await refreshSpaceRuns();
+        }
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: `Run ${archived ? "archived" : "unarchived"}, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    } finally {
+      finishEpisodeAction();
+    }
+  };
+
   const requestEpisodeReauthorization = async (episodeId: string, invocationCeiling: number) => {
     if (!apiBase || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`reauthorize:${episodeId}`);
@@ -3680,6 +3716,7 @@ export default function App() {
           spaceRuns={spaceRuns}
           onOpen={openProject}
           onOpenExperiment={openProject}
+          onArchiveEpisode={requestEpisodeArchive}
           onCreate={openSetup}
           projectCreation={verifiedHealth!.project_creation}
           onMovePersonalProjectToTeam={movePersonalProjectToTeam}
@@ -4328,6 +4365,7 @@ export default function App() {
                 onInspectTask={selectTaskInspector}
                 onLoadEpisodeMessages={refreshEpisodeMessages}
                 onStopEpisode={requestEpisodeStop}
+                onArchiveEpisode={requestEpisodeArchive}
                 onMergeEpisode={requestEpisodeMerge}
                 onReauthorizeEpisode={requestEpisodeReauthorization}
                 onSendEpisodeMessage={messageEpisodeOrchestrator}

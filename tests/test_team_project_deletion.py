@@ -31,7 +31,7 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-@pytest.mark.parametrize("protocol", ["2", "3"])
+@pytest.mark.parametrize("protocol", ["2", "3", "4"])
 def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     tmp_path: Path, protocol
 ) -> None:
@@ -113,10 +113,10 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     [headerless_card] = client.get("/api/projects").json()
     assert headerless_card == card
 
-    mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "4"})
+    mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "5"})
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
-    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 3}
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 4}
 
     refused = client.delete(
         f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}
@@ -125,7 +125,7 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     assert refused.json()["detail"] == {
         "code": "team_shell_protocol_mismatch",
         "message": "Team project deletion requires team-shell protocol 2 or newer.",
-        "server_protocol": {"minimum": 1, "maximum": 3},
+        "server_protocol": {"minimum": 1, "maximum": 4},
         "action": "Update and rebuild RCP desktop from current origin/main.",
     }
     assert store.project(project_id) is not None
