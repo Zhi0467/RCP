@@ -837,3 +837,71 @@ def test_protected_removal_is_reviewed_with_its_exact_incident_graph_effects(
     )
     assert "edge/question-hypothesis" not in approved.edges
     assert ("rq/review" not in approved.nodes) == (remove == "node")
+
+
+def test_later_merge_replays_a_prior_source_head_that_ended_on_a_rejected_patch(
+    review_branch, monkeypatch
+):
+    harness = review_branch
+    _human_patch(harness, {"op": "set_standing", "node_id": "hyp/review", "standing": "accepted"})
+    rejected = harness.branch.append(
+        Patch(
+            kind="work",
+            author="agent",
+            summary="Retain a rejected branch revision at the head.",
+            run_truth_scope=["repo-a"],
+            source_operation_id=harness.root.operation_id,
+            ops=[
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "source": "ev/review",
+                            "target": "hyp/review",
+                            "relation": "not_a_relation",
+                        }
+                    ],
+                }
+            ],
+        ),
+        raise_on_reject=False,
+    )[0]
+    assert rejected.admission == "rejected"
+    assert harness.branch.head_ref().revision == rejected.revision
+    for standing in ("accepted", "asserted"):
+        _merge(
+            harness,
+            monkeypatch,
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    _proposal(
+                        {
+                            "op": "set_standing",
+                            "intent": "standing_change",
+                            "node_id": "hyp/review",
+                            "standing": standing,
+                        }
+                    )
+                ],
+            },
+        )
+        pending = [
+            proposal
+            for proposal in harness.service.history.state().proposals.values()
+            if proposal.status == "pending"
+        ]
+        assert len(pending) == 1
+        harness.service.decide_proposal(
+            pending[0].id,
+            ProposalDecisionRequest(decision="approved"),
+            authorized_by=authorized_human(harness.app),
+        )
+        _human_patch(
+            harness, {"op": "set_standing", "node_id": "hyp/review", "standing": "asserted"}
+        )
+    receipts = harness.branch.validated_merge_receipts()
+    assert sorted(receipt.provenance.branch_head.revision for receipt in receipts) == [
+        rejected.revision,
+        rejected.revision + 1,
+    ]

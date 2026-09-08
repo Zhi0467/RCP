@@ -186,17 +186,14 @@ async def stream_branch_merge_task(
                 if source_head.revision == metadata.base_head.revision:
                     previous_graph = base_graph
                 else:
-                    _result, boundaries = branch.accepted_patch_boundaries()
-                    previous_graph = next(
-                        (
-                            state
-                            for _before, patch, state in boundaries
-                            if patch.revision == source_head.revision
-                            and patch.transition is not None
-                            and patch.transition.transition_id == source_head.transition_id
-                        ),
-                        None,
-                    )
+                    # Replay through the receipt's exact revision: the head it named
+                    # may end on a retained rejected Patch with no accepted boundary.
+                    source = branch.materialize_at_revision(source_head.revision)
+                    if (
+                        source.state.replay_status == "complete"
+                        and branch.head_ref(source) == source_head
+                    ):
+                        previous_graph = source.state
                 if previous_graph is None:
                     raise StateUnavailable(
                         "The prior merge receipt lost its exact canonical source snapshot."

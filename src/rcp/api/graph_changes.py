@@ -62,8 +62,10 @@ def branch_changes(
 
     with history.workspace.snapshot_lock:
         metadata = history.branch_metadata()
+        # The immutable base, not the first accepted boundary: a retained rejected
+        # Patch advances the revision the next boundary's before-state carries.
+        base = history.base_state()
         result, boundaries = history.accepted_patch_boundaries()
-        base = boundaries[0][0] if boundaries else result.state
         head = history.head_ref(result)
         delta = build_semantic_delta(
             base, result.state, base_head=metadata.base_head, branch_head=head

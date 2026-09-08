@@ -701,10 +701,27 @@ class BranchHistoryManager:
         )
         return self.write_merge_receipt(receipt)
 
+    def materialize_at_revision(self, revision: int) -> MaterializationResult:
+        """Replay the branch exactly through ``revision``, retained rejected Patches included.
+
+        A branch head can end on a rejected Patch, which advances the revision without an
+        accepted boundary, so callers that must reproduce the state a receipt named cannot
+        rely on accepted boundaries alone.
+        """
+
+        with self._process_lock:
+            if not self.workspace.refresh_if_stale():
+                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
+            self.parent._reload_manifest()
+            self.manifest = self.parent.manifest
+            self._metadata = self._read_metadata()
+            return self._replay(through_revision=revision)
+
     def _replay(
         self,
         *,
         accepted_patch_observer: AcceptedPatchObserver | None = None,
+        through_revision: int | None = None,
     ) -> MaterializationResult:
         base_result = self._materialize_base()
         initial_scope, scope_failure = self._initial_truth_scope()
@@ -714,7 +731,11 @@ class BranchHistoryManager:
             if base_result.state.replay_status == "degraded"
             else None
         )
-        branch_paths = self._patch_paths()
+        branch_paths = [
+            path
+            for path in self._patch_paths()
+            if through_revision is None or int(path.stem) <= through_revision
+        ]
         branch_patches: list[Patch] = []
         branch_failure: ReplayFailure | None = None
         if failure is None:

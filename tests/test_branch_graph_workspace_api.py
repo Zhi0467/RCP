@@ -230,3 +230,56 @@ def test_merge_refuses_work_before_creating_its_repository_worktree(
         },
     )
     assert response.status_code == 409, response.text
+
+
+def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_patch(
+    manifest, tmp_path
+):
+    app, main, episode, root = _app_branch(manifest, tmp_path)
+    client = TestClient(app)
+    base = f"/api/projects/{episode.project_id}"
+    params = {"branch_id": episode.episode_id}
+    branch = main.for_graph_target(episode.graph_target).history
+    rejected, _result = branch.append(
+        Patch(
+            kind="work",
+            author="agent",
+            summary="Retain a rejected first branch revision.",
+            run_truth_scope=["repo-a"],
+            source_operation_id=root.operation_id,
+            ops=[
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {"source": QUESTION, "target": HYPOTHESIS, "relation": "not_a_relation"}
+                    ],
+                }
+            ],
+        ),
+        raise_on_reject=False,
+    )
+    assert rejected.admission == "rejected"
+    snapshot = client.get(base, params=params).json()
+    assert snapshot["graph_changes"]["base_head"] == branch.branch_metadata().base_head.model_dump(
+        mode="json"
+    )
+    synced = client.post(
+        f"{base}/sync",
+        params=params,
+        json={
+            "base_revision": snapshot["revision"],
+            "nodes": [
+                {
+                    "node_id": QUESTION,
+                    "base_updated_rev": main.history.state().nodes[QUESTION].updated_rev,
+                    "changes": {"question": "Does the rejected revision hide this change?"},
+                }
+            ],
+        },
+    )
+    assert synced.status_code == 200, synced.text
+    changes = client.get(f"{base}/graph/changes", params=params)
+    assert changes.status_code == 200, changes.text
+    assert changes.json()["base_head"] == snapshot["graph_changes"]["base_head"]
+    assert [item["node_id"] for item in changes.json()["nodes"]] == [QUESTION]
+    assert changes.json()["nodes"][0]["history"][0]["producer"] == "human"
