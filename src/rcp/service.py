@@ -2492,7 +2492,32 @@ class ProjectService:
                     f"{state_machine!r}"
                 )
             updates["run_on"] = run_on
-        return base.model_copy(update=updates)
+        resolved = base.model_copy(update=updates)
+        if not resolved.model:
+            resolved = resolved.model_copy(
+                update={"model": self._first_catalog_model(resolved.provider, resolved.run_on)}
+            )
+        return resolved
+
+    def _first_catalog_model(self, provider: ProviderId, run_on: str) -> str:
+        """The first model the provider CLI vendors on that machine.
+
+        There is no "provider default" choice: a profile or request that names no
+        model runs the head of the catalog the readiness probe already collected.
+        Only an already-cached probe is consulted, so admission never launches a
+        CLI; an unknown catalog leaves the model empty and the CLI picks its own.
+        """
+        machine = self.manifest.machine_map.get(run_on)
+        if machine is None:
+            return ""
+        readiness = self.launcher.cached_readiness(
+            provider,
+            host=machine.host,
+            binary=machine.provider_paths.get(provider),
+        )
+        if readiness is None or not readiness.models:
+            return ""
+        return readiness.models[0].id
 
     def assemble_run(
         self,

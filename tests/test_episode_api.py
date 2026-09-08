@@ -979,20 +979,23 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "rcp-result-view-gesture" not in preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
     assert viewer.status_code == 200
-    assert "rcp-artifact-context" in viewer.text
-    assert '"source": "episode_report"' in viewer.text
+    # An Auto-research episode concludes with a non-chat task, so this report has no
+    # originating chat: the shell is read-only and draws no selection rail.
+    assert "rcp-artifact-context" not in viewer.text
+    assert 'id="pending"' not in viewer.text
+    assert ">Comment</button>" not in viewer.text
+    assert "rcp-artifact-selection-enable" not in viewer.text
     assert 'id="keep"' not in viewer.text
     assert ">Save copy</button>" in viewer.text
+    assert "fetch(config.saveUrl" in viewer.text
     assert f"/episodes/{episode.episode_id}/report/save" in viewer.text
     assert ">report</span>" in viewer.text
+    assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
-    assert "rcp-artifact-context" in legacy_preview.text
+    assert ">Save copy</button>" in legacy_preview.text
     assert url in legacy_preview.text
     with TestClient(app) as client:
         assert client.head(legacy_preview_url).content == b""
-    assert ">Comment</button>" in viewer.text
-    assert ">Cancel</button>" in viewer.text
-    assert 'id="box"' not in viewer.text
 
 
 def test_save_episode_report_copies_immutable_bytes_without_overwriting(manifest, tmp_path) -> None:

@@ -14,6 +14,7 @@ import {
   providerOptions,
   reasoningOptions,
   runtimeOptions,
+  selectedModel,
 } from "../providers";
 import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 
@@ -90,8 +91,9 @@ export function AgentConfigControls({
   // accept, and which reasoning efforts each of those models accepts.
   const models = readiness?.models ?? [];
   const providers = providerOptions(Object.values(onMachine), value.provider);
-  const modelChoices = modelOptions(models, value.model);
-  const reasoningChoices = reasoningOptions(models, value.model, value.reasoning);
+  const model = selectedModel(models, value.model);
+  const modelChoices = modelOptions(models, model);
+  const reasoningChoices = reasoningOptions(models, model, value.reasoning);
   const runtimeChoices = runtimeOptions(readiness, runtime?.value ?? "");
 
   const contents = (
@@ -141,7 +143,7 @@ export function AgentConfigControls({
         <label>
           <span>Model</span>
           <select
-            value={value.model}
+            value={model}
             disabled={locked}
             onChange={(event) => update(modelChange(models, event.target.value, value.reasoning))}
           >

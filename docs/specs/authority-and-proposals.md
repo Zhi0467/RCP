@@ -53,7 +53,12 @@ manifest, skill, native session, client field, file path, or parent-task id can
 never widen another boundary.
 
 Execution profiles choose provider, model, reasoning, execution machine, and
-run-scope repositories. They grant no graph or orchestration permission.
+run-scope repositories. They grant no graph or orchestration permission. The
+model is always a catalogued model: no surface offers a "provider default"
+choice, and a profile or request that names no model resolves to the first
+model the provider CLI vendors on that machine, read from the already-probed
+readiness catalog. Only while that catalog is unknown does the model stay empty
+and the CLI choose for itself.
 
 ## Human identity and project membership
 

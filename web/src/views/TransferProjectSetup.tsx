@@ -40,6 +40,7 @@ import {
 import {
   modelChange,
   modelOptions,
+  selectedModel,
   providerChange,
   providerOptions,
   reasoningOptions,
@@ -988,7 +989,7 @@ export function TransferProjectSetup({
                       <label>
                         Model
                         <select
-                          value={profile.model}
+                          value={selectedModel(models, profile.model)}
                           disabled={preparationLocked}
                           onChange={(event) =>
                             updateProvider(
@@ -997,11 +998,13 @@ export function TransferProjectSetup({
                             )
                           }
                         >
-                          {modelOptions(models, profile.model).map((option) => (
-                            <option value={option.id} key={option.id}>
-                              {option.label}
-                            </option>
-                          ))}
+                          {modelOptions(models, selectedModel(models, profile.model)).map(
+                            (option) => (
+                              <option value={option.id} key={option.id}>
+                                {option.label}
+                              </option>
+                            ),
+                          )}
                         </select>
                       </label>
                       <label>

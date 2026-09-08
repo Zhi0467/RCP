@@ -37,6 +37,7 @@ import {
 import {
   modelChange,
   modelOptions,
+  selectedModel,
   providerChange,
   providerOptions,
   readinessFor,
@@ -817,7 +818,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                       <label>
                         Model
                         <select
-                          value={profile.model}
+                          value={selectedModel(models, profile.model)}
                           onChange={(event) =>
                             updateAgent(
                               id,
@@ -825,11 +826,13 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                             )
                           }
                         >
-                          {modelOptions(models, profile.model).map((option) => (
-                            <option key={option.id} value={option.id}>
-                              {option.label}
-                            </option>
-                          ))}
+                          {modelOptions(models, selectedModel(models, profile.model)).map(
+                            (option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ),
+                          )}
                         </select>
                       </label>
                       <label>

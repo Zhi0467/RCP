@@ -53,15 +53,28 @@ export function runtimeOptions(readiness: ProviderReadiness | undefined, saved: 
   );
 }
 
-/** The empty string is what the manifest has always meant by "provider default". */
+/**
+ * Only catalogued models are offered; there is no "provider default" entry. An
+ * empty saved value is shown, and run, as the head of the catalog.
+ */
 export function modelOptions(models: ModelChoice[], saved: string): Option[] {
   return withSaved(
-    [{ id: "", label: "Provider default" }, ...models.map(({ id, label }) => ({ id, label }))],
+    models.map(({ id, label }) => ({ id, label })),
     saved,
   );
 }
 
-/** Efforts the chosen model accepts; every known effort when none is chosen. */
+/** The model the backend runs for an empty saved value: the first one vendored. */
+export function firstModel(models: ModelChoice[]): string {
+  return models[0]?.id ?? "";
+}
+
+/** What a model select shows: the saved model, else the first catalogued one. */
+export function selectedModel(models: ModelChoice[], saved: string): string {
+  return saved || firstModel(models);
+}
+
+/** Efforts the chosen model accepts; every known effort when the model is unknown. */
 export function reasoningFor(models: ModelChoice[], model: string): string[] {
   const chosen = models.find((item) => item.id === model);
   if (chosen) return chosen.reasoning;
@@ -78,17 +91,16 @@ export function reasoningOptions(models: ModelChoice[], model: string, saved: st
 /**
  * Move to a provider, dropping the model with it. A model id belongs to one
  * provider — carrying `gpt-5.5` over to Claude would offer a value Claude
- * rejects — so the choice resets to the provider default. The effort survives
- * when the new provider shares it, which the common `low`..`xhigh` levels are.
+ * rejects — so the choice becomes the new provider's first catalogued model.
+ * The effort survives when that model accepts it, which the common
+ * `low`..`xhigh` levels do.
  */
 export function providerChange(
   models: ModelChoice[],
   provider: string,
   reasoning: string,
 ): { provider: string; model: string; reasoning?: string } {
-  const accepted = reasoningFor(models, "");
-  if (accepted.length === 0 || accepted.includes(reasoning)) return { provider, model: "" };
-  return { provider, model: "", reasoning: accepted[0] };
+  return { provider, ...modelChange(models, firstModel(models), reasoning) };
 }
 
 /**

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from rcp.agents.launcher import ProviderReadiness
 from rcp.config import AgentSurfaceConfig, Manifest
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
+from rcp.providers import ModelChoice
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
@@ -91,7 +93,43 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
         model="claude-opus-4-1",
     )
 
+    # No readiness probe has run, so the catalog is unknown and the model stays empty.
     assert provider_default.provider == "claude"
     assert provider_default.model == ""
     assert explicit.provider == "claude"
     assert explicit.model == "claude-opus-4-1"
+
+
+def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) -> None:
+    history = HistoryManager(manifest)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    paper = PaperService(manifest, store, history.workspace, project_id="project")
+    service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
+    machine = manifest.machine_map[manifest.agent_profile("project_chat").run_on]
+    probed: list[tuple[str, str, str | None]] = []
+
+    def cached_readiness(provider: str, *, host: str = "", binary: str | None = None):
+        probed.append((provider, host, binary))
+        if provider != "codex":
+            return None
+        return ProviderReadiness(
+            provider="codex",
+            installed=True,
+            authenticated=True,
+            models=[
+                ModelChoice(id="gpt-5.6-sol", label="GPT-5.6-Sol", reasoning=["low", "high"]),
+                ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "high"]),
+            ],
+        )
+
+    service.launcher.cached_readiness = cached_readiness  # type: ignore[method-assign]
+
+    resolved = service.resolve_agent_profile("project_chat", provider="codex", model="")
+    explicit = service.resolve_agent_profile("project_chat", provider="codex", model="gpt-5.5")
+    unknown_catalog = service.resolve_agent_profile("project_chat", provider="claude", model="")
+
+    assert resolved.model == "gpt-5.6-sol"
+    assert explicit.model == "gpt-5.5"
+    assert unknown_catalog.model == ""
+    # Only the already-cached probe for that machine's exact executable is read.
+    assert probed[0] == ("codex", machine.host, machine.provider_paths.get("codex"))

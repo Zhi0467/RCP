@@ -28,9 +28,10 @@ def _resolved_graph_request(
     resolved = request.model_copy(
         update={
             "provider": profile.provider,
-            # An empty string is the explicit provider-default sentinel. Once a
-            # request is resolved it must not collapse back to None, which means
-            # "inherit the current surface setting" on a later continuation.
+            # Resolution names the catalog model that will run; it stays empty
+            # only while the provider's catalog is unknown. Once a request is
+            # resolved it must not collapse back to None, which means "inherit
+            # the current surface setting" on a later continuation.
             "model": profile.model,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
