@@ -638,20 +638,19 @@ def watch_liveness(liveness: Liveness) -> None:
 
 
 def lock_input_lines(liveness: Liveness):
-    """Poll complete lines without hiding buffered input or blocking on a partial line."""
+    """Poll complete lines without hiding buffered input or blocking on a partial line.
+
+    Expiry belongs to the watchdog alone, so a silent client produces exactly one
+    diagnostic and one exit path whether or not a command is running.
+    """
     pending = b""
     while True:
-        remaining = liveness.remaining()
-        if remaining <= 0:
-            raise TimeoutError("client stopped heartbeating")
         if b"\n" in pending:
             line, pending = pending.split(b"\n", 1)
             liveness.refresh()
             yield line
             continue
-        ready, _, _ = select.select(
-            [sys.stdin], [], [], min(STATE_LOCK_POLL_INTERVAL_SECONDS, remaining)
-        )
+        ready, _, _ = select.select([sys.stdin], [], [], STATE_LOCK_POLL_INTERVAL_SECONDS)
         if ready:
             chunk = os.read(sys.stdin.fileno(), 65536)
             if not chunk:
@@ -659,7 +658,7 @@ def lock_input_lines(liveness: Liveness):
                     yield pending
                 return
             pending += chunk
-        elif liveness.remaining() > 0:
+        else:
             yield None
 
 
@@ -755,16 +754,8 @@ def main() -> None:
         os.close(descriptor)
         print("unsafe-entry", flush=True)
         raise SystemExit(0)
-    try:
-        with os.fdopen(descriptor, "a+") as handle:
-            hold_lock(handle, lock_path, heartbeat_timeout)
-    except TimeoutError:
-        print(
-            "Lock holder released the lock because its client stopped heartbeating.",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise SystemExit(3) from None
+    with os.fdopen(descriptor, "a+") as handle:
+        hold_lock(handle, lock_path, heartbeat_timeout)
 
 
 if __name__ == "__main__":
