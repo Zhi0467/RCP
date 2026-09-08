@@ -33,8 +33,10 @@ from rcp.__main__ import (
     main,
 )
 from rcp.limits import (
+    BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_SHUTDOWN_TIMEOUT_SECONDS,
+    WATCHER_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.models import ServerStepEvent
 from rcp.server_runtime import (
@@ -406,7 +408,7 @@ def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     _replace_existing_server(args, tmp_path)
 
     assert calls[0] == (4321, signal.SIGTERM)
-    assert calls[1] == (tmp_path, 45.0)
+    assert calls[1] == (tmp_path, SERVER_SHUTDOWN_TIMEOUT_SECONDS)
     assert calls[2] == ("serve", tmp_path)
 
 
@@ -460,6 +462,15 @@ def test_server_bounds_graceful_shutdown_below_the_replacement_window(
 
     assert calls[0]["timeout_graceful_shutdown"] == SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
     assert SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS < SERVER_SHUTDOWN_TIMEOUT_SECONDS
+
+
+def test_server_shutdown_budget_fits_the_replacement_window() -> None:
+    teardown = (
+        SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS
+        + 2 * (WATCHER_CHECK_TIMEOUT_SECONDS + 1)
+        + BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS
+    )
+    assert teardown < SERVER_SHUTDOWN_TIMEOUT_SECONDS
 
 
 def test_owner_publishes_metadata_after_lock_and_reports_owned(

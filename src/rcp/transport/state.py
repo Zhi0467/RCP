@@ -39,6 +39,8 @@ from rcp.limits import (
     REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
+    STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS,
+    STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS,
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
     STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS,
@@ -100,7 +102,10 @@ def _remote_lock_holder_script() -> str:
     helper = (
         importlib.resources.files("rcp").joinpath("artifact_replace.py").read_text(encoding="utf-8")
     )
-    return f"{helper}\n{_remote_script('remote_lock_holder.py')}"
+    return (
+        f"{helper}\nSTATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}\n"
+        f"{_remote_script('remote_lock_holder.py')}"
+    )
 
 
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
@@ -1471,6 +1476,7 @@ def _advisory_lock_holder_arguments(
         "-c",
         _remote_lock_holder_script(),
         os.fspath(lock_path),
+        str(STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS),
     ]
 
 
@@ -1481,7 +1487,9 @@ def _remote_advisory_lock_command(host: str, lock_path: str | os.PathLike[str]) 
 
 def _stop_lock_holder(process: subprocess.Popen[str]) -> None:
     if process.stdin is not None and not process.stdin.closed:
-        process.stdin.close()
+        # A failed heartbeat flush can leave buffered bytes on a dead channel.
+        with suppress(BrokenPipeError, OSError, ValueError):
+            process.stdin.close()
     try:
         process.wait(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
         return
@@ -1639,7 +1647,6 @@ def _wait_for_lock_holder(
             continue
         if status == _LOCK_ACQUIRED:
             return
-        _stop_lock_holder(process)
         if status == _LOCK_LEGACY_DIRECTORY:
             raise _LegacyLockDirectory(
                 f"Canonical-state lock {location} is a legacy directory RCP could not reclaim. "
@@ -1690,6 +1697,7 @@ def _send_lock_holder_command(
     lines: _HolderLines,
     lease: RunLockLease,
     command: dict[str, object],
+    write_guard: threading.Lock,
 ) -> dict[str, object]:
     if process.stdin is None or process.stdout is None:
         _raise_holder_command_lost(
@@ -1698,8 +1706,9 @@ def _send_lock_holder_command(
             f"Canonical-state lock holder channel for {lease.location} is unavailable.",
         )
     try:
-        process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
-        process.stdin.flush()
+        with write_guard:
+            process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
+            process.stdin.flush()
     except (BrokenPipeError, OSError, ValueError) as exc:
         _raise_holder_command_lost(
             process,
@@ -1743,6 +1752,22 @@ def _send_lock_holder_command(
         return response
 
 
+def _heartbeat_lock_holder(
+    process: subprocess.Popen[str],
+    write_guard: threading.Lock,
+    stopped: threading.Event,
+) -> None:
+    while not stopped.wait(STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            with write_guard:
+                if stopped.is_set() or process.stdin is None:
+                    return
+                process.stdin.write('{"op":"heartbeat"}\n')
+                process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            return
+
+
 @contextmanager
 def _process_advisory_lock(
     process_arguments: list[str],
@@ -1767,50 +1792,64 @@ def _process_advisory_lock(
         raise StateUnavailable(
             f"Could not start canonical-state lock holder for {location}: {exc}"
         ) from exc
-    if holder.stdout is None:
-        _terminate_lock_holder(holder)
-        raise StateUnavailable(f"Lock holder for {location} did not expose an ownership signal.")
-    lines = _HolderLines(holder)
-    stderr = _HolderStderr(holder)
-    try:
-        _wait_for_lock_holder(
-            holder,
-            lines,
-            stderr,
-            location,
-            on_wait=on_wait,
-            cancelled=cancelled,
-        )
-    except BaseException:
-        _terminate_lock_holder(holder)
-        raise
-    if cancelled is not None and cancelled():
-        _raise_lock_cancelled(holder, acquired=True)
-    lease: RunLockLease
-
-    def owned_command(command: dict[str, object]) -> dict[str, object]:
-        return _send_lock_holder_command(holder, lines, lease, command)
-
-    lease = RunLockLease(
-        location,
-        on_lost=on_lost,
-        owned=lambda: holder.poll() is None,
-        command=owned_command,
-    )
-    supervisor_stop = threading.Event()
-    supervisor = threading.Thread(
-        target=_supervise_lock_holder,
-        args=(holder, lease, supervisor_stop),
+    write_guard = threading.Lock()
+    heartbeat_stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_lock_holder,
+        args=(holder, write_guard, heartbeat_stop),
         daemon=True,
     )
-    supervisor.start()
+    heartbeat.start()
     try:
-        yield lease
+        if holder.stdout is None:
+            _terminate_lock_holder(holder)
+            raise StateUnavailable(
+                f"Lock holder for {location} did not expose an ownership signal."
+            )
+        lines = _HolderLines(holder)
+        stderr = _HolderStderr(holder)
+        try:
+            _wait_for_lock_holder(
+                holder,
+                lines,
+                stderr,
+                location,
+                on_wait=on_wait,
+                cancelled=cancelled,
+            )
+        except BaseException:
+            _terminate_lock_holder(holder)
+            raise
+        if cancelled is not None and cancelled():
+            _raise_lock_cancelled(holder, acquired=True)
+        lease: RunLockLease
+
+        def owned_command(command: dict[str, object]) -> dict[str, object]:
+            return _send_lock_holder_command(holder, lines, lease, command, write_guard)
+
+        lease = RunLockLease(
+            location,
+            on_lost=on_lost,
+            owned=lambda: holder.poll() is None,
+            command=owned_command,
+        )
+        supervisor_stop = threading.Event()
+        supervisor = threading.Thread(
+            target=_supervise_lock_holder,
+            args=(holder, lease, supervisor_stop),
+            daemon=True,
+        )
+        supervisor.start()
+        try:
+            yield lease
+        finally:
+            lease._begin_release()
+            supervisor_stop.set()
+            supervisor.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
     finally:
-        lease._begin_release()
-        supervisor_stop.set()
+        heartbeat_stop.set()
+        heartbeat.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
         _stop_lock_holder(holder)
-        supervisor.join(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
 
 
 class SSHStateWorkspace(StateWorkspace):

@@ -295,8 +295,9 @@ never asked to discover or kill the old process manually.
 Remote canonical locks are process-held advisory files. Writers wait for live
 contention; a read-side refresh waits a bounded time and then reports canonical
 state unavailable, so one stuck writer cannot freeze a project's readers.
-Process or connection death releases ownership, and SSH keepalives make a
-stalled connection die within about a minute. RCP may reclaim only a provably
+Process death releases ownership. The remote holder releases the lock itself
+when its client stops heartbeating, so an orphaned holder cannot outlive a dead
+connection by more than the heartbeat timeout. RCP may reclaim only a provably
 empty legacy lock directory; populated, symlink, or special entries remain with
 an exact diagnostic and no instruction to delete them.
 

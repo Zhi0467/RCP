@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.limits import STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS
 from rcp.transport.remote_read_kept_view import (
     MISSING,
     TOO_LARGE,
@@ -33,6 +34,8 @@ def run_script(name: str, *args: str, stdin: str | None = None) -> subprocess.Co
     source = (
         _remote_lock_holder_script() if name == "remote_lock_holder.py" else _remote_script(name)
     )
+    if name == "remote_lock_holder.py" and args[:1] != ("replace-run-artifact",):
+        args = (*args, str(STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS))
     return subprocess.run(
         [sys.executable, "-c", source, *args],
         input=stdin,
