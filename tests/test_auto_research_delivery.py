@@ -1851,94 +1851,17 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
             source_id="worker-one",
             source_event="succeeded",
             payload={"kind": "work", "status": "succeeded"},
-            created_at=store.now(),
+            created_at=(
+                _required_timestamp(store.now())
+                - timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+            ).isoformat(),
         )
     )
-    # TEMPORARY CI DIAGNOSTIC: capture why delivery returns None on Linux runners.
-    turn_errors: list[str] = []
-    real_start_turn = delivery_module.start_auto_research_turn
-
-    def recording_start_turn(*args, **kwargs):
-        try:
-            return real_start_turn(*args, **kwargs)
-        except Exception as exc:
-            turn_errors.append(f"{type(exc).__name__}: {exc}")
-            raise
-
-    real_prefix = delivery_module._lifecycle_claim_prefix
-    real_create = store.create_auto_research_lifecycle_wake_task
-    real_spawn = tasks._create_and_spawn
-
-    def recording_prefix(**kwargs):
-        try:
-            result = real_prefix(**kwargs)
-        except Exception as exc:
-            turn_errors.append(f"prefix raised {type(exc).__name__}: {exc}")
-            raise
-        turn_errors.append(f"prefix -> {[n.notice_id for n in result]!r}")
-        return result
-
-    def recording_create(record, **kwargs):
-        try:
-            result = real_create(record, **kwargs)
-        except Exception as exc:
-            turn_errors.append(f"create raised {type(exc).__name__}: {exc}")
-            raise
-        turn_errors.append(f"create -> {None if result is None else result.status}")
-        return result
-
-    def recording_spawn(*args, **kwargs):
-        try:
-            result = real_spawn(*args, **kwargs)
-        except Exception as exc:
-            turn_errors.append(f"spawn raised {type(exc).__name__}: {exc}")
-            raise
-        turn_errors.append(f"spawn -> {None if result is None else result.status}")
-        return result
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(delivery_module, "start_auto_research_turn", recording_start_turn)
-        patch.setattr(delivery_module, "_lifecycle_claim_prefix", recording_prefix)
-        patch.setattr(store, "create_auto_research_lifecycle_wake_task", recording_create)
-        patch.setattr(tasks, "_create_and_spawn", recording_spawn)
-        wake_id = deliver_pending_auto_research_lifecycle(
-            tasks,
-            episode_id=auto_research.episode_id,
-        )
-    if wake_id is None:
-        episode_now = store.episode(auto_research.episode_id)
-        lines = [
-            f"turn_errors={turn_errors!r}",
-            f"episode={episode_now.status if episode_now else None} ending={episode_now.ending if episode_now else None}",
-            f"binding={store.auto_research_actor_binding(root.operation_id)!r}",
-            f"budget={store.episode_budget_meter(auto_research.episode_id)!r}",
-        ]
-        for notice in store.auto_research_lifecycle_notices(auto_research.episode_id):
-            lines.append(f"notice={notice!r}")
-        import sqlite3 as _sqlite3
-
-        from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES as _MAX
-
-        lines.append(f"sqlite={_sqlite3.sqlite_version} max_notices={_MAX!r}")
-        pending = store.pending_auto_research_lifecycle_notices(
-            auto_research.episode_id, limit=_MAX
-        )
-        lines.append(f"pending_count={len(pending)}")
-        lines.append(f"pending_episode_ids={store.pending_auto_research_lifecycle_episode_ids()!r}")
-        lines.append(f"current_task_exists={store.agent_task('root') is not None}")
-        with store.connection() as connection:
-            for row in connection.execute(
-                "SELECT notice_id, episode_id, delivered_at, acknowledged_at, "
-                "typeof(delivered_at) AS td, typeof(acknowledged_at) AS ta, created_at "
-                "FROM auto_research_lifecycle_notices"
-            ).fetchall():
-                lines.append(f"raw={dict(row)!r}")
-        for task in store.auto_research_tasks(auto_research.episode_id):
-            lines.append(
-                f"task={task.operation_id} status={task.status} attempt={task.attempt} "
-                f"wake={task.request.get('wake_cause')} parent={task.parent_operation_id}"
-            )
-        pytest.fail("DIAG\n" + "\n".join(lines))
+    wake_id = deliver_pending_auto_research_lifecycle(
+        tasks,
+        episode_id=auto_research.episode_id,
+    )
+    assert wake_id is not None
     wait_for_task(store, wake_id, expect="failed")
 
     retried = tasks.retry(wake_id)
