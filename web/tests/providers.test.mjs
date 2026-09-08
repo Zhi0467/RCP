@@ -34,7 +34,9 @@ const CLAUDE = {
   label: "Claude",
   installed: true,
   authenticated: true,
-  models: [{ id: "opus", label: "Opus", reasoning: ["low", "max"], default_reasoning: "medium" }],
+  models: [
+    { id: "opus", label: "Opus", reasoning: ["low", "medium", "max"], default_reasoning: "medium" },
+  ],
 };
 
 test("every provider the backend probed is offered, under its own label", () => {
@@ -54,11 +56,18 @@ test("an unknown model offers every effort any of the provider's models accepts"
   assert.deepEqual(reasoningFor(CODEX.models, ""), ["low", "high", "ultra"]);
 });
 
-test("moving to a model that rejects the current effort falls back to its default", () => {
+test("moving to a model that rejects the current effort falls back to an accepted one", () => {
   // `ultra` is real on sol and absent on 5.5; carrying it over would be
   // rejected at the API, which is the bug this whole path exists to prevent.
+  // 5.5 advertises `medium` as its default without listing it, so the default is
+  // not trusted either: the first effort the model does list is used.
   assert.deepEqual(modelChange(CODEX.models, "gpt-5.5", "ultra"), {
     model: "gpt-5.5",
+    reasoning: "low",
+  });
+  // A default the model does list is preferred over the first listed effort.
+  assert.deepEqual(modelChange(CLAUDE.models, "opus", "ultra"), {
+    model: "opus",
     reasoning: "medium",
   });
 });

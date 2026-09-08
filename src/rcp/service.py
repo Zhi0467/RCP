@@ -1475,12 +1475,7 @@ class ProjectService:
         attention = project_graph_attention(state)
         counts = project_counts(state, attention)
         refresh_profile = self.manifest.agent_profile("refresh")
-        # Export the profile as it would run: an unnamed model becomes the catalog
-        # head once that provider's readiness is cached, so no surface derives it.
-        profiles = {
-            surface: self.resolve_agent_profile(surface).model_dump(mode="json")
-            for surface in _SETTINGS_SURFACES
-        }
+        profiles = self.effective_profiles(self.manifest, self.launcher)
         return _ProjectSnapshotDraft(
             {
                 "name": self.manifest.name,
@@ -1533,6 +1528,7 @@ class ProjectService:
 
     def readiness_snapshot(self, *, refresh: bool = False) -> dict[str, object]:
         snapshot = self.readiness_for(self.manifest, self.launcher, refresh=refresh)
+        snapshot["agent_profiles"] = self.effective_profiles(self.manifest, self.launcher)
         self.wait_for_provider_skill_inventories()
         snapshot["provider_skill_inventories"] = self.provider_skill_inventory_snapshot()
         return snapshot
@@ -2495,37 +2491,65 @@ class ProjectService:
                     f"{state_machine!r}"
                 )
             updates["run_on"] = run_on
-        resolved = base.model_copy(update=updates)
-        if resolved.model:
-            return resolved
-        head = self._first_catalog_model(resolved.provider, resolved.run_on)
-        if head is None:
-            return resolved
-        filled: dict[str, object] = {"model": head.id}
-        # The effort was chosen without a model; keep it only if the head accepts it.
-        if head.reasoning and resolved.reasoning not in head.reasoning:
-            filled["reasoning"] = head.default_reasoning or head.reasoning[0]
-        return resolved.model_copy(update=filled)
+        return self._with_catalog_head(
+            self.manifest, self.launcher, base.model_copy(update=updates)
+        )
 
-    def _first_catalog_model(self, provider: ProviderId, run_on: str) -> ModelChoice | None:
-        """The first model the provider CLI vendors on that machine.
+    @classmethod
+    def effective_profiles(
+        cls,
+        manifest: Manifest,
+        launcher: AgentLauncher,
+    ) -> dict[AgentExecutionProfile, dict[str, object]]:
+        """Every settings profile as it would run, for the project and readiness projections.
+
+        An unnamed model becomes the catalog head once that provider's readiness is
+        cached, so no surface derives it; a readiness refresh re-exports these with
+        the refreshed catalog.
+        """
+        return {
+            surface: cls._with_catalog_head(
+                manifest, launcher, manifest.agent_profile(surface)
+            ).model_dump(mode="json")
+            for surface in _SETTINGS_SURFACES
+        }
+
+    @staticmethod
+    def _with_catalog_head(
+        manifest: Manifest,
+        launcher: AgentLauncher,
+        profile: AgentSurfaceConfig,
+    ) -> AgentSurfaceConfig:
+        """Fill an unnamed model with the first model the provider CLI vendors on that machine.
 
         There is no "provider default" choice: a profile or request that names no
         model runs the head of the catalog the readiness probe already collected.
         Only an already-cached probe is consulted, so admission never launches a
         CLI; an unknown catalog leaves the model empty and the CLI picks its own.
         """
-        machine = self.manifest.machine_map.get(run_on)
+        if profile.model:
+            return profile
+        machine = manifest.machine_map.get(profile.run_on)
         if machine is None:
-            return None
-        readiness = self.launcher.cached_readiness(
-            provider,
+            return profile
+        readiness = launcher.cached_readiness(
+            profile.provider,
             host=machine.host,
-            binary=machine.provider_paths.get(provider),
+            binary=machine.provider_paths.get(profile.provider),
         )
         if readiness is None or not readiness.models:
-            return None
-        return readiness.models[0]
+            return profile
+        head: ModelChoice = readiness.models[0]
+        filled: dict[str, object] = {"model": head.id}
+        # The effort was chosen without a model; keep it only if the head accepts it,
+        # and trust the catalog's default only when the head's own list contains it.
+        if head.reasoning and profile.reasoning not in head.reasoning:
+            filled["reasoning"] = (
+                head.default_reasoning
+                if head.default_reasoning in head.reasoning
+                else head.reasoning[0]
+            )
+        return profile.model_copy(update=filled)
 
     def assemble_run(
         self,

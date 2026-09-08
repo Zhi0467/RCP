@@ -181,28 +181,16 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         setAgents(
           (current) =>
             Object.fromEntries(
-              Object.entries(current).map(([surface, profile]) => {
-                const kept = known.some((item) => item.provider === profile.provider)
+              Object.entries(current).map(([surface, profile]) => [
+                surface,
+                known.some((item) => item.provider === profile.provider)
                   ? profile
                   : {
                       ...profile,
                       provider: fallback,
                       runtime: readinessFor(known, fallback)?.default_runtime ?? "",
-                    };
-                // A profile that names no model takes the catalog head as its
-                // saved selection, the same model the backend would run for it.
-                return [
-                  surface,
-                  {
-                    ...kept,
-                    ...defaultModelSelection(
-                      readinessFor(known, kept.provider)?.models ?? [],
-                      kept.model,
-                      kept.reasoning,
-                    ),
-                  },
-                ];
-              }),
+                    },
+              ]),
             ) as SetupAgents,
         );
       })
@@ -279,6 +267,33 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     const repository = repositories.find((item) => item.alias === stateRepository);
     return repository?.machine_alias ?? machines[0]?.alias ?? "";
   }, [machines, repositories, stateRepository]);
+
+  // A profile that names no model takes the catalog head as its saved selection
+  // once readiness is known, but only when its target machine is this one:
+  // `/api/providers` describes the web server's own CLIs. A remote target's
+  // catalog is resolved by the backend once that machine has been probed, so
+  // its model stays empty here rather than pinning a local head it may not have.
+  useEffect(() => {
+    if (providers.length === 0) return;
+    setAgents((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const surface of Object.keys(current) as AgentExecutionProfile[]) {
+        const alias = surface === "paper_coach" ? paperCoachMachine : canonicalMachine;
+        if (machines.find((machine) => machine.alias === alias)?.location !== "local") continue;
+        const profile = current[surface];
+        const selection = defaultModelSelection(
+          readinessFor(providers, profile.provider)?.models ?? [],
+          profile.model,
+          profile.reasoning,
+        );
+        if (!selection) continue;
+        next[surface] = { ...profile, ...selection };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [providers, machines, canonicalMachine, paperCoachMachine]);
 
   const updateAgent = (profile: AgentExecutionProfile, patch: Partial<SetupAgentProfile>) => {
     setAgents((current) => ({ ...current, [profile]: { ...current[profile], ...patch } }));

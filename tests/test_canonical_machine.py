@@ -121,7 +121,8 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
                     id="gpt-5.6-sol",
                     label="GPT-5.6-Sol",
                     reasoning=["low", "high"],
-                    default_reasoning="high",
+                    # A catalog default the head itself does not list must not be used.
+                    default_reasoning="medium",
                 ),
                 ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "medium", "high"]),
             ],
@@ -139,13 +140,26 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     unknown_catalog = service.resolve_agent_profile("project_chat", provider="claude", model="")
 
     assert resolved.model == "gpt-5.6-sol"
-    # The profile's `medium` was chosen with no model; the head rejects it, so the
-    # head's own default effort is used rather than launching a doomed turn.
-    assert resolved.reasoning == "high"
+    # The profile's `medium` was chosen with no model; the head rejects it and its
+    # advertised default is not in its own list, so the first accepted effort is used.
+    assert resolved.reasoning == "low"
     assert kept_effort.model == "gpt-5.6-sol"
     assert kept_effort.reasoning == "low"
     assert explicit.model == "gpt-5.5"
     assert explicit.reasoning == "medium"
     assert unknown_catalog.model == ""
+
+    # The same fill feeds both projections, so a readiness refresh re-exports it.
+    effective = ProjectService.effective_profiles(manifest, service.launcher)
+    assert effective["project_chat"]["model"] == "gpt-5.6-sol"
+    assert effective["project_chat"]["reasoning"] == "low"
+    assert set(effective) == {
+        "seed",
+        "refresh",
+        "node_chat",
+        "project_chat",
+        "paper_coach",
+        "orchestrator",
+    }
     # Only the already-cached probe for that machine's exact executable is read.
     assert probed[0] == ("codex", machine.host, machine.provider_paths.get("codex"))

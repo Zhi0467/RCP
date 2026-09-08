@@ -124,6 +124,7 @@ export function modelChange(
 ): { model: string; reasoning?: string } {
   const accepted = reasoningFor(models, model);
   if (accepted.length === 0 || accepted.includes(reasoning)) return { model };
-  const fallback = models.find((item) => item.id === model)?.default_reasoning;
-  return { model, reasoning: fallback || accepted[0] };
+  // The catalog's default is trusted only when the model's own list contains it.
+  const fallback = models.find((item) => item.id === model)?.default_reasoning ?? "";
+  return { model, reasoning: accepted.includes(fallback) ? fallback : accepted[0] };
 }
