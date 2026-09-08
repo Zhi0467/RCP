@@ -440,6 +440,15 @@ def deliver_pending_auto_research_mail(
         raise ValueError("auto_research mail recipient is outside the auto_research")
     if not binding.native_session_id or not binding.stage_root:
         return None
+    episode = background.store.episode(episode_id)
+    if (
+        episode is not None
+        and binding.actor_operation_id == episode.root_operation_id
+        and background.store.pending_auto_research_lifecycle_notices(episode_id, limit=1)
+    ):
+        # The lifecycle wake claims root mail with its notices, so a separate mail
+        # wake here would spend a second allocation while a notice waits out its grace.
+        return None
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
         return None

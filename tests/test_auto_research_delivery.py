@@ -393,6 +393,14 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     task_ids_before = [task.operation_id for task in store.auto_research_tasks(episode.episode_id)]
 
     assert deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id) is None
+    # Root mail waits with the notice instead of spending its own allocation.
+    assert (
+        deliver_pending_auto_research_mail(
+            tasks, episode_id=episode.episode_id, recipient_task_id=root.operation_id
+        )
+        is None
+    )
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [mail]
     assert store.episode_budget_meter(episode.episode_id) == before
     assert [
         task.operation_id for task in store.auto_research_tasks(episode.episode_id)
