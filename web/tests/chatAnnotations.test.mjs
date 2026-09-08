@@ -17,7 +17,14 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 
 test("assistant answers expose pointer selection and a real keyboard selection command", () => {
   assert.match(nodeChatSource, /className="chat-markdown chat-annotatable-answer"/);
-  assert.match(nodeChatSource, /onPointerUp=/);
+  assert.doesNotMatch(nodeChatSource, /onPointerUp=/);
+  // The pointer may lift outside the swept answer, so the release is observed on the
+  // document and the answer is resolved from the selection, clamped to its edges.
+  assert.match(nodeChatSource, /document\.addEventListener\("pointerup", onPointerUp\)/);
+  assert.match(
+    nodeChatSource,
+    /annotatableAnswerSelectionRange\(window\.getSelection\(\), chatLinesRef\.current\)/,
+  );
   assert.doesNotMatch(
     nodeChatSource,
     /className="chat-markdown chat-annotatable-answer"\s+tabIndex=/,
