@@ -22,7 +22,6 @@ import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
 import {
   modelChange,
-  defaultModelSelection,
   modelOptions,
   providerChange,
   providerOptions,
@@ -259,32 +258,6 @@ function PersonalProjectSetup({
     location: stateRepo.location,
     host: stateRepo.location === "ssh" ? stateRepo.host.trim() : "",
   } as const;
-  // A profile that names no model takes the catalog head as its saved selection
-  // once readiness is known, but only when it runs on this machine: `/api/providers`
-  // describes the web server's own CLIs. A remote target's catalog is resolved by
-  // the backend once that machine has been probed, so its model stays empty here.
-  const paperCoachLocation = agents.paper_coach.location;
-  useEffect(() => {
-    if (providers.length === 0) return;
-    setAgents((current) => {
-      let changed = false;
-      const next = { ...current };
-      for (const surface of Object.keys(current) as AgentExecutionProfile[]) {
-        const profile = current[surface];
-        const location = surface === "paper_coach" ? profile.location : canonicalExecution.location;
-        if (location !== "local") continue;
-        const selection = defaultModelSelection(
-          readinessFor(providers, profile.provider)?.models ?? [],
-          profile.model,
-          profile.reasoning,
-        );
-        if (!selection) continue;
-        next[surface] = { ...profile, ...selection };
-        changed = true;
-      }
-      return changed ? next : current;
-    });
-  }, [providers, canonicalExecution.location, paperCoachLocation]);
   const payload = (): ProjectSetupRequest => ({
     name: name.trim(),
     repositories: repositories.map(({ id: _id, ...repo }) => ({
@@ -657,6 +630,7 @@ function PersonalProjectSetup({
                               )
                             }
                           >
+                            {!profile.model && <option value="" disabled />}
                             {modelOptions(models, profile.model).map((option) => (
                               <option key={option.id} value={option.id}>
                                 {option.label}

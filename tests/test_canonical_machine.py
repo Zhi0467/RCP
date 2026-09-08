@@ -149,10 +149,14 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert explicit.reasoning == "medium"
     assert unknown_catalog.model == ""
 
-    # The same fill feeds both projections, so a readiness refresh re-exports it.
+    # Both projections export the manifest model unchanged beside the model that
+    # runs, so an unnamed profile is never pinned by a display and a readiness
+    # refresh re-exports the current head.
     effective = ProjectService.effective_profiles(manifest, service.launcher)
-    assert effective["project_chat"]["model"] == "gpt-5.6-sol"
-    assert effective["project_chat"]["reasoning"] == "low"
+    assert effective["project_chat"]["model"] == ""
+    assert effective["project_chat"]["effective_model"] == "gpt-5.6-sol"
+    assert effective["project_chat"]["reasoning"] == "medium"
+    assert effective["seed"]["effective_model"] == "gpt-5.6-sol"
     assert set(effective) == {
         "seed",
         "refresh",

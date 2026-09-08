@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  defaultModelSelection,
   firstModel,
   modelChange,
   modelOptions,
@@ -94,19 +93,9 @@ test("only catalogued models are offered; there is no provider-default entry", (
   ]);
 });
 
-test("an empty model becomes a durable selection of the catalog head", () => {
-  // The backend fills the same head for an unnamed model, so selecting it into
-  // state keeps what the picker shows and what runs identical, and saves it.
+test("the catalog head is what a provider switch selects; nothing is invented without one", () => {
   assert.equal(firstModel(CODEX.models), "gpt-5.6-sol");
-  assert.deepEqual(defaultModelSelection(CODEX.models, "", "high"), { model: "gpt-5.6-sol" });
-  // An effort the head rejects is reconciled to the head's own default.
-  assert.deepEqual(defaultModelSelection(CODEX.models, "", "medium"), {
-    model: "gpt-5.6-sol",
-    reasoning: "low",
-  });
-  // A named model, or no catalog yet, selects nothing and invents nothing.
-  assert.equal(defaultModelSelection(CODEX.models, "gpt-5.5", "high"), null);
-  assert.equal(defaultModelSelection([], "", "high"), null);
+  assert.equal(firstModel([]), "");
 });
 
 test("an unknown provider contributes no models instead of throwing", () => {

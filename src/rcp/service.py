@@ -2501,18 +2501,21 @@ class ProjectService:
         manifest: Manifest,
         launcher: AgentLauncher,
     ) -> dict[AgentExecutionProfile, dict[str, object]]:
-        """Every settings profile as it would run, for the project and readiness projections.
+        """Every settings profile with the model it would run, for both projections.
 
-        An unnamed model becomes the catalog head once that provider's readiness is
-        cached, so no surface derives it; a readiness refresh re-exports these with
-        the refreshed catalog.
+        `model` stays the manifest value, so an unnamed profile is saved back
+        unnamed and keeps following the catalog. `effective_model` is what runs:
+        the catalog head once that provider's readiness is cached, else the
+        manifest value. A readiness refresh re-exports these with the refreshed
+        catalog, so no surface derives the head itself.
         """
-        return {
-            surface: cls._with_catalog_head(
-                manifest, launcher, manifest.agent_profile(surface)
-            ).model_dump(mode="json")
-            for surface in _SETTINGS_SURFACES
-        }
+        profiles: dict[AgentExecutionProfile, dict[str, object]] = {}
+        for surface in _SETTINGS_SURFACES:
+            saved = manifest.agent_profile(surface)
+            exported = saved.model_dump(mode="json")
+            exported["effective_model"] = cls._with_catalog_head(manifest, launcher, saved).model
+            profiles[surface] = exported
+        return profiles
 
     @staticmethod
     def _with_catalog_head(

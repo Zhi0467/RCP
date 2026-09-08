@@ -69,20 +69,6 @@ export function firstModel(models: ModelChoice[]): string {
   return models[0]?.id ?? "";
 }
 
-/**
- * The durable selection for a config that names no model once the catalog is
- * known: the head, with the effort reconciled to it. Null when there is nothing
- * to select yet, so a caller can spread it without branching.
- */
-export function defaultModelSelection(
-  models: ModelChoice[],
-  model: string,
-  reasoning: string,
-): { model: string; reasoning?: string } | null {
-  if (model || models.length === 0) return null;
-  return modelChange(models, firstModel(models), reasoning);
-}
-
 /** Efforts the chosen model accepts; every known effort when the model is unknown. */
 export function reasoningFor(models: ModelChoice[], model: string): string[] {
   const chosen = models.find((item) => item.id === model);

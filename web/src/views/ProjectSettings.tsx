@@ -1137,6 +1137,14 @@ export function ProjectSettings({
               <AgentConfigControls
                 project={project}
                 value={profiles[id]}
+                // The exported head describes the saved provider on the saved
+                // machine; a draft that moved either shows blank until saved.
+                effectiveModel={
+                  profiles[id].provider === project.agent_profiles[id]?.provider &&
+                  profiles[id].run_on === project.agent_profiles[id]?.run_on
+                    ? project.agent_profiles[id]?.effective_model
+                    : ""
+                }
                 locked={writesDisabled}
                 runOnLocked={id !== "paper_coach"}
                 onRefreshReadiness={onRefreshReadiness}

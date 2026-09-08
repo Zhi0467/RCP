@@ -90,7 +90,13 @@ function deferredReadiness(generations, projectId) {
 const probedCompute = { local: { gpu: { status_label: "Reachable" } } };
 const probedProviders = { local: { codex: { provider: "codex", installed: true } } };
 const probedProfiles = {
-  project_chat: { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", run_on: "local" },
+  project_chat: {
+    provider: "codex",
+    model: "",
+    effective_model: "gpt-5.6-sol",
+    reasoning: "medium",
+    run_on: "local",
+  },
 };
 const readinessResponse = {
   compute_status: probedCompute,
