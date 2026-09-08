@@ -418,6 +418,36 @@ test("episode archiving hides child cards and links, survives stale reads, and r
     assert.equal(await projectCard("main-current").count(), 0);
     await projectCard("main-old").getByRole("button", { name: "Unarchive", exact: true }).click();
     await projectCard("main-old").waitFor({ state: "detached" });
+
+    records[2].archived = false;
+    records[2].can_archive = true;
+    await page.goto(
+      `http://127.0.0.1:${address.port}/tests/fixtures/episodeArchive.html#/projects/project-one?view=runs&experiment=experiment%2Fmain&episode=main-current&target=main`,
+    );
+    await page.reload();
+    await projectCard("main-current").waitFor({ state: "attached" });
+    const showArchived = project.getByRole("checkbox", { name: "Show archived" });
+    assert.equal(await showArchived.isChecked(), false);
+
+    // A teammate archives the selected run without changing this viewer's route.
+    records[2].archived = true;
+    records[2].can_archive = false;
+    await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
+    await projectCard("main-current")
+      .getByRole("button", { name: "Unarchive", exact: true })
+      .waitFor();
+    assert.equal(await showArchived.isChecked(), true);
+
+    // The viewer can hide it again; unchanged polling must respect that choice.
+    await showArchived.uncheck();
+    const refresh = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects/project-one/episodes",
+    );
+    await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
+    await (await refresh).finished();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await showArchived.isChecked(), false);
+    assert.equal(await projectCard("main-current").count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

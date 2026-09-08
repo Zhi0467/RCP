@@ -957,7 +957,6 @@ export function ExecutionView({
   episodeReportHref,
 }: ExecutionProps) {
   const [showArchived, setShowArchived] = useState(false);
-  const openedArchiveRoute = useRef<string | null>(null);
   const selectedDetailRef = useRef<HTMLDivElement>(null);
   const selectedAutoResearchDetailRef = useRef<HTMLDivElement>(null);
   const focusedAutoResearchEpisodeId = useRef<string | null>(null);
@@ -1046,6 +1045,7 @@ export function ExecutionView({
   const requestedEpisodeId =
     selectedAutoResearchEpisodeId ?? exactExperimentRoute?.episode_id ?? null;
   const requestedEpisode = requestedEpisodeId ? episodesById.get(requestedEpisodeId) : undefined;
+  const requestedEpisodeArchived = requestedEpisode?.archived ?? false;
   const childExperimentsByParent = new Map<string, ExperimentLoopIndexEntry[]>();
   experimentEntriesByEpisode.forEach((entry) => {
     if (!entry.parent_episode_id) return;
@@ -1089,14 +1089,8 @@ export function ExecutionView({
   ];
 
   useEffect(() => {
-    if (!requestedEpisodeId) {
-      openedArchiveRoute.current = null;
-      return;
-    }
-    if (!requestedEpisode || openedArchiveRoute.current === requestedEpisodeId) return;
-    openedArchiveRoute.current = requestedEpisodeId;
-    if (requestedEpisode.archived) setShowArchived(true);
-  }, [requestedEpisodeId, requestedEpisode]);
+    if (requestedEpisodeArchived) setShowArchived(true);
+  }, [requestedEpisodeId, requestedEpisodeArchived]);
 
   useEffect(() => {
     if (
