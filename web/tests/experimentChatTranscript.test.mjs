@@ -11,9 +11,8 @@ const server = await createServer({
 });
 after(() => server.close());
 
-const { visibleChatTranscriptTarget, transcriptAbsenceIsExpected } = await server.ssrLoadModule(
-  "/src/hooks/useChatState.ts",
-);
+const { visibleChatTranscriptTarget, transcriptAbsenceIsExpected, experimentChatFreshnessToken } =
+  await server.ssrLoadModule("/src/hooks/useChatState.ts");
 const { ApiError } = await server.ssrLoadModule("/src/api.ts");
 const { MAIN_GRAPH } = await server.ssrLoadModule("/src/graphTarget.ts");
 
@@ -94,4 +93,57 @@ test("a real failure on the Experiment chat still reports", () => {
     ),
     false,
   );
+});
+
+const PROGRESS = {
+  current_operation_id: "op-1",
+  current_status: "running",
+  current_last_activity_at: "2026-09-09T00:00:00Z",
+};
+
+test("a cross-graph Experiment chat takes its freshness from the run's progress", () => {
+  // Summaries only cover the viewed graph, so a branch chat never supplies the
+  // `updated_at` that refires the transcript fetch for every other chat.
+  const token = experimentChatFreshnessToken("experiment-chat", PROGRESS, BRANCH, MAIN_GRAPH);
+  assert.notEqual(token, "");
+  assert.notEqual(
+    token,
+    experimentChatFreshnessToken(
+      "experiment-chat",
+      { ...PROGRESS, current_last_activity_at: "2026-09-09T00:00:05Z" },
+      BRANCH,
+      MAIN_GRAPH,
+    ),
+  );
+  assert.notEqual(
+    token,
+    experimentChatFreshnessToken(
+      "experiment-chat",
+      { ...PROGRESS, current_operation_id: "op-2" },
+      BRANCH,
+      MAIN_GRAPH,
+    ),
+  );
+  assert.equal(
+    token,
+    experimentChatFreshnessToken("experiment-chat", { ...PROGRESS }, BRANCH, MAIN_GRAPH),
+  );
+});
+
+test("a chat on the viewed graph keeps summary freshness alone", () => {
+  // Its summary `updated_at` already refires the fetch; a second signal would
+  // only refetch the same transcript on every run poll.
+  assert.equal(
+    experimentChatFreshnessToken("experiment-chat", PROGRESS, MAIN_GRAPH, MAIN_GRAPH),
+    "",
+  );
+  assert.equal(experimentChatFreshnessToken("experiment-chat", PROGRESS, BRANCH, BRANCH), "");
+});
+
+test("no selected Experiment chat needs no freshness signal", () => {
+  assert.equal(experimentChatFreshnessToken(null, PROGRESS, BRANCH, MAIN_GRAPH), "");
+});
+
+test("a cross-graph chat with no progress yet still yields a stable token", () => {
+  assert.equal(experimentChatFreshnessToken("experiment-chat", null, BRANCH, MAIN_GRAPH), "||");
 });

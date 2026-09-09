@@ -1,4 +1,4 @@
-import { MAIN_GRAPH } from "../graphTarget";
+import { MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
@@ -17,7 +17,20 @@ import {
   type ChatKind,
   type DraftConversation,
 } from "../chatWorkspace";
-import type { AgentTask, AppView, ChatSummary, ChatTranscript, GraphNode } from "../types";
+import type {
+  AgentTask,
+  AppView,
+  ChatSummary,
+  ChatTranscript,
+  ExperimentOperationalState,
+  GraphNode,
+} from "../types";
+
+/** The run progress that stands in for a cross-graph chat's summary freshness. */
+export type ExperimentChatProgress = Pick<
+  ExperimentOperationalState,
+  "current_operation_id" | "current_status" | "current_last_activity_at"
+>;
 
 export interface FloatingChat {
   chatId: string;
@@ -43,6 +56,7 @@ interface UseChatStateOptions {
   graphTarget?: GraphTargetRef;
   selectedExperimentChatId: string | null;
   selectedExperimentChatTarget?: GraphTargetRef;
+  selectedExperimentChatFreshness?: string;
   isActiveProject: (projectId: string) => boolean;
   visibleTranscriptIds: (selectedChatId: string | null, floatingChatId: string | null) => string[];
   reportError: (message: string) => void;
@@ -99,6 +113,24 @@ export function visibleChatTranscriptTarget(
   return chatId === experimentChatId ? experimentChatTarget : graphTarget;
 }
 
+export function experimentChatFreshnessToken(
+  experimentChatId: string | null,
+  operational: ExperimentChatProgress | null,
+  experimentChatTarget: GraphTargetRef,
+  graphTarget: GraphTargetRef,
+): string {
+  // A chat on another graph never enters the viewed graph's summaries, so the
+  // summary `updated_at` that refires this fetch for every other chat never
+  // arrives. The run's own backend-exported progress stands in: it advances
+  // when the turn does, which is exactly when a new transcript exists.
+  if (!experimentChatId || sameGraphTarget(experimentChatTarget, graphTarget)) return "";
+  return [
+    operational?.current_operation_id ?? "",
+    operational?.current_status ?? "",
+    operational?.current_last_activity_at ?? "",
+  ].join("|");
+}
+
 export function transcriptAbsenceIsExpected(
   chatId: string,
   experimentChatId: string | null,
@@ -127,6 +159,7 @@ export function useChatState({
   graphTarget = MAIN_GRAPH,
   selectedExperimentChatId,
   selectedExperimentChatTarget = MAIN_GRAPH,
+  selectedExperimentChatFreshness = "",
   isActiveProject,
   visibleTranscriptIds,
   reportError,
@@ -215,6 +248,7 @@ export function useChatState({
     graphTarget,
     selectedExperimentChatId,
     experimentChatTargetKey,
+    selectedExperimentChatFreshness,
     visibleChatVersions,
   ]);
 
