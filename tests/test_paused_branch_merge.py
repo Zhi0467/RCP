@@ -12,10 +12,11 @@ from rcp.background import BackgroundAgentTasks
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AutoResearchChildAdmissionRecord, EpisodeNotRunning
 
-from .helpers import wait_for_task
+from .helpers import append_fixture_patch, wait_for_task
 from .test_auto_research_children_storage import _experiment_route, _experiment_task, _work_pair
 from .test_background import _done_stream
 from .test_branch_merge_api import (
+    _branch_patch,
     _candidate_for,
     _create_branch_harness,
     _episode_payload,
@@ -50,6 +51,11 @@ def test_end_and_merge_retires_paused_episode_even_if_merge_fails(
     manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_fails: bool
 ) -> None:
     harness, stage = _paused_branch_harness(manifest, tmp_path)
+    if provider_fails:
+        # Only a conflict needs a provider now; ordinary merges are deterministic.
+        competing = _branch_patch(harness.root.operation_id, "evidence")
+        competing.ops[0].nodes[0].observation = "Main recorded a different result."
+        append_fixture_patch(harness.service, competing)
     payload = _episode_payload(harness)
     assert payload["task_control"] == "resume"
     assert payload["graph_branch"]["merge_eligible"] is True

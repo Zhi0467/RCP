@@ -26,7 +26,7 @@ and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
 during and after the episode. Those conversations have their own sessions and
 authority. Main stays editable,
 and branch work reaches main only when a human dispatches the dedicated semantic
-merge agent. Repository files and external effects are never branched or rolled
+merge task. Repository files and external effects are never branched or rolled
 back by that graph workflow.
 
 The paper introduction is human-authored and non-authoritative. Agent-created

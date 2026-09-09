@@ -226,7 +226,6 @@ def created_node_id(patch: Patch, node_id: Any) -> bool:
 def oldest_source_ref(raw: dict[str, Any], patch: Patch, report: ValidationReport):
     oldest = None
     run_scope = set(patch.run_truth_scope)
-    repositories_read = set(patch.repositories_read)
     for item in raw.get("source_refs", []):
         try:
             ref = SourceRef.model_validate(item)
@@ -241,12 +240,6 @@ def oldest_source_ref(raw: dict[str, Any], patch: Patch, report: ValidationRepor
             report.reject(
                 "source-outside-run-scope",
                 f"Source reference uses {ref.truth_repository!r} outside this run scope.",
-                patch.revision or None,
-            )
-        if patch.kind != "approval" and ref.truth_repository not in repositories_read:
-            report.reject(
-                "unread-source-repository",
-                f"Source reference uses {ref.truth_repository!r}, but the patch did not record reading it.",
                 patch.revision or None,
             )
         oldest = older(oldest, ref.timestamp)
