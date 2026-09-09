@@ -147,9 +147,13 @@ never adds prompt context. The human may add one comment or question per
 confirmed selection, review the
 assembled draft, and add it to the ordinary chat composer. Nothing is sent until
 the human sends that composer turn.
+Re-adding selections replaces the earlier generated block, including edits inside
+that block, while preserving surrounding composer text. Reopening the chat alone
+preserves direct composer edits.
 After adding selections, **Open chat** opens that exact conversation and graph
 target with the draft ready to review. In the desktop it brings the existing RCP
 window forward; in a browser it follows the chat link in the current tab.
+An expired desktop navigation cannot later select the chat or focus the window.
 
 RCP carries selected text with limited surrounding text. A box carries bounded
 viewport-relative coordinates and the intersecting visible text or SVG labels;

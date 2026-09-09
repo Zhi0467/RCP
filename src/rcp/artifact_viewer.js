@@ -167,6 +167,7 @@ openChat.addEventListener("click", (event) => {
   try {
     const channel = new BroadcastChannel("rcp-artifact-chat-navigation");
     const requestId = crypto.randomUUID();
+    const expiresAt = Date.now() + config.chatOpenTimeoutMs;
     const timeout = setTimeout(() => {
       channel.close();
       notice.textContent = "Open the originating RCP space, then try Open chat again.";
@@ -177,7 +178,11 @@ openChat.addEventListener("click", (event) => {
       channel.close();
       notice.textContent = data.error || "Opened the originating chat.";
     };
-    channel.postMessage({ requestId, hash: new URL(openChat.href).hash });
+    channel.postMessage({
+      requestId,
+      hash: new URL(openChat.href).hash,
+      expiresAt,
+    });
   } catch {
     notice.textContent = "Could not reach the RCP window. Try Open chat again.";
   }

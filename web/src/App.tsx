@@ -782,6 +782,7 @@ export default function App() {
   }));
   const pendingArtifactChatNavigation = useRef<{
     hash: string;
+    expiresAt: number;
     resolve: () => void;
     reject: (error: Error) => void;
   } | null>(null);
@@ -2436,13 +2437,15 @@ export default function App() {
 
   useEffect(() => {
     if (!desktop || !backendSessionReady) return;
-    const stopListening = listenForArtifactChatNavigation(async (hash) => {
+    const stopListening = listenForArtifactChatNavigation(async (hash, expiresAt) => {
+      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
       await new Promise<void>((resolve, reject) => {
         pendingArtifactChatNavigation.current?.reject(new Error("Chat navigation was replaced."));
-        pendingArtifactChatNavigation.current = { hash, resolve, reject };
+        pendingArtifactChatNavigation.current = { hash, expiresAt, resolve, reject };
         if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
         else window.location.hash = hash;
       });
+      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
       await desktopShowReady();
     });
     return () => {
@@ -2468,6 +2471,8 @@ export default function App() {
     void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
       .then((transcript) => {
         if (cancelled) return;
+        if (navigation && Date.now() >= navigation.expiresAt)
+          throw new Error("Chat navigation timed out.");
         selectCanonicalChat(transcript);
         clearNodeSelections();
         navigation?.resolve();

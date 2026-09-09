@@ -10,8 +10,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { artifactContextDraft, parseArtifactContextPayload, updateArtifactContextDraft } =
-  await server.ssrLoadModule("/src/components/NodeChat.tsx");
+const {
+  artifactContextDraft,
+  parseArtifactContextPayload,
+  updateArtifactContextDraft,
+  moveArtifactDraftSpan,
+} = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
@@ -99,26 +103,51 @@ test("artifact selection comments assemble into a visible annotation-style draft
 test("re-adding edited selections replaces their generated draft and preserves user text", () => {
   const before = "My introduction.\n\n";
   const after = "\n\nKeep this question too.";
-  const initial = artifactContextDraft(payload);
+  const initial = updateArtifactContextDraft(before, payload, null);
+  const withSuffix = moveArtifactDraftSpan(initial, initial.message + after);
   const revised = {
     ...payload,
     selections: [{ ...payload.selections[0], comment: "Use $& literally in the explanation." }],
   };
   const expected = `${before}${artifactContextDraft(revised)}${after}`;
   assert.equal(
-    updateArtifactContextDraft(`${before}${initial}${after}`, revised, JSON.stringify(payload)),
+    updateArtifactContextDraft(withSuffix.message, revised, JSON.stringify(withSuffix)).message,
     expected,
   );
-  assert.equal(updateArtifactContextDraft(expected, revised, JSON.stringify(revised)), expected);
+  const updated = updateArtifactContextDraft(
+    withSuffix.message,
+    revised,
+    JSON.stringify(withSuffix),
+  );
   assert.equal(
-    updateArtifactContextDraft("User text", revised, null),
+    updateArtifactContextDraft(expected, revised, JSON.stringify(updated)).message,
+    expected,
+  );
+  const edited = moveArtifactDraftSpan(
+    withSuffix,
+    withSuffix.message.replace("Why does this happen?", "I edited this in chat."),
+  );
+  assert.equal(
+    updateArtifactContextDraft(edited.message, revised, JSON.stringify(edited)).message,
+    expected,
+  );
+  const editedAgain = moveArtifactDraftSpan(
+    edited,
+    edited.message.replace("Keep this question too.", "Keep my revised closing question."),
+  );
+  assert.equal(
+    updateArtifactContextDraft(editedAgain.message, revised, JSON.stringify(editedAgain)).message,
+    expected.replace("Keep this question too.", "Keep my revised closing question."),
+  );
+  assert.equal(
+    updateArtifactContextDraft("User text", revised, null).message,
     `User text\n\n${artifactContextDraft(revised)}`,
   );
 });
 
 test("the unified artifact handoff does not switch mode or dispatch automatically", () => {
   const handoff = nodeChatSource.slice(
-    nodeChatSource.indexOf("const accept = (raw: unknown)"),
+    nodeChatSource.indexOf("const accept = (raw: unknown"),
     nodeChatSource.indexOf("const stored = readStorage(artifactContextKey)"),
   );
   assert.match(handoff, /setArtifactContext/);
