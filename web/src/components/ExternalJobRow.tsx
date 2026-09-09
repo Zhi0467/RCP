@@ -55,7 +55,7 @@ export function ExternalJobRow({
       {cancellation.can_cancel && (
         <button
           type="button"
-          className="button compact external-job-action"
+          className="button compact watcher-action"
           onClick={() => void cancel()}
           disabled={cancelling}
           aria-label={`Cancel job ${label}`}
@@ -66,7 +66,7 @@ export function ExternalJobRow({
       {!cancellation.can_cancel && watcher.status === "completed" && onHide && (
         <button
           type="button"
-          className="button compact external-job-action"
+          className="button compact watcher-action"
           onClick={onHide}
           aria-label={`Hide watcher ${label}`}
         >

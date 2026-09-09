@@ -154,7 +154,22 @@ const fixtureWatchers = [
 
 function WatcherFixture() {
   const [projectId, setProjectId] = useState("project");
-  const [watchers, setWatchers] = useState(fixtureWatchers);
+  const [watchers, setWatchers] = useState(() =>
+    new URLSearchParams(location.search).get("watchers") === "graph"
+      ? fixtureWatchers.map(({ watcher_id, status, continuation, created_at }) => ({
+          watcher_id,
+          status,
+          continuation,
+          created_at,
+          condition:
+            watcher_id === "grouped"
+              ? { node_id: "hypothesis/grouped", proposal_resolved: true }
+              : { node_id: `decision/${watcher_id}`, status_in: ["decided"] },
+          last_evaluated_at: created_at,
+          delivery_label: "Not delivered",
+        }))
+      : fixtureWatchers,
+  );
   Object.assign(window, { watcherFixture: { watchers, setWatchers, setProjectId } });
   const project = { ...initialProject, id: projectId };
   const run = buildExperimentRun(experiment as never, control, [], watchers as never);

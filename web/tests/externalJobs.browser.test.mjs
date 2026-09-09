@@ -148,105 +148,130 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
   }
 });
 
-test("completed watchers hide as whole cards across Runs and Chat, persist, and restore", async () => {
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
-  });
-  let browser;
-  try {
-    await server.listen();
-    const address = server.httpServer.address();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    const mutations = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/**", (route) => {
-      if (route.request().method() !== "GET") mutations.push(route.request().url());
-      return route.fulfill({ json: [] });
+for (const kind of ["shell", "graph"]) {
+  test(`completed ${kind} watchers hide as whole cards across Runs and Chat, persist, and restore`, async () => {
+    const label = (id) =>
+      kind === "shell"
+        ? `${id}.log`
+        : id === "grouped"
+          ? "Proposal on hypothesis/grouped is resolved"
+          : `decision/${id} reaches decided`;
+    const hideName = (id) => `Hide watcher ${label(id)}`;
+    const server = await createServer({
+      root: new URL("..", import.meta.url).pathname,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0, strictPort: false },
     });
-    const url = `http://127.0.0.1:${address.port}/tests/fixtures/externalJobs.html?watchers`;
-    await page.goto(url);
-    const run = page.getByRole("region", { name: "Experiment run", exact: true });
-    const chat = page.getByRole("region", { name: "Chat about Watcher experiment", exact: true });
-    await chat.getByRole("button", { name: "3 watchers", exact: true }).click();
-    await run.getByText("Finished batch", { exact: true }).click();
-    const hide = run.getByRole("button", { name: "Hide watcher completed.log", exact: true });
-    for (const width of [1280, 390]) {
-      await page.setViewportSize({ width, height: 900 });
-      const button = await hide.boundingBox();
-      const title = await run
-        .locator(".chat-watcher-row > strong")
-        .filter({ hasText: "completed.log" })
-        .boundingBox();
-      assert.ok(button.x > title.x + title.width, "Hide sits to the right of the title");
-      assert.ok(
-        title.y >= button.y && title.y < button.y + button.height,
-        "Hide shares the title row",
-      );
+    let browser;
+    try {
+      await server.listen();
+      const address = server.httpServer.address();
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      const errors = [];
+      const mutations = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.route("**/api/**", (route) => {
+        if (route.request().method() !== "GET") mutations.push(route.request().url());
+        return route.fulfill({ json: [] });
+      });
+      const url = `http://127.0.0.1:${address.port}/tests/fixtures/externalJobs.html?watchers=${kind}`;
+      await page.goto(url);
+      const run = page.getByRole("region", { name: "Experiment run", exact: true });
+      const chat = page.getByRole("region", { name: "Chat about Watcher experiment", exact: true });
+      await chat.getByRole("button", { name: "3 watchers", exact: true }).click();
+      if (kind === "shell") await run.getByText("Finished batch", { exact: true }).click();
+      const hide = run.getByRole("button", { name: hideName("completed"), exact: true });
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const surface of [run, chat]) {
+          const button = await surface
+            .getByRole("button", { name: hideName("completed"), exact: true })
+            .boundingBox();
+          const title = await surface
+            .locator(".chat-watcher-row > strong")
+            .filter({ hasText: label("completed") })
+            .boundingBox();
+          assert.ok(button.x > title.x + title.width, "Hide sits to the right of the title");
+          assert.ok(
+            title.y >= button.y && title.y < button.y + button.height,
+            "Hide shares the title row",
+          );
+        }
+      }
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await hide.click();
+      await run.getByRole("button", { name: hideName("grouped"), exact: true }).click();
+      await chat.getByRole("button", { name: "Show hidden watchers (2)", exact: true }).waitFor();
+      assert.equal(await run.locator(".experiment-run-watcher").count(), 1);
+      assert.equal(await run.locator(".experiment-run-watcher-group").count(), 0);
+      assert.equal(await chat.locator(".chat-watcher-row").count(), 1);
+      if (kind === "shell") {
+        assert.equal(await run.getByRole("button", { name: "Cancel job active.log" }).count(), 1);
+      } else {
+        assert.equal(await run.getByRole("button", { name: hideName("active") }).count(), 0);
+      }
+      await page.evaluate(() => {
+        const { watchers, setWatchers } = window.watcherFixture;
+        setWatchers(watchers.map((watcher) => ({ ...watcher })));
+      });
+      assert.equal(await run.locator(".experiment-run-watcher").count(), 1);
+      await page.reload();
+      await run.getByRole("button", { name: "Show hidden watchers (2)" }).waitFor();
+      await chat.getByRole("button", { name: "1 watcher, 2 hidden", exact: true }).click();
+      await chat.getByRole("button", { name: "Show hidden watchers (2)" }).click();
+      await run.getByRole("button", { name: hideName("completed") }).waitFor();
+      assert.equal(await run.locator(".experiment-run-watcher").count(), 3);
+      await chat.getByRole("button", { name: hideName("completed") }).click();
+      await run.getByRole("button", { name: "Show hidden watchers (1)" }).waitFor();
+
+      await page.evaluate(() => window.watcherFixture.setProjectId("other-project"));
+      await run.getByRole("button", { name: hideName("completed") }).waitFor();
+      await page.evaluate(() => window.watcherFixture.setProjectId("project"));
+      await run.getByRole("button", { name: "Show hidden watchers (1)" }).waitFor();
+      await page.evaluate(() => {
+        const { watchers, setWatchers } = window.watcherFixture;
+        setWatchers(
+          watchers.map((watcher) =>
+            watcher.watcher_id === "completed"
+              ? { ...watcher, status: "active", can_cancel: true }
+              : watcher,
+          ),
+        );
+      });
+      if (kind === "shell") {
+        await run.getByRole("button", { name: "Cancel job completed.log" }).waitFor();
+      } else {
+        await run
+          .locator(".chat-watcher-row > strong")
+          .filter({ hasText: label("completed") })
+          .waitFor();
+        assert.equal(await run.getByRole("button", { name: hideName("completed") }).count(), 0);
+      }
+      assert.equal(await run.getByRole("button", { name: /Show hidden watchers/ }).count(), 0);
+
+      // When every current card is hidden, each surface still offers a way back.
+      await page.evaluate(() => {
+        const { watchers, setWatchers } = window.watcherFixture;
+        setWatchers(
+          watchers.map((watcher) => ({ ...watcher, status: "completed", can_cancel: false })),
+        );
+      });
+      await chat.getByRole("button", { name: hideName("active") }).click();
+      await chat.getByRole("button", { name: hideName("grouped") }).click();
+      await run.getByRole("button", { name: "Show hidden watchers (3)" }).waitFor();
+      assert.equal(await run.locator(".experiment-run-watcher").count(), 0);
+      assert.equal(await chat.locator(".chat-watcher-row").count(), 0);
+      await chat.getByRole("button", { name: "0 watchers, 3 hidden", exact: true }).click();
+      await chat.getByRole("button", { name: "0 watchers, 3 hidden", exact: true }).click();
+      await run.getByRole("button", { name: "Show hidden watchers (3)" }).click();
+      await chat.getByRole("button", { name: hideName("active") }).waitFor();
+      assert.equal(await run.locator(".experiment-run-watcher").count(), 3);
+      assert.deepEqual(mutations, []);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser?.close();
+      await server.close();
     }
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await hide.click();
-    await run.getByRole("button", { name: "Hide watcher grouped.log", exact: true }).click();
-    await chat.getByRole("button", { name: "Show hidden watchers (2)", exact: true }).waitFor();
-    assert.equal(await run.locator(".experiment-run-watcher").count(), 1);
-    assert.equal(await run.locator(".experiment-run-watcher-group").count(), 0);
-    assert.equal(await chat.locator(".chat-watcher-row").count(), 1);
-    assert.equal(await run.getByRole("button", { name: "Cancel job active.log" }).count(), 1);
-    await page.evaluate(() => {
-      const { watchers, setWatchers } = window.watcherFixture;
-      setWatchers(watchers.map((watcher) => ({ ...watcher })));
-    });
-    assert.equal(await run.locator(".experiment-run-watcher").count(), 1);
-    await page.reload();
-    await run.getByRole("button", { name: "Show hidden watchers (2)" }).waitFor();
-    await chat.getByRole("button", { name: "1 watcher, 2 hidden", exact: true }).click();
-    await chat.getByRole("button", { name: "Show hidden watchers (2)" }).click();
-    await run.getByRole("button", { name: "Hide watcher completed.log" }).waitFor();
-    assert.equal(await run.locator(".experiment-run-watcher").count(), 3);
-    await chat.getByRole("button", { name: "Hide watcher completed.log" }).click();
-    await run.getByRole("button", { name: "Show hidden watchers (1)" }).waitFor();
-
-    await page.evaluate(() => window.watcherFixture.setProjectId("other-project"));
-    await run.getByRole("button", { name: "Hide watcher completed.log" }).waitFor();
-    await page.evaluate(() => window.watcherFixture.setProjectId("project"));
-    await run.getByRole("button", { name: "Show hidden watchers (1)" }).waitFor();
-    await page.evaluate(() => {
-      const { watchers, setWatchers } = window.watcherFixture;
-      setWatchers(
-        watchers.map((watcher) =>
-          watcher.watcher_id === "completed"
-            ? { ...watcher, status: "active", can_cancel: true }
-            : watcher,
-        ),
-      );
-    });
-    await run.getByRole("button", { name: "Cancel job completed.log" }).waitFor();
-    assert.equal(await run.getByRole("button", { name: /Show hidden watchers/ }).count(), 0);
-
-    // When every current card is hidden, each surface still offers a way back.
-    await page.evaluate(() => {
-      const { watchers, setWatchers } = window.watcherFixture;
-      setWatchers(
-        watchers.map((watcher) => ({ ...watcher, status: "completed", can_cancel: false })),
-      );
-    });
-    await chat.getByRole("button", { name: "Hide watcher active.log" }).click();
-    await chat.getByRole("button", { name: "Hide watcher grouped.log" }).click();
-    await run.getByRole("button", { name: "Show hidden watchers (3)" }).waitFor();
-    assert.equal(await run.locator(".experiment-run-watcher").count(), 0);
-    assert.equal(await chat.locator(".chat-watcher-row").count(), 0);
-    await chat.getByRole("button", { name: "0 watchers, 3 hidden", exact: true }).click();
-    await chat.getByRole("button", { name: "0 watchers, 3 hidden", exact: true }).click();
-    await run.getByRole("button", { name: "Show hidden watchers (3)" }).click();
-    await chat.getByRole("button", { name: "Hide watcher active.log" }).waitFor();
-    assert.equal(await run.locator(".experiment-run-watcher").count(), 3);
-    assert.deepEqual(mutations, []);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await server.close();
-  }
-});
+  });
+}

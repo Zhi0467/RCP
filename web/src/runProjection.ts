@@ -85,7 +85,7 @@ export function visibleChatWatchers(
   const experimentNodeId = node?.type === "experiment" ? node.id : null;
   const visible = new Map<string, WatcherRecord>();
   for (const watcher of watchers) {
-    if (!watcherIsActive(watcher) && !isExternalWatcherRecord(watcher)) continue;
+    if (watcher.status === "stopped" && !isExternalWatcherRecord(watcher)) continue;
     const nodeLoopWatcher =
       experimentNodeId !== null &&
       watcher.continuation.patch_kind === "experiment_loop" &&

@@ -681,21 +681,33 @@ function WatcherDetail({
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
-      {external && (
-        <div className="chat-watcher-row">
+      <div className="chat-watcher-row">
+        {external ? (
           <ExternalJobRow
             apiBase={apiBase}
             watcher={watcher}
             onHide={() => onHideWatcher(watcher.watcher_id)}
           />
-        </div>
-      )}
+        ) : (
+          <>
+            <strong>{graphConditionLabel(watcher.condition)}</strong>
+            {watcher.status === "completed" && (
+              <button
+                type="button"
+                className="button compact watcher-action"
+                onClick={() => onHideWatcher(watcher.watcher_id)}
+                aria-label={`Hide watcher ${graphConditionLabel(watcher.condition)}`}
+              >
+                Hide
+              </button>
+            )}
+          </>
+        )}
+      </div>
       <details>
         <summary className="experiment-run-watcher-heading">
           <span className={`status-pill ${watcher.status}`}>{watcher.status}</span>
-          <strong className="mono experiment-run-breakable">
-            {external ? watcher.watcher_id : graphConditionLabel(watcher.condition)}
-          </strong>
+          <strong className="mono experiment-run-breakable">{watcher.watcher_id}</strong>
           <span>{watcher.delivery_label}</span>
         </summary>
         <Facts

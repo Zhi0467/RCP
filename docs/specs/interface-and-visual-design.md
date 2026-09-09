@@ -196,9 +196,9 @@ owns project write admission. The action response updates the displayed receipt;
 the existing watcher refresh owns observation. The browser does not infer
 cancellation availability from watcher status.
 
-Watcher actions sit at the right of the row. Completed watchers offer **Hide**,
-which removes the full watcher row or detail card from Chat and Runs on this
-device and browser origin, scoped to the project. **Show hidden watchers** restores
+Watcher actions sit at the right of the row. Completed shell and graph-condition
+watchers offer **Hide**, which removes the full watcher row or detail card from Chat
+and Runs on this device and browser origin, scoped to the project. **Show hidden watchers** restores
 them. This display preference preserves the watcher record and other viewers'
 lists; a watcher that becomes active again is visible regardless of the preference.
 

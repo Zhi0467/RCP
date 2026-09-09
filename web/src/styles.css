@@ -6401,7 +6401,7 @@ button.relation-map-node:hover {
   grid-column: 1 / -1;
   justify-self: start;
 }
-.chat-watcher-row > .external-job-action {
+.chat-watcher-row > .watcher-action {
   grid-column: 2;
   grid-row: 1;
   justify-self: end;

@@ -1663,6 +1663,16 @@ export function NodeChat({
                 ) : (
                   <>
                     <strong>{graphConditionLabel(watcher.condition)}</strong>
+                    {watcher.status === "completed" && (
+                      <button
+                        type="button"
+                        className="button compact watcher-action"
+                        onClick={() => watcherVisibility.hide(watcher.watcher_id)}
+                        aria-label={`Hide watcher ${graphConditionLabel(watcher.condition)}`}
+                      >
+                        Hide
+                      </button>
+                    )}
                     <time dateTime={observedAt ?? undefined}>
                       {observedAt
                         ? `Evaluated ${new Date(observedAt).toLocaleString()}`
