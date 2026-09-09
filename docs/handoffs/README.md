@@ -12,6 +12,10 @@ Active:
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; the full live journey remains open.
 
+- [A refusal explains itself](handoff-2026-09-09-refusal-explains-itself.md)
+  — human-confirmed on 2026-08-15 and not yet implemented: a refused Apply
+  gets a terminal `refused` state and a plain-language explanation.
+
 - [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
   — production adoption, promoted release, complete backup, and doctor are
   verified. The separate controller fix and unfinished Ubuntu reboot/restore

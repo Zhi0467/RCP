@@ -15,12 +15,20 @@ reconciles running helper rows before its fence. Outside the sandbox on
 2026-09-07, the full backend suite, the web suite (653 tests), Ruff, and
 pre-commit pass, and the launchd facility test ran against real launchd on a Mac.
 On 2026-09-07 the source-transfer drive ran on the team server as the rcp
-service account and both S136 routes passed (see S136 `last_checked`). It exposed
+service account and both compute routes passed: the Slurm route (agent-submitted
+pending job, armed watcher, survival across RCP restart, human Cancel through the
+API, one wake in the originating conversation, no duplicate after another restart)
+and the generic helper route (systemd user manager after linger, mirrored
+containment with cgroup isolation, keyed launch, survival, Cancel stopping a
+setsid descendant, one wake, no duplicate); evidence in
+`/private/tmp/rcp-s136-live-20260907/`. It exposed
 two setup defects, fixed in the follow-up PR: the probe's cgroup comparison
 rejected hosts with leftover v1 hierarchies, and doctor did not report a service
-account without linger. PR #83 is merged; the remaining S136 steps and the
-release promotion are the open work.
-Close this handoff after S136's remaining live journey is resolved.
+account without linger. PR #83 is merged. Not yet exercised live: Experiment-loop
+and child-Work handoff and wake, missing-handoff correction, stopped-watcher
+Cancel, unobservable-work degradation, the served-browser drive, and the slow
+staged-command deadline. Those and the release promotion are the open work.
+Close this handoff after that remaining live journey is resolved.
 
 The former compute-runner plan is
 [archived](../archive/handoffs/handoff-2026-09-06-compute-runner.md). It is evidence
