@@ -13,7 +13,8 @@ def branch_merge_task_contract(
     patch_path: str,
     validator_command: str,
     review_contract_json: str,
-    deterministic_plan_json: str,
+    plan_path: str,
+    residue_block: str,
     ontology_extensions: bool = False,
 ) -> str:
     """Describe one fresh semantic rebase without exposing repositories."""
@@ -28,6 +29,7 @@ and no authority over project configuration, ontology, membership, or Proposal a
 Exact immutable inputs:
 - merge context: `{context_path}`
 - merge context id: `{context_id}`
+- built operation plan: `{plan_path}`
 - candidate Patch output: `{patch_path}`
 - live validator command: `{validator_command}`
 
@@ -36,18 +38,19 @@ main graph, a typed base-to-branch semantic delta, branch Patch summaries, trans
 contracts, and deterministic three-way conflicts. Treat those files and heads as exact. Do not
 infer a different base, inspect canonical state directories, or inspect any repository.
 
-RCP has already built the ordinary operations in this exact plan:
-```json
-{deterministic_plan_json}
-```
-Write only the remaining operations for the listed residue paths to `patch.json`.
-RCP prepends the built operations during both self-check and commit; do not copy them into
-your output. A path can be satisfied by transition-generated effects without a direct write.
-Use the full graph snapshots as context for the remaining choices.
-Preserve compatible main-side changes. Resolve every listed conflict
-explicitly from the supplied graph semantics; never resolve one by silently preferring an entire
-branch or main object. If the intended outcome cannot be represented legally, leave a precise
-diagnostic in your final response and do not invent authority.
+RCP has already built every ordinary operation. The exact built plan is the file at the
+operation-plan path above. RCP prepends those operations during both self-check and commit, so
+never copy them into your output; read that file only to see what main already contains when
+your own operations apply.
+
+Write only the operations for the paths below to `patch.json`.
+
+{residue_block}
+
+The base, branch, and main values for every path are in the merge context at that same path. A
+path can also be satisfied by a transition-generated effect rather than a direct write.
+Preserve compatible main-side changes. If the intended outcome cannot be represented legally,
+leave a precise diagnostic in your final response and do not invent authority.
 
 {orchestrator_graph_authority_contract()}
 {_authoring_rules(ontology_extensions)}
@@ -144,7 +147,8 @@ def branch_merge_rebase_contract(
     context_id: str,
     patch_path: str,
     validator_command: str,
-    deterministic_plan_json: str,
+    plan_path: str,
+    residue_block: str,
     ontology_extensions: bool = False,
 ) -> str:
     """Replace a discarded candidate after main moved, preserving the native session."""
@@ -166,12 +170,11 @@ Replacement merge context id: `{context_id}`
 Candidate Patch output to rewrite: `{patch_path}`
 Live validator command: `{validator_command}`
 
-RCP rebuilt the ordinary operations against the replacement main head:
-```json
-{deterministic_plan_json}
-```
-This plan supersedes the old plan. Output only the replacement residue operations; RCP prepends
-the built operations during both self-check and commit.
+RCP rebuilt the ordinary operations against the replacement main head. The replacement plan is
+at `{plan_path}` and supersedes the old plan. Output only the operations for the paths below;
+RCP prepends the built operations during both self-check and commit.
+
+{residue_block}
 Recompute the semantic merge against the replacement current-main graph. Preserve compatible
 new main changes and explicitly resolve the replacement context's conflicts. Rewrite the Patch;
 do not reuse the stale candidate unchanged. Run the validator command before finishing. This is

@@ -885,11 +885,99 @@ def semantic_delta_is_subsumed(delta: GraphSemanticDelta, main: GraphState) -> b
 
 SemanticWritePath = tuple[str, ...]
 
+# Why one path still needs judgment, and what discharging it looks like.  The
+# merge contract renders this exact mapping, so the agent is never asked to
+# rediscover the policy that produced its own task.
+MERGE_RESIDUE_REASONS: dict[str, str] = {
+    "conflict": (
+        "Branch and main changed this path differently. Resolve it from the supplied graph "
+        "semantics; never resolve it by preferring one side wholesale."
+    ),
+    "node_conflict": (
+        "Another path on this node conflicts, so the whole node moves as one coherent decision."
+    ),
+    "protected_node": (
+        "The node is a ResearchQuestion or Hypothesis. Carry the change as one pending main "
+        "Proposal instead of writing it."
+    ),
+    "decision_outcome": (
+        "The Decision's status or selected_option changes. Write one coherent node update, and "
+        "declare agent_action only when the operation actually chooses the Decision."
+    ),
+    "main_standing_changed": (
+        "A human moved this node's standing on main after the branch forked. Carrying the branch "
+        "edit would discard that judgment, so decide it explicitly."
+    ),
+    "system_field": (
+        "RCP derives this field. Satisfy the path through the effect of an allowed operation; a "
+        "direct write is rejected."
+    ),
+    "node_absent": (
+        "The node is missing on one side. A branch removal of a node main still accepts is one "
+        "pending removal Proposal."
+    ),
+    "unbuildable_create": (
+        "The new node cannot be expressed in the agent node schema. Create what the schema allows "
+        "and name what could not be carried in the final response."
+    ),
+    "collection": (
+        "The branch changed a Proposal, ambiguity, or glossary entry. Carry it under the rules for "
+        "that collection."
+    ),
+    "edge_change": (
+        "The branch changed this existing edge in place. There is no edge update operation; carry "
+        "it by removing and recreating the edge."
+    ),
+    "edge_endpoint_uncertain": (
+        "An endpoint node is still in this list, so the edge belongs to that same decision."
+    ),
+    "protected_restructure": (
+        "The edge restructures a protected epistemic relation. Carry it as one pending main "
+        "Proposal."
+    ),
+}
+
+
+def _node_path_residue_reason(
+    path: SemanticWritePath,
+    *,
+    node: ProjectNode | None,
+    current: ProjectNode | None,
+    baseline: ProjectNode | None,
+    field: str,
+    allowed: set[SemanticWritePath],
+    conflicts: set[SemanticWritePath],
+) -> str | None:
+    """Name the judgment one node path needs, or None when it can be built."""
+
+    if node is None or current is None:
+        return "node_absent"
+    if node.type in {"research_question", "hypothesis"}:
+        return "protected_node"
+    # An agent edit resets standing, which is ordinary.  What is not ordinary is
+    # a human moving standing on main after the fork: carrying the branch edit
+    # would drop that judgment silently, so it stays a decision.
+    if baseline is None or current.standing != baseline.standing:
+        return "main_standing_changed"
+    if field in IMMUTABLE_NODE_UPDATE_FIELDS:
+        return "system_field"
+    # Decision outcomes and conflicts may require one coherent node update.
+    if node.type == "decision" and any(
+        item[:2] == path[:2] and item[2] in {"status", "selected_option"} for item in allowed
+    ):
+        return "decision_outcome"
+    if any(item[:2] == path[:2] for item in conflicts):
+        return "node_conflict"
+    return None
+
 
 def build_deterministic_merge_ops(
     context: BranchMergeContext,
-) -> tuple[list[dict[str, Any]], set[SemanticWritePath]]:
-    """Build ordinary source changes; leave review and conflict choices explicit."""
+) -> tuple[list[dict[str, Any]], dict[SemanticWritePath, str]]:
+    """Build ordinary source changes; leave review and conflict choices explicit.
+
+    The residue maps every remaining path to its reason in `MERGE_RESIDUE_REASONS`.
+    """
 
     base = context.previous_branch_graph or context.base_graph
     branch = _merge_branch_graph(base, context.branch_graph)
@@ -900,7 +988,7 @@ def build_deterministic_merge_ops(
     }
     source = _graph_semantic_document(branch)
     main = _graph_semantic_document(context.main_graph)
-    residue = set(conflicts)
+    residue: dict[SemanticWritePath, str] = {path: "conflict" for path in conflicts}
     creates: list[dict[str, Any]] = []
     updates: dict[str, dict[str, Any]] = {}
     edge_creates: list[dict[str, Any]] = []
@@ -911,7 +999,7 @@ def build_deterministic_merge_ops(
         if value == _semantic_path_value(main, path):
             continue
         if path[0] != "nodes":
-            residue.add(path)
+            residue[path] = "edge_change" if path[0] == "edges" else "collection"
             continue
         _, identity, field, *_ = path
         node = branch.nodes.get(identity)
@@ -925,27 +1013,21 @@ def build_deterministic_merge_ops(
             try:
                 node_adapter.validate_python(raw)
             except ValidationError:
-                residue.add(path)
+                residue[path] = "unbuildable_create"
             else:
                 creates.append(raw)
             continue
-        if (
-            node is None
-            or current is None
-            or node.type in {"research_question", "hypothesis"}
-            or current.standing != "asserted"
-            or field in IMMUTABLE_NODE_UPDATE_FIELDS
-            # Decision outcomes and conflicts may require one coherent node update.
-            or (
-                node.type == "decision"
-                and any(
-                    item[:2] == path[:2] and item[2] in {"status", "selected_option"}
-                    for item in allowed
-                )
-            )
-            or any(item[:2] == path[:2] for item in conflicts)
-        ):
-            residue.add(path)
+        reason = _node_path_residue_reason(
+            path,
+            node=node,
+            current=current,
+            baseline=base.nodes.get(identity),
+            field=field,
+            allowed=allowed,
+            conflicts=conflicts,
+        )
+        if reason is not None:
+            residue[path] = reason
             continue
         changes = updates.setdefault(identity, {})
         parts = path[3:-1] if path[-1] == "$" else path[3:]
@@ -960,13 +1042,31 @@ def build_deterministic_merge_ops(
             else:
                 target[parts[-1]] = deepcopy(value)
 
+    # An agent update resets standing to asserted.  Where the branch did that
+    # too, the built update already carries it; where branch and main still
+    # agree on a stronger standing, the update must not quietly drop it.
+    standing_restores: dict[str, str] = {}
+    for identity in updates:
+        node = branch.nodes.get(identity)
+        current = context.main_graph.nodes.get(identity)
+        if node is None or current is None:
+            continue
+        if node.standing == "asserted":
+            if current.standing != "asserted":
+                residue.pop(("nodes", identity, "standing"), None)
+        elif node.standing == current.standing:
+            standing_restores[identity] = str(node.standing)
+
     # Edges touching a node that still needs judgment belong to that same task.
     uncertain_nodes = {path[1] for path in residue if path[0] == "nodes"}
-    for path in sorted(residue.copy()):
+    for path in sorted(residue):
         if len(path) != 3 or path[0] != "edges" or path[-1] != "$" or path not in mandatory:
             continue
         edge = branch.edges.get(path[1]) or context.main_graph.edges.get(path[1])
-        if edge is None or {edge.source, edge.target} & uncertain_nodes:
+        if edge is None:
+            continue
+        if {edge.source, edge.target} & uncertain_nodes:
+            residue[path] = "edge_endpoint_uncertain"
             continue
         edge_op = (
             {
@@ -985,12 +1085,13 @@ def build_deterministic_merge_ops(
         if RESTRUCTURE_PROTECTED_EPISTEMIC in operation_actions(
             context.main_graph, probe, probe.ops[-1]
         ):
+            residue[path] = "protected_restructure"
             continue
         if path[1] in branch.edges:
             edge_creates.append(edge.model_dump(mode="json", exclude={"created_rev", "layer"}))
         else:
             edge_removes.append(edge.id)
-        residue.remove(path)
+        del residue[path]
 
     ops: list[dict[str, Any]] = []
     if creates:
@@ -1006,13 +1107,33 @@ def build_deterministic_merge_ops(
         )
     if edge_creates:
         ops.append({"op": "create_edges", "edges": edge_creates})
+    for identity, standing in sorted(standing_restores.items()):
+        ops.append({"op": "set_standing", "node_id": identity, "standing": standing})
     return ops, residue
+
+
+def render_merge_residue(residue: dict[SemanticWritePath, str]) -> str:
+    """Render the remaining paths and the meaning of every reason they carry."""
+
+    items = [
+        {"path": _render_semantic_path(path), "reason": residue[path]} for path in sorted(residue)
+    ]
+    legend = "\n".join(
+        f"- `{reason}` — {MERGE_RESIDUE_REASONS[reason]}"
+        for reason in sorted(set(residue.values()))
+    )
+    return f"""```json
+{json.dumps(items, indent=2)}
+```
+
+What each reason means:
+{legend}"""
 
 
 def _require_possible_merge_plan(
     context: BranchMergeContext,
     ops: list[dict[str, Any]],
-    residue: set[SemanticWritePath],
+    residue: dict[SemanticWritePath, str],
 ) -> None:
     """Do not ask a provider to repair fixed operations or mandatory source scope."""
 
@@ -1739,9 +1860,10 @@ async def stream_branch_merge_run(
                 patch_path=patch_path,
                 validator_command=validator_command,
                 review_contract_json=context.review_contract.model_dump_json(indent=2),
-                deterministic_plan_json=json.dumps(
-                    {"ops": deterministic_ops, "residue": sorted(residue)}, indent=2
+                plan_path=_stage_merge_plan(
+                    stage, token, deterministic_ops, round_number=outcome.rebase_rounds
                 ),
+                residue_block=render_merge_residue(residue),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             original_contract_path, prompt = _stage_task_contract(
@@ -1888,9 +2010,10 @@ async def stream_branch_merge_run(
                 context_id=context.context_id,
                 patch_path=_patch_path(stage),
                 validator_command=validator_command,
-                deterministic_plan_json=json.dumps(
-                    {"ops": deterministic_ops, "residue": sorted(residue)}, indent=2
+                plan_path=_stage_merge_plan(
+                    stage, token, deterministic_ops, round_number=outcome.rebase_rounds
                 ),
+                residue_block=render_merge_residue(residue),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             contract_path, prompt = _stage_task_contract(
@@ -2628,6 +2751,21 @@ def _patch_path(stage: BranchMergeStage) -> str:
     if stage.remote_stage is not None:
         return str(stage.remote_stage.workspace / "patch.json")
     return str(stage.workspace / "patch.json")
+
+
+def _stage_merge_plan(
+    stage: BranchMergeStage,
+    token: str,
+    ops: list[dict[str, Any]],
+    *,
+    round_number: int,
+) -> str:
+    return _stage_json_task_input(
+        stage.local_stage,
+        stage.remote_stage,
+        f"task-{token}-branch-merge-plan-{round_number}.json",
+        {"ops": ops},
+    )
 
 
 def _stage_merge_context(
