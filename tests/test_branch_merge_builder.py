@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from rcp.agents.branch_merge_prompt import branch_merge_task_contract
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.runs.branch_merge import (
+    MERGE_RESIDUE_REASONS,
     BranchMergeContext,
     BranchMergeEligibility,
     BranchMergeRunOutcome,
@@ -17,6 +19,7 @@ from rcp.runs.branch_merge import (
     build_deterministic_merge_ops,
     parse_branch_merge_candidate,
     prepare_branch_merge_with_history,
+    render_merge_residue,
     stream_branch_merge_run,
 )
 from rcp.service import RunRequest
@@ -398,9 +401,9 @@ async def test_decision_options_and_selection_remain_one_agent_update(
     ops, residue = build_deterministic_merge_ops(load_context())
     assert ops == [_new_blocker()]
     assert residue == {
-        ("nodes", "dec/choice", "options"),
-        ("nodes", "dec/choice", "selected_option"),
-        ("nodes", "dec/choice", "status"),
+        ("nodes", "dec/choice", "options"): "decision_outcome",
+        ("nodes", "dec/choice", "selected_option"): "decision_outcome",
+        ("nodes", "dec/choice", "status"): "decision_outcome",
     }
     launcher = _SequenceLauncher(
         [
@@ -421,6 +424,12 @@ async def test_decision_options_and_selection_remain_one_agent_update(
     assert launcher.sessions == [None]
     assert history.state().nodes["dec/choice"].selected_option == "Revised design"
     assert history.state().nodes["blk/branch-only"].source_refs
+    # The built plan reaches the agent as a staged input, not as inlined prompt text.
+    plans = sorted((tmp_path / "stage" / "inputs").glob("*-branch-merge-plan-*.json"))
+    assert [json.loads(plan.read_text())["ops"] for plan in plans] == [ops]
+    contract = next((tmp_path / "stage" / "inputs").glob("*-branch-merge.md")).read_text()
+    assert plans[0].name in contract
+    assert '"op": "create_nodes"' not in contract
 
 
 @pytest.mark.asyncio
@@ -432,7 +441,7 @@ async def test_mixed_merge_keeps_built_ops_through_residue_correction(
     _append(history, _update("blk/existing", description="Main description."))
     context = load_context()
     ops, residue = build_deterministic_merge_ops(context)
-    assert residue == {("nodes", "blk/existing", "description")}
+    assert residue == {("nodes", "blk/existing", "description"): "conflict"}
     candidates: list[Patch] = []
     validate = history.validate_candidate
 
@@ -610,7 +619,7 @@ async def test_invalid_fixed_ops_reject_before_launching_for_protected_residue(
     context = load_context()
     ops, residue = build_deterministic_merge_ops(context)
     assert ops
-    assert residue == {("nodes", "rq/merge", "question")}
+    assert residue == {("nodes", "rq/merge", "question"): "protected_node"}
 
     outcome, frames, _workspace = await _run(tmp_path, history, load_context)
 
@@ -622,3 +631,139 @@ async def test_invalid_fixed_ops_reject_before_launching_for_protected_residue(
     assert history.head_ref() == context.main_head
     assert branch.head_ref() == context.metadata.head
     assert any('"event":"error"' in frame for frame in frames)
+
+
+def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
+    """One main history and a branch forked after the given main operations."""
+
+    history = HistoryManager(manifest)
+    _append(history, *main_ops)
+    for operation in human_ops:
+        _append(history, operation, human=True)
+    template = _context()
+    base_head = history.head_ref()
+    branch = history.create_auto_research_branch(
+        template.metadata.model_copy(
+            update={
+                "base_head": base_head,
+                "head": base_head.model_copy(update={"target": template.metadata.head.target}),
+            }
+        )
+    )
+
+    def load_context() -> BranchMergeContext:
+        metadata = branch.branch_metadata()
+        return BranchMergeContext.create(
+            merge_task_id=template.merge_task_id,
+            authorized_by=template.authorized_by,
+            metadata=metadata,
+            eligibility=BranchMergeEligibility(
+                branch_head=metadata.head, episode_ending="completed"
+            ),
+            base_graph=branch.base_state(),
+            branch_graph=branch.state(),
+            main_head=history.head_ref(),
+            main_graph=history.state(),
+            run_truth_scope=["repo-a"],
+        )
+
+    return history, branch, load_context
+
+
+@pytest.mark.asyncio
+async def test_editing_a_node_main_already_accepted_needs_no_merge_agent(
+    manifest, tmp_path: Path
+) -> None:
+    history, branch, load_context = _forked(
+        manifest,
+        _new_blocker(),
+        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
+    )
+    _append(branch, _update("blk/branch-only", description="A revised branch finding."))
+
+    ops, residue = build_deterministic_merge_ops(load_context())
+
+    assert ops and not residue
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    merged = history.state().nodes["blk/branch-only"]
+    assert merged.description == "A revised branch finding."
+    # The agent edit resets the standing exactly as it did on the branch.
+    assert merged.standing == "asserted"
+
+
+@pytest.mark.asyncio
+async def test_a_human_content_edit_keeps_the_standing_both_sides_agree_on(
+    manifest, tmp_path: Path
+) -> None:
+    history, branch, load_context = _forked(
+        manifest,
+        _new_blocker(),
+        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
+    )
+    _append(branch, _update("blk/branch-only", description="A revised finding."), human=True)
+
+    ops, residue = build_deterministic_merge_ops(load_context())
+
+    assert not residue
+    assert ops[-1] == {
+        "op": "set_standing",
+        "node_id": "blk/branch-only",
+        "standing": "accepted",
+    }
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    merged = history.state().nodes["blk/branch-only"]
+    assert merged.description == "A revised finding."
+    assert merged.standing == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_a_standing_move_on_main_after_the_fork_stays_a_decision(
+    manifest, tmp_path: Path
+) -> None:
+    history, branch, load_context = _forked(manifest, _new_blocker())
+    _append(branch, _update("blk/branch-only", description="A revised branch finding."))
+    _append(
+        history,
+        {"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},
+        human=True,
+    )
+
+    _ops, residue = build_deterministic_merge_ops(load_context())
+
+    assert residue == {("nodes", "blk/branch-only", "description"): "main_standing_changed"}
+
+
+def test_merge_residue_renders_every_reason_it_reports() -> None:
+    residue = {
+        ("nodes", "blk/existing", "description"): "conflict",
+        ("nodes", "rq/merge", "question"): "protected_node",
+    }
+
+    block = render_merge_residue(residue)
+
+    assert '"path": "nodes/blk/existing/description"' in block
+    assert '"reason": "protected_node"' in block
+    assert MERGE_RESIDUE_REASONS["conflict"] in block
+    assert MERGE_RESIDUE_REASONS["protected_node"] in block
+    assert "decision_outcome" not in block
+
+
+def test_merge_contract_cites_the_plan_file_instead_of_inlining_it() -> None:
+    contract = branch_merge_task_contract(
+        context_path="/stage/inputs/context.json",
+        context_id="a" * 64,
+        patch_path="/stage/workspace/patch.json",
+        validator_command="python3 validator.py validate patch.json",
+        review_contract_json="{}",
+        plan_path="/stage/inputs/plan.json",
+        residue_block=render_merge_residue({("nodes", "dec/choice", "status"): "decision_outcome"}),
+    )
+
+    assert "/stage/inputs/plan.json" in contract
+    assert '"op": "create_nodes"' not in contract
+    assert '"path": "nodes/dec/choice/status"' in contract
+    assert MERGE_RESIDUE_REASONS["decision_outcome"] in contract

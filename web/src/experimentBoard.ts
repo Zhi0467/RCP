@@ -14,6 +14,7 @@ export interface ProjectHashRoute {
   projectId: string | null;
   view: AppView;
   projectViewSpecified: boolean;
+  chatId?: string;
   experimentId: string | null;
   experimentRoute: ExperimentRouteIdentity | null;
   autoResearchEpisodeId: string | null;
@@ -189,6 +190,9 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
         ? params.get("view")
         : "overview") as AppView,
       projectViewSpecified: params.has("view"),
+      ...(params.get("view") === "chats" && params.get("chat")
+        ? { chatId: params.get("chat")! }
+        : {}),
       experimentId: null,
       experimentRoute: null,
       autoResearchEpisodeId: null,

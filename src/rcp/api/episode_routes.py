@@ -584,6 +584,7 @@ def _episode_report_viewer_response(
         descriptor=descriptor,
         source="episode_report",
         episode_id=episode_id,
+        branch_id=origin.graph_target.branch_id if origin is not None else None,
         save_url=(
             f"/api/projects/{quote(project_id, safe='')}/episodes/"
             f"{quote(episode_id, safe='')}/report/save"
