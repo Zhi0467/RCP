@@ -627,15 +627,3 @@ and Paper surface retains its provider-native public-web behavior as defined by
 its contract. Exact project write roots do not add a new network restriction.
 Generic scratch-only Patch correction remains offline where its retained
 contract requires that.
-
-## Verification contracts
-
-The durable observable boundaries are [S14 remote state](../acceptance/S14-remote-state.md),
-[S15 real agent](../acceptance/S15-real-agent.md),
-[S17 live preview](../acceptance/S17-real-agent-preview.md),
-[S62 direct ingestion](../acceptance/S62-direct-provider-log-ingestion.md),
-[S63 lock recovery](../acceptance/S63-agent-run-lock-recovery.md),
-[S74 fail-closed containment](../acceptance/S74-boundary-inputs-fail-closed.md),
-[S75 public web access](../acceptance/S75-network-access-on-every-agent-surface.md),
-[S102 team execution](../acceptance/S102-team-runs-execute-as-the-space-account.md),
-and [S119 stale-process exclusion](../acceptance/S119-stale-processes-cannot-command-the-next-turn.md).

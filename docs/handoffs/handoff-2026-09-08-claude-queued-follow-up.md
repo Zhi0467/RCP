@@ -4,15 +4,13 @@ Date: 2026-09-08
 Status: implemented under the human-confirmed brief, with verification gaps
 recorded below. The settled contract is Claude queued follow-up turns, Codex
 injection, runtime-owned composer wording, honest first-error diagnostics, and cached Work-like sandbox
-readiness. Remaining work is the external S134 drive and checks blocked by this
-execution sandbox; no real-provider or SSH acceptance pass is claimed.
+readiness. Remaining work is the external live-steering drive and checks blocked
+by this execution sandbox; no real-provider or SSH pass is claimed.
 
 This replaces the materially different
 [archived steering handoff](../archive/handoffs/handoff-2026-09-05-live-provider-steering.md).
 Current behavior belongs in
-[providers and containment](../specs/providers-and-containment.md#live-human-steering)
-and the confirmed journey in
-[S134](../acceptance/S134-steer-the-running-human-chat.md).
+[providers and containment](../specs/providers-and-containment.md#live-human-steering).
 
 ## Settled boundaries
 
@@ -44,15 +42,15 @@ and the confirmed journey in
   withheld from the wire, so before this only a failing turn — whose error event
   is forwarded — was ever counted.
 
-## Remaining acceptance drive
+## Remaining live drive
 
-Use disposable data and spare ports. Complete S134 with real local and authorized
-SSH providers: verify same-session Claude follow-ups through the served UI,
+Use disposable data and spare ports. Drive live steering with real local and
+authorized SSH providers: verify same-session Claude follow-ups through the served UI,
 Codex injection, Work containment, transport loss without resend, and restart
 with an unacknowledged message. Confirm both a working sandbox and a concrete
 missing-sandbox readiness diagnostic on the actual execution host. Existing
 probe facts supplied by the human are established evidence, not a new integrated
-acceptance pass. Archive this handoff when that remaining drive is complete.
+pass. Archive this handoff when that remaining drive is complete.
 
 ## Verification in this worktree
 
@@ -68,14 +66,10 @@ acceptance pass. Archive this handoff when that remaining drive is complete.
 - Chromium cannot launch inside this macOS sandbox (`bootstrap_check_in`,
   Permission denied 1100). Watcher tests invoking `ps` are also denied. Exact
   final check counts and commands are in the root work summary. One episode
-  acceptance timeout in the full parallel run passed with all six tests in its
-  isolated file rerun; no episode code or timeout was changed.
+  timeout in the full parallel run passed with all six tests in its isolated
+  file rerun; no episode code or timeout was changed.
 - Usage forwarding is fixed in this branch, not left as a gap: `_stream_agent_events`
   now forwards an answer's usage on its own frame, and the regression test was
-  checked against the unfixed code, where it fails with zero usage rows. The S134
+  checked against the unfixed code, where it fails with zero usage rows. The
   separate-usage assertion is exercised by the two-result protocol test; its
-  live-provider drive is still part of the external S134 run.
-
-The pending/blocked acceptance scan found no additional completed journey. S134
-retains `blocked-external`; S35 still needs packaged/live-host verification, S60
-owns wizard vocabulary, and S121 owns graph Apply refusal semantics.
+  live-provider drive is still part of the external run.

@@ -7,10 +7,10 @@ Active:
   OS-owned helper for ordinary processes. Integrated checks and the real
   team-server/Codex journey remain; the predecessor compute-runner plan is archived.
 
-- [Claude queued follow-up](handoff-2026-09-08-claude-queued-follow-up.md) — queued provider turns, honest errors, and sandbox readiness implemented; integrated local/SSH acceptance verification remains open.
+- [Claude queued follow-up](handoff-2026-09-08-claude-queued-follow-up.md) — queued provider turns, honest errors, and sandbox readiness implemented; integrated local/SSH verification remains open.
 
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
-  — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
+  — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; the full live journey remains open.
 
 - [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
   — production adoption, promoted release, complete backup, and doctor are
@@ -21,7 +21,7 @@ The [team-space/server handoff is closed](../archive/handoffs/handoff-2026-08-27
 the backed-up CoT project was transferred and verified through the desktop on
 2026-09-05. Existing two-member production use was accepted by the human;
 separate disposable-host SSH qualification was deliberately skipped. Unrun
-acceptance coverage remains explicit, rather than being relabeled as passed.
+coverage remains explicit, rather than being relabeled as passed.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

@@ -13,10 +13,9 @@ Current authority, highest first:
 
 1. [`docs/design.md`](docs/design.md) for product boundaries and cross-cutting invariants.
 2. The applicable file in [`docs/specs/`](docs/specs/) for current behavior.
-3. Active acceptance scenarios for selected observable promises.
-4. Active decisions for rationale that remains easy to regress.
-5. Active handoffs for human-confirmed work that is not yet complete.
-6. [`docs/archive/`](docs/archive/) for history only.
+3. Active decisions for rationale that remains easy to regress.
+4. Active handoffs for human-confirmed work that is not yet complete.
+5. [`docs/archive/`](docs/archive/) for history only.
 
 Read the applicable current spec and active handoff before deciding an issue.
 Report contradictions instead of silently choosing a source.
@@ -24,9 +23,8 @@ Report contradictions instead of silently choosing a source.
 ## Working loop
 
 1. Read the relevant design, spec, source, and tests yourself.
-2. Decide whether the change creates a new durable cross-module promise. Add and
-   confirm an acceptance scenario only when it does; ordinary bugs and refactors
-   use focused regression tests.
+2. Cover the change with focused regression tests at the level that proves the
+   behavior.
 3. Plan file ownership, invariants, and checks before substantial edits.
 4. Make small edits directly. Fan out larger implementation by coherent module
    boundary, while the main agent retains integration, verification, and review.
@@ -85,16 +83,9 @@ Remote behavior requires a reachable host. Test against a copy of real app data
 when migration or recovery correctness depends on records that fresh fixtures do
 not contain. Never write to the human's real data directory from tests.
 
-Before finishing, inspect pending and blocked acceptance scenarios for ones the
-change made runnable or stale:
-
-```bash
-grep -l "^status: \(pending\|blocked-external\)" docs/acceptance/S*.md
-```
-
 ## Stable invariants
 
-This numbered registry is cited from source, tests, and acceptance frontmatter. Never
+This numbered registry is cited from source and tests. Never
 renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 1. **Canonical Patch logs are append-only.** Never edit or delete main or branch Patch history; replay would change the past.
@@ -171,8 +162,8 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 ## Documentation lifecycle
 
-- Current behavior belongs in specs. Durable user journeys belong in acceptance.
-  Rationale for an active easy-to-regress tradeoff belongs in decisions.
+- Current behavior and durable user journeys belong in specs. Rationale for an
+  active easy-to-regress tradeoff belongs in decisions.
 - A handoff is active work, not a diary. Its opening status must name what is
   implemented, what remains, and which decisions are settled.
 - When a handoff decision changes, update its plan and status in the same commit.
@@ -218,4 +209,4 @@ every task. Move behavior, rationale, long failure histories, UI details, and
 module-specific procedures to their owning documents.
 Do not grow this file by append-only notes: each added line must remove or consolidate
 equal-value text. A new global invariant must replace or consolidate a global rule,
-name its concrete code owner, and cite an executable test or acceptance scenario.
+name its concrete code owner, and cite an executable test.

@@ -326,20 +326,3 @@ team-shell protocol-1 request, the project-card list preserves the older
 contract: `can_delete=false`, `delete_unavailable_reason` explains operator
 deprovisioning, and `delete_confirmation` is absent. Protocol 2 and callers with
 no protocol header receive the deletable card with `delete_confirmation`.
-
-## Verification contracts
-
-The durable current boundaries are [S01 first project](../acceptance/S01-first-project.md),
-[S14 remote state](../acceptance/S14-remote-state.md),
-[S26 delete project](../acceptance/S26-delete-project.md),
-[S60 project setup](../acceptance/S60-plain-language-project-setup.md),
-[S96 team enrollment](../acceptance/S96-joining-a-team-space.md),
-[S98 project transfer](../acceptance/S98-move-a-project-into-a-team-space.md),
-[S101 project membership](../acceptance/S101-project-membership.md),
-[S105 multi-space client](../acceptance/S105-move-between-spaces-in-one-window.md),
-[S116 retained research](../acceptance/S116-choose-existing-or-fresh-research.md),
-[S122 project invitations](../acceptance/S122-project-invitations.md), and
-[S128 team project provisioning](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
-
-Pending scenarios in that list describe intended future promises, not current
-implemented behavior.

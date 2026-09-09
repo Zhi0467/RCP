@@ -95,8 +95,8 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
    and retained Slurm selection/diagnostics across reload. Console, network,
    and server logs were clean; no provider or compute work was launched. API
    regressions cover authority refusals and cancellation failure/retry.
-4. Run [S136](../acceptance/S136-long-running-compute-outlives-the-agent.md) with
-   real Codex and reachable disposable team-server/Slurm work. Verify provider
+4. Drive long-running compute end to end with real Codex and reachable
+   disposable team-server/Slurm work. Verify provider
    exit, RCP restart, ordinary shell watcher wake, native-session continuation,
    child budget/Stop, and human Cancel. Never use the human's live data directory
    or stop unrelated jobs.

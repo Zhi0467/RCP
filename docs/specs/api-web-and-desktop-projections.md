@@ -770,7 +770,7 @@ Strict host-key browser calls use a direct OpenSSH transport with connection
 sharing disabled, so an existing multiplexed master cannot bypass the check.
 
 The desktop may add shell-only dictation, update, reconnection, and packaging
-behavior only where an active acceptance contract owns it. Browser verification
+behavior only where a native test owns it. Browser verification
 does not stand in for native window lifecycle.
 
 A local Codex thread created through RCP's app-server runtime is stored by Codex
@@ -792,18 +792,3 @@ execution account and is not owned by another RCP layer. Client-generated ids,
 cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
-
-## Verification contracts
-
-The durable journeys include [S03 graph views](../acceptance/S03-views-and-graph-controls.md),
-[S19 draft preservation](../acceptance/S19-nothing-typed-is-lost.md),
-[S30 desktop window lifecycle](../acceptance/S30-desktop-window-is-not-the-app.md),
-[S31 Quit ownership](../acceptance/S31-quit-stops-what-it-started.md),
-[S32 desktop previews](../acceptance/S32-artifacts-in-the-desktop-window.md),
-[S53 truthful Runs projections](../acceptance/S53-truthful-attention-and-run-surfaces.md),
-[S81 live canonical state](../acceptance/S81-live-canonical-state.md),
-[S90 dictation](../acceptance/S90-desktop-chat-dictation.md),
-[S105 multi-space desktop](../acceptance/S105-move-between-spaces-in-one-window.md),
-[S109 current tabs](../acceptance/S109-tabs-stay-current-without-freezing.md),
-[S125 branch merge](../acceptance/S125-auto-research-graph-branch-merge.md), and
-[S128 team project provisioning](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).

@@ -333,11 +333,3 @@ A remote Patch commit is observed as present, absent, or unknown. Present
 succeeds and repairs derived outputs, absent rolls back an unpublished mirror,
 and unknown is quarantined until a canonical refresh proves the outcome. No
 unfenced fallback apply is allowed.
-
-## Verification contracts
-
-The core durable journeys are [S13 replay halt](../acceptance/S13-replay-halts.md),
-[S74 boundary failure](../acceptance/S74-boundary-inputs-fail-closed.md),
-[S76 graph-condition wake](../acceptance/S76-graph-condition-wake.md),
-[S81 live canonical state](../acceptance/S81-live-canonical-state.md), and
-[S125 branch merge](../acceptance/S125-auto-research-graph-branch-merge.md).

@@ -59,14 +59,14 @@ readiness-checks a provider but never performs or stores its login; execution
 uses whatever the configured operating-system account has authenticated
 natively. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
 non-reloading service, and its commit and update lifecycle are managed by the
-server CLI. The unfinished journeys that make this deployment usable remain
-explicit pending acceptance work.
+server CLI. The unfinished journeys that make this deployment usable are not
+yet driven end to end.
 
 ## Cross-cutting invariants
 
 These are the repository-wide promises every module keeps. They are stated here
-as principles; the permanent numbered identifiers that acceptance frontmatter,
-source comments, and tests cite (`4b`, `10g`, and the rest) are registered in
+as principles; the permanent numbered identifiers that source comments and
+tests cite (`4b`, `10g`, and the rest) are registered in
 [`AGENTS.md`](../AGENTS.md) under "Stable invariants" and are never renumbered.
 The two lists decompose the same promises at different grain, so do not read a
 number here.
@@ -151,14 +151,12 @@ Current sources have this precedence:
 1. This file owns repository-wide product boundaries and cross-cutting
    invariants.
 2. The applicable file in [`specs/`](specs/) owns current module behavior.
-3. Active [`acceptance/`](acceptance/README.md) scenarios state selected
-   observable promises and must agree with current design and specifications.
-4. Active [`decisions/`](decisions/README.md) records explain rationale but do
+3. Active [`decisions/`](decisions/README.md) records explain rationale but do
    not override current design or specifications.
-5. Active [`handoffs/`](handoffs/README.md) authorize and scope work not yet
+4. Active [`handoffs/`](handoffs/README.md) authorize and scope work not yet
    implemented. A human-confirmed, ready handoff need not be reconfirmed, but it
    may not silently change current design.
-6. [`archive/`](archive/) is historical and non-authoritative.
+5. [`archive/`](archive/) is historical and non-authoritative.
 
 [`server.md`](server.md) and [`desktop.md`](desktop.md) are operator and
 developer guides. They own the exact procedure an operator runs and the native
@@ -213,5 +211,5 @@ user-authored rule language, provider-neutral hostile-process sandbox,
 live output watcher, hard provider interruption,
 persistent provider daemon, or peer-to-peer agent mail. Human steering of an
 ordinary running chat uses only RCP's existing process for that exact attempt.
-Confirmed but unimplemented product journeys remain explicitly `pending` in the
-active acceptance suite rather than being described as current behavior here.
+Confirmed but unimplemented product journeys belong in an active handoff rather
+than being described as current behavior here.

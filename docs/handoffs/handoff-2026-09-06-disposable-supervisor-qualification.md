@@ -63,9 +63,9 @@ production deployment without waiting for additional controller iterations.
    boot IDs, startup ordering, and data checks. Do not replace executed proof
    with unit tests or planned checks.
 3. Fix any drive-found bug in a separate PR, then rerun affected qualification.
-   Keep [S135](../acceptance/S135-supervisor-recovers-automatically-after-reboot.md)
-   pending until its full drive passes on both Ubuntu versions. S103 and S104
-   also retain their broader, separately unexecuted assertions.
+   Automatic recovery after reboot stays unproven until its full drive passes on
+   both Ubuntu versions. The broader backup and restore drives are also still
+   unexecuted.
 
 Production is never a disposable guest. No production reboot, forced failure,
 rollback, or restore is authorized by this follow-up. Full machine-loss checkout

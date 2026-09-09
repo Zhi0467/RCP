@@ -294,15 +294,3 @@ controls.
 
 Commands never become graph authority by themselves. A graph change still uses
 the typed Patch, transition manager, and Apply gate.
-
-## Verification contracts
-
-The durable observable boundaries are [S08 human authority](../acceptance/S08-human-authority.md),
-[S53 truthful attention](../acceptance/S53-truthful-attention-and-run-surfaces.md),
-[S78 bounded Auto-research](../acceptance/S78-one-budget-one-stop.md),
-[S100 two permission checks](../acceptance/S100-permission-is-checked-twice.md),
-[S101 project membership](../acceptance/S101-project-membership.md),
-[S113 attribution](../acceptance/S113-campaign-attribution.md),
-[S115 protected beliefs](../acceptance/S115-beliefs-change-only-through-you.md),
-[S121 truthful refusal](../acceptance/S121-a-refusal-explains-itself.md), and
-[S125 branch merge](../acceptance/S125-auto-research-graph-branch-merge.md).

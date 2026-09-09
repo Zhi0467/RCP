@@ -31,7 +31,7 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   not a persistent session daemon. The
   [current provider contract](../specs/providers-and-containment.md#live-human-steering)
   bounds delivery to one ordinary human chat attempt and preserves authority and
-  recovery. Its handoff and S134 retain the unverified live acceptance work.
+  recovery. Its handoff retains the unverified live work.
 - **Peer mail:** no cross-episode/worker-to-worker mail. Preserve the existing
   orchestrator/worker star topology and recipient budget/authority boundaries.
 - **Restore:** add no client rollback detector. Preserve the existing restore

@@ -4,8 +4,7 @@ RCP observes external work through shell watchers. Agents submit scheduler jobs
 directly and choose the command, script, and resources.
 Where a process would otherwise die with the provider or RCP service, a generic
 launch helper starts it under an OS process owner. Both routes use the same
-watcher contract and human job controls. The real-host acceptance drive remains
-pending in [S136](../acceptance/S136-long-running-compute-outlives-the-agent.md).
+watcher contract and human job controls.
 
 ## Execution route
 
