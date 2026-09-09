@@ -23,6 +23,7 @@ from rcp.runs.branch_merge import (
     branch_merge_can_resolve_without_patch,
     branch_merge_id,
     branch_merge_receipt_from_committed_patch,
+    build_deterministic_merge_ops,
     parse_branch_merge_candidate,
     prepare_branch_merge_with_history,
     stream_branch_merge_run,
@@ -161,6 +162,12 @@ async def stream_branch_merge_task(
             )
             main = service.history.current_materialization()
             main_head = service.history.head_ref(main)
+            merge_truth_scope = sorted(set(main.state.project_truth_scope))
+            if merge_truth_scope != request.run_truth_scope:
+                raise ValueError(
+                    "Project truth membership changed after merge dispatch. "
+                    "Dispatch a new merge against current membership."
+                )
             patches = [
                 patch
                 for patch in branch.load_patches()
@@ -207,7 +214,9 @@ async def stream_branch_merge_task(
                 branch_graph=branch_result.state,
                 main_head=main_head,
                 main_graph=main.state,
-                run_truth_scope=sorted(set(request.run_truth_scope or ())),
+                # Graph provenance covers current repository truth membership;
+                # the merge does not read or gain write access to repositories.
+                run_truth_scope=merge_truth_scope,
                 human_review_changes=branch_human_review_changes(
                     patches, previous_graph or base_graph, branch_result.state
                 ),
@@ -362,7 +371,11 @@ def _validate_candidate(
 ) -> PatchValidationResult:
     try:
         context = load_context()
-        patch = parse_branch_merge_candidate(text, context)
+        patch = parse_branch_merge_candidate(
+            text,
+            context,
+            deterministic_ops=build_deterministic_merge_ops(context)[0],
+        )
         if not patch.ops:
             if not branch_merge_can_resolve_without_patch(context):
                 raise BranchMergeCandidateProblem(

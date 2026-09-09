@@ -1,8 +1,8 @@
 """Graph-only semantic rebase and merge for one Auto-research branch.
 
 This module deliberately owns no task allocation, branch history, API route, or
-merge-receipt persistence.  It consumes exact branch/main snapshots, runs one
-fresh dedicated agent in a stage-only write scope, and uses HistoryManager's
+merge-receipt persistence. It consumes exact branch/main snapshots, builds ordinary
+changes, uses a stage-only agent for residue, and uses HistoryManager's
 single-transition validation/append boundary through a small structural port.
 """
 
@@ -12,12 +12,21 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing, suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from rcp.agents import AgentEvent, AgentLauncher, agent_output_schema, parse_agent_patch_json
 from rcp.agents.branch_merge_prompt import (
@@ -26,8 +35,14 @@ from rcp.agents.branch_merge_prompt import (
     branch_merge_task_contract,
 )
 from rcp.agents.context import _has_ontology_extensions
-from rcp.agents.schema import OrchestratorAgentPatch, prepare_agent_patch
+from rcp.agents.schema import (
+    AgentProjectNode,
+    OrchestratorAgentPatch,
+    _strip_rcp_bookkeeping,
+    prepare_agent_patch,
+)
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.core.authority import RESTRUCTURE_PROTECTED_EPISTEMIC, operation_actions
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     Ambiguity,
@@ -66,6 +81,8 @@ from rcp.core.transitions import (
     project_transition_projection,
     transition_trigger_manifest,
 )
+from rcp.core.validation import validate_patch
+from rcp.core.validation.constants import IMMUTABLE_NODE_UPDATE_FIELDS
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import (
     BranchMergeAlreadyCommitted,
@@ -866,6 +883,181 @@ def semantic_delta_is_subsumed(delta: GraphSemanticDelta, main: GraphState) -> b
 SemanticWritePath = tuple[str, ...]
 
 
+def build_deterministic_merge_ops(
+    context: BranchMergeContext,
+) -> tuple[list[dict[str, Any]], set[SemanticWritePath]]:
+    """Build ordinary source changes; leave review and conflict choices explicit."""
+
+    base = context.previous_branch_graph or context.base_graph
+    branch = _merge_branch_graph(base, context.branch_graph)
+    allowed = _graph_semantic_write_paths(base, branch)
+    conflicts = _branch_conflict_paths(context.deterministic_conflicts)
+    mandatory = {
+        path for path in allowed if not any(_semantic_path_covers(item, path) for item in conflicts)
+    }
+    source = _graph_semantic_document(branch)
+    main = _graph_semantic_document(context.main_graph)
+    residue = set(conflicts)
+    creates: list[dict[str, Any]] = []
+    updates: dict[str, dict[str, Any]] = {}
+    edge_creates: list[dict[str, Any]] = []
+    edge_removes: list[str] = []
+    node_adapter = TypeAdapter(AgentProjectNode)
+    for path in sorted(mandatory):
+        value = _semantic_path_value(source, path)
+        if value == _semantic_path_value(main, path):
+            continue
+        if path[0] != "nodes":
+            residue.add(path)
+            continue
+        _, identity, field, *_ = path
+        node = branch.nodes.get(identity)
+        current = context.main_graph.nodes.get(identity)
+        if field == "$" and node is not None and current is None and node.standing == "asserted":
+            raw = node.model_dump(
+                mode="json",
+                exclude={"created_rev", "updated_rev", "standing"},
+                exclude_defaults=True,
+            )
+            try:
+                node_adapter.validate_python(raw)
+            except ValidationError:
+                residue.add(path)
+            else:
+                creates.append(raw)
+            continue
+        if (
+            node is None
+            or current is None
+            or node.type in {"research_question", "hypothesis"}
+            or current.standing != "asserted"
+            or field in IMMUTABLE_NODE_UPDATE_FIELDS
+            # Decision outcomes and conflicts may require one coherent node update.
+            or (
+                node.type == "decision"
+                and any(
+                    item[:2] == path[:2] and item[2] in {"status", "selected_option"}
+                    for item in allowed
+                )
+            )
+            or any(item[:2] == path[:2] for item in conflicts)
+        ):
+            residue.add(path)
+            continue
+        changes = updates.setdefault(identity, {})
+        parts = path[3:-1] if path[-1] == "$" else path[3:]
+        if not parts:
+            changes[field] = deepcopy(value)
+        else:
+            target = changes.setdefault(field, deepcopy(_semantic_path_value(main, path[:3])))
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            if value is _MISSING:
+                target.pop(parts[-1], None)
+            else:
+                target[parts[-1]] = deepcopy(value)
+
+    # Edges touching a node that still needs judgment belong to that same task.
+    uncertain_nodes = {path[1] for path in residue if path[0] == "nodes"}
+    for path in sorted(residue.copy()):
+        if len(path) != 3 or path[0] != "edges" or path[-1] != "$" or path not in mandatory:
+            continue
+        edge = branch.edges.get(path[1]) or context.main_graph.edges.get(path[1])
+        if edge is None or {edge.source, edge.target} & uncertain_nodes:
+            continue
+        edge_op = (
+            {
+                "op": "create_edges",
+                "edges": [edge.model_dump(mode="json", exclude={"created_rev", "layer"})],
+            }
+            if path[1] in branch.edges
+            else {"op": "remove_edges", "edge_ids": [edge.id]}
+        )
+        probe = Patch(
+            kind="work",
+            author="agent",
+            summary="Classify merge edge authority.",
+            ops=([{"op": "create_nodes", "nodes": creates}] if creates else []) + [edge_op],
+        )
+        if RESTRUCTURE_PROTECTED_EPISTEMIC in operation_actions(
+            context.main_graph, probe, probe.ops[-1]
+        ):
+            continue
+        if path[1] in branch.edges:
+            edge_creates.append(edge.model_dump(mode="json", exclude={"created_rev", "layer"}))
+        else:
+            edge_removes.append(edge.id)
+        residue.remove(path)
+
+    ops: list[dict[str, Any]] = []
+    if creates:
+        ops.append({"op": "create_nodes", "nodes": creates})
+    if edge_removes:
+        ops.append({"op": "remove_edges", "edge_ids": edge_removes})
+    if updates:
+        ops.append(
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": key, "changes": value} for key, value in updates.items()],
+            }
+        )
+    if edge_creates:
+        ops.append({"op": "create_edges", "edges": edge_creates})
+    return ops, residue
+
+
+def _require_possible_merge_plan(
+    context: BranchMergeContext,
+    ops: list[dict[str, Any]],
+    residue: set[SemanticWritePath],
+) -> None:
+    """Do not ask a provider to repair fixed operations or mandatory source scope."""
+
+    unsupported = sorted(
+        path for path in residue if path[0] in {"ontology", "project_truth_scope", "coverage"}
+    )
+    if unsupported:
+        raise BranchMergeCandidateProblem(
+            "Branch merge cannot carry project configuration changes: "
+            + ", ".join(_render_semantic_path(path) for path in unsupported[:8])
+        )
+    candidate = parse_branch_merge_candidate(
+        json.dumps({"summary": "Check fixed merge operations.", "ops": []}),
+        context,
+        deterministic_ops=ops,
+    )
+    if ops:
+        report = validate_patch(context.main_graph, candidate, context.run_truth_scope)
+        if report.rejected:
+            raise BranchMergeCandidateProblem(_validation_diagnostic(report)[0])
+    conflicts = _branch_conflict_paths(context.deterministic_conflicts)
+    proposals = [
+        context.branch_graph.proposals[path[1]]
+        for path in sorted(residue)
+        if len(path) == 3
+        and path[0] == "proposals"
+        and path[-1] == "$"
+        and path[1] in context.branch_graph.proposals
+        and path[1] not in context.main_graph.proposals
+        and not any(_semantic_path_covers(item, path) for item in conflicts)
+    ]
+    if proposals:
+        source_ops = _strip_rcp_bookkeeping(
+            [CreateProposalsOperation(op="create_proposals", proposals=proposals)]
+        )
+        probe = parse_branch_merge_candidate(
+            json.dumps({"summary": "Check mandatory source Proposal scope.", "ops": source_ops}),
+            context,
+            deterministic_ops=ops,
+        )
+        report = validate_patch(context.main_graph, probe, context.run_truth_scope)
+        # Other diagnostics may depend on nodes still in the residue. Source scope
+        # cannot: a mandatory source Proposal must retain its exact provenance.
+        for message in report.messages:
+            if message.code == "source-outside-run-scope":
+                raise BranchMergeCandidateProblem(message.message)
+
+
 def validate_branch_merge_candidate_conformance(
     context: BranchMergeContext,
     current_main: GraphState,
@@ -1213,8 +1405,13 @@ def branch_merge_provenance(context: BranchMergeContext) -> BranchMergeProvenanc
     )
 
 
-def parse_branch_merge_candidate(value: str, context: BranchMergeContext) -> Patch:
-    """Parse semantic-only output and stamp all non-agent merge provenance."""
+def parse_branch_merge_candidate(
+    value: str,
+    context: BranchMergeContext,
+    *,
+    deterministic_ops: list[dict[str, Any]] | None = None,
+) -> Patch:
+    """Combine fixed operations with semantic output and stamp merge provenance."""
 
     try:
         draft = parse_agent_patch_json(value, profile="orchestrator")
@@ -1225,6 +1422,10 @@ def parse_branch_merge_candidate(value: str, context: BranchMergeContext) -> Pat
     if draft.repositories_read:
         raise BranchMergeCandidateProblem(
             "A graph-only branch merge must declare repositories_read as an empty list."
+        )
+    if deterministic_ops:
+        draft = OrchestratorAgentPatch.model_validate(
+            {**draft.model_dump(mode="python"), "ops": [*deterministic_ops, *draft.ops]}
         )
     patch = prepare_agent_patch(
         draft,
@@ -1400,6 +1601,11 @@ def classify_refreshed_context(
 ) -> Literal["unchanged", "main_moved"]:
     """Permit only current-main movement; never retarget a task to another branch head."""
 
+    if previous.run_truth_scope != current.run_truth_scope:
+        raise BranchMergeSourceChanged(
+            "Project truth membership changed while the merge task was running. "
+            "Dispatch a new merge against current membership."
+        )
     stable = (
         previous.merge_task_id == current.merge_task_id
         and previous.authorized_by == current.authorized_by
@@ -1407,7 +1613,6 @@ def classify_refreshed_context(
         and previous.eligibility == current.eligibility
         and previous.base_graph == current.base_graph
         and previous.branch_graph == current.branch_graph
-        and previous.run_truth_scope == current.run_truth_scope
         and previous.branch_patch_summaries == current.branch_patch_summaries
         and previous.transition_contract == current.transition_contract
         and previous.review_contract == current.review_contract
@@ -1493,9 +1698,37 @@ async def stream_branch_merge_run(
     first_turn = True
 
     while True:
+        deterministic_ops, residue = build_deterministic_merge_ops(context)
+        if residue:
+            try:
+                _require_possible_merge_plan(context, deterministic_ops, residue)
+            except BranchMergeCandidateProblem as exc:
+                outcome.status = "rejected"
+                outcome.diagnostic = exc.message
+                yield _sse(AgentEvent(event="error", text=exc.message))
+                return
+        if not residue:
+            _clear_patch_candidates(stage)
+            if first_turn:
+                _stage_merge_context(stage, token, context, round_number=outcome.rebase_rounds)
+            candidate_text = json.dumps(
+                {"summary": "Carry the ordinary branch changes onto main.", "ops": []}
+            )
+            candidate = parse_branch_merge_candidate(
+                candidate_text, context, deterministic_ops=deterministic_ops
+            )
+            # Retain the complete generated candidate if validation or append fails.
+            saved = json.dumps({"summary": candidate.summary, "ops": deterministic_ops}, indent=2)
+            if stage.remote_stage is not None:
+                stage.remote_stage.write_workspace_text("patch.json", saved)
+            else:
+                (stage.workspace / "patch.json").write_text(saved, encoding="utf-8")
+            first_turn = False
         if first_turn:
             _clear_patch_candidates(stage)
-            context_path = _stage_merge_context(stage, token, context, round_number=0)
+            context_path = _stage_merge_context(
+                stage, token, context, round_number=outcome.rebase_rounds
+            )
             patch_path = _patch_path(stage)
             contract = branch_merge_task_contract(
                 context_path=context_path,
@@ -1503,6 +1736,9 @@ async def stream_branch_merge_run(
                 patch_path=patch_path,
                 validator_command=validator_command,
                 review_contract_json=context.review_contract.model_dump_json(indent=2),
+                deterministic_plan_json=json.dumps(
+                    {"ops": deterministic_ops, "residue": sorted(residue)}, indent=2
+                ),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             original_contract_path, prompt = _stage_task_contract(
@@ -1548,7 +1784,9 @@ async def stream_branch_merge_run(
                 return
             try:
                 candidate_text = _read_candidate_text(stage)
-                candidate = parse_branch_merge_candidate(candidate_text, context)
+                candidate = parse_branch_merge_candidate(
+                    candidate_text, context, deterministic_ops=deterministic_ops
+                )
                 candidate_problem = None
             except (
                 AgentOutputProblem,
@@ -1609,7 +1847,7 @@ async def stream_branch_merge_run(
                 )
                 yield _sse(AgentEvent(event="done"))
                 return
-            if session_id is None or outcome.rebase_rounds >= max_main_rebases:
+            if outcome.rebase_rounds >= max_main_rebases or (session_id is None and residue):
                 outcome.status = "retryable"
                 outcome.diagnostic = (
                     "Main advanced while the merge was running; retry the merge task against "
@@ -1621,6 +1859,17 @@ async def stream_branch_merge_run(
             context = fresh
             outcome.rebase_rounds += 1
             outcome.rebased_main_head = context.main_head
+            deterministic_ops, residue = build_deterministic_merge_ops(context)
+            if session_id is None or not residue:
+                first_turn = True
+                continue
+            try:
+                _require_possible_merge_plan(context, deterministic_ops, residue)
+            except BranchMergeCandidateProblem as exc:
+                outcome.status = "rejected"
+                outcome.diagnostic = exc.message
+                yield _sse(AgentEvent(event="error", text=exc.message))
+                return
             context_path = _stage_merge_context(
                 stage,
                 token,
@@ -1636,6 +1885,9 @@ async def stream_branch_merge_run(
                 context_id=context.context_id,
                 patch_path=_patch_path(stage),
                 validator_command=validator_command,
+                deterministic_plan_json=json.dumps(
+                    {"ops": deterministic_ops, "residue": sorted(residue)}, indent=2
+                ),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
             contract_path, prompt = _stage_task_contract(
@@ -1682,7 +1934,9 @@ async def stream_branch_merge_run(
                 return
             try:
                 candidate_text = _read_candidate_text(stage)
-                candidate = parse_branch_merge_candidate(candidate_text, context)
+                candidate = parse_branch_merge_candidate(
+                    candidate_text, context, deterministic_ops=deterministic_ops
+                )
                 candidate_problem = None
             except (
                 AgentOutputProblem,
@@ -1810,7 +2064,11 @@ async def stream_branch_merge_run(
                     return
 
         assert candidate_problem is not None
-        if session_id is None or outcome.correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS:
+        if (
+            not residue
+            or session_id is None
+            or outcome.correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
+        ):
             outcome.status = "rejected"
             outcome.diagnostic = candidate_problem.message
             yield _sse(AgentEvent(event="error", text=candidate_problem.message))
@@ -1888,7 +2146,9 @@ async def stream_branch_merge_run(
                 raise BranchMergeCandidateProblem(
                     "The correction left patch.json byte-identical; rewrite the candidate."
                 )
-            candidate = parse_branch_merge_candidate(candidate_text, context)
+            candidate = parse_branch_merge_candidate(
+                candidate_text, context, deterministic_ops=deterministic_ops
+            )
             candidate_problem = None
         except (AgentOutputProblem, BranchMergeCandidateProblem, OSError, StateUnavailable) as exc:
             candidate_problem = BranchMergeCandidateProblem(str(exc))

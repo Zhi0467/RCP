@@ -764,7 +764,9 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     assert first.graph_target == harness.episode.graph_target
     assert first.episode_id == harness.episode.episode_id
     assert first.authorized_by == authorized_human(harness.app)
-    assert first.dispatch_authority == _orchestrator_authority(harness.episode.episode_id)
+    expected_authority = _orchestrator_authority(harness.episode.episode_id)
+    expected_authority.scope.run_truth_scope = harness.service.history.state().project_truth_scope
+    assert first.dispatch_authority == expected_authority
     assert harness.store.episode_budget_meter(harness.episode.episode_id) == budget_before
     admitted_summary = admitted.json()["graph_branch"]
     assert admitted_summary["merge_state"] == "running"
@@ -874,7 +876,7 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     assert response.status_code == 202, response.text
     operation_id = response.json()["graph_branch"]["active_merge_task_id"]
     wait_for_task(store, operation_id, expect="succeeded")
-    assert launcher.calls == 1
+    assert launcher.calls == 0
     assert "ev/branch-result" in harness.service.history.state().nodes
     assert harness.branch.merge_receipts()[-1].provenance.merge_task_id == operation_id
 
@@ -1136,7 +1138,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     assert isinstance(operation_id, str)
 
     task = wait_for_task(harness.store, operation_id, expect="succeeded")
-    assert launcher.calls == 1
+    assert launcher.calls == 0
     assert task.applied_revision == harness.service.history.state().revision
     assert harness.service.history.state().nodes["blk/merge-ready"].status == "resolved"
     receipts = harness.branch.merge_receipts()

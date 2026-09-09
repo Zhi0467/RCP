@@ -1032,9 +1032,8 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
     ("run_scope", "repositories_read", "expected_code"),
     [
         (["repo-a"], ["repo-a"], "source-outside-run-scope"),
-        # A cited repository inside run scope needs no separate read record. Both
-        # lists are agent-declared, so requiring one restated the scope boundary
-        # without adding a check, and it made carried provenance unrepresentable.
+        # A cited repository inside RCP-supplied run scope needs no separate
+        # self-reported read record, including when carrying existing provenance.
         (["repo-a", "repo-b"], ["repo-a"], None),
     ],
 )

@@ -298,13 +298,32 @@ RCP prepares a closed graph-only context containing:
 - transition schema and validation command; and
 - deterministic conflicts found before provider launch.
 
-The merge agent receives the orchestrator graph profile under the human merge
-dispatcher's authorization. It receives scratch but no repository write roots,
+Merge dispatch pins current main project truth membership as its run truth
+scope, independent of the default repository selection for ordinary runs.
+`repositories_read` remains empty. A membership change after dispatch requires
+a new merge; provenance outside current membership is rejected.
+
+RCP builds authorable non-conflicting node creations, asserted ordinary node
+updates, and legal edge creations/removals from the same semantic paths checked
+by merge validation.
+Already-present values are omitted. Protected changes, conflicting nodes, Decision
+outcomes, removals, and source Proposals remain together in the agent's residue.
+This keeps coupled fields such as Decision options and selection in one update.
+
+An empty residue commits without a provider turn. Otherwise, the agent writes
+only the residue operations; RCP prepends the built operations for both self-check
+and commit. Unsupported configuration changes, invalid fixed operations, and
+mandatory source Proposals with out-of-scope provenance fail before provider
+launch. They never enter an agent correction loop that cannot repair them.
+
+When needed, the merge agent receives the orchestrator graph profile under the
+human merge dispatcher's authorization. It receives scratch but no repository write roots,
 membership, ontology, project configuration, Proposal approval, server command,
 or general branch authority.
 
-The agent authors one typed semantic Patch against current main. The transition
-manager validates it and commits one attributable main transition or nothing.
+The combined candidate is one typed semantic Patch against current main. The
+transition manager validates it and commits one attributable main transition
+or nothing.
 Conflict diagnostics enter the same bounded native-session correction loop;
 there is no manual node conflict viewer.
 

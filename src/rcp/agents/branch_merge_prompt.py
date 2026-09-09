@@ -13,6 +13,7 @@ def branch_merge_task_contract(
     patch_path: str,
     validator_command: str,
     review_contract_json: str,
+    deterministic_plan_json: str,
     ontology_extensions: bool = False,
 ) -> str:
     """Describe one fresh semantic rebase without exposing repositories."""
@@ -35,8 +36,15 @@ main graph, a typed base-to-branch semantic delta, branch Patch summaries, trans
 contracts, and deterministic three-way conflicts. Treat those files and heads as exact. Do not
 infer a different base, inspect canonical state directories, or inspect any repository.
 
-Produce one semantic Patch that carries the branch's intended graph change onto the supplied
-current main graph. Preserve compatible main-side changes. Resolve every listed conflict
+RCP has already built the ordinary operations in this exact plan:
+```json
+{deterministic_plan_json}
+```
+Write only the remaining operations for the listed residue paths to `patch.json`.
+RCP prepends the built operations during both self-check and commit; do not copy them into
+your output. A path can be satisfied by transition-generated effects without a direct write.
+Use the full graph snapshots as context for the remaining choices.
+Preserve compatible main-side changes. Resolve every listed conflict
 explicitly from the supplied graph semantics; never resolve one by silently preferring an entire
 branch or main object. If the intended outcome cannot be represented legally, leave a precise
 diagnostic in your final response and do not invent authority.
@@ -80,9 +88,9 @@ Only permitted file output:
   the merge context.
 - Include only `summary`, semantic `ops`, `repositories_read` (which must be `[]`),
   `change_summary`, and `agent_action` only when the operation actually chooses a Decision.
-- Carry an existing node's `source_refs` exactly as the branch recorded them. You read no
-  repository, so you may never invent or edit a ref, and never drop one to satisfy validation;
-  dropping it would lose provenance the branch established.
+- Preserve non-conflicting `source_refs` verbatim. For a source-ref conflict, choose among
+  the supplied main and branch refs; never invent a ref or remove provenance just to pass
+  validation. This task reads no repository.
 - Do not include revisions, graph heads, merge ids, branch provenance, authorizers, task ids,
   transition traces, admission fields, or other RCP bookkeeping. RCP supplies all of them.
 - Do not write repository files, watcher files, artifacts, or canonical `.research` files.
@@ -120,7 +128,8 @@ Exact current inputs:
 - live validator command: `{validator_command}`
 
 Correct only the semantic candidate Patch described by the original contract. The branch and
-main heads have not changed. Read the diagnostic, rewrite `{patch_path}` with a different valid
+main heads have not changed. RCP still prepends the built operations; correct only the residue.
+Read the diagnostic, rewrite `{patch_path}` with a different valid
 orchestrator semantic Patch, and run the validator command before finishing. Do not repeat or
 perform any operational side effect. Do not add RCP bookkeeping or branch provenance, inspect
 repositories, write watcher/artifact files, or write canonical state.
@@ -135,6 +144,7 @@ def branch_merge_rebase_contract(
     context_id: str,
     patch_path: str,
     validator_command: str,
+    deterministic_plan_json: str,
     ontology_extensions: bool = False,
 ) -> str:
     """Replace a discarded candidate after main moved, preserving the native session."""
@@ -156,6 +166,12 @@ Replacement merge context id: `{context_id}`
 Candidate Patch output to rewrite: `{patch_path}`
 Live validator command: `{validator_command}`
 
+RCP rebuilt the ordinary operations against the replacement main head:
+```json
+{deterministic_plan_json}
+```
+This plan supersedes the old plan. Output only the replacement residue operations; RCP prepends
+the built operations during both self-check and commit.
 Recompute the semantic merge against the replacement current-main graph. Preserve compatible
 new main changes and explicitly resolve the replacement context's conflicts. Rewrite the Patch;
 do not reuse the stale candidate unchanged. Run the validator command before finishing. This is
