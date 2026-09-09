@@ -79,9 +79,11 @@ capability-bearing config key instead, and cannot disable `.rules` at all.
 The recorded actual runtime also decides live human steering support. Codex
 app-server accepts `turn/steer` against the recorded thread and active turn id;
 `expectedTurnId` is the provider's precondition. Claude stream-json keeps stdin
-open and launches with `--replay-user-messages`; each steer is a user message
-with a unique UUID. Codex exec has no inbound channel, including when it was
-selected by the pre-prompt fallback. The backend publishes the disabled reason
+open and launches with `--replay-user-messages`; each additional user message
+with an RCP-generated UUID queues a follow-up provider turn in the same session.
+It does not inject into the turn already running. Each runtime declares its
+steering behavior and composer action label. Codex exec has no inbound channel,
+including when it was selected by the pre-prompt fallback. The backend publishes the disabled reason
 for an unsupported runtime instead of offering a send that cannot be delivered.
 
 ## Cooperative project write containment
@@ -295,13 +297,30 @@ began or may have begun but no acknowledgment established its outcome. Codex
 acknowledges through the matching `turn/steer` response and rejects a stale or
 completed turn. Completion immediately fences new Codex input, but RCP drains
 matching responses before marking outstanding receipts unknown at stream shutdown.
-Claude acknowledges only through a replayed user echo carrying
-the steer's UUID. RCP
-writes to Claude only while no `result` event has been observed, stops the
-process at the first `result`, and refuses a steer whose echo did not precede
-that result as completed before delivery if the result arrives before the
-acknowledgment deadline. This completion fence prevents a
-racing input from starting a new Claude turn.
+Claude becomes ready when `command_lifecycle state=started` names the initial
+RCP command UUID. `state=queued` for a pending follow-up UUID acknowledges
+acceptance immediately; replayed user echoes are consumed but never establish
+readiness or delivery. Its durable `delivered` receipt is labelled **Queued**
+and explains that the follow-up runs after the current turn, with the captured
+capability and write scope. Injecting runtimes retain **Delivered**. Labels are
+chosen from the task's recorded runtime when receipts are written.
+
+RCP tracks accepted, unfinished command UUIDs that it generated itself:
+`queued` and `started` add them, `completed` removes them. Unknown command UUIDs
+cannot keep the process open. Each Claude `result` removes its
+`user_message_uuids` (or singular `user_message_uuid`) from that set. When an
+accepted follow-up remains, RCP yields that result's answer and usage and lets
+the same process run the next turn. Otherwise it completes and stops the
+process, refusing any unacknowledged follow-ups. A result without usable command
+UUIDs fails closed to the same stop behavior. `queued_turn_count` is not used.
+Without a follow-up, the first result still ends the invocation.
+
+The provider turns share one native session, capability, write scope, and task
+stage. Their answers are joined with a blank line into one assistant chat
+message; each result retains its own usage accounting. Work reads `patch.json`
+only once, after the invocation ends, and scratch is cleared only on entry to
+the RCP turn. No second task, chat record for an assistant, or answer file is
+created for a queued turn.
 
 A transport drop or process exit after a write began leaves an unacknowledged
 steer unknown, except for Claude's explicit result fence above. Waiting for a
@@ -319,8 +338,8 @@ The message and receipt belong to the
 [human chat record](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
 Steering changes no mode, scope, graph target, budget, or permission. It creates
 no persistent provider daemon and wires no hard interrupt. Each provider process
-still ends with its turn; Pause, Resume, Retry, graceful Stop, and restart
-recovery keep their existing attempt and durable-state contracts. A restart
+still ends when its accepted commands finish; Pause, Resume, Retry, graceful Stop,
+and restart recovery keep their existing attempt and durable-state contracts. A restart
 does not recover or resend an in-flight steer through a replacement process.
 
 ## Local and SSH execution
@@ -516,6 +535,23 @@ version, authentication, model-catalog, and configured machine probes; results
 are cached for their configured lifetime. Explicit Refresh bypasses the cache.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.
+
+After authentication succeeds, the Claude profile also supplies a zero-cost
+Work-like startup probe using its strict sandbox settings, stream-json input,
+and closed empty stdin. Sandbox validation happens before any model call. The
+cached readiness result records Work-like availability and its concrete reason;
+Settings renders that readiness reason. A Work or orchestrate launch checks this
+precondition alongside the profile's version requirement before starting its
+provider turn. A missing sandbox fails with the provider's actual diagnostic;
+connection loss or an unreachable host is reported as such, not diagnosed as a
+missing sandbox. Discuss does not require this precondition or attach the sandbox
+settings. Refresh and normal readiness invalidation also invalidate the probe.
+
+A decoded provider error includes meaningful captured stderr in the first error
+event, with a bounded drain after process termination and existing shell TTY
+noise filtering. When the result has no text-bearing field, its subtype is the
+fallback diagnostic. This preserves the real startup failure for task consumers
+that stop reading at the first error.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A

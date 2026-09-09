@@ -9,20 +9,20 @@ covered_by:
   - web/tests/liveSteering.browser.test.mjs
   - web/tests/api.test.mjs
   - web/tests/agentTasks.test.mjs
-invariants: [4, 4b, 5, 7, 9, 10b, 10d, 10g, 11]
-reported_by: human-confirmed live-provider-steering handoff on 2026-09-05
+invariants: [4, 4b, 5, 7, 9, 10b, 10c, 10d, 10g, 11]
+reported_by: human-confirmed queued-follow-up brief on 2026-09-08
 ---
 
-# Steer the running human chat with a durable delivery receipt
+# Send during a running human chat with an honest delivery receipt
 
 The human can correct the ordinary Discuss or Work turn they are watching
-without starting a second turn. Delivery is bounded to RCP's existing provider
-process for the exact task attempt, and the stored human message tells whether
+by injecting into Codex app-server or queueing a Claude follow-up turn. Delivery
+is bounded to RCP's existing provider process for the exact task attempt, and the stored human message tells whether
 the provider acknowledged it. No receipt implies changed authority or that the
 model obeyed the input.
 
 This journey was confirmed in the
-[implementation handoff](../handoffs/handoff-2026-09-05-live-provider-steering.md).
+[implementation handoff](../handoffs/handoff-2026-09-08-claude-queued-follow-up.md).
 The complete drive remains blocked: real SSH steering and connection-loss
 verification need an authorized reachable host. Local protocol probes alone do
 not establish the served-app or SSH promises below.
@@ -46,24 +46,32 @@ not establish the served-app or SSH promises below.
    message is not queued for the next ordinary turn. Address an old attempt
    while a newer one runs; refusal must not redirect the message to the new one.
 4. Select exec, start a turn, and confirm the composer stays unavailable as for
-   any running turn while the API reports the backend's unsupported-runtime
-   reason. Repeat with a pre-prompt app-server failure that falls back to exec:
-   the actual exec runtime governs the composer.
-5. Run the equivalent mid-turn drive with Claude stream-json. Confirm the
-   replayed user echo bearing the steer UUID establishes **Delivered**. Race
-   input with completion: the first result ends the process, an input without
-   its earlier matching echo is **Refused** as completed before delivery when
-   that result arrives before the acknowledgment deadline. If the deadline
-   expires first, the stored **Unknown** receipt remains unchanged even after
-   a later echo or result. Neither case resends the input, and no second Claude
-   result or new turn is produced.
+   any running turn while the composer displays the backend's unsupported-runtime
+   reason. Pressing Enter leaves the draft intact and sends no request. Repeat
+   with a pre-prompt app-server failure that falls back to exec: the actual exec
+   runtime governs the composer.
+5. Select Claude stream-json and start a long Discuss turn. The composer becomes
+   ready on the initial command's `started` lifecycle, before its replay echo,
+   and visibly says **Queue a follow-up turn**, matching the send-button label.
+   Send a question about a recognizable detail in the original prompt. Its
+   matching `queued` lifecycle immediately establishes **Queued**, with a reason
+   saying it runs after the current turn. The first result answers the original
+   prompt; the follow-up then runs in the same session and remembers the detail.
+   Both answers appear in one assistant message joined by a blank line, with
+   separate usage rows. Repeat with Work and verify the same scope and stage,
+   one final Patch read, and no extra graph-change channel. Mode controls cannot
+   change the running capability. With no follow-up, the first result still
+   ends the process. Race unacknowledged input with the final result: it is
+   **Refused** when that result closes the invocation before the deadline.
+   Missing usable result UUIDs also stop the process; foreign lifecycle UUIDs
+   never keep it open. A timed-out receipt remains **Unknown** without resend.
 6. Repeat the app-server steer on an authorized SSH execution host using RCP's
    existing wrapper. Observe the matching acknowledgment, changed answer, and
    persisted delivered receipt. No independent provider daemon is started.
 7. On an owned throwaway SSH turn, drop the transport after a steer write begins
    and before its acknowledgment. The stored receipt becomes **Unknown**.
    Restore connectivity and reload the app: RCP does not resend the steer or
-   start a replacement turn. Repeat for Claude without a replayed echo or
+   start a replacement turn. Repeat for Claude without a matching `queued` lifecycle or
    observed result. A local process exit before acknowledgment follows the same
    unknown rule; Claude's result observed before the acknowledgment deadline
    uses the explicit refusal in step 5.
@@ -84,9 +92,10 @@ not establish the served-app or SSH promises below.
 ## Assert — transport, API, and browser
 
 - `only_the_exact_live_human_chat_attempt_can_receive_a_steer`
-- `actual_runtime_supplies_support_and_disabled_reason`
+- `actual_runtime_supplies_visible_action_label_and_disabled_reason`
 - `codex_acknowledgment_matches_the_expected_active_turn`
-- `claude_uuid_echo_acknowledges_before_the_first_result_fence`
+- `claude_started_unlocks_and_queued_acknowledges_a_same_session_follow_up`
+- `claude_results_join_one_answer_and_only_owned_outstanding_commands_continue`
 - `stored_human_message_retains_one_exact_attempt_receipt_after_reload`
 - `completion_refuses_without_queuing_a_new_turn`
 - `disconnect_is_unknown_and_never_automatically_resent`

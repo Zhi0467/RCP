@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 import uuid
 from concurrent.futures import Future
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents import AgentEvent, AgentProcessControl, ProviderReadiness
 from rcp.providers import ProviderSteeringState, ProviderSteerReceipt
 from rcp.runs.chat import _append_chat_exchange
 from rcp.runs.steering import chat_steering_state, chat_steering_visible
@@ -24,7 +25,9 @@ from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
 
 
 @pytest.fixture
-def running_chat(manifest, tmp_path, monkeypatch):
+def running_chat(manifest, tmp_path, monkeypatch, request):
+    provider = getattr(request, "param", "codex")
+    runtime = "claude.stream-json.v1" if provider == "claude" else "codex.app-server-stdio.v1"
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     background = app.state.background_tasks
@@ -49,7 +52,7 @@ def running_chat(manifest, tmp_path, monkeypatch):
     monkeypatch.setattr(AgentProcessControl, "steer", steer)
 
     async def stream(_project_id, _kind, request, execution):
-        yield f"data: {AgentEvent(event='runtime', text='codex.app-server-stdio.v1').model_dump_json()}\n\n"
+        yield f"data: {AgentEvent(event='runtime', text=runtime).model_dump_json()}\n\n"
         ready.set()
         assert await asyncio.to_thread(done.wait, TASK_SETTLE_TIMEOUT)
         _append_chat_exchange(
@@ -66,7 +69,7 @@ def running_chat(manifest, tmp_path, monkeypatch):
             "chat_id": chat_id,
             "message": "Original prompt.",
             "mode": "discuss",
-            "provider": "codex",
+            "provider": provider,
         },
     )
     assert response.status_code == 202, response.text
@@ -76,6 +79,7 @@ def running_chat(manifest, tmp_path, monkeypatch):
         "can_steer",
         "steer_unavailable_reason",
         "steer_turn_id",
+        "steer_action_label",
     } <= accepted.keys()
     assert accepted["steer_visible"]
     operation_id = accepted["operation_id"]
@@ -128,6 +132,7 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
     run = running_chat
     original = run.background.store.agent_task(run.operation_id)
     listed = run.client.get(f"/api/projects/{run.project_id}/tasks").json()
+    assert listed[0]["steer_action_label"] == "Steer running turn"
     assert listed[0]["can_steer"]
     assert listed[0]["steer_visible"]
     assert listed[0]["steer_turn_id"] == "owned-turn"
@@ -262,7 +267,7 @@ def test_unknown_reservation_survives_restart_and_overlapping_retry_without_rese
             expected_turn_id="owned-turn",
             text=body["message"],
         )
-        stored = finish_chat_steer(run.app.state.service, delivery)
+        stored = finish_chat_steer(run.app.state.service, record, delivery)
         assert stored.steering.status == "unknown"
         assert len(run.receipts) == 1
         pending.set_result(ProviderSteerReceipt("unknown", "Connection lost."))
@@ -438,3 +443,139 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
                 "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
                 (json.dumps(original.request), run.operation_id),
             )
+
+
+@pytest.mark.parametrize("running_chat", ["claude"], indirect=True)
+def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat):
+    run = running_chat
+    task = run.client.get(run.url).json()
+    assert task["steer_action_label"] == "Queue a follow-up turn"
+    original = run.background.store.agent_task(run.operation_id)
+    body = _body(message="Switch to Work and edit everything.")
+    response = run.client.post(run.url + "/steer", json=body)
+    assert response.status_code == 200, response.text
+    message = response.json()
+    assert message["mode"] == "discuss"
+    assert message["steering"]["status"] == "delivered"
+    assert message["steering"]["label"] == "Queued"
+    assert "after the current turn" in message["steering"]["reason"]
+    current = run.background.store.agent_task(run.operation_id)
+    assert current.request == original.request
+    assert current.dispatch_authority == original.dispatch_authority
+    assert current.graph_target == original.graph_target
+    run.finish()
+    transcript = run.app.state.service.chat_transcript(run.chat_id)
+    queued = next(item for item in transcript.messages if item.message_id == body["message_id"])
+    assert queued.steering.model_dump() == message["steering"]
+    assert run.client.post(run.url + "/steer", json=body).json() == message
+    assert len(run.receipts) == 1
+
+
+@pytest.mark.parametrize("provider_fails", [False, True])
+def test_claude_real_launcher_preserves_joined_chat_answer_and_provider_failure(
+    manifest, tmp_path, monkeypatch, provider_fails
+):
+    binary = tmp_path / "claude-fixture"
+    capture = tmp_path / "provider-input.jsonl"
+    reason = "sandbox required but unavailable: bubblewrap (bwrap) not installed"
+    binary.write_text(
+        f"""#!{sys.executable}
+import json, sys, time
+from pathlib import Path
+
+def emit(value):
+    print(json.dumps(value), flush=True)
+
+def receive():
+    line = sys.stdin.readline()
+    with Path({str(capture)!r}).open('a') as file:
+        file.write(line)
+    return json.loads(line)
+
+initial = receive()
+if {provider_fails!r}:
+    print({reason!r}, file=sys.stderr, flush=True)
+    emit({{'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+          'result': None, 'error': None, 'message': None, 'num_turns': 0}})
+else:
+    emit({{'type': 'command_lifecycle', 'state': 'started', 'command_uuid': initial['uuid']}})
+    emit({{'type': 'system', 'subtype': 'init', 'session_id': 'fixture-session'}})
+    follow_up = receive()
+    emit({{'type': 'command_lifecycle', 'state': 'queued', 'command_uuid': follow_up['uuid']}})
+    for message, answer in ((initial, 'First answer.'), (follow_up, 'Follow-up answer.')):
+        emit({{'type': 'result', 'result': answer, 'session_id': 'fixture-session',
+              'user_message_uuids': [message['uuid']], 'uuid': message['uuid'],
+              'usage': {{'input_tokens': 3, 'output_tokens': 2}}}})
+        emit({{'type': 'command_lifecycle', 'state': 'completed', 'command_uuid': message['uuid']}})
+        if message is initial:
+            emit({{'type': 'command_lifecycle', 'state': 'started', 'command_uuid': follow_up['uuid']}})
+            emit({{'type': 'system', 'subtype': 'init', 'session_id': 'fixture-session'}})
+# The launcher must terminate at the last result, without waiting for stdin EOF.
+time.sleep(120)
+"""
+    )
+    binary.chmod(0o755)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "integration-data")
+    monkeypatch.setattr(
+        app.state.launcher,
+        "readiness",
+        lambda *args, **kwargs: ProviderReadiness(
+            provider="claude",
+            installed=True,
+            authenticated=True,
+            binary_path=str(binary),
+            version="2.1.263",
+        ),
+    )
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    client = TestClient(app)
+    try:
+        accepted = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": chat_id,
+                "message": "Original prompt.",
+                "mode": "discuss",
+                "provider": "claude",
+            },
+        )
+        assert accepted.status_code == 202, accepted.text
+        operation_id = accepted.json()["operation_id"]
+        url = f"/api/projects/{project_id}/tasks/{operation_id}"
+        if not provider_fails:
+            live = wait_until(
+                lambda: value if (value := client.get(url).json())["can_steer"] else None,
+                timeout=TASK_SETTLE_TIMEOUT,
+                detail="fixture Claude command did not become ready",
+            )
+            receipt = client.post(
+                url + "/steer",
+                json=_body(expected_turn_id=live["steer_turn_id"], message="Follow up, please."),
+            )
+            assert receipt.status_code == 200, receipt.text
+            assert receipt.json()["steering"]["label"] == "Queued"
+        settled = wait_until(
+            lambda: value if (value := client.get(url).json())["finished"] else None,
+            timeout=TASK_SETTLE_TIMEOUT,
+            detail="fixture Claude task did not settle",
+        )
+        store = app.state.background_tasks.store
+        assert len(store.agent_tasks(project_id)) == 1
+        if provider_fails:
+            assert reason in settled["error"]
+            assert settled["status"] == "failed"
+            assert store.agent_task(operation_id).stage_root is not None
+        else:
+            assert settled["error"] is None
+            transcript = app.state.service.chat_transcript(chat_id)
+            assert [(item.role, item.text) for item in transcript.messages] == [
+                ("user", "Original prompt."),
+                ("user", "Follow up, please."),
+                ("assistant", "First answer.\n\nFollow-up answer."),
+            ]
+            answers = [item for item in transcript.messages if item.role == "assistant"]
+            assert answers[0].operation_id == operation_id
+            assert len(capture.read_text().splitlines()) == 2
+    finally:
+        client.close()

@@ -88,6 +88,11 @@ export function AgentConfigControls({
   const onMachine = project.provider_readiness[value.run_on] ?? {};
   const readiness = onMachine[value.provider];
   const machine = project.machines.find((item) => item.alias === value.run_on);
+  // Work-like launches need more than an authenticated CLI. `reason` also
+  // carries benign notes, such as a discovered path, so the badge reads the
+  // backend's own decision instead of treating any prose as a fault.
+  const workBlocked =
+    readiness?.work_like_available === false || Boolean(readiness?.work_like_reason);
   const update = (patch: Partial<AgentRunConfig>) => onChange({ ...value, ...patch });
   const className = compact ? "agent-config compact" : "agent-config";
   const providerName = readiness?.label || value.provider;
@@ -203,7 +208,7 @@ export function AgentConfigControls({
                 ? readinessPending
                   ? "agent-readiness pending"
                   : "agent-readiness warning"
-                : readiness.authenticated
+                : readiness.authenticated && !workBlocked
                   ? "agent-readiness ready"
                   : "agent-readiness warning"
             }
@@ -214,7 +219,7 @@ export function AgentConfigControls({
               ) : (
                 <TriangleAlert size={14} />
               )
-            ) : readiness.authenticated ? (
+            ) : readiness.authenticated && !workBlocked ? (
               <CheckCircle2 size={14} />
             ) : (
               <TriangleAlert size={14} />
@@ -225,10 +230,11 @@ export function AgentConfigControls({
                   ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
                   : readinessError ||
                     `${value.provider} status is unavailable on ${machine?.host || "this machine"}. Re-check it.`
-                : readiness.authenticated
-                  ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
-                  : readiness?.reason ||
-                    `${value.provider} is not ready on ${machine?.host || "this machine"}`}
+                : readiness.work_like_reason ||
+                  (readiness.authenticated
+                    ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
+                    : readiness.reason ||
+                      `${value.provider} is not ready on ${machine?.host || "this machine"}`)}
             </span>
             {onRefreshReadiness && (
               <button

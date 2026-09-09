@@ -48,6 +48,7 @@ const initialTask = {
   attempt: 2,
   steer_visible: true,
   can_steer: true,
+  steer_action_label: "Steer running turn",
   steer_turn_id: "provider-turn",
   steer_unavailable_reason: null,
   elapsed_seconds: 5,

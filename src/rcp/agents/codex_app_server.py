@@ -41,7 +41,7 @@ class CodexAppServerRuntime(ProviderRuntime):
     """Fresh-stdio Codex app-server transport for one RCP provider turn."""
 
     id = CODEX_APP_SERVER_RUNTIME_ID
-    supports_steering = True
+    steering_behavior = "inject"
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _CodexAppServerTurn(request)

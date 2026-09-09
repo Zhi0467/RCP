@@ -2074,6 +2074,10 @@ export interface AgentTask {
   can_steer: boolean;
   steer_unavailable_reason: string | null;
   steer_turn_id: string | null;
+  //: What sending into this running attempt does, worded by the runtime that
+  //: owns the behaviour: Codex app-server injects into the turn, Claude
+  //: stream-json queues a follow-up turn. The composer renders this verbatim.
+  steer_action_label: string;
   active: boolean;
   queued: boolean;
   pausing: boolean;
@@ -2349,6 +2353,9 @@ export interface ProviderReadiness {
   path_state: "resolved" | "missing" | "denied" | "unconfigured" | "unreachable";
   version?: string | null;
   reason?: string | null;
+  /** Whether Work-like launches can run here. Null means it was not checked. */
+  work_like_available?: boolean | null;
+  work_like_reason?: string | null;
   models: ModelChoice[];
   runtimes: ProviderRuntimeChoice[];
   /** The runtime an omitted manifest value resolves to. Never derive this. */

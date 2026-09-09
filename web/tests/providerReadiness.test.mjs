@@ -70,6 +70,52 @@ test("missing readiness is called checking only while a request is actually pend
   assert.doesNotMatch(failed, /Checking codex on this machine/);
 });
 
+/** Render the badge for one authenticated Claude readiness shape. */
+function readinessMarkup(extra) {
+  return renderToStaticMarkup(
+    React.createElement(AgentConfigControls, {
+      project: {
+        ...project,
+        provider_readiness: {
+          local: {
+            claude: {
+              provider: "claude",
+              label: "Claude",
+              installed: true,
+              authenticated: true,
+              models: [],
+              ...extra,
+            },
+          },
+        },
+      },
+      value: { ...value, provider: "claude" },
+      onChange() {},
+    }),
+  );
+}
+
+test("authenticated providers still show a failed Work precondition", () => {
+  const work_like_reason = "Claude Work sandbox unavailable: bubblewrap (bwrap) not installed.";
+  const markup = readinessMarkup({ work_like_available: false, work_like_reason });
+
+  assert.ok(markup.includes(work_like_reason));
+  assert.match(markup, /agent-readiness warning/);
+  assert.doesNotMatch(markup, /ready on/);
+});
+
+test("a benign readiness note does not make a working provider read as broken", () => {
+  // `reason` carries notes as well as faults, so only the backend's own Work
+  // decision may turn the badge into a warning.
+  const markup = readinessMarkup({
+    reason: "claude was found at /usr/local/bin/claude; using the discovered path.",
+    work_like_available: true,
+  });
+
+  assert.match(markup, /agent-readiness ready/);
+  assert.match(markup, /ready on/);
+});
+
 /** Consume one deferred readiness response the way the App-owned request does. */
 function deferredReadiness(generations, projectId) {
   const requestGeneration = currentProjectReadinessGeneration(generations, projectId);

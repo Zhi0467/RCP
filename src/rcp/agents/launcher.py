@@ -25,6 +25,7 @@ from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
+    PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
     REMOTE_PROVIDER_PID_WAIT_SECONDS,
     REMOTE_PROVIDER_STOP_POLL_SECONDS,
@@ -88,6 +89,9 @@ class ProviderReadiness(BaseModel):
     authenticated: bool
     version: str | None = None
     reason: str | None = None
+    #: None means the profile has no work-like probe or it could not be checked.
+    work_like_available: bool | None = None
+    work_like_reason: str | None = None
     #: The exact executable checked. For an unconfigured provider this is the
     #: absolute candidate discovery found and used for a best-effort launch;
     #: a project manifest may save it as a stable pin.
@@ -513,11 +517,32 @@ class AgentLauncher:
         # catalog probe just costs a subprocess to learn what auth already said.
         catalog_command = profile.catalog_command(candidate) if authenticated else None
         catalog = self._probe(host, catalog_command) if catalog_command else None
+        work_like_available = None
+        work_like_reason = None
+        work_command = profile.work_like_probe_command(candidate) if authenticated else None
+        if work_command is not None:
+            work_probe = self._probe(host, work_command)
+            if work_probe.returncode == 255:
+                where = f" on {host}" if host else ""
+                work_like_reason = (
+                    f"{profile.label} Work readiness could not be checked{where}: "
+                    + (_meaningful_stderr(work_probe.stderr) or "provider probe unavailable.")
+                )
+            else:
+                work_like_available = work_probe.returncode == 0
+                if not work_like_available:
+                    work_like_reason = (
+                        _meaningful_stderr(work_probe.stderr)
+                        or work_probe.stdout.strip()
+                        or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
+                    )
         return ProviderReadiness(
             provider=provider,
             label=profile.label,
             installed=True,
             authenticated=authenticated,
+            work_like_available=work_like_available,
+            work_like_reason=work_like_reason,
             version=version,
             binary_path=candidate,
             path_state="resolved" if configured else "unconfigured",
@@ -700,6 +725,15 @@ class AgentLauncher:
                 return
 
         profile = profile_for(provider)
+        if capability in {"work_auto", "orchestrate"} and (
+            getattr(readiness, "work_like_available", None) is False
+            or getattr(readiness, "work_like_reason", None)
+        ):
+            yield AgentEvent(
+                event="error",
+                text=readiness.work_like_reason or "Provider Work readiness is unavailable.",
+            )
+            return
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
         legacy_command = (
@@ -906,6 +940,39 @@ class AgentLauncher:
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
                     if event.event == "error":
+                        # Consumers stop at the first error. Capture the diagnostic
+                        # before yielding it, including when a result already stopped
+                        # the process and bypasses the nonzero-exit branch below.
+                        process.stdin.close()
+                        if stderr_pending:
+                            assert stderr_task is not None
+                            try:
+                                # Other protocols can finish their error response on
+                                # EOF. Give them a bounded graceful exit before TERM.
+                                stderr = await asyncio.wait_for(
+                                    asyncio.shield(stderr_task),
+                                    timeout=PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
+                                )
+                            except TimeoutError:
+                                if not step.stop_process:
+                                    if host and remote_pid_file:
+                                        await asyncio.to_thread(
+                                            AgentProcessControl._terminate_remote,
+                                            host,
+                                            remote_pid_file,
+                                        )
+                                    await AgentProcessControl._terminate(process)
+                                try:
+                                    stderr = await asyncio.wait_for(
+                                        stderr_task,
+                                        timeout=PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
+                                    )
+                                except TimeoutError:
+                                    stderr = "Provider stderr did not close after termination."
+                            stderr_pending = False
+                        detail = _meaningful_stderr(stderr)
+                        if detail and detail not in event.text:
+                            event.text = "\n".join(part for part in (event.text, detail) if part)
                         provider_failed = True
                         if not prompt_delivered and not pre_prompt_error:
                             pre_prompt_error = event.text
@@ -957,6 +1024,10 @@ class AgentLauncher:
                     event="error",
                     text="The remote provider returned a result, but RCP could not confirm that its process stopped.",
                 )
+            elif provider_failed:
+                # The first error already includes stderr. A forced stop must
+                # not invent a second failure from our own termination signal.
+                self.invalidate_readiness(provider, host=host, binary=binary)
             elif return_code and not stopped_at_result:
                 self.invalidate_readiness(provider, host=host, binary=binary)
                 detail = stderr or _exit_reason(provider, return_code, host)
@@ -967,8 +1038,6 @@ class AgentLauncher:
                     event="error",
                     text=f"{provider} closed its provider protocol before the turn completed.",
                 )
-            elif provider_failed:
-                self.invalidate_readiness(provider, host=host, binary=binary)
             else:
                 yield AgentEvent(event="done")
         finally:
@@ -1039,6 +1108,7 @@ class AgentLauncher:
                 arguments,
                 capture_output=True,
                 text=True,
+                input="",
                 timeout=10,
                 check=False,
             )

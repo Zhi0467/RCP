@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from rcp.background import BackgroundAgentTasks
 from rcp.limits import PROVIDER_STEER_ACK_TIMEOUT_SECONDS
-from rcp.providers import ProviderSteeringState, ProviderSteerReceipt, profile_for
+from rcp.providers import ProviderRuntime, ProviderSteeringState, ProviderSteerReceipt, profile_for
 from rcp.runs.chat import _append_chat_records, _chat_path
 from rcp.runs.task_policy import load_stored_request
 from rcp.service import (
@@ -30,6 +30,18 @@ def chat_steering_visible(store: AppStore, record: AgentTaskRecord) -> bool:
     )
 
 
+def _recorded_runtime(record: AgentTaskRecord) -> ProviderRuntime | None:
+    try:
+        return profile_for(str(record.request.get("provider"))).runtime(record.runtime_id)
+    except ValueError:
+        return None
+
+
+def chat_steer_action_label(record: AgentTaskRecord) -> str:
+    runtime = _recorded_runtime(record)
+    return (runtime.steer_action_label or "") if runtime is not None else ""
+
+
 def chat_steering_state(
     background: BackgroundAgentTasks, record: AgentTaskRecord
 ) -> ProviderSteeringState:
@@ -37,9 +49,8 @@ def chat_steering_state(
         return ProviderSteeringState(False, "Only human conversation turns can be steered.", None)
     if record.history_only or record.status != "running":
         return ProviderSteeringState(False, "This task attempt is not running.", None)
-    try:
-        runtime = profile_for(str(record.request.get("provider"))).runtime(record.runtime_id)
-    except ValueError:
+    runtime = _recorded_runtime(record)
+    if runtime is None:
         return ProviderSteeringState(False, "The recorded provider runtime is unavailable.", None)
     if not runtime.supports_steering:
         return ProviderSteeringState(
@@ -51,14 +62,22 @@ def chat_steering_state(
     return control.steering_state()
 
 
-def _receipt(attempt: int, turn_id: str, status: str, reason: str | None) -> SteeringReceipt:
+def _receipt(
+    record: AgentTaskRecord, attempt: int, turn_id: str, status: str, reason: str | None
+) -> SteeringReceipt:
+    runtime = _recorded_runtime(record)
+    queued = runtime is not None and runtime.steering_behavior == "queue"
+    if status == "delivered" and queued:
+        reason = "The follow-up runs after the current turn, with the running turn's capability and write scope."
     return SteeringReceipt(
         attempt=attempt,
         turn_id=turn_id,
         status=status,
-        label={"delivered": "Delivered", "refused": "Refused", "unknown": "Delivery unknown"}[
-            status
-        ],
+        label={
+            "delivered": "Queued" if queued else "Delivered",
+            "refused": "Refused",
+            "unknown": "Delivery unknown",
+        }[status],
         reason=reason,
     )
 
@@ -135,6 +154,7 @@ def begin_chat_steer(
             else None
         )
         receipt = _receipt(
+            current,
             attempt,
             expected_turn_id,
             "refused" if refusal else "unknown",
@@ -207,6 +227,7 @@ def begin_chat_steer(
 
 def finish_chat_steer(
     service: ProjectService,
+    record: AgentTaskRecord,
     delivery: tuple[_StoredChatRecord, Future[ProviderSteerReceipt] | None],
 ) -> ChatMessage:
     """Wait without project/canonical locks; a disconnect never triggers a resend."""
@@ -228,7 +249,7 @@ def finish_chat_steer(
             "unknown", "Provider acknowledgment was lost; this message will not be resent."
         )
     receipt = _receipt(
-        stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
+        record, stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
     )
     stored = stored.model_copy(update={"steering": receipt})
     with service.history.workspace.transaction():

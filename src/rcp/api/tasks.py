@@ -55,6 +55,7 @@ from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_ope
 from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.steering import (
     begin_chat_steer,
+    chat_steer_action_label,
     chat_steering_state,
     chat_steering_visible,
     finish_chat_steer,
@@ -210,6 +211,7 @@ def _agent_task_response(
     response.update(
         steer_visible=chat_steering_visible(store, record),
         can_steer=steering.can_steer,
+        steer_action_label=chat_steer_action_label(record),
         steer_unavailable_reason=steering.reason,
         steer_turn_id=steering.turn_id,
     )
@@ -448,7 +450,7 @@ def steer_agent_task(
                 expected_turn_id=body.expected_turn_id,
                 text=body.message,
             )
-        return finish_chat_steer(service, delivery)
+        return finish_chat_steer(service, record, delivery)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, StateUnavailable) as exc:

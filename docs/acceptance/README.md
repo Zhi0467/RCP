@@ -120,7 +120,7 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S131](S131-browser-agents-operate-rcp-through-webmcp.md) | Let a browser agent operate RCP without creating a second authority plane | implemented | browser |
 | [S132](S132-child-experiments-appear-in-runs.md) | A dispatched child Experiment appears in Runs | pending | pytest + browser |
 | [S133](S133-conversation-worktree-execution.md) | Conversations edit independently and integrate only by human choice | blocked-external | pytest + browser + provider + SSH |
-| [S134](S134-steer-the-running-human-chat.md) | Steer the running human chat with a durable delivery receipt | blocked-external | pytest + api + browser + ssh |
+| [S134](S134-steer-the-running-human-chat.md) | Send during a running human chat with an honest delivery receipt | blocked-external | pytest + api + browser + ssh |
 | [S135](S135-supervisor-recovers-automatically-after-reboot.md) | Recover interrupted deployment before admitting work after reboot | pending | pytest + ssh + systemd + vm |
 | [S136](S136-long-running-compute-outlives-the-agent.md) | Long-running compute outlives the agent and wakes it | pending | pytest + ssh + real Codex |
 | [S137](S137-archive-episode-runs.md) | Archive an episode without erasing its work | implemented | pytest + api + browser |
