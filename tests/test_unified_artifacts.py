@@ -1154,7 +1154,7 @@ def test_keep_refuses_unsafe_artifacts_entry(tmp_path: Path) -> None:
         )
 
 
-def test_viewer_assembles_transient_context_without_dispatch_or_mode_change() -> None:
+def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
     descriptor = AgentArtifactDescriptor(
         artifact_id="0123456789abcdef01234567",
         name="curves.html",
@@ -1169,20 +1169,23 @@ def test_viewer_assembles_transient_context_without_dispatch_or_mode_change() ->
         chat_id="chat",
         operation_id="operation",
         descriptor=descriptor,
+        branch_id="branch/id",
     )
 
     assert "rcp-artifact-context" in document
     assert "Added to the originating chat draft." in document
-    assert "BroadcastChannel('rcp-artifact-context')" in document
+    assert 'BroadcastChannel("rcp-artifact-context")' in document
+    assert "/#/projects/project?view=chats&amp;chat=chat&amp;branch_id=branch%2Fid" in document
+    assert ">Open chat</a>" in document
     assert "mode" not in document
     assert "fetch(config.keepUrl" in document
     assert "A prompt can include at most 12 selections." in document
     assert "right - left < 4" in document
     assert 'id="pending"' in document
     assert "installSelectionConfirmation" in document
-    assert "frame.addEventListener('load',enableSelection)" in document
-    assert "type:'rcp-artifact-selection-enable'" in document
-    assert "installArtifactSelection(boxLayer,offerSelection)" in document
+    assert 'frame.addEventListener("load", enableSelection)' in document
+    assert 'type: "rcp-artifact-selection-enable"' in document
+    assert "installArtifactSelection(boxLayer, offerSelection)" in document
     assert 'id="box"' not in document
     assert ">Comment</button>" in document
     assert ">Cancel</button>" in document

@@ -14,7 +14,11 @@ covered_by:
   - web/tests/resultViews.test.mjs
   - web/tests/artifactSelection.browser.test.mjs
 invariants: [1, 2, 4, 6, 9, 10e]
-last_checked: 2026-09-06 — Save copy passed in Chromium and WebKit against a live
+last_checked: 2026-09-09 — Saved preview comments survived close/reopen before and
+  after Add to chat in Chromium and WebKit. Open chat reached the exact source
+  conversation in the served app, retaining one copy of the text and its artifact
+  context without dispatch. Desktop navigation messaging passed in both engines;
+  native window focus remains to be checked. On 2026-09-06, Save copy passed against a live
   local server with synthetic report data and no originating chat. The displayed
   artifacts/ path resolved to the exact captured HTML. An existing file blocking
   artifacts/ produced a visible error; removing the obstruction allowed retry.
@@ -48,9 +52,10 @@ publishes captured report HTML into the state repository's `artifacts/` director
 and shows its repository-relative path. It preserves the immutable stored report
 and remains available without an originating chat.
 
-The viewer's text and box selections are transient prompt context, not saved
-annotations. The human comments on selections, reviews the assembled chat draft,
-and sends it. The originating native session answers every comment and question.
+The viewer saves text and box selections and their comments per artifact in the
+current browser or desktop profile. Closing and reopening restores them; Remove
+deletes a saved selection. The human comments on selections, reviews the assembled
+chat draft, and sends it. The originating native session answers every comment and question.
 It edits the artifact only when the human explicitly asks and sends Work.
 
 ## Setup
@@ -65,7 +70,7 @@ canonical state.
 
 1. Produce the three task artifacts from the Node chat. Confirm the PNG and SVG
    appear inline with the answer and the HTML appears as an Open link.
-2. Open the HTML. Confirm the unified viewer shows the page, transient-selection
+2. Open the HTML. Confirm the unified viewer shows the page, selection
    rail, and Keep control; no result-view destination, selector, or second card
    exists.
 3. Highlight text, then choose Comment to add it to the rail. Drag a figure or
@@ -73,7 +78,11 @@ canonical state.
    visible until Comment, Cancel or Escape; neither a highlight nor an area
    enters the rail automatically. Confirm ordinary report controls still work. Add
    separate comments and add the assembled context to the chat. Confirm no task
-   starts automatically and the editable composer remains in Discuss.
+   starts automatically and the editable composer remains in Discuss. Choose
+   **Open chat** and confirm that exact conversation opens with the comments in
+   its composer. Close and reopen the viewer before and after adding to chat;
+   confirm selections and comments remain. Remove a selection and reopen again
+   to confirm its removal persists.
 4. Send a question. Confirm the exact originating native session receives the
    bounded selections, comments, final question, and a read-only current copy
    of the artifact. Confirm it answers without editing the file.
@@ -142,7 +151,8 @@ canonical state.
 - `task_artifacts_and_episode_reports_use_one_viewer_shell`
 - `a_source_update_upgrades_legacy_desktop_preview_urls_to_the_viewer_shell`
 - `legacy_inline_image_requests_remain_images_after_the_source_update`
-- `text_and_box_selections_are_transient_not_persisted_annotations`
+- `text_and_box_comments_survive_closing_and_reopening_the_artifact`
+- `open_chat_reaches_the_originating_conversation_and_graph_target`
 - `highlighting_text_does_not_capture_it_without_an_explicit_action`
 - `box_context_includes_bounded_coordinates_and_visible_labels`
 - `selection_comments_assemble_into_a_visible_editable_chat_draft`

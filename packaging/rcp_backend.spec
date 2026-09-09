@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(SPECPATH).parent
 SOURCE_ROOT = PROJECT_ROOT / "src"
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 ARTIFACT_SELECTION = SOURCE_ROOT / "rcp" / "artifact_selection.js"
+ARTIFACT_VIEWER = SOURCE_ROOT / "rcp" / "artifact_viewer.js"
 RECORD_PARSER = SOURCE_ROOT / "rcp" / "sources" / "record_parsing.py"
 STAGED_COMMAND_CLIENT = SOURCE_ROOT / "rcp" / "agents" / "staged_command_client.py"
 STAGED_COMMAND_BROKER = SOURCE_ROOT / "rcp" / "agents" / "staged_command_broker.py"
@@ -35,6 +36,7 @@ analysis = Analysis(
     datas=[
         (str(WEB_DIST), "rcp/web_dist"),
         (str(ARTIFACT_SELECTION), "rcp"),
+        (str(ARTIFACT_VIEWER), "rcp"),
         (str(RECORD_PARSER), "rcp/sources"),
         (str(STAGED_COMMAND_CLIENT), "rcp/agents"),
         (str(STAGED_COMMAND_BROKER), "rcp/agents"),

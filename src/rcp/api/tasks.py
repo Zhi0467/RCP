@@ -635,6 +635,7 @@ async def _artifact_viewer_response(
         chat_id=chat_id if descriptor.can_discuss else None,
         operation_id=operation_id,
         descriptor=descriptor,
+        branch_id=record.graph_target.branch_id,
     )
     return Response(
         b"" if head else document,

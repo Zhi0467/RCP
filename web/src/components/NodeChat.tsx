@@ -371,6 +371,86 @@ export function artifactContextDraft(payload: ArtifactContextPayload): string {
     .join("\n\n");
 }
 
+interface ArtifactDraftSpan {
+  signature: string;
+  message: string;
+  start: number;
+  end: number;
+}
+
+function readArtifactDraftSpan(raw: string | null): ArtifactDraftSpan | null {
+  try {
+    const span = JSON.parse(raw ?? "null");
+    return span &&
+      typeof span.signature === "string" &&
+      typeof span.message === "string" &&
+      Number.isInteger(span.start) &&
+      Number.isInteger(span.end) &&
+      span.start >= 0 &&
+      span.end >= span.start &&
+      span.end <= span.message.length
+      ? span
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function moveArtifactDraftSpan(span: ArtifactDraftSpan, message: string): ArtifactDraftSpan {
+  const block = span.message.slice(span.start, span.end);
+  const retained = block ? message.indexOf(block) : -1;
+  if (retained >= 0) return { ...span, message, start: retained, end: retained + block.length };
+  let prefix = 0;
+  while (
+    prefix < span.message.length &&
+    prefix < message.length &&
+    span.message[prefix] === message[prefix]
+  )
+    prefix++;
+  let suffix = 0;
+  while (
+    suffix < span.message.length - prefix &&
+    suffix < message.length - prefix &&
+    span.message[span.message.length - suffix - 1] === message[message.length - suffix - 1]
+  )
+    suffix++;
+  const oldEnd = span.message.length - suffix;
+  const delta = message.length - span.message.length;
+  return {
+    ...span,
+    message,
+    start: span.start <= prefix ? span.start : span.start >= oldEnd ? span.start + delta : prefix,
+    end:
+      span.end < prefix
+        ? span.end
+        : span.end >= oldEnd
+          ? span.end + delta
+          : message.length - suffix,
+  };
+}
+
+export function updateArtifactContextDraft(
+  message: string,
+  payload: ArtifactContextPayload,
+  previousDraft: string | null,
+): ArtifactDraftSpan {
+  const addition = artifactContextDraft(payload);
+  const previous = readArtifactDraftSpan(previousDraft);
+  const span = previous ? moveArtifactDraftSpan(previous, message) : null;
+  const prefix = span
+    ? message.slice(0, span.start)
+    : message.trimEnd()
+      ? `${message.trimEnd()}\n\n`
+      : "";
+  const suffix = span ? message.slice(span.end) : "";
+  return {
+    signature: JSON.stringify(payload),
+    message: prefix + addition + suffix,
+    start: prefix.length,
+    end: prefix.length + addition.length,
+  };
+}
+
 export function NodeChat({
   project,
   node,
@@ -476,6 +556,7 @@ export function NodeChat({
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
+  const appliedArtifactContextKey = `${artifactContextKey}:applied`;
   const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
@@ -486,7 +567,22 @@ export function NodeChat({
     () => latestPersistedComputeIds(historyMessages, relatedTasks, computeConnections),
     [computeConnections, historyMessages, relatedTasks],
   );
-  const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
+  const [message, setMessageState] = useState(() => readStorage(draftKey) ?? "");
+  const setMessage = useCallback(
+    (value: string | ((current: string) => string)) => {
+      setMessageState((current) => {
+        const next = typeof value === "function" ? value(current) : value;
+        const span = readArtifactDraftSpan(readStorage(appliedArtifactContextKey));
+        if (span)
+          writeStorage(
+            appliedArtifactContextKey,
+            JSON.stringify(moveArtifactDraftSpan(span, next)),
+          );
+        return next;
+      });
+    },
+    [appliedArtifactContextKey],
+  );
   const [artifactContext, setArtifactContext] = useState<ArtifactContextRequest | null>(null);
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
@@ -621,7 +717,7 @@ export function NodeChat({
   }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
 
   useEffect(() => {
-    const accept = (raw: unknown) => {
+    const accept = (raw: unknown, restoring = false) => {
       const payload = parseArtifactContextPayload(raw);
       if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
       const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
@@ -643,19 +739,24 @@ export function NodeChat({
           : {}),
         selections: payload.selections,
       });
-      const addition = artifactContextDraft(payload);
-      setMessage((current) => {
-        const next = current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
-        writeStorage(draftKey, next);
-        return next;
-      });
-      removeStorage(artifactContextKey);
+      // The preview can bring a different window or chat surface forward. Keep
+      // the attachment with its draft without appending its text again on mount.
       window.requestAnimationFrame(() => textareaRef.current?.focus());
+      setMessageState((current) => {
+        const previousDraft = readStorage(appliedArtifactContextKey);
+        const previous = readArtifactDraftSpan(previousDraft);
+        if (restoring && previous?.signature === signature && previous.message === current)
+          return current;
+        const next = updateArtifactContextDraft(current, payload, previousDraft);
+        writeStorage(draftKey, next.message);
+        writeStorage(appliedArtifactContextKey, JSON.stringify(next));
+        return next.message;
+      });
     };
     const stored = readStorage(artifactContextKey);
     if (stored) {
       try {
-        accept(JSON.parse(stored));
+        accept(JSON.parse(stored), true);
       } catch {
         removeStorage(artifactContextKey);
       }
@@ -680,7 +781,7 @@ export function NodeChat({
       window.removeEventListener("storage", storage);
       channel?.close();
     };
-  }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
+  }, [artifactContextKey, appliedArtifactContextKey, chatId, draftKey, project.id, relatedTasks]);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
@@ -1278,7 +1379,12 @@ export function NodeChat({
       // reset so they cannot attach themselves to the next ordinary turn.
       setMessage((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      setArtifactContext((current) => (current === draftArtifactContext ? null : current));
+      setArtifactContext((current) => {
+        if (current !== draftArtifactContext) return current;
+        removeStorage(artifactContextKey);
+        removeStorage(appliedArtifactContextKey);
+        return null;
+      });
       setAnnotationsOpen(false);
       skills.reset();
       lastArtifactContextRef.current = null;
@@ -1329,7 +1435,7 @@ export function NodeChat({
       mode,
       attachments: readyAttachments,
     });
-    setMessage("");
+    setMessageState("");
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -1355,6 +1461,8 @@ export function NodeChat({
       skills.reset();
       setAttachments([]);
       setArtifactContext(null);
+      removeStorage(artifactContextKey);
+      removeStorage(appliedArtifactContextKey);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
@@ -2042,6 +2150,7 @@ export function NodeChat({
                 aria-label="Remove artifact selections"
                 onClick={() => {
                   setArtifactContext(null);
+                  removeStorage(artifactContextKey);
                   lastArtifactContextRef.current = null;
                 }}
               >

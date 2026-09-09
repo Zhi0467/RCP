@@ -43,6 +43,7 @@ import {
 } from "react";
 import { isActiveTask } from "./agentTasks";
 import { loadChatTranscript } from "./chatApi";
+import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
   chatEntryConversationId,
@@ -773,6 +774,18 @@ export default function App() {
     };
   });
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [requestedChat, setRequestedChat] = useState(() => ({
+    hash: window.location.hash,
+    projectId: initialRoute.project.projectId,
+    chatId: initialRoute.project.chatId,
+    graphTarget: initialRoute.graphTarget,
+  }));
+  const pendingArtifactChatNavigation = useRef<{
+    hash: string;
+    expiresAt: number;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null>(null);
   const activeGraphTargetRef = useRef(graphTarget);
   activeGraphTargetRef.current = graphTarget;
   const {
@@ -1112,6 +1125,7 @@ export default function App() {
     chatSummariesLoading,
     visibleChatSummaries,
     selectChat,
+    selectCanonicalChat,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
@@ -1857,9 +1871,20 @@ export default function App() {
 
   useEffect(() => {
     const handleHashChange = () => {
+      const pending = pendingArtifactChatNavigation.current;
+      if (pending && pending.hash !== window.location.hash) {
+        pending.reject(new Error("Chat navigation was cancelled."));
+        pendingArtifactChatNavigation.current = null;
+      }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
+      setRequestedChat({
+        hash: window.location.hash,
+        projectId: route.projectId,
+        chatId: route.chatId,
+        graphTarget: nextTarget,
+      });
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
@@ -2409,6 +2434,78 @@ export default function App() {
     clearNodeSelections();
     changeView("chats");
   };
+
+  useEffect(() => {
+    if (!desktop || !backendSessionReady) return;
+    const stopListening = listenForArtifactChatNavigation(async (hash, expiresAt) => {
+      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
+      await new Promise<void>((resolve, reject) => {
+        pendingArtifactChatNavigation.current?.reject(new Error("Chat navigation was replaced."));
+        pendingArtifactChatNavigation.current = { hash, expiresAt, resolve, reject };
+        if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+        else window.location.hash = hash;
+      });
+      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
+      await desktopShowReady();
+    });
+    return () => {
+      stopListening();
+      pendingArtifactChatNavigation.current?.reject(new Error("RCP disconnected."));
+      pendingArtifactChatNavigation.current = null;
+    };
+  }, [desktop, backendSessionReady]);
+
+  useEffect(() => {
+    if (
+      !requestedChat.chatId ||
+      loading ||
+      view !== "chats" ||
+      !backendSessionReady ||
+      project?.id !== requestedChat.projectId ||
+      !sameGraphTarget(graphTarget, requestedChat.graphTarget)
+    )
+      return;
+    let cancelled = false;
+    const pending = pendingArtifactChatNavigation.current;
+    const navigation = pending?.hash === requestedChat.hash ? pending : null;
+    void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
+      .then((transcript) => {
+        if (cancelled) return;
+        if (navigation && Date.now() >= navigation.expiresAt)
+          throw new Error("Chat navigation timed out.");
+        selectCanonicalChat(transcript);
+        clearNodeSelections();
+        navigation?.resolve();
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = `Conversation could not be opened: ${String(error)}`;
+        reportErrorNotice(message);
+        navigation?.reject(new Error(message));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (pendingArtifactChatNavigation.current === navigation)
+          pendingArtifactChatNavigation.current = null;
+        setRequestedChat((current) =>
+          current === requestedChat ? { ...current, chatId: undefined } : current,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    requestedChat,
+    loading,
+    view,
+    backendSessionReady,
+    project?.id,
+    graphTarget,
+    apiBase,
+    selectCanonicalChat,
+    clearNodeSelections,
+    reportErrorNotice,
+  ]);
 
   useEffect(() => {
     if (mutationsDisabled) {
