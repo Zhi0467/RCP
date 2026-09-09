@@ -271,6 +271,7 @@ export function TeamSessionList({
       {sessions.map((session) => (
         <li key={session.session_id}>
           <div>
+            <strong>{session.label}</strong>
             {session.is_current && <strong>Current device</strong>}
             <time dateTime={session.created_at}>
               Connected {formatInvitationTime(session.created_at)}

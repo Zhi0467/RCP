@@ -1969,6 +1969,9 @@ class AppStoreBase:
     @classmethod
     def _migrate_team_session_ids(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(connection, "team_sessions", "session_id", "TEXT")
+        cls._ensure_column(
+            connection, "team_sessions", "label", "TEXT NOT NULL DEFAULT 'Unnamed device'"
+        )
         rows = connection.execute(
             "SELECT session_hash FROM team_sessions WHERE session_id IS NULL"
         ).fetchall()

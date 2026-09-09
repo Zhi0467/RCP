@@ -201,8 +201,15 @@ sessions with connection and last-seen times. **Current device** has no Revoke
 control; ending it remains Logout. The panel refreshes on opening and after a
 successful revoke, and offers an explicit Refresh action.
 
+`POST /api/team/session/exchange` accepts an optional human-authored `label`
+string of at most 80 characters. Omission stores `Unnamed device`; migration 14
+also assigns that literal to existing sessions. The label is stored and rendered
+as untrusted display text, without normalization or inference from request
+fingerprints. Supplying a label remains optional for every supported native
+protocol version. There is no rename route or label-entry screen in this change.
+
 `GET /api/team/sessions` returns only the acting member's unexpired sessions.
-Each entry exports `session_id`, `created_at`, `last_seen_at`, `expires_at`,
+Each entry exports `session_id`, `label`, `created_at`, `last_seen_at`, `expires_at`,
 `is_current`, and `can_revoke`. The backend computes both decisions and reports
 the current authenticated session as not revocable. Public identifiers are
 independent random UUIDs, never session tokens, hashes, or derivatives of either.

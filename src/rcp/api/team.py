@@ -12,6 +12,7 @@ from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, normalize_display_name
 from rcp.limits import (
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
 from rcp.storage.models import TeamInvitationRecord
@@ -49,12 +50,14 @@ class TeamSessionExchangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
+    label: str = Field(default="Unnamed device", max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
 
 
 class TeamSessionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     session_id: str
+    label: str
     created_at: str
     last_seen_at: str
     expires_at: str
@@ -193,7 +196,7 @@ def exchange_team_session(
 ) -> dict[str, object]:
     acknowledge_team_shell_protocol(request, response, required_on_installed_server=True)
     identity_access.require_team_space()
-    session, member = store.create_team_session(body.token)
+    session, member = store.create_team_session(body.token, label=body.label)
     identity_access.set_team_session_cookie(response, session)
     return identity_access.identity_payload(member)
 

@@ -638,6 +638,7 @@ export interface TeamInvitationIssue {
 
 export interface TeamSession {
   session_id: string;
+  label: string;
   created_at: string;
   last_seen_at: string;
   expires_at: string;

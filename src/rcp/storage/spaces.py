@@ -14,6 +14,7 @@ from rcp.limits import (
     TEAM_INVITATION_TTL_DAYS,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_SESSION_IDLE_DAYS,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
     TEAM_SESSION_TOKEN_MAX_LENGTH,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
@@ -700,7 +701,11 @@ class SpaceStoreMixin:
                 ).fetchone()
         return TeamInvitationRecord.model_validate(dict(row))
 
-    def create_team_session(self, token: str) -> tuple[str, SpaceUserRecord]:
+    def create_team_session(
+        self, token: str, *, label: str = "Unnamed device"
+    ) -> tuple[str, SpaceUserRecord]:
+        if not isinstance(label, str) or len(label) > TEAM_SESSION_LABEL_MAX_LENGTH:
+            raise ValueError("The device label exceeds its length limit or is not text.")
         if (
             not isinstance(token, str)
             or len(token) > TEAM_MEMBER_TOKEN_MAX_LENGTH
@@ -732,10 +737,10 @@ class SpaceStoreMixin:
                 connection.execute(
                     """
                     INSERT INTO team_sessions (
-                        session_hash, session_id, user_id, created_at, last_seen_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        session_hash, session_id, label, user_id, created_at, last_seen_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_hash, str(uuid.uuid4()), member.user_id, now, now, expires_at),
+                    (session_hash, str(uuid.uuid4()), label, member.user_id, now, now, expires_at),
                 )
         if member is None:
             raise TeamAuthenticationError(
@@ -826,7 +831,7 @@ class SpaceStoreMixin:
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT session_id, created_at, last_seen_at, expires_at,
+                SELECT session_id, label, created_at, last_seen_at, expires_at,
                        session_hash IS ? AS is_current
                 FROM team_sessions WHERE user_id = ? AND expires_at > ?
                 ORDER BY created_at DESC, session_id

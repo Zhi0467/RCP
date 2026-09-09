@@ -249,6 +249,7 @@ test("the team identity panel exposes Devices beside invitations", () => {
 test("devices render backend current and revoke decisions and dispatch the public ID", () => {
   const session = {
     session_id: "current-public-id",
+    label: 'My <img src="x" onerror="alert(1)"> phone',
     created_at: "2026-09-09T10:00:00Z",
     last_seen_at: "2026-09-09T11:00:00Z",
     expires_at: "2026-09-23T11:00:00Z",
@@ -269,6 +270,8 @@ test("devices render backend current and revoke decisions and dispatch the publi
   };
   const html = renderToStaticMarkup(React.createElement(TeamSessionList, props));
   assert.match(html, /Current device/);
+  assert.match(html, /My &lt;img/);
+  assert.doesNotMatch(html, /<img/);
   assert.match(html, /Last seen/);
   assert.equal((html.match(/<button/g) ?? []).length, 1);
   const tree = TeamSessionList(props);

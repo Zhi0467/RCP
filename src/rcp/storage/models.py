@@ -40,6 +40,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
     WATCHER_ERROR_BACKOFF_SECONDS,
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
@@ -178,6 +179,7 @@ class TeamSessionRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     session_id: str
+    label: str = Field(max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
     created_at: str
     last_seen_at: str
     expires_at: str

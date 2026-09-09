@@ -15,7 +15,11 @@ from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_SESSION_IDLE_DAYS
+from rcp.limits import (
+    TEAM_CODE_FAILED_ATTEMPT_LIMIT,
+    TEAM_SESSION_IDLE_DAYS,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
+)
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import (
     AgentTaskRecord,
@@ -55,10 +59,12 @@ def test_session_ids_migrate_independently_and_preserve_sessions(tmp_path) -> No
         ).fetchall()
         connection.execute("DROP INDEX team_sessions_public_id")
         connection.execute("ALTER TABLE team_sessions DROP COLUMN session_id")
+        connection.execute("ALTER TABLE team_sessions DROP COLUMN label")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 14")
 
     migrated = AppStore(store.path)
     sessions = migrated.team_sessions(member.user_id)
+    assert all(session.label == "Unnamed device" for session in sessions)
     identifiers = {session.session_id for session in sessions}
     assert len(identifiers) == 3
     assert all(uuid.UUID(identifier).version == 4 for identifier in identifiers)
@@ -97,7 +103,15 @@ def test_members_list_and_revoke_only_their_own_device_sessions(tmp_path) -> Non
     assert len({item["session_id"] for item in sessions}) == 3
     assert all(
         set(item)
-        == {"session_id", "created_at", "last_seen_at", "expires_at", "is_current", "can_revoke"}
+        == {
+            "session_id",
+            "label",
+            "created_at",
+            "last_seen_at",
+            "expires_at",
+            "is_current",
+            "can_revoke",
+        }
         for item in sessions
     )
     for client in clients:
@@ -151,6 +165,42 @@ def test_session_listing_omits_expired_rows_without_refreshing_idle_expiry(tmp_p
     assert len(before) == 1
     assert before[0].is_current is True
     assert store.team_sessions(member.user_id, authenticating_session=live_secret) == before
+
+
+@pytest.mark.parametrize(
+    "label", [" My <script>alert(1)</script> phone ", "", "x" * TEAM_SESSION_LABEL_MAX_LENGTH]
+)
+def test_session_exchange_preserves_the_supplied_label(tmp_path, label) -> None:
+    store, _, member, token = _claimed_team(tmp_path)
+    client = TestClient(create_app(data_dir=tmp_path), base_url="https://testserver")
+    response = client.post(
+        "/api/team/session/exchange",
+        json={"token": token, "label": label},
+        headers={"User-Agent": "Never use this as a device label"},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/team/sessions").json()[0]["label"] == label
+    assert AppStore(store.path).team_sessions(member.user_id)[0].label == label
+
+
+def test_session_exchange_defaults_an_omitted_label_and_rejects_excess_length(tmp_path) -> None:
+    store, _, member, token = _claimed_team(tmp_path)
+    client = TestClient(create_app(data_dir=tmp_path), base_url="https://testserver")
+    rejected = client.post(
+        "/api/team/session/exchange",
+        json={"token": token, "label": "x" * (TEAM_SESSION_LABEL_MAX_LENGTH + 1)},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"][0]["loc"] == ["body", "label"]
+    assert store.team_sessions(member.user_id) == []
+    exchanged = client.post(
+        "/api/team/session/exchange",
+        json={"token": token},
+        headers={"User-Agent": "A fingerprint must not name this session"},
+    )
+    assert exchanged.status_code == 200
+    assert client.get("/api/team/sessions").json()[0]["label"] == "Unnamed device"
+    assert store.team_sessions(member.user_id)[0].label == "Unnamed device"
 
 
 def test_bootstrap_is_not_issued_before_late_schema_work_succeeds(tmp_path, monkeypatch) -> None:
