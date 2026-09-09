@@ -10,9 +10,8 @@ verified against a real phone yet, because no pairing flow exists.
 
 Close this handoff when a member can see their own connected devices in the
 identity panel, revoke any one of them without disturbing the others, and reach
-that panel from a phone. The last of those depends on the transport work, which
-is deliberately excluded here — this handoff stays open until it is resolved
-elsewhere or the closure condition is narrowed by a human.
+that panel from a phone. The last of those depends on the transport, which is
+now chosen but not yet stood up; see "Transport".
 
 ## Why this exists
 
@@ -20,9 +19,8 @@ A member wants to reach RCP from a phone. The team space already carries
 everything the phone needs except two things: the member cannot see what is
 connected, and the narrow-width layout has two defects.
 
-Remote access itself is not part of this handoff. The transport question (SSH
-tunnel, tailnet, or public TLS) is separate and unsettled; see "Deliberately out
-of scope".
+Building the transport is not part of this handoff, but the human chose it on
+2026-09-09; see "Transport".
 
 ## Settled decisions
 
@@ -192,13 +190,47 @@ All three questions this handoff opened with are settled.
    touch guideline does not; it changes every screen including desktop and needs
    its own decision.
 
+## Transport
+
+The human chose a tailnet on 2026-09-09. The team server joins Tailscale and
+`tailscale serve` terminates HTTPS in front of the existing loopback listener:
+
+```bash
+sudo tailscale up
+sudo tailscale serve --bg 8421
+```
+
+HTTPS certificates must be enabled for the tailnet. Each member installs the
+Tailscale app and joins.
+
+This needs no RCP code change. The listener stays on `127.0.0.1`, so invariant 8
+and the loopback-only rule in `docs/server.md` both remain true, and the
+perimeter stays a private network — a tailnet instead of SSH — rather than a
+public port. Member session authentication still applies on top, so reaching the
+tailnet is not authority.
+
+A public TLS front was rejected. It is easier for the member, who installs
+nothing, but it needs a public DNS record and inbound 80/443, and it makes
+`/api/team/enroll` and `/api/team/session/exchange` the entire perimeter. That is
+a threat-model change requiring its own decision record.
+
+**The proxy must preserve `Host` and set `X-Forwarded-Proto: https`.** The team
+mutation-origin check compares the browser `Origin` against
+`f"{request.url.scheme}://{host}"`, and its only exception matches the desktop's
+`rcp-<id>.rcp.localhost` terminator. Uvicorn ships `proxy_headers=True` with
+`forwarded_allow_ips` defaulting to `127.0.0.1`, so a localhost terminator that
+sets the header yields scheme `https` and the check passes; this was confirmed
+against uvicorn 0.51.0 by asserting the exact expression from
+`src/rcp/api/app.py`. A proxy that drops either header returns 403 on every
+mutation while reads keep working, which is a confusing failure to debug. Verify
+both headers before adopting any other terminator.
+
+Nothing here has been stood up yet. Do not document these steps in
+`docs/server.md` as operator procedure until someone has run them against a real
+team server; that guide describes procedures that work.
+
 ## Deliberately out of scope
 
-- **Transport.** How a phone reaches the server is unsettled. The team listener
-  is loopback-only and `docs/server.md` states that opening 8421 publicly is not
-  supported. A tailnet keeps that property; a public TLS front changes the threat
-  model and needs its own decision record. Nothing here depends on which is
-  chosen.
 - **Personal spaces.** A personal space has no authentication at all
   (`IdentityAccess.acting_user` returns the local owner directly), so it has no
   sessions to list. This feature is team-space only.
