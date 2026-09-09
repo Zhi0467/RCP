@@ -215,9 +215,11 @@ the current authenticated session as not revocable. Public identifiers are
 independent random UUIDs, never session tokens, hashes, or derivatives of either.
 Listing does not refresh other sessions' idle expiry.
 The source-built desktop's native operations reuse the session its window holds
-instead of exchanging a new one per request, so an ordinary desktop is one device.
-The shell verifies that session before each native request and exchanges again
-only when the server answers 401.
+instead of exchanging a new one per request; the shell verifies that session
+before each native request and exchanges again only when the server answers 401.
+Each app launch or explicit Reconnect still exchanges a new session without
+retiring the previous one, so a desktop's earlier launches remain listed until
+they expire.
 
 `POST /api/team/sessions/{session_id}/revoke` deletes that member's named session
 and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all

@@ -5,8 +5,10 @@ Status: implemented on `feat/team-device-sessions` except the pairing screen.
 Sessions carry an independent public UUID through storage migration 14, the
 member-scoped list and revoke routes exist, the identity panel has a Devices
 section, exchange stores a human-typed label, and both narrow-screen fixes
-below are in, and the source-built desktop's native requests reuse one session
-instead of exchanging a new one per request. All three open questions are
+below are in, and within one launch the source-built desktop's native requests
+reuse the window's session instead of exchanging a new one per request. Sessions
+replaced at launch or Reconnect are not yet retired; see "Open". All three open
+questions are
 settled; see "Settled decisions".
 The transport is chosen but not stood up; see "Transport". Nothing has been
 verified against a real phone yet, because no pairing flow exists.
@@ -231,6 +233,17 @@ both headers before adopting any other terminator.
 Nothing here has been stood up yet. Do not document these steps in
 `docs/server.md` as operator procedure until someone has run them against a real
 team server; that guide describes procedures that work.
+
+## Open: sessions replaced at connect are not retired
+
+The desktop exchanges a new session each time it establishes a saved connection,
+on every app launch and every explicit Reconnect, and never retires the one it
+replaces. Within one launch its native requests now reuse the window's session,
+so one launch is one row; across launches the rows accumulate until their
+fourteen-day idle expiry, each reading `Unnamed device`. Fix this with the
+pairing screen: either reuse the WebView's persisted session across launches or
+retire the replaced session at Reconnect and at Quit. A native logout is one
+request; the mutation-origin check passes when no `Origin` header is sent.
 
 ## Deliberately out of scope
 
