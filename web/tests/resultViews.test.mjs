@@ -10,9 +10,8 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { artifactContextDraft, parseArtifactContextPayload } = await server.ssrLoadModule(
-  "/src/components/NodeChat.tsx",
-);
+const { artifactContextDraft, parseArtifactContextPayload, updateArtifactContextDraft } =
+  await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
@@ -95,6 +94,26 @@ test("artifact selection comments assemble into a visible annotation-style draft
   assert.match(draft, /Compare this with seed one\./);
   assert.match(draft, /:rcp-artifact-selection\{index="1"\}/);
   assert.match(draft, /:rcp-artifact-selection\{index="2"\}/);
+});
+
+test("re-adding edited selections replaces their generated draft and preserves user text", () => {
+  const before = "My introduction.\n\n";
+  const after = "\n\nKeep this question too.";
+  const initial = artifactContextDraft(payload);
+  const revised = {
+    ...payload,
+    selections: [{ ...payload.selections[0], comment: "Use $& literally in the explanation." }],
+  };
+  const expected = `${before}${artifactContextDraft(revised)}${after}`;
+  assert.equal(
+    updateArtifactContextDraft(`${before}${initial}${after}`, revised, JSON.stringify(payload)),
+    expected,
+  );
+  assert.equal(updateArtifactContextDraft(expected, revised, JSON.stringify(revised)), expected);
+  assert.equal(
+    updateArtifactContextDraft("User text", revised, null),
+    `User text\n\n${artifactContextDraft(revised)}`,
+  );
 });
 
 test("the unified artifact handoff does not switch mode or dispatch automatically", () => {

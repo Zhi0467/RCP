@@ -371,6 +371,24 @@ export function artifactContextDraft(payload: ArtifactContextPayload): string {
     .join("\n\n");
 }
 
+export function updateArtifactContextDraft(
+  message: string,
+  payload: ArtifactContextPayload,
+  previousSignature: string | null,
+): string {
+  const addition = artifactContextDraft(payload);
+  if (previousSignature) {
+    try {
+      const previous = parseArtifactContextPayload(JSON.parse(previousSignature));
+      if (previous && message.includes(artifactContextDraft(previous)))
+        return message.replace(artifactContextDraft(previous), () => addition);
+    } catch {
+      // Unreadable draft metadata must not erase the user's message.
+    }
+  }
+  return message.trimEnd() ? `${message.trimEnd()}\n\n${addition}` : addition;
+}
+
 export function NodeChat({
   project,
   node,
@@ -647,10 +665,10 @@ export function NodeChat({
       // The preview can bring a different window or chat surface forward. Keep
       // the attachment with its draft without appending its text again on mount.
       window.requestAnimationFrame(() => textareaRef.current?.focus());
-      if (readStorage(appliedArtifactContextKey) === signature) return;
-      const addition = artifactContextDraft(payload);
+      const previousSignature = readStorage(appliedArtifactContextKey);
+      if (previousSignature === signature) return;
       setMessage((current) => {
-        const next = current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
+        const next = updateArtifactContextDraft(current, payload, previousSignature);
         writeStorage(draftKey, next);
         writeStorage(appliedArtifactContextKey, signature);
         return next;
