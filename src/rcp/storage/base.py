@@ -47,6 +47,7 @@ class AppStoreBase:
         (11, "child_work_watchers_v1"),
         (12, "compute_job_labels_v1"),
         (13, "episode_archives_v1"),
+        (14, "team_session_ids_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -508,6 +509,12 @@ class AppStoreBase:
             version=13,
             name="episode_archives_v1",
             migration=self._migrate_episode_archives,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=14,
+            name="team_session_ids_v1",
+            migration=self._migrate_team_session_ids,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1939,6 +1946,7 @@ class AppStoreBase:
         self._migrate_child_work_watchers(connection)
         self._migrate_compute_job_labels(connection)
         self._migrate_episode_archives(connection)
+        self._migrate_team_session_ids(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1957,6 +1965,21 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_team_session_ids(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "team_sessions", "session_id", "TEXT")
+        rows = connection.execute(
+            "SELECT session_hash FROM team_sessions WHERE session_id IS NULL"
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE team_sessions SET session_id = ? WHERE session_hash = ?",
+                (str(uuid.uuid4()), row[0]),
+            )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS team_sessions_public_id ON team_sessions(session_id)"
+        )
 
     @staticmethod
     def _migrate_episode_archives(connection: sqlite3.Connection) -> None:

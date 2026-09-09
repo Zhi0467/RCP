@@ -196,6 +196,25 @@ an account. The panel shows editable display name and exact read-only copyable
 user id. A team member uses the server login/session boundary and can manage
 their own credential. Pending project invitations appear on the index.
 
+The team identity panel includes **Devices**, listing the member's unexpired
+sessions with connection and last-seen times. **Current device** has no Revoke
+control; ending it remains Logout. The panel refreshes on opening and after a
+successful revoke, and offers an explicit Refresh action.
+
+`GET /api/team/sessions` returns only the acting member's unexpired sessions.
+Each entry exports `session_id`, `created_at`, `last_seen_at`, `expires_at`,
+`is_current`, and `can_revoke`. The backend computes both decisions and reports
+the current authenticated session as not revocable. Public identifiers are
+independent random UUIDs, never session tokens, hashes, or derivatives of either.
+Listing does not refresh other sessions' idle expiry.
+
+`POST /api/team/sessions/{session_id}/revoke` deletes that member's named session
+and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all
+return the same 404; the current session returns 409 directing the member to
+Logout. Other sessions and the member credential remain usable. Both routes
+inherit team authentication and mutation-origin enforcement, and return 404 in
+a personal space, whose identity panel has no Devices section.
+
 Projects hidden by membership never appear as locked cards. Losing access
 closes its open tab and returns to the index.
 

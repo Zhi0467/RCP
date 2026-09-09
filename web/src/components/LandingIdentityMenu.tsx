@@ -13,7 +13,9 @@ import {
   createTeamInvitation,
   loadSpaceUsers,
   loadTeamInvitations,
+  loadTeamSessions,
   revokeTeamInvitation,
+  revokeTeamSession,
 } from "../api";
 import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
 import type {
@@ -21,6 +23,7 @@ import type {
   SpaceUserSummary,
   TeamInvitation,
   TeamInvitationIssue,
+  TeamSession,
 } from "../types";
 
 interface Props {
@@ -132,7 +135,10 @@ export function IdentityProvenanceSlip({
       </div>
 
       {identity.space_kind === "team" ? (
-        <TeamInvitationPanel identity={identity} active={teamPanelActive} />
+        <>
+          <TeamInvitationPanel identity={identity} active={teamPanelActive} />
+          <TeamDevicesPanel key={identity.user.user_id} active={teamPanelActive} />
+        </>
       ) : (
         <PersonalTeamSeam
           noticeId={teamNoticeId}
@@ -184,6 +190,108 @@ export function PersonalTeamSeam({
         )}
       </div>
     </section>
+  );
+}
+
+export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
+  const [sessions, setSessions] = useState<TeamSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!active) return;
+    let stopped = false;
+    setLoading(true);
+    setError(null);
+    void loadTeamSessions()
+      .then((next) => {
+        if (!stopped) setSessions(next);
+      })
+      .catch(() => {
+        if (!stopped) setError("Devices could not be refreshed. Try again.");
+      })
+      .finally(() => {
+        if (!stopped) setLoading(false);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [active, refreshVersion]);
+
+  const revoke = async (sessionId: string) => {
+    setRevoking(sessionId);
+    setError(null);
+    try {
+      await revokeTeamSession(sessionId);
+      setRefreshVersion((current) => current + 1);
+    } catch {
+      setError("That device could not be revoked. Refresh devices and try again.");
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  return (
+    <section className="landing-team-devices" aria-labelledby={titleId} aria-busy={loading}>
+      <header>
+        <span id={titleId}>Devices</span>
+        <button
+          type="button"
+          disabled={loading || revoking !== null}
+          onClick={() => setRefreshVersion((current) => current + 1)}
+        >
+          <RefreshCw size={10} aria-hidden="true" />
+          Refresh
+        </button>
+      </header>
+      {error && <p role="alert">{error}</p>}
+      {loading ? (
+        <p role="status">Loading devices…</p>
+      ) : (
+        <TeamSessionList sessions={sessions} revoking={revoking} onRevoke={revoke} />
+      )}
+    </section>
+  );
+}
+
+export function TeamSessionList({
+  sessions,
+  revoking,
+  onRevoke,
+}: {
+  sessions: TeamSession[];
+  revoking: string | null;
+  onRevoke: (sessionId: string) => void | Promise<void>;
+}) {
+  return (
+    <ul>
+      {sessions.map((session) => (
+        <li key={session.session_id}>
+          <div>
+            {session.is_current && <strong>Current device</strong>}
+            <time dateTime={session.created_at}>
+              Connected {formatInvitationTime(session.created_at)}
+            </time>
+            <time dateTime={session.last_seen_at}>
+              Last seen {formatInvitationTime(session.last_seen_at)}
+            </time>
+          </div>
+          {session.can_revoke && (
+            <button
+              type="button"
+              disabled={revoking !== null}
+              onClick={() => void onRevoke(session.session_id)}
+              aria-label={`Revoke device connected ${formatInvitationTime(session.created_at)}`}
+            >
+              {revoking === session.session_id ? "Revoking…" : "Revoke"}
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 

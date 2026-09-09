@@ -45,6 +45,114 @@ def _sqlite_bytes(path) -> bytes:
     return payload
 
 
+def test_session_ids_migrate_independently_and_preserve_sessions(tmp_path) -> None:
+    store, _, member, token = _claimed_team(tmp_path)
+    secrets = [store.create_team_session(token)[0] for _ in range(3)]
+    with store.connection() as connection:
+        before = connection.execute(
+            "SELECT session_hash, user_id, created_at, last_seen_at, expires_at "
+            "FROM team_sessions ORDER BY session_hash"
+        ).fetchall()
+        connection.execute("DROP INDEX team_sessions_public_id")
+        connection.execute("ALTER TABLE team_sessions DROP COLUMN session_id")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 14")
+
+    migrated = AppStore(store.path)
+    sessions = migrated.team_sessions(member.user_id)
+    identifiers = {session.session_id for session in sessions}
+    assert len(identifiers) == 3
+    assert all(uuid.UUID(identifier).version == 4 for identifier in identifiers)
+    assert identifiers.isdisjoint(hashlib.sha256(secret.encode()).hexdigest() for secret in secrets)
+    with migrated.connection() as connection:
+        after = connection.execute(
+            "SELECT session_hash, user_id, created_at, last_seen_at, expires_at "
+            "FROM team_sessions ORDER BY session_hash"
+        ).fetchall()
+        assert [tuple(row) for row in before] == [tuple(row) for row in after]
+        assert (
+            connection.execute(
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 14"
+            ).fetchone()[0]
+            == "team_session_ids_v1"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE team_sessions SET session_id = ?", (sessions[0].session_id,))
+    reopened = AppStore(store.path)
+    assert {session.session_id for session in reopened.team_sessions(member.user_id)} == identifiers
+    assert all(reopened.resolve_team_session(secret) == member for secret in secrets)
+
+
+def test_members_list_and_revoke_only_their_own_device_sessions(tmp_path) -> None:
+    store, _, alice, alice_token = _claimed_team(tmp_path)
+    _, _, bob, bob_token = _enroll_invited_member(store, alice.user_id, "Alice")
+    app = create_app(data_dir=tmp_path)
+    clients = [TestClient(app, base_url="https://testserver") for _ in range(4)]
+    for client, token in zip(clients, [alice_token] * 3 + [bob_token], strict=True):
+        assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
+    desktop, phone, other, bob_client = clients
+    response = desktop.get("/api/team/sessions")
+    assert response.status_code == 200
+    sessions = response.json()
+    assert len(sessions) == 3
+    assert len({item["session_id"] for item in sessions}) == 3
+    assert all(
+        set(item)
+        == {"session_id", "created_at", "last_seen_at", "expires_at", "is_current", "can_revoke"}
+        for item in sessions
+    )
+    for client in clients:
+        secret = client.cookies.get("__Host-rcp_session")
+        assert secret not in response.text
+        assert hashlib.sha256(secret.encode()).hexdigest() not in response.text
+    assert alice_token not in response.text
+    current = next(item for item in sessions if item["is_current"])
+    assert current["can_revoke"] is False
+    assert all(item["can_revoke"] for item in sessions if not item["is_current"])
+    refused_current = desktop.post(f"/api/team/sessions/{current['session_id']}/revoke", json={})
+    assert refused_current.status_code == 409
+    assert desktop.get("/api/identity").status_code == 200
+
+    bob_sessions = bob_client.get("/api/team/sessions").json()
+    assert len(bob_sessions) == 1
+    assert {item["session_id"] for item in sessions}.isdisjoint(
+        item["session_id"] for item in bob_sessions
+    )
+    foreign = desktop.post(f"/api/team/sessions/{bob_sessions[0]['session_id']}/revoke", json={})
+    unknown = desktop.post(f"/api/team/sessions/{uuid.uuid4()}/revoke", json={})
+    assert foreign.status_code == unknown.status_code == 404
+    assert foreign.json() == unknown.json()
+    phone_id = next(
+        item["session_id"] for item in phone.get("/api/team/sessions").json() if item["is_current"]
+    )
+    revoked = desktop.post(f"/api/team/sessions/{phone_id}/revoke", json={})
+    assert revoked.status_code == 200
+    assert revoked.json() == {"ok": True}
+    assert phone.get("/api/identity").status_code == 401
+    assert desktop.get("/api/identity").status_code == 200
+    assert other.get("/api/identity").status_code == 200
+    assert bob_client.get("/api/identity").json()["user"]["user_id"] == bob.user_id
+    assert len(desktop.get("/api/team/sessions").json()) == 2
+    assert phone.post("/api/team/session/exchange", json={"token": alice_token}).status_code == 200
+
+
+def test_session_listing_omits_expired_rows_without_refreshing_idle_expiry(tmp_path) -> None:
+    store, _, member, token = _claimed_team(tmp_path)
+    live_secret, _ = store.create_team_session(token)
+    expired_secret, _ = store.create_team_session(token)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE team_sessions SET expires_at = ? WHERE session_hash = ?",
+            (
+                (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                hashlib.sha256(expired_secret.encode()).hexdigest(),
+            ),
+        )
+    before = store.team_sessions(member.user_id, authenticating_session=live_secret)
+    assert len(before) == 1
+    assert before[0].is_current is True
+    assert store.team_sessions(member.user_id, authenticating_session=live_secret) == before
+
+
 def test_bootstrap_is_not_issued_before_late_schema_work_succeeds(tmp_path, monkeypatch) -> None:
     def fail_late_schema_work(*_args, **_kwargs) -> None:
         raise sqlite3.OperationalError("injected late schema failure")
@@ -544,7 +652,13 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
         assert response.status_code == 413
         assert response.json()["detail"]["code"] == "team_auth_request_too_large"
 
-    for path in ("/api", "/api/identity", "/api/projects", "/api/team/invitations"):
+    for path in (
+        "/api",
+        "/api/identity",
+        "/api/projects",
+        "/api/team/invitations",
+        "/api/team/sessions",
+    ):
         response = client.get(path)
         assert response.status_code == 401, (path, response.text)
         assert response.json()["detail"]["code"] == "team_identity_required"
@@ -561,6 +675,7 @@ def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_pat
     assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
 
     mutation_paths = (
+        f"/api/team/sessions/{uuid.uuid4()}/revoke",
         "/api/team/session/logout",
         "/api/team/invitations",
         "/api/team/credential/rotate",
@@ -970,6 +1085,8 @@ def test_personal_space_keeps_its_local_owner_without_team_authentication(tmp_pa
     for path, body in (
         ("/api/team/enroll", {"code": "unused", "display_name": "Person"}),
         ("/api/team/session/exchange", {"token": "rcp_unused"}),
+        (f"/api/team/sessions/{uuid.uuid4()}/revoke", {}),
     ):
         assert client.post(path, json=body).status_code == 404
+    assert client.get("/api/team/sessions").status_code == 404
     assert app.state.background_tasks.store.local_owner == owner

@@ -636,6 +636,15 @@ export interface TeamInvitationIssue {
   space_name: string;
 }
 
+export interface TeamSession {
+  session_id: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  is_current: boolean;
+  can_revoke: boolean;
+}
+
 export interface SourceRef {
   machine: string;
   truth_repository: string;

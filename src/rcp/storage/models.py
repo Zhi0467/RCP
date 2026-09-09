@@ -174,6 +174,16 @@ class TeamMemberAuthorityRecord(BaseModel):
         return self
 
 
+class TeamSessionRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str
+    created_at: str
+    last_seen_at: str
+    expires_at: str
+    is_current: bool
+
+
 class TeamInvitationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -3613,6 +3623,7 @@ __all__ = [
     "StoredWatcherRecord",
     "TeamAuthenticationError",
     "TeamInvitationRecord",
+    "TeamSessionRecord",
     "WatcherClaimConflict",
     "WatcherContinuation",
     "WatcherDeliveryRecord",
