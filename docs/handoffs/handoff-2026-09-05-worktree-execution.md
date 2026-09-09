@@ -5,8 +5,7 @@ Status: active, human-confirmed on 2026-09-05; implementation committed on the P
 branch on 2026-09-05. Durable chat binding, local and shipped-remote Git
 operations, Work/Discuss path resolution, exact provider write scopes,
 continuation and restart recovery, integration preflights and instructions,
-explicit removal, UI, regression tests, four spec updates, and acceptance S133
-are implemented. Local HTTP and Git verification proved binding and restart,
+explicit removal, UI, regression tests, and four spec updates are implemented. Local HTTP and Git verification proved binding and restart,
 isolated fixture edits, dirty refusals, clean preflights, operator-executed local
 push and merges, and removal that retains unmerged commits. A later unsandboxed
 drive on the committed branch proved the provider path: a real Codex Work turn
@@ -18,9 +17,9 @@ with fixture API responses. Full served-app/provider browser interaction,
 Discuss reads of the worktree, the pull-request option's provider turn, and real Pause/Resume/Retry remain
 unverified. A human-approved disposable SSH check on 2026-09-06 verified the
 shipped Git module on Git 2.34.1 as the operator account. The full provider/SSH
-workflow and GitHub `gh pr create` remain unexercised. S133 remains
-blocked-external. The settled decisions below
-remain the contract; implementation choices and check receipts follow.
+workflow and GitHub `gh pr create` remain unexercised and blocked on an external
+environment. The settled decisions below remain the contract; implementation
+choices and check receipts follow.
 
 ## What this is
 
@@ -115,24 +114,20 @@ before touching code.
   chat context; add the worktree root and local-merge exception to write
   containment and continuation binding; add the controls to the projections spec.
 
-## Acceptance
-
-This is a new durable cross-module promise, so it needs one acceptance scenario
-at the next free number. It must cover: two chats editing the same repository
-independently; Discuss in the bound chat seeing the worktree's edits; native
-session continuation and app restart finding the same worktree; the same path
-over SSH; each Integrate option's preflight refusal and success; a rejected
-integration and Remove without losing unmerged work.
-
 ## Remaining verification and closure
 
-S133 is the single new acceptance scenario authorized by the brief. Its complete
-journey still needs a browser and a provider environment that can execute the
-existing containment contract, including the full SSH and GitHub PR workflows.
+The complete journey still needs a browser and a provider environment that can
+execute the existing containment contract, including the full SSH and GitHub PR
+workflows. It must cover: two chats editing the same repository independently;
+Discuss in the bound chat seeing the worktree's edits; native session
+continuation and app restart finding the same worktree; the same path over SSH;
+each Integrate option's preflight refusal and success; a rejected integration and
+Remove without losing unmerged work.
+
 The human approved only a disposable SSH Git compatibility check on 2026-09-06;
 that does not complete provider execution or GitHub verification. Leave this
 file active; do not treat the partial drives or provider task completion as
-acceptance success.
+success.
 
 ## Implementation choices where the handoff was silent
 
@@ -186,7 +181,6 @@ Fresh setup ran in the prescribed order, each exit 0:
 | `uv run pre-commit run --files <all 12 untracked new paths>` | 0 | All applicable hooks passed; `worktree-precommit-new-files.log` |
 | `npm --prefix web run build` | 0 | TypeScript and Vite passed; existing large-chunk advisory; `worktree-build.log` |
 | `npm --prefix web test` | 1 | 605 passed, 3 failed out of 608; `worktree-web-test.log` |
-| `grep -l "^status: \(pending\|blocked-external\)" docs/acceptance/S*.md` | 0 | 22 files, including S133; reviewed for affected promises |
 
 The remaining pytest failure is
 `test_pty_runner_supplies_controlling_terminal_for_host_confirmation`:
@@ -212,7 +206,7 @@ checked explicitly because `--all-files` sees only tracked paths and the human
 prohibited `git add`.
 
 The first full pytest run had 31 failures (3,679 passed, 9 skipped): new schema,
-route, acceptance-index, and request-serialization expectations needed updating,
+route and request-serialization expectations needed updating,
 plus the existing PTY environment failure. The subsequent run had two failures
 (3,711 passed, 9 skipped): that PTY failure and a new remote-canonicalization test
 fixture missing its service history. The fixture was corrected before the final
@@ -322,5 +316,5 @@ sandbox. It exercises the actual `NodeChat` component with fixture API responses
 first-Work binding selection, branch badge, backend-disabled integration,
 ordinary Work integration dispatch without losing the draft, removal evidence,
 Cancel, and confirmed removal. No page errors were observed. This closes the
-earlier browser-test launch failure, not the real-server/provider/SSH acceptance
-journey. S133 and this handoff remain open for those explicitly listed gaps.
+earlier browser-test launch failure, not the real-server/provider/SSH journey.
+This handoff remains open for those explicitly listed gaps.

@@ -270,13 +270,3 @@ Graph-writing agents add or revise thin project-wide definitions through
 `upsert_glossary` Patches. Canonical glossary entries render as best-effort
 whole-term inline definitions in node prose, answers, and Proposal cards. There
 is no standalone Glossary surface or human glossary editor.
-
-## Verification contracts
-
-The durable journeys include [S11 paper coach](../acceptance/S11-paper-coach.md),
-[S17 live preview](../acceptance/S17-real-agent-preview.md),
-[S18 remote preview](../acceptance/S18-remote-artifact-preview.md),
-[S32 desktop artifacts](../acceptance/S32-artifacts-in-the-desktop-window.md),
-[S110 paper draft preservation](../acceptance/S110-paper-draft-survives-a-canonical-change.md),
-[S114 unified artifact viewing](../acceptance/S114-see-your-results-without-leaving.md), and
-[S120 episode reports](../acceptance/S120-episodes-wrap-up-with-a-visual-report.md).

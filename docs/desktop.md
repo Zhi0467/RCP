@@ -87,9 +87,9 @@ re-enters that event with `Some(code)`, so matching every code would re-enter qu
 
 A successful build is not the desktop test. Open the relevant bundle through Finder,
 exercise the affected workflow, inspect the visible result, and check the backend log for
-errors. The desktop scenarios in [`docs/acceptance/`](acceptance/README.md) are the source
-of truth for native window, Quit, artifact, packaged-environment, update, and text-scale
-behavior.
+errors. Native window, Quit, artifact, packaged-environment, update, and text-scale
+behavior are verified through the desktop itself; a browser check does not stand in
+for any of them.
 
 ## WebView origin probes
 
@@ -187,7 +187,7 @@ uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
 ```
 
-Then open that bundle through Finder and run the desktop acceptance scenarios affected by
+Then open that bundle through Finder and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
 readiness is truthful, desktop-only interactions work, and the app owns or reuses the
 expected backend. Source behavior is not evidence for the packaged artifact.

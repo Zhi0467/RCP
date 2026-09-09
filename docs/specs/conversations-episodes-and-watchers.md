@@ -496,14 +496,3 @@ The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and
 groups, session continuity, diagnostics, and report. Ordinary conversations and
 Paper coaching remain outside Runs.
-
-## Verification contracts
-
-The durable observable journeys are [S10 recovery](../acceptance/S10-pause-resume-retry.md),
-[S40 Discuss and Work](../acceptance/S40-discuss-and-work.md),
-[S41 bounded Experiment control](../acceptance/S41-bounded-experiment-control.md),
-[S42 conversation watchers](../acceptance/S42-watchers-wake-conversations.md),
-[S53 truthful Runs projection](../acceptance/S53-truthful-attention-and-run-surfaces.md),
-[S76 graph-condition wake](../acceptance/S76-graph-condition-wake.md),
-[S78 one budget and Stop](../acceptance/S78-one-budget-one-stop.md), and
-[S120 visual episode report](../acceptance/S120-episodes-wrap-up-with-a-visual-report.md).

@@ -450,14 +450,3 @@ repository-branch control, and no merge runs without a human dispatching it. Tha
 is current scope rather than a permanent exclusion; a version-control model for
 the graph is admitted in
 [the graph-branch scope decision](../decisions/2026-09-08-graph-branch-scope-is-reopened.md).
-
-## Verification contract
-
-[S115](../acceptance/S115-beliefs-change-only-through-you.md) owns the
-protected-belief boundary, [S78](../acceptance/S78-one-budget-one-stop.md) owns
-bounded orchestrator budget/Stop behavior,
-[S113](../acceptance/S113-campaign-attribution.md) owns episode lineage, and
-[S125](../acceptance/S125-auto-research-graph-branch-merge.md) owns graph-branch
-isolation and semantic merge. [S138](../acceptance/S138-edit-and-discuss-an-episode-graph.md)
-owns editing and ordinary conversations on an episode graph. Single-turn orchestration and child harvesting
-remain focused implementation contracts under this specification.

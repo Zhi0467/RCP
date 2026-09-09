@@ -450,9 +450,9 @@ workflow uses an external QEMU controller on GitHub-hosted Ubuntu 22.04/24.04,
 requires actual changed Linux boot IDs, and interrupts update and restore at
 journal and individual root publication boundaries, including repeated rollback
 and recovery without network access. Unavailable virtualization produces an
-explicit unqualified failure. Local process interruption tests do not satisfy
-[S135](../acceptance/S135-supervisor-recovers-automatically-after-reboot.md).
-The production cutover requires that qualification and human promotion first.
+explicit unqualified failure. Local process interruption tests do not prove
+recovery across a real reboot. The production cutover requires that
+qualification and human promotion first.
 
 ## Central checkouts and repository credentials
 
@@ -1315,24 +1315,8 @@ review route can append the reserved identity and complete the request.
 
 Machine orchestration, final creation, confirmed team catalog deletion, console
 member removal, and replacement activation are
-hermetically covered, but provisioning has not yet passed S128's complete
-source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
-after machine preparation, the unified wizard and desktop operator bridge, the
-live restore/member-removal drives, and transfer remain active acceptance work.
-Protected
-backup is hermetically complete but still awaits S104's full live Linux/SSH
-no-pause and systemd drive. Current RCP must not simulate the other unfinished
-journeys or describe **ready for review** as an existing project.
-
-## Verification contracts
-
-The durable current boundaries are
-[S95 durable team space](../acceptance/S95-durable-team-space.md),
-[S98 project transfer](../acceptance/S98-move-a-project-into-a-team-space.md),
-[S102 team execution](../acceptance/S102-team-runs-execute-as-the-space-account.md),
-[S103 console operations](../acceptance/S103-server-operations-are-console-operations.md),
-[S104 backup](../acceptance/S104-backups-never-pause-work.md), and
-[S128 team project provisioning](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
-
-Pending scenarios in that list describe intended future promises, not current
-implemented behavior.
+hermetically covered. Provisioning, cancellation after machine preparation, the
+unified wizard and desktop operator bridge, live restore and member removal,
+transfer, and protected backup have not been driven live against a source-built
+team service. Current RCP must not simulate those journeys or describe
+**ready for review** as an existing project.
