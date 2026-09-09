@@ -81,8 +81,8 @@ Only permitted file output:
 - Include only `summary`, semantic `ops`, `repositories_read` (which must be `[]`),
   `change_summary`, and `agent_action` only when the operation actually chooses a Decision.
 - Carry an existing node's `source_refs` exactly as the branch recorded them. You read no
-  repository, so you may never invent, edit, or drop a ref to satisfy validation; RCP records
-  the inherited reads for you.
+  repository, so you may never invent or edit a ref, and never drop one to satisfy validation;
+  dropping it would lose provenance the branch established.
 - Do not include revisions, graph heads, merge ids, branch provenance, authorizers, task ids,
   transition traces, admission fields, or other RCP bookkeeping. RCP supplies all of them.
 - Do not write repository files, watcher files, artifacts, or canonical `.research` files.

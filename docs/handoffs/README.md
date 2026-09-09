@@ -2,6 +2,10 @@
 
 Active:
 
+- [Deterministic branch merge](handoff-2026-09-08-deterministic-branch-merge.md)
+  — build the non-conflicting merge operations RCP already specifies, and send
+  the agent only the conflict residue. Not started; scope settled.
+
 - [External job and watcher simplification](handoff-2026-09-06-external-job-simplification.md)
   — direct Slurm submission, one shell-watcher contract, human Cancel, and an
   OS-owned helper for ordinary processes. Integrated checks and the real

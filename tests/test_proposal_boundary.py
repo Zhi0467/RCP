@@ -1032,14 +1032,17 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
     ("run_scope", "repositories_read", "expected_code"),
     [
         (["repo-a"], ["repo-a"], "source-outside-run-scope"),
-        (["repo-a", "repo-b"], ["repo-a"], "unread-source-repository"),
+        # A cited repository inside run scope needs no separate read record. Both
+        # lists are agent-declared, so requiring one restated the scope boundary
+        # without adding a check, and it made carried provenance unrepresentable.
+        (["repo-a", "repo-b"], ["repo-a"], None),
     ],
 )
 def test_content_proposal_source_refs_retain_originating_agent_scope(
     manifest,
     run_scope: list[str],
     repositories_read: list[str],
-    expected_code: str,
+    expected_code: str | None,
 ) -> None:
     state = _state_with_decision(manifest)
     proposal = _intent_proposal(
@@ -1074,8 +1077,11 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
 
     report = validate_patch(state, patch, ["repo-a", "repo-b"])
 
-    assert report.rejected
-    assert any(message.code == expected_code for message in report.messages)
+    if expected_code is None:
+        assert not report.rejected, [message.message for message in report.messages]
+    else:
+        assert report.rejected
+        assert any(message.code == expected_code for message in report.messages)
 
 
 def test_duplicate_proposal_ids_in_one_create_operation_are_rejected(manifest) -> None:

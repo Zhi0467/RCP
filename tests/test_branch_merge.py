@@ -244,23 +244,12 @@ def _sourced_blocker_candidate(*, refs: list[dict]) -> str:
     )
 
 
-def test_merge_inherits_branch_source_refs_it_can_prove_and_ignores_invented_ones() -> None:
-    recorded = _branch_source_ref()
-    context = _sourced_blocker_context(refs=[recorded])
+def test_merge_carries_branch_provenance_without_declaring_a_repository_read() -> None:
+    """A graph-only merge reads no repository, so carrying provenance must still admit.
 
-    carried = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[recorded]), context)
-    invented = parse_branch_merge_candidate(
-        _sourced_blocker_candidate(refs=[_branch_source_ref(record="record-invented")]),
-        context,
-    )
-
-    # RCP records the reads the branch already validated, never the agent's claim.
-    assert carried.repositories_read == ["repo"]
-    assert invented.repositories_read == []
-
-
-def test_merge_carrying_a_sourced_node_is_not_rejected_as_an_unread_source() -> None:
-    """A graph-only merge reads no repository, so carrying provenance must still admit."""
+    Source refs stay bound to the run truth scope; nothing requires the carrying
+    patch to have read the repository that the branch task already read.
+    """
 
     recorded = _branch_source_ref()
     context = _sourced_blocker_context(refs=[recorded])
@@ -272,7 +261,24 @@ def test_merge_carrying_a_sourced_node_is_not_rejected_as_an_unread_source() -> 
         ["repo"],
     )
 
-    assert not any(message.code == "unread-source-repository" for message in report.messages), [
+    assert candidate.repositories_read == []
+    assert not report.rejected, [message.message for message in report.messages]
+
+
+def test_merge_still_rejects_a_carried_ref_outside_the_run_truth_scope() -> None:
+    """Removing the read record keeps the scope boundary RCP itself supplies."""
+
+    foreign = _branch_source_ref(repository="unscoped-repo")
+    context = _sourced_blocker_context(refs=[foreign])
+    candidate = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[foreign]), context)
+
+    report = validate_patch(
+        context.main_graph,
+        candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
+        ["repo", "unscoped-repo"],
+    )
+
+    assert any(message.code == "source-outside-run-scope" for message in report.messages), [
         message.message for message in report.messages
     ]
 
