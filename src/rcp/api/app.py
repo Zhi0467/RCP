@@ -1119,7 +1119,7 @@ def create_app(
                 request,
                 execution,
             )
-            for episode in store.episodes(project_id):
+            for episode in store.episodes(project_id, limit=None):
                 if episode.mode == "auto_research":
                     try:
                         reconcile_auto_research_children(episode.episode_id)
@@ -1163,7 +1163,7 @@ def create_app(
         reconcile_auto_research_recovery_pass()
         auto_research_episode_ids: list[str] = []
         for project in store.projects():
-            for episode in store.episodes(project.project_id):
+            for episode in store.episodes(project.project_id, limit=None):
                 if episode.mode == "auto_research":
                     auto_research_episode_ids.append(episode.episode_id)
                     try:
@@ -1429,7 +1429,7 @@ def create_app(
                         child_reconciliation.cancelled,
                     )
                 for project in store.projects():
-                    for episode in store.episodes(project.project_id):
+                    for episode in store.episodes(project.project_id, limit=None):
                         if episode.mode == "auto_research":
                             try:
                                 await asyncio.to_thread(
@@ -1469,7 +1469,7 @@ def create_app(
                         exc,
                     )
                 for project in store.projects():
-                    for episode in store.episodes(project.project_id):
+                    for episode in store.episodes(project.project_id, limit=None):
                         if episode.mode == "auto_research":
                             try:
                                 await asyncio.to_thread(
