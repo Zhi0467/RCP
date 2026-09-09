@@ -96,6 +96,7 @@ import type {
   WatcherRecord,
 } from "../types";
 import { nodeTypeLabel } from "../nodePresentation";
+import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
 export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
   detail.focus({ preventScroll: true });
@@ -220,6 +221,8 @@ export function DagView({
   onClearRelationFocus,
   ...editing
 }: DagProps) {
+  const narrow = useNarrowViewport();
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
   const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
   const connectionDrag = useRef<{ source: string; pointerId: number } | null>(null);
   const [expandedContext, setExpandedContext] = useState<Set<string> | null>(() => new Set());
@@ -773,141 +776,153 @@ export function DagView({
         <EmptyState icon={<GitBranch size={20} />} title="No graph" />
       ) : (
         <div className="dag-shell" ref={shellRef}>
-          <div className="dag-controls">
-            <div className="dag-layout-controls">
-              <span className="dag-control-label">
-                <GitBranch size={14} /> Layout
-              </span>
-              <div className="dag-layout-switch" role="group" aria-label="DAG layout">
-                <button
-                  className={layoutMode === "force" ? "is-active" : ""}
-                  type="button"
-                  aria-pressed={layoutMode === "force"}
-                  onClick={() => setLayoutMode("force")}
-                >
-                  <Orbit size={13} /> Force-directed
-                </button>
-                <button
-                  className={layoutMode === "flow" ? "is-active" : ""}
-                  type="button"
-                  aria-pressed={layoutMode === "flow"}
-                  onClick={() => setLayoutMode("flow")}
-                >
-                  <Workflow size={13} /> Research flow
-                </button>
-              </div>
-              <span className="dag-control-label dag-projection-label">Projection</span>
-              <div
-                className="dag-layout-switch dag-projection-switch"
-                role="group"
-                aria-label="DAG ontology projection"
-              >
-                {(["all", "belief", "action"] as const).map((item) => (
+          <details className="dag-controls-disclosure" open={!narrow || mobileControlsOpen}>
+            <summary
+              className="view-disclosure-summary"
+              onClick={(event) => {
+                event.preventDefault();
+                setMobileControlsOpen((current) => !current);
+              }}
+            >
+              <span>DAG controls</span>
+              <ChevronDown size={14} />
+            </summary>
+            <div className="dag-controls">
+              <div className="dag-layout-controls">
+                <span className="dag-control-label">
+                  <GitBranch size={14} /> Layout
+                </span>
+                <div className="dag-layout-switch" role="group" aria-label="DAG layout">
                   <button
-                    className={ontologyProjection === item ? "is-active" : ""}
+                    className={layoutMode === "force" ? "is-active" : ""}
                     type="button"
-                    aria-pressed={ontologyProjection === item}
-                    onClick={() => setOntologyProjection(item)}
-                    key={item}
+                    aria-pressed={layoutMode === "force"}
+                    onClick={() => setLayoutMode("force")}
                   >
-                    {item[0].toUpperCase() + item.slice(1)}
+                    <Orbit size={13} /> Force-directed
                   </button>
-                ))}
-              </div>
-            </div>
-            <div className="dag-lenses" role="group" aria-label="Node brightness by type">
-              <span className="dag-control-label">
-                <Eye size={14} /> Brightness
-              </span>
-              {dagTypes.map((type) => {
-                const active = brightTypes.has(type);
-                const meta = dagTypeMeta[type];
-                return (
                   <button
-                    className={`dag-lens ${active ? "is-bright" : "is-dim"}`}
-                    style={{ "--lens-color": meta.color } as CSSProperties}
+                    className={layoutMode === "flow" ? "is-active" : ""}
                     type="button"
-                    aria-pressed={active}
-                    aria-label={`${active ? "Dim" : "Brighten"} ${meta.label.toLowerCase()} (${typeCounts[type]})`}
-                    onClick={() => toggleType(type)}
-                    key={type}
+                    aria-pressed={layoutMode === "flow"}
+                    onClick={() => setLayoutMode("flow")}
                   >
-                    {active ? <Eye size={12} /> : <EyeOff size={12} />}
-                    <span>{meta.label}</span>
-                    <small>{typeCounts[type]}</small>
+                    <Workflow size={13} /> Research flow
                   </button>
-                );
-              })}
-              <button
-                className="dag-tool-button"
-                type="button"
-                disabled={allBright}
-                onClick={() => setBrightTypes(new Set(dagTypes))}
-              >
-                <Eye size={13} /> Brighten all
-              </button>
-              <button
-                className="dag-tool-button"
-                type="button"
-                disabled={allDim}
-                onClick={() => setBrightTypes(new Set())}
-              >
-                <EyeOff size={13} /> Dim all
-              </button>
-            </div>
-            <div className="dag-physics-controls">
-              {layoutMode === "force" && (
-                <label className="dag-force-control">
-                  <span>
-                    <Gauge size={14} /> Repulsion
-                  </span>
-                  <input
-                    aria-label="Node repulsion"
-                    type="range"
-                    min="350"
-                    max="1900"
-                    step="50"
-                    value={repulsion}
-                    onChange={(event) => setRepulsion(Number(event.target.value))}
-                  />
-                  <output>{repulsionLabel}</output>
-                </label>
-              )}
-              <button
-                className="dag-tool-button"
-                type="button"
-                disabled={layout.pinCount === 0}
-                onClick={layout.releasePins}
-              >
-                <PinOff size={13} /> Release all pins
-              </button>
-              <button
-                className="dag-tool-button"
-                type="button"
-                onClick={() => {
-                  framedLayoutRef.current = null;
-                  layout.resetLayout();
-                }}
-              >
-                <RotateCcw size={13} /> Reset layout
-              </button>
-              <button className="dag-tool-button" type="button" onClick={fitToView}>
-                <Scan size={13} /> Fit
-              </button>
-              {fullscreenSupported && (
+                </div>
+                <span className="dag-control-label dag-projection-label">Projection</span>
+                <div
+                  className="dag-layout-switch dag-projection-switch"
+                  role="group"
+                  aria-label="DAG ontology projection"
+                >
+                  {(["all", "belief", "action"] as const).map((item) => (
+                    <button
+                      className={ontologyProjection === item ? "is-active" : ""}
+                      type="button"
+                      aria-pressed={ontologyProjection === item}
+                      onClick={() => setOntologyProjection(item)}
+                      key={item}
+                    >
+                      {item[0].toUpperCase() + item.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="dag-lenses" role="group" aria-label="Node brightness by type">
+                <span className="dag-control-label">
+                  <Eye size={14} /> Brightness
+                </span>
+                {dagTypes.map((type) => {
+                  const active = brightTypes.has(type);
+                  const meta = dagTypeMeta[type];
+                  return (
+                    <button
+                      className={`dag-lens ${active ? "is-bright" : "is-dim"}`}
+                      style={{ "--lens-color": meta.color } as CSSProperties}
+                      type="button"
+                      aria-pressed={active}
+                      aria-label={`${active ? "Dim" : "Brighten"} ${meta.label.toLowerCase()} (${typeCounts[type]})`}
+                      onClick={() => toggleType(type)}
+                      key={type}
+                    >
+                      {active ? <Eye size={12} /> : <EyeOff size={12} />}
+                      <span>{meta.label}</span>
+                      <small>{typeCounts[type]}</small>
+                    </button>
+                  );
+                })}
                 <button
-                  aria-label={isFullscreen ? "Exit DAG full screen" : "Enter DAG full screen"}
-                  aria-pressed={isFullscreen}
                   className="dag-tool-button"
                   type="button"
-                  onClick={toggleFullscreen}
+                  disabled={allBright}
+                  onClick={() => setBrightTypes(new Set(dagTypes))}
                 >
-                  {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-                  {isFullscreen ? "Exit full screen" : "Full screen"}
+                  <Eye size={13} /> Brighten all
                 </button>
-              )}
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={allDim}
+                  onClick={() => setBrightTypes(new Set())}
+                >
+                  <EyeOff size={13} /> Dim all
+                </button>
+              </div>
+              <div className="dag-physics-controls">
+                {layoutMode === "force" && (
+                  <label className="dag-force-control">
+                    <span>
+                      <Gauge size={14} /> Repulsion
+                    </span>
+                    <input
+                      aria-label="Node repulsion"
+                      type="range"
+                      min="350"
+                      max="1900"
+                      step="50"
+                      value={repulsion}
+                      onChange={(event) => setRepulsion(Number(event.target.value))}
+                    />
+                    <output>{repulsionLabel}</output>
+                  </label>
+                )}
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={layout.pinCount === 0}
+                  onClick={layout.releasePins}
+                >
+                  <PinOff size={13} /> Release all pins
+                </button>
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  onClick={() => {
+                    framedLayoutRef.current = null;
+                    layout.resetLayout();
+                  }}
+                >
+                  <RotateCcw size={13} /> Reset layout
+                </button>
+                <button className="dag-tool-button" type="button" onClick={fitToView}>
+                  <Scan size={13} /> Fit
+                </button>
+                {fullscreenSupported && (
+                  <button
+                    aria-label={isFullscreen ? "Exit DAG full screen" : "Enter DAG full screen"}
+                    aria-pressed={isFullscreen}
+                    className="dag-tool-button"
+                    type="button"
+                    onClick={toggleFullscreen}
+                  >
+                    {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          </details>
           <div className="dag-scroll" ref={scrollRef}>
             <div
               className="dag-zoom-plane"

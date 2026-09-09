@@ -1,4 +1,11 @@
-import { ChevronLeft, ChevronRight, Circle, LoaderCircle, MessageCircle } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
+  LoaderCircle,
+  MessageCircle,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { isActiveTask } from "../agentTasks";
 import { conversationHasUnread, type ChatConversation } from "../chatWorkspace";
@@ -22,6 +29,7 @@ import type {
   WatcherRecord,
 } from "../types";
 import { NodeChat } from "../components/NodeChat";
+import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
 interface Props {
   project: ProjectSnapshot;
@@ -107,6 +115,8 @@ export function ChatsWorkspace({
   onStopWatcher,
   onNewSession,
 }: Props) {
+  const narrow = useNarrowViewport();
+  const [mobileListOpen, setMobileListOpen] = useState(false);
   const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
@@ -145,15 +155,16 @@ export function ChatsWorkspace({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!isChatListToggleShortcut(event)) return;
       event.preventDefault();
-      setListCollapsed((current) => !current);
+      if (narrow) setMobileListOpen((current) => !current);
+      else setListCollapsed((current) => !current);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [narrow]);
 
   useEffect(() => {
     const element = workspace.current;
-    if (!element) return;
+    if (!element || narrow) return;
 
     const updateBounds = (width: number) => {
       const nextBounds = chatListWidthBounds(width);
@@ -167,7 +178,7 @@ export function ChatsWorkspace({
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [project.id]);
+  }, [project.id, narrow]);
 
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
@@ -180,13 +191,26 @@ export function ChatsWorkspace({
       className="chats-workspace"
       ref={workspace}
       style={{
-        gridTemplateColumns: `${listCollapsed ? CHAT_LIST_COLLAPSED_WIDTH : listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
+        gridTemplateColumns: narrow
+          ? undefined
+          : `${listCollapsed ? CHAT_LIST_COLLAPSED_WIDTH : listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
+      <button
+        className="conversation-list-toggle view-disclosure-summary"
+        type="button"
+        aria-controls="conversation-list-panel"
+        aria-expanded={mobileListOpen}
+        onClick={() => setMobileListOpen((current) => !current)}
+      >
+        <MessageCircle size={14} />
+        <span>Chats</span>
+        <ChevronDown size={14} />
+      </button>
       <aside
         className="conversation-list"
         aria-label="Project conversations"
-        hidden={listCollapsed}
+        hidden={narrow ? !mobileListOpen : listCollapsed}
         id="conversation-list-panel"
       >
         <header>
@@ -208,7 +232,10 @@ export function ChatsWorkspace({
                 aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
                 className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
                 title={conversation.title}
-                onClick={() => onSelect(conversation.chatId)}
+                onClick={() => {
+                  onSelect(conversation.chatId);
+                  if (narrow) setMobileListOpen(false);
+                }}
                 key={conversation.chatId}
               >
                 <span>{conversation.title}</span>

@@ -1,15 +1,18 @@
 # Phone access: device sessions and mobile rendering
 
 Date: 2026-09-09
-Status: not implemented. Scope was confirmed by the human on 2026-09-09 after a
-read of the current authentication code and a measured mobile scan of the running
-app. Nothing in this handoff has been built yet. The scan results and the
-authentication facts below are verified observations, not plans; the
-implementation plan is open work.
+Status: partly implemented on `feat/team-device-sessions`. Sessions carry an
+independent public UUID through storage migration 14, the member-scoped list and
+revoke routes exist, and the identity panel has a Devices section. Stored device
+labels and the two mobile fixes below are in progress on the same branch. All
+three open questions are settled; see "Settled decisions". Nothing has been
+verified against a real phone yet, because no pairing flow exists.
 
 Close this handoff when a member can see their own connected devices in the
 identity panel, revoke any one of them without disturbing the others, and reach
-that panel from a phone.
+that panel from a phone. The last of those depends on the transport work, which
+is deliberately excluded here — this handoff stays open until it is resolved
+elsewhere or the closure condition is narrowed by a human.
 
 ## Why this exists
 
@@ -44,6 +47,19 @@ reinterpretation during implementation.
 - **A phone session is an ordinary session.** Do not add a device `kind`,
   `surface`, or equivalent selector to session rows or to the resolve path. The
   subordinate model works precisely because the session type is uniform.
+- **A device label is text a human typed.** Never infer one. No user-agent
+  parsing, no request fingerprint, no name generated from the session id. A
+  browser cannot obtain the device model anyway: iOS Safari reports a generic
+  `iPhone` with no model and does not implement `navigator.userAgentData`, so
+  "iPhone 16e" can only come from the person holding it.
+- **Naming is mandatory in the pairing UI, optional in the API.**
+  `POST /api/team/session/exchange` already requires a team-shell protocol
+  declaration on an installed server, so a newly required body field would break
+  shells at existing protocol versions and force a bump. The route accepts a
+  label; the pairing screen is what refuses to continue without one. A label is
+  display text with no authority, so client-side enforcement is sufficient.
+  Sessions created without one store the literal `Unnamed device`, as do rows
+  backfilled by the migration.
 
 ## Verified current behavior
 
@@ -163,21 +179,18 @@ The panel already fits at 390px.
 - Web: the section renders for a team space, is absent for a personal space, and
   the revoke control is absent on the current session.
 
-## Open questions for the human
+## Resolved on 2026-09-09
 
-1. **Acceptance scenario.** Seeing and revoking your own devices is a
-   user-visible authority promise spanning storage, API, and web. Under
-   `AGENTS.md` that is the shape of a durable cross-module promise, which needs a
-   confirmed acceptance scenario rather than regression tests alone. Confirm
-   whether to add one.
-2. **Device labels.** The plan shows `created_at` and `last_seen_at` only. A
-   coarse label from the user agent would make a list of three devices easier to
-   read, at the cost of a stored fingerprint. Recommendation: ship without it and
-   add one only if the list proves ambiguous in use.
-3. **Mobile fixes in this PR or a follow-up.** The chats breakpoint is small and
-   contained. The DAG control collapse is a real layout design task. The touch
-   target size is a design-spec change. Recommendation: chats here, the other two
-   separately.
+All three questions this handoff opened with are settled.
+
+1. **No acceptance scenario.** The human chose to retire the acceptance system
+   entirely rather than extend it. That retirement is a separate change; nothing
+   here adds to `docs/acceptance/`.
+2. **Device labels are typed by a human.** See "Settled decisions".
+3. **Both mobile fixes belong on this branch.** Chats stacking and the DAG
+   control collapse ship here. The global 32-38px control height against a 44px
+   touch guideline does not; it changes every screen including desktop and needs
+   its own decision.
 
 ## Deliberately out of scope
 
@@ -192,3 +205,11 @@ The panel already fits at 390px.
 - **Session caps and eviction.** Rejected by the human on 2026-09-09.
 - **A rotate control.** Rotate has no caller in any client. Per-session revoke
   covers the device case, so a rotate button is not required by this work.
+- **The pairing screen.** It belongs with the transport work, and it is where
+  mandatory naming is enforced. Until it ships, every row reads `Unnamed device`
+  and devices are told apart by last-seen time and the current-device marker.
+- **A rename route.** Deliberately omitted. Naming happens once, at pairing.
+  Adding rename would reintroduce the label lifecycle this design removes.
+- **The desktop shell supplying its own machine name.** That is a
+  `web/src-tauri/` change needing a Tauri rebuild. Not required for the list to
+  work.

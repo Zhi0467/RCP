@@ -8934,7 +8934,7 @@ button.relation-map-node:hover {
   padding: 12px;
   width: 100vw;
 }
-.dag-shell:fullscreen .dag-controls {
+.dag-shell:fullscreen .dag-controls-disclosure {
   flex: none;
 }
 .dag-shell:fullscreen .dag-scroll {
@@ -9542,7 +9542,8 @@ button.relation-map-node:hover {
 .agent-config.collapsible {
   padding: 0;
 }
-.agent-config-summary {
+.agent-config-summary,
+.view-disclosure-summary {
   align-items: center;
   cursor: pointer;
   display: inline-flex;
@@ -9550,13 +9551,16 @@ button.relation-map-node:hover {
   list-style: none;
   padding: 7px 9px;
 }
-.agent-config-summary::-webkit-details-marker {
+.agent-config-summary::-webkit-details-marker,
+.view-disclosure-summary::-webkit-details-marker {
   display: none;
 }
-.agent-config-summary:hover {
+.agent-config-summary:hover,
+.view-disclosure-summary:hover {
   background: color-mix(in srgb, var(--sheet) 50%, transparent);
 }
-.agent-config-summary:focus-visible {
+.agent-config-summary:focus-visible,
+.view-disclosure-summary:focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 2px;
 }
@@ -9564,11 +9568,14 @@ button.relation-map-node:hover {
   font-size: 9px;
   font-weight: 700;
 }
-.agent-config-summary > svg {
+.agent-config-summary > svg,
+.view-disclosure-summary > svg:last-child {
   color: var(--muted);
   transition: transform 0.14s ease;
 }
-.agent-config.collapsible[open] .agent-config-summary > svg {
+.agent-config.collapsible[open] .agent-config-summary > svg,
+.view-disclosure-summary[aria-expanded="true"] > svg:last-child,
+details[open] > .view-disclosure-summary > svg:last-child {
   transform: rotate(180deg);
 }
 .agent-config-body {
@@ -9603,7 +9610,8 @@ button.relation-map-node:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-config-summary > svg {
+  .agent-config-summary > svg,
+  .view-disclosure-summary > svg:last-child {
     transition: none;
   }
 }
@@ -9872,6 +9880,9 @@ button.relation-map-node:hover {
   grid-template-columns: minmax(190px, 260px) 9px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+}
+.view-disclosure-summary {
+  display: none;
 }
 .conversation-list {
   background: color-mix(in srgb, var(--sheet) 75%, var(--paper));
@@ -11260,7 +11271,41 @@ button.relation-map-node:hover {
     width: calc(100vw - 24px);
   }
   .chats-workspace {
-    grid-template-columns: 110px 9px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .view-disclosure-summary {
+    align-items: center;
+    background: var(--paper-deep);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    display: flex;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: left;
+  }
+  .conversation-list-toggle {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .view-disclosure-summary > span {
+    flex: 1;
+  }
+  .conversation-list {
+    grid-row: 2;
+    height: auto;
+    max-height: 35vh;
+  }
+  .conversation-list > header,
+  .conversation-divider {
+    display: none;
+  }
+  .conversation-surface {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .dag-controls-disclosure > .view-disclosure-summary {
+    border-bottom: 0;
   }
   .conversation-list [role="option"] {
     padding: 9px 6px;
