@@ -1,3 +1,4 @@
+import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import {
   AlertTriangle,
@@ -680,10 +681,14 @@ export function NodeChat({
       channel?.close();
     };
   }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
+  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
     () => visibleChatWatchers(watchers, chatId, node),
     [chatId, node, watchers],
   );
+  const visibleWatcherRows = watcherRows.filter((watcher) => !watcherVisibility.isHidden(watcher));
+  const hiddenWatchers = watcherRows.filter(watcherVisibility.isHidden);
   const continuedTaskIds = useMemo(
     () =>
       new Set(
@@ -704,7 +709,6 @@ export function NodeChat({
   const mode = modeState.value;
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
-  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
@@ -1572,10 +1576,10 @@ export function NodeChat({
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
       type="button"
       aria-expanded={watchersOpen}
-      aria-label={`${watcherRows.length} watcher${watcherRows.length === 1 ? "" : "s"}`}
+      aria-label={`${visibleWatcherRows.length} watcher${visibleWatcherRows.length === 1 ? "" : "s"}${hiddenWatchers.length ? `, ${hiddenWatchers.length} hidden` : ""}`}
       onClick={() => setWatchersOpen((open) => !open)}
     >
-      <RadioTower size={12} /> {watcherRows.length}
+      <RadioTower size={12} /> {visibleWatcherRows.length || `${hiddenWatchers.length} hidden`}
     </button>
   );
 
@@ -1633,13 +1637,29 @@ export function NodeChat({
       </div>
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
-          {watcherRows.map((watcher) => {
+          {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}
+          {hiddenWatchers.length > 0 && (
+            <button
+              type="button"
+              className="button compact"
+              onClick={() =>
+                watcherVisibility.show(hiddenWatchers.map((watcher) => watcher.watcher_id))
+              }
+            >
+              Show hidden watchers ({hiddenWatchers.length})
+            </button>
+          )}
+          {visibleWatcherRows.map((watcher) => {
             const external = isExternalWatcherRecord(watcher);
             const observedAt = watcherLastObservedAt(watcher);
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
                 {external ? (
-                  <ExternalJobRow apiBase={apiBase} watcher={watcher} />
+                  <ExternalJobRow
+                    apiBase={apiBase}
+                    watcher={watcher}
+                    onHide={() => watcherVisibility.hide(watcher.watcher_id)}
+                  />
                 ) : (
                   <>
                     <strong>{graphConditionLabel(watcher.condition)}</strong>

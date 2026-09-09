@@ -20,7 +20,7 @@ last_passed: >-
   nested links, reload persistence, Show archived, and recorded starter profiles
   matched the stored state. All archive requests returned 200, with no browser
   console or server errors. API checks verified shared team visibility and
-  membership; regressions covered active-work refusal, retained history,
+  membership; regressions covered the former active-work refusal, retained history,
   migration, backup, transfer, older-reader refusal before release, and stale
   browser polls.
 ---
@@ -30,6 +30,8 @@ last_passed: >-
 The human confirmed reversible episode archiving on 2026-09-07 and chose to
 share the archive with everyone in a team project. Episode cards also identify
 the recorded human who started the run through a compact avatar and name.
+On 2026-09-09 the human extended Archive to every episode, including active and
+Needs Action episodes. Archive continues to change visibility only.
 
 ## Drive — API and browser
 
@@ -40,8 +42,9 @@ the recorded human who started the run through a compact avatar and name.
    different member views the project.
 3. Archive an ended episode. It disappears from default project and space Runs
    and their section counts. Archiving a child also removes its nested link
-   from its parent's Turns. The running episode has no Archive action, and a
-   direct archive request for it is refused.
+   from its parent's Turns. Repeat with running and Needs Action episodes of
+   both modes: Archive is available, their work continues, and archiving a
+   parent does not archive or stop its child.
 4. Reload and view the same project as another member. The archive remains
    effective for both members. Neither member's identity replaces the episode's
    original authorizer.
@@ -55,9 +58,11 @@ the recorded human who started the run through a compact avatar and name.
 
 ## Assert
 
-- Archive eligibility is decided and checked by the backend at mutation time.
+- The backend permits Archive in every episode lifecycle state while retaining
+  ordinary project membership and write-admission checks.
 - Shared archive state survives restart and project transfer, with attribution.
 - Archive and Unarchive are idempotent and do not change execution or graph state.
+- An archived episode stays archived through lifecycle changes until unarchived.
 - Stale polling responses cannot restore an archived row in the browser.
 - Archived rows never increase the ordinary Runs section counts.
 - Missing legacy attribution never impersonates the viewer.

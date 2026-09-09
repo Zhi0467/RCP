@@ -539,10 +539,11 @@ Historical Ambiguities never render or count.
 
 ### Research
 
-Research presents question-centered paths and a bounded DAG. `has_subquestion`
-depth forms successive ResearchQuestion columns, followed by
-Hypothesis/Decision, Experiment/Blocker, and Evidence stages. Other relations
-affect ordering but not question depth.
+Research presents question-centered paths and a bounded DAG. Research flow uses
+one column per node type, ordered ResearchQuestion, Hypothesis, Decision, Blocker,
+Experiment, then Evidence. All question depths share the ResearchQuestion column;
+relations affect ordering within a column, never type placement. Columns start at
+the same top row. Manual pins remain explicit position overrides.
 
 The node detail is a persistent, resizable, viewport-clamped inspection window.
 Its stable vertical one-hop relation map shows incoming neighbors, focus, and
@@ -594,7 +595,7 @@ episode attribution, including the inherited authorizer on an Auto-research
 child; it does not claim live presence or enumerate contributors. Missing legacy
 attribution never borrows the current viewer's identity.
 
-An eligible episode offers **Archive**; an archived episode offers
+Every unarchived episode offers **Archive**; an archived episode offers
 **Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
 is shared across the project. Archived episodes are absent from default Runs
 cards, section counts, and nested child-Experiment links. **Show archived** adds

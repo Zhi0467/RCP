@@ -10,6 +10,8 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore, EpisodeRecord
 
 from .helpers import authorized_human, create_named_app
+from .test_episode_api import create_recoverable_auto_episode
+from .test_episode_storage import _operational_task
 from .test_project_membership import _create_project, _team_app
 from .test_project_transfer_request_api import _source_project
 
@@ -79,7 +81,89 @@ def test_archive_round_trip_survives_restart_without_changing_episode_or_graph(
     assert reopened.state.background_tasks.store.episode(episode.episode_id) == episode
 
 
-def test_archive_rechecks_current_eligibility_and_rejects_invalid_body(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("mode", ["experiment_loop", "auto_research"])
+@pytest.mark.parametrize(
+    ("status", "task_status", "ending", "wrapup_state"),
+    [
+        ("queued", "queued", None, "not_started"),
+        ("running", "running", None, "not_started"),
+        ("stopping", "pausing", None, "not_started"),
+        ("wrapping_up", "succeeded", "completed", "running"),
+        ("needs_action", "paused", None, "not_started"),
+        ("completed", "succeeded", "completed", "ready"),
+        ("stopped", "succeeded", "stopped", "skipped"),
+        ("failed", "failed", "failed", "failed"),
+    ],
+)
+def test_every_episode_state_can_archive_without_changing_retained_work_or_projection(
+    manifest, tmp_path, mode, status, task_status, ending, wrapup_state
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    history = app.state.catalog.open(project_id).history
+    if mode == "auto_research":
+        episode, task = create_recoverable_auto_episode(
+            store,
+            history,
+            project_id,
+            episode_id="archivable-auto-episode",
+            status="queued",
+            stage=tmp_path / "retained-stage",
+        )
+    else:
+        episode = _episode(store, project_id, authorized_human(store), ended=False)
+        episode, _invocation, task = store.allocate_episode_invocation(
+            episode.episode_id,
+            _operational_task(
+                store,
+                "retained-turn",
+                episode_id=episode.episode_id,
+                project_id=project_id,
+            ),
+        )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = ?, ending = ?, wrapup_state = ? WHERE episode_id = ?",
+            (status, ending, wrapup_state, episode.episode_id),
+        )
+        connection.execute(
+            "UPDATE graph_runs SET status = ? WHERE operation_id = ?",
+            (task_status, task.operation_id),
+        )
+    retained = (
+        store.episode(episode.episode_id),
+        store.episode_tasks(episode.episode_id, include_hidden=True),
+        store.episode_invocations(episode.episode_id),
+    )
+    main_head = history.head_ref()
+    client = TestClient(app)
+    base = f"/api/projects/{project_id}/episodes"
+    path = f"{base}/{episode.episode_id}/archive"
+    before_response = client.get(base, params={"episode_id": episode.episode_id})
+    assert before_response.status_code == 200, before_response.text
+    [before] = before_response.json()
+    assert before["can_archive"] is True
+    assert before["archived"] is False
+    assert before["status"] == status
+    assert before["tasks"]
+
+    for archived in (True, False):
+        response = client.post(path, json={"archived": archived})
+        assert response.status_code == 200, response.text
+        assert response.json() == {**before, "archived": archived}
+        assert client.get(base, params={"episode_id": episode.episode_id}).json() == [
+            {**before, "archived": archived}
+        ]
+        assert (
+            store.episode(episode.episode_id),
+            store.episode_tasks(episode.episode_id, include_hidden=True),
+            store.episode_invocations(episode.episode_id),
+        ) == retained
+        assert history.head_ref() == main_head
+
+
+def test_archive_rejects_invalid_body_without_changing_visibility(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -87,12 +171,37 @@ def test_archive_rechecks_current_eligibility_and_rejects_invalid_body(manifest,
     client = TestClient(app)
     path = f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive"
 
-    refused = client.post(path, json={"archived": True})
-    assert refused.status_code == 409, refused.text
-    assert store.episode(episode.episode_id) == episode
     for invalid in ({"archived": "true"}, {"archived": True, "status": "stopped"}, {}):
         assert client.post(path, json=invalid).status_code == 422
-    assert client.post(path, json={"archived": False}).status_code == 200
+    assert store.episode(episode.episode_id) == episode
+    assert store.episode_archive_states(project_id)[episode.episode_id].archived is False
+
+
+@pytest.mark.parametrize("archived", [True, False])
+def test_archive_and_unarchive_preserve_project_write_admission(
+    manifest, tmp_path, monkeypatch, archived
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    actor = authorized_human(store)
+    episode = _episode(store, project_id, actor, ended=False)
+    if not archived:
+        store.set_episode_archived(project_id, episode.episode_id, actor.user_id, archived=True)
+
+    def refuse_transferring_project(checked_project_id: str) -> None:
+        assert checked_project_id == project_id
+        raise ValueError("This project is moving to its admitted team space.")
+
+    monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transferring_project)
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive",
+        json={"archived": archived},
+    )
+    assert response.status_code == 409, response.text
+    assert "moving to its admitted team space" in response.json()["detail"]
+    assert store.episode_archive_states(project_id)[episode.episode_id].archived is not archived
+    assert store.episode(episode.episode_id) == episode
 
 
 def test_archived_history_remains_in_episode_list_after_recent_limit(manifest, tmp_path) -> None:
@@ -129,7 +238,7 @@ def test_team_archive_is_shared_and_preserves_initiator_when_another_member_rest
     authorizer = AuthorizedHuman(
         space_id=store.space_id, user_id=starter.user_id, display_name=starter.display_name
     )
-    episode = _episode(store, project_id, authorizer)
+    episode = _episode(store, project_id, authorizer, ended=False)
     base = f"/api/projects/{project_id}/episodes"
     path = f"{base}/{episode.episode_id}/archive"
 

@@ -295,6 +295,11 @@ export function DagView({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoom, setZoom] = useState(() => viewportRef.current?.zoom ?? 1);
+  const [canvasOffset, setCanvasOffset] = useState(() => ({
+    offsetX: viewportRef.current?.offsetX ?? 0,
+    offsetY: viewportRef.current?.offsetY ?? 0,
+  }));
+  const canvasOffsetRef = useRef(canvasOffset);
   // An explicit relation focus outranks the remembered viewport: it is a request to look somewhere.
   const restoringViewportRef = useRef(relationFocusNodeId ? null : viewportRef.current);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -313,6 +318,7 @@ export function DagView({
     const scroller = scrollRef.current;
     if (!scroller) return;
     viewportRef.current = {
+      ...canvasOffsetRef.current,
       zoom: zoomRef.current,
       floor: gestureFloorRef.current,
       scrollLeft: scroller.scrollLeft,
@@ -379,6 +385,7 @@ export function DagView({
       const deltaScale =
         event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
       const next = zoomDagAtPoint({
+        ...canvasOffsetRef.current,
         zoom: zoomRef.current,
         deltaY: event.deltaY * deltaScale,
         focalX: event.clientX - rect.left - scroller.clientLeft,
@@ -389,7 +396,11 @@ export function DagView({
       });
       if (next.zoom === zoomRef.current) return;
       pendingZoomScrollRef.current = next;
-      viewportRef.current = { ...next, floor: gestureFloorRef.current };
+      viewportRef.current = {
+        ...next,
+        ...canvasOffsetRef.current,
+        floor: gestureFloorRef.current,
+      };
       zoomRef.current = next.zoom;
       setZoom(next.zoom);
     };
@@ -412,7 +423,7 @@ export function DagView({
     scroller.scrollLeft = pending.scrollLeft;
     scroller.scrollTop = pending.scrollTop;
     pendingZoomScrollRef.current = null;
-  }, [zoom]);
+  }, [zoom, canvasOffset]);
 
   useLayoutEffect(() => {
     const restored = restoringViewportRef.current;
@@ -428,6 +439,7 @@ export function DagView({
     if (!scroller) return;
     return () => {
       viewportRef.current = {
+        ...canvasOffsetRef.current,
         zoom: zoomRef.current,
         floor: gestureFloorRef.current,
         scrollLeft: scroller.scrollLeft,
@@ -453,18 +465,25 @@ export function DagView({
     if (!next) return;
     gestureFloorRef.current = Math.min(DAG_ZOOM_MIN, next.zoom);
     viewportRef.current = next;
-    if (next.zoom === zoomRef.current) {
+    const offset = { offsetX: next.offsetX ?? 0, offsetY: next.offsetY ?? 0 };
+    if (
+      next.zoom === zoomRef.current &&
+      offset.offsetX === canvasOffsetRef.current.offsetX &&
+      offset.offsetY === canvasOffsetRef.current.offsetY
+    ) {
       scroller.scrollLeft = next.scrollLeft;
       scroller.scrollTop = next.scrollTop;
       return;
     }
     // Scroll lands in the layout effect once the canvas has re-scaled.
     pendingZoomScrollRef.current = next;
+    canvasOffsetRef.current = offset;
+    setCanvasOffset(offset);
     zoomRef.current = next.zoom;
     setZoom(next.zoom);
   }, [viewportRef]);
 
-  // Frame the whole graph on open. A relation focus and a remembered viewport
+  // Fit the columns on open. A relation focus and a remembered viewport
   // both outrank this: each already states where the human wants to look.
   useEffect(() => {
     if (!layoutReady || focusNodeId) return;
@@ -503,10 +522,14 @@ export function DagView({
         ].find((node) => node.dataset.nodeId === focusNodeId);
         if (!scroller || !focusNode) return;
         const currentZoom = zoomRef.current;
-        scroller.scrollLeft = Math.max(0, focusNode.offsetLeft * currentZoom - 32);
+        scroller.scrollLeft = Math.max(
+          0,
+          canvasOffsetRef.current.offsetX + focusNode.offsetLeft * currentZoom - 32,
+        );
         scroller.scrollTop = Math.max(
           0,
-          focusNode.offsetTop * currentZoom -
+          canvasOffsetRef.current.offsetY +
+            focusNode.offsetTop * currentZoom -
             Math.max(32, (scroller.clientHeight - focusNode.offsetHeight * currentZoom) / 2),
         );
       },
@@ -888,12 +911,22 @@ export function DagView({
           <div className="dag-scroll" ref={scrollRef}>
             <div
               className="dag-zoom-plane"
-              style={{ width: layout.width * zoom, height: layout.height * zoom }}
+              style={{
+                // Trailing room lets the browser center nodes near either canvas edge.
+                width: `calc(${layout.width * zoom + canvasOffset.offsetX}px + 50%)`,
+                height: `calc(${layout.height * zoom + canvasOffset.offsetY}px + 50%)`,
+              }}
             >
               <div
                 className="dag-canvas"
                 ref={canvasRef}
-                style={{ width: layout.width, height: layout.height, transform: `scale(${zoom})` }}
+                style={{
+                  width: layout.width,
+                  height: layout.height,
+                  left: canvasOffset.offsetX,
+                  top: canvasOffset.offsetY,
+                  transform: `scale(${zoom})`,
+                }}
               >
                 <svg width={layout.width} height={layout.height} aria-hidden="true">
                   <defs>

@@ -5,9 +5,11 @@ import type { ExternalWatcherRecord } from "../types";
 export function ExternalJobRow({
   apiBase,
   watcher,
+  onHide,
 }: {
   apiBase: string;
   watcher: ExternalWatcherRecord;
+  onHide?: () => void;
 }) {
   const [result, setResult] = useState<ExternalWatcherRecord | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -53,12 +55,22 @@ export function ExternalJobRow({
       {cancellation.can_cancel && (
         <button
           type="button"
-          className="button compact"
+          className="button compact external-job-action"
           onClick={() => void cancel()}
           disabled={cancelling}
           aria-label={`Cancel job ${label}`}
         >
           {cancelling ? "Cancelling…" : "Cancel"}
+        </button>
+      )}
+      {!cancellation.can_cancel && watcher.status === "completed" && onHide && (
+        <button
+          type="button"
+          className="button compact external-job-action"
+          onClick={onHide}
+          aria-label={`Hide watcher ${label}`}
+        >
+          Hide
         </button>
       )}
     </>

@@ -8,7 +8,7 @@ import {
   resolveRectangleCollisions,
 } from "../src/hooks/dagLayout.ts";
 
-test("semantic stages stay left-to-right across reverse-reading relations", () => {
+test("every node type has its own research-flow column across reverse-reading relations", () => {
   const nodes = [
     { id: "evidence", type: "evidence" },
     { id: "blocker", type: "blocker" },
@@ -20,28 +20,24 @@ test("semantic stages stay left-to-right across reverse-reading relations", () =
   const edges = [
     { source: "experiment", target: "hypothesis", relation: "tests" },
     { source: "experiment", target: "decision", relation: "governed_by" },
+    { source: "experiment", target: "blocker", relation: "blocked_by" },
     { source: "evidence", target: "experiment", relation: "result_of" },
   ];
 
   const layout = buildSemanticLaneLayout(nodes, edges);
   const reordered = buildSemanticLaneLayout([...nodes].reverse(), [...edges].reverse());
-  const laneById = Object.fromEntries(
-    layout.lanes.flatMap((lane, index) => lane.map((id) => [id, index])),
-  );
-
   assert.deepEqual(layout, reordered);
-  assert.equal(laneById.question, 0);
-  assert.equal(laneById.hypothesis, 1);
-  assert.equal(laneById.decision, 1);
-  assert.equal(laneById.experiment, 2);
-  assert.equal(laneById.blocker, 2);
-  assert.equal(laneById.evidence, 3);
-  assert.ok(laneById.experiment > laneById.hypothesis);
-  assert.ok(laneById.experiment > laneById.decision);
-  assert.ok(laneById.evidence > laneById.experiment);
+  assert.deepEqual(layout.lanes, [
+    ["question"],
+    ["hypothesis"],
+    ["decision"],
+    ["blocker"],
+    ["experiment"],
+    ["evidence"],
+  ]);
 });
 
-test("subquestion chains advance one research-flow column per level", () => {
+test("subquestion chains stay ordered within one research-flow column", () => {
   const nodes = ["root", "child", "grandchild"].map((id) => ({
     id,
     type: "research_question",
@@ -53,10 +49,11 @@ test("subquestion chains advance one research-flow column per level", () => {
 
   const layout = buildSemanticLaneLayout(nodes, edges);
 
-  assert.deepEqual(layout.lanes.slice(0, 3), [["root"], ["child"], ["grandchild"]]);
+  assert.deepEqual(layout.lanes[0], ["root", "child", "grandchild"]);
+  assert.deepEqual(layout, buildSemanticLaneLayout([...nodes].reverse(), [...edges].reverse()));
 });
 
-test("a multi-parent subquestion follows its deepest parent", () => {
+test("a multi-parent subquestion follows its parents within the question column", () => {
   const nodes = ["root", "middle", "other-root", "child"].map((id) => ({
     id,
     type: "research_question",
@@ -68,12 +65,11 @@ test("a multi-parent subquestion follows its deepest parent", () => {
   ];
 
   const layout = buildSemanticLaneLayout(nodes, edges);
-  const laneById = laneIndexes(layout.lanes);
-
-  assert.equal(laneById.root, 0);
-  assert.equal(laneById["other-root"], 0);
-  assert.equal(laneById.middle, 1);
-  assert.equal(laneById.child, 2);
+  const questions = layout.lanes[0];
+  assert.equal(questions.length, nodes.length);
+  assert.ok(questions.indexOf("root") < questions.indexOf("middle"));
+  assert.ok(questions.indexOf("middle") < questions.indexOf("child"));
+  assert.ok(questions.indexOf("other-root") < questions.indexOf("child"));
 });
 
 test("questions in a hierarchy cycle share one column", () => {
@@ -88,24 +84,22 @@ test("questions in a hierarchy cycle share one column", () => {
     { source: "cycle-b", target: "child", relation: "has_subquestion" },
   ];
 
-  const laneById = laneIndexes(buildSemanticLaneLayout(nodes, edges).lanes);
+  const layout = buildSemanticLaneLayout(nodes, edges);
 
-  assert.equal(laneById.root, 0);
-  assert.equal(laneById["cycle-a"], 1);
-  assert.equal(laneById["cycle-b"], 1);
-  assert.equal(laneById.child, 2);
+  assert.deepEqual(layout.lanes[0], ["root", "cycle-a", "cycle-b", "child"]);
+  assert.deepEqual(layout, buildSemanticLaneLayout([...nodes].reverse(), [...edges].reverse()));
 });
 
-test("non-hierarchy relations do not assign question depth", () => {
+test("non-hierarchy relations affect ordering within the question column", () => {
   const nodes = ["first", "second"].map((id) => ({ id, type: "research_question" }));
-  const edges = [{ source: "first", target: "second", relation: "contradicts" }];
+  const edges = [{ source: "second", target: "first", relation: "contradicts" }];
 
   const layout = buildSemanticLaneLayout(nodes, edges);
 
-  assert.deepEqual(layout.lanes[0], ["first", "second"]);
+  assert.deepEqual(layout.lanes[0], ["second", "first"]);
 });
 
-test("later research stages begin after the deepest question column", () => {
+test("question depth does not shift the other node-type columns", () => {
   const nodes = [
     { id: "root", type: "research_question" },
     { id: "child", type: "research_question" },
@@ -120,12 +114,12 @@ test("later research stages begin after the deepest question column", () => {
   const laneById = laneIndexes(buildSemanticLaneLayout(nodes, edges).lanes);
 
   assert.equal(laneById.root, 0);
-  assert.equal(laneById.child, 1);
-  assert.equal(laneById.hypothesis, 2);
+  assert.equal(laneById.child, 0);
+  assert.equal(laneById.hypothesis, 1);
   assert.equal(laneById.decision, 2);
-  assert.equal(laneById.experiment, 3);
+  assert.equal(laneById.experiment, 4);
   assert.equal(laneById.blocker, 3);
-  assert.equal(laneById.evidence, 4);
+  assert.equal(laneById.evidence, 5);
 });
 
 test("topology ranks condense cycles and remain deterministic", () => {

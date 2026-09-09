@@ -22,6 +22,15 @@ export const RESEARCH_STAGE_BY_NODE_TYPE = {
   evidence: 3,
 } as const;
 
+const RESEARCH_FLOW_NODE_TYPES = [
+  "research_question",
+  "hypothesis",
+  "decision",
+  "blocker",
+  "experiment",
+  "evidence",
+] as const;
+
 export interface SemanticLaneNode extends TopologyNode {
   type: keyof typeof RESEARCH_STAGE_BY_NODE_TYPE;
 }
@@ -93,7 +102,7 @@ export function buildTopologyLayout(nodes: TopologyNode[], edges: TopologyEdge[]
   return { layers, rankById };
 }
 
-/** Places question hierarchy levels before the fixed later research stages. */
+/** Gives each node type one column, with topology ordering nodes within it. */
 export function buildSemanticLaneLayout(
   nodes: SemanticLaneNode[],
   edges: TopologyEdge[],
@@ -108,26 +117,9 @@ export function buildSemanticLaneLayout(
     });
   });
 
-  const questionNodes = nodes.filter((node) => node.type === "research_question");
-  const questionIds = new Set(questionNodes.map((node) => node.id));
-  const questionLayout = buildTopologyLayout(
-    questionNodes,
-    edges.filter(
-      (edge) =>
-        edge.relation === "has_subquestion" &&
-        questionIds.has(edge.source) &&
-        questionIds.has(edge.target),
-    ),
+  const lanes = RESEARCH_FLOW_NODE_TYPES.map((type) =>
+    nodes.filter((node) => node.type === type).map((node) => node.id),
   );
-  const deepestQuestionRank = Math.max(0, ...Object.values(questionLayout.rankById));
-  const lanes = Array.from({ length: deepestQuestionRank + 4 }, () => [] as string[]);
-  nodes.forEach((node) => {
-    const lane =
-      node.type === "research_question"
-        ? (questionLayout.rankById[node.id] ?? 0)
-        : RESEARCH_STAGE_BY_NODE_TYPE[node.type] + deepestQuestionRank;
-    lanes[lane].push(node.id);
-  });
   lanes.forEach((lane) =>
     lane.sort(
       (left, right) =>

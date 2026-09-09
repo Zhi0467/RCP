@@ -1,5 +1,9 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { ExperimentRunDetail } from "../../src/components/ExperimentRunDetail";
+import { NodeChat } from "../../src/components/NodeChat";
+import { buildExperimentRun } from "../../src/runProjection";
+import { withExperimentControlAnswers } from "../taskAnswers.mjs";
 import { ExternalJobRow } from "../../src/components/ExternalJobRow";
 import { ProjectSettings } from "../../src/views/ProjectSettings";
 import "../../src/styles.css";
@@ -105,4 +109,97 @@ function Fixture() {
     </main>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+const experiment = {
+  id: "experiment-1",
+  type: "experiment",
+  title: "Watcher experiment",
+  status: "running",
+  invocation_ceiling: 5,
+  extension_fields: {},
+  source_refs: [],
+};
+const control = withExperimentControlAnswers({
+  health: "waiting_on_watchers",
+  recommendation: "wait",
+  reasons: [],
+  graph_reasons: [],
+  episode_id: "episode-1",
+  episode: null,
+  invocations_used: 1,
+  invocation_ceiling: 5,
+  operational: { session: null },
+});
+const fixtureWatchers = [
+  { watcher_id: "active", status: "active", can_cancel: true },
+  { watcher_id: "completed", status: "completed", can_cancel: false },
+  {
+    watcher_id: "grouped",
+    status: "completed",
+    can_cancel: false,
+    group_id: "finished-group",
+    group_label: "Finished batch",
+  },
+].map((fields) => ({
+  ...initialWatcher,
+  ...fields,
+  log_path: `/scratch/${fields.watcher_id}.log`,
+  created_at: new Date().toISOString(),
+  continuation: {
+    patch_kind: "experiment_loop",
+    control_node_id: experiment.id,
+    control_episode_id: "episode-1",
+  },
+  delivery_label: "Not delivered",
+}));
+
+function WatcherFixture() {
+  const [projectId, setProjectId] = useState("project");
+  const [watchers, setWatchers] = useState(fixtureWatchers);
+  Object.assign(window, { watcherFixture: { watchers, setWatchers, setProjectId } });
+  const project = { ...initialProject, id: projectId };
+  const run = buildExperimentRun(experiment as never, control, [], watchers as never);
+  return (
+    <main style={{ padding: 20 }}>
+      <section aria-label="Experiment run">
+        <ExperimentRunDetail
+          apiBase={`/api/projects/${projectId}`}
+          run={run}
+          runBusy={false}
+          runDisabled={false}
+          stopBusy={false}
+          recoveryBusy={false}
+          watcherCheckBusyId={null}
+          onRun={noop}
+          onStopLoop={noop}
+          onRecover={noop}
+          onSwitchProvider={noop}
+          onCheckWatcher={noop}
+          episodeReportHref={() => "#report"}
+        />
+      </section>
+      <NodeChat
+        project={project as never}
+        node={experiment as never}
+        runScope={["repo"]}
+        tasks={[]}
+        watchers={watchers as never}
+        chatId="watcher-chat"
+        presentation="workspace"
+        readOnly
+        onStartTask={ready as never}
+        onInspectTask={noop}
+        onOpenInbox={noop}
+        onRepairGraphUpdate={ready}
+        onNewSession={noop}
+        onClose={noop}
+        onResumeTask={noop}
+        onRetryTask={noop}
+        onRefreshTask={ready as never}
+      />
+    </main>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  new URLSearchParams(location.search).has("watchers") ? <WatcherFixture /> : <Fixture />,
+);

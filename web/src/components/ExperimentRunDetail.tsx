@@ -1,3 +1,4 @@
+import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -7,6 +8,7 @@ import {
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
   experimentRecommendation,
+  experimentWatcherDisplayItems,
   graphConditionLabel,
   isExternalWatcherRecord,
   watcherLastObservedAt,
@@ -108,8 +110,13 @@ export function ExperimentRunDetail({
     taskGroup?.latest.operation_id;
   const attempts = node.attempts ?? [];
   const completionCriteria = node.completion_criteria ?? [];
-  const stoppedWatcherItems = run.watcherItems.filter(watcherItemIsStopped);
-  const currentWatcherItems = run.watcherItems.filter((item) => !watcherItemIsStopped(item));
+  const watcherVisibility = useHiddenWatchers(apiBase);
+  const hiddenWatchers = run.watchers.filter(watcherVisibility.isHidden);
+  const watcherItems = experimentWatcherDisplayItems(
+    run.watchers.filter((watcher) => !watcherVisibility.isHidden(watcher)),
+  );
+  const stoppedWatcherItems = watcherItems.filter(watcherItemIsStopped);
+  const currentWatcherItems = watcherItems.filter((item) => !watcherItemIsStopped(item));
   const stoppedWatcherCount = stoppedWatcherItems.reduce(watcherItemCount, 0);
   const currentWatcherCount = currentWatcherItems.reduce(watcherItemCount, 0);
   const lastActivity = formatMoment(
@@ -341,7 +348,19 @@ export function ExperimentRunDetail({
             The owning Auto-research episode is watching this Experiment's completion.
           </p>
         )}
-        {currentWatcherItems.length === 0 ? (
+        {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}
+        {hiddenWatchers.length > 0 && (
+          <button
+            className="button compact"
+            type="button"
+            onClick={() =>
+              watcherVisibility.show(hiddenWatchers.map((watcher) => watcher.watcher_id))
+            }
+          >
+            Show hidden watchers ({hiddenWatchers.length})
+          </button>
+        )}
+        {currentWatcherItems.length === 0 && hiddenWatchers.length === 0 ? (
           <p className="experiment-run-empty">
             {ownedByAutoResearch && health === "agent_active"
               ? "The agent is still working. No detached work has been handed off by this Experiment."
@@ -349,7 +368,7 @@ export function ExperimentRunDetail({
                 ? "No current watchers."
                 : "No detached work has been handed off."}
           </p>
-        ) : (
+        ) : currentWatcherItems.length > 0 ? (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">
             <WatcherItems
               apiBase={apiBase}
@@ -357,9 +376,10 @@ export function ExperimentRunDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={watcherActionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onHideWatcher={watcherVisibility.hide}
             />
           </ul>
-        )}
+        ) : null}
         {stoppedWatcherCount > 0 && (
           <Fold title="Stopped watchers" count={stoppedWatcherCount} nested>
             <ul className="experiment-run-watchers" aria-label="Stopped experiment watchers">
@@ -369,6 +389,7 @@ export function ExperimentRunDetail({
                 watcherCheckBusyId={watcherCheckBusyId}
                 actionsDisabled={watcherActionsDisabled}
                 onCheckWatcher={onCheckWatcher}
+                onHideWatcher={watcherVisibility.hide}
               />
             </ul>
           </Fold>
@@ -549,12 +570,14 @@ function WatcherItems({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onHideWatcher,
 }: {
   apiBase: string;
   items: ExperimentWatcherItem[];
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
 }) {
   return items.map((item) =>
     item.kind === "group" ? (
@@ -564,6 +587,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onHideWatcher={onHideWatcher}
         key={item.group.groupId}
       />
     ) : (
@@ -573,6 +597,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onHideWatcher={onHideWatcher}
         key={item.watcher.watcher_id}
       />
     ),
@@ -595,12 +620,14 @@ function WatcherGroupDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onHideWatcher,
 }: {
   apiBase: string;
   group: ExperimentWatcherGroup;
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
 }) {
   return (
     <li className="experiment-run-watcher-group">
@@ -624,6 +651,7 @@ function WatcherGroupDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={actionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onHideWatcher={onHideWatcher}
               key={watcher.watcher_id}
             />
           ))}
@@ -639,12 +667,14 @@ function WatcherDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onHideWatcher,
 }: {
   apiBase: string;
   watcher: WatcherRecord;
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
   const canCheckNow = watcher.can_check_now;
@@ -653,7 +683,11 @@ function WatcherDetail({
     <li className={`experiment-run-watcher ${watcher.status}`}>
       {external && (
         <div className="chat-watcher-row">
-          <ExternalJobRow apiBase={apiBase} watcher={watcher} />
+          <ExternalJobRow
+            apiBase={apiBase}
+            watcher={watcher}
+            onHide={() => onHideWatcher(watcher.watcher_id)}
+          />
         </div>
       )}
       <details>

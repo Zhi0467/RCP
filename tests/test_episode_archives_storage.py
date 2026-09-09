@@ -116,7 +116,9 @@ def test_archive_is_shared_and_retains_the_archiving_human_after_member_removal(
 
 
 @pytest.mark.parametrize("task_status", ["queued", "running", "pausing", "paused", "failed"])
-def test_unended_or_recoverable_episode_cannot_be_archived(tmp_path, task_status) -> None:
+def test_unended_or_recoverable_episode_can_be_archived_without_changing_work(
+    tmp_path, task_status
+) -> None:
     store, user_id = _store(tmp_path)
     store.create_episode(_episode(store, "episode"))
     store.allocate_episode_invocation(
@@ -124,27 +126,22 @@ def test_unended_or_recoverable_episode_cannot_be_archived(tmp_path, task_status
     )
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status = ?", (task_status,))
-    assert not store.episode_archive_states("project")["episode"].can_archive
-    with pytest.raises(ValueError, match="settled work"):
-        store.set_episode_archived("project", "episode", user_id, archived=True)
-    if task_status != "failed":
-        _end(store, "episode")
-        assert not store.episode_archive_states("project")["episode"].can_archive
-        with pytest.raises(ValueError, match="settled work"):
-            store.set_episode_archived("project", "episode", user_id, archived=True)
+    before = (store.episode("episode"), store.episode_tasks("episode"))
+    assert store.episode_archive_states("project")["episode"].can_archive
+    assert store.set_episode_archived("project", "episode", user_id, archived=True).archived
+    assert (store.episode("episode"), store.episode_tasks("episode")) == before
+    assert store.archived_episodes("project") == [before[0]]
+    assert not store.set_episode_archived("project", "episode", user_id, archived=False).archived
+    assert (store.episode("episode"), store.episode_tasks("episode")) == before
 
 
-def test_pending_report_blocks_archive_until_final_failure_and_preserves_report_history(
+def test_archive_preserves_pending_report_and_remains_archived_after_report_failure(
     tmp_path,
 ) -> None:
     store, user_id = _store(tmp_path)
     _start_wrapping(store, "episode")
     store.complete_agent_task("episode-operation", applied_revision=None, result={})
     attempt = store.allocate_episode_report_attempt("episode")
-    assert not store.episode_archive_states("project")["episode"].can_archive
-    with pytest.raises(ValueError, match="settled work"):
-        store.set_episode_archived("project", "episode", user_id, archived=True)
-    store.finish_episode_report_error(attempt.attempt_id, "No report")
     before = (
         store.episode("episode"),
         store.episode_wrapup("episode"),
@@ -158,6 +155,8 @@ def test_pending_report_blocks_archive_until_final_failure_and_preserves_report_
         store.episode_report_attempts("episode"),
         store.episode_tasks("episode", include_hidden=True),
     ) == before
+    store.finish_episode_report_error(attempt.attempt_id, "No report")
+    assert store.episode_archive_states("project")["episode"].archived
 
 
 def test_archive_mutation_checks_project_and_member_under_the_write_lock(tmp_path) -> None:
@@ -187,7 +186,7 @@ def test_archived_auto_research_does_not_hide_a_fresh_reauthorization(tmp_path) 
     store.create_episode(_episode(store, "new", mode="auto_research"))
     states = store.episode_archive_states("project")
     assert states["old"].archived
-    assert states["new"] == EpisodeArchiveState(archived=False, can_archive=False)
+    assert states["new"] == EpisodeArchiveState(archived=False, can_archive=True)
     snapshots = store.auto_research_space_run_projection_snapshots(
         {"project"}, completed_since=store.now()
     )
@@ -195,7 +194,7 @@ def test_archived_auto_research_does_not_hide_a_fresh_reauthorization(tmp_path) 
     assert all(snapshot.episode.authorized_by == _authorizer(store) for snapshot in snapshots)
 
 
-def test_ended_parent_cannot_hide_running_child_and_archiving_does_not_cascade(tmp_path) -> None:
+def test_archiving_parent_with_running_child_does_not_cascade_or_stop_child(tmp_path) -> None:
     store, user_id = _store(tmp_path)
     parent, root = _auto_parent(store)
     child_id = str(uuid.uuid4())
@@ -204,18 +203,15 @@ def test_ended_parent_cannot_hide_running_child_and_archiving_does_not_cascade(t
     store.create_experiment_episode_with_invocation(child_task, auto_research_route=route)
     store.fail_agent_task(root.operation_id, "Parent failed")
     _end(store, parent.episode_id)
-    assert not store.episode_archive_states("project")[parent.episode_id].can_archive
-    with pytest.raises(ValueError, match="settled work"):
-        store.set_episode_archived("project", parent.episode_id, user_id, archived=True)
-    store.fail_agent_task(child_task.operation_id, "Child failed")
-    _end(store, child_id)
+    before = (store.episode(child_id), store.episode_tasks(child_id))
     store.set_episode_archived("project", parent.episode_id, user_id, archived=True)
     states = store.episode_archive_states("project")
     assert states[parent.episode_id].archived
     assert states[child_id] == EpisodeArchiveState(archived=False, can_archive=True)
+    assert (store.episode(child_id), store.episode_tasks(child_id)) == before
 
 
-def test_ended_parent_cannot_hide_running_child_work_or_unsettled_admission(tmp_path) -> None:
+def test_archiving_preserves_running_child_work_and_unsettled_admission(tmp_path) -> None:
     store, user_id = _store(tmp_path)
     parent, root = _auto_parent(store)
     route, task = _work_pair(store, parent, root, worker_id="worker")
@@ -226,21 +222,17 @@ def test_ended_parent_cannot_hide_running_child_work_or_unsettled_admission(tmp_
     store.record_auto_research_child_admission(admission)
     store.fail_agent_task(root.operation_id, "Parent failed")
     _end(store, parent.episode_id)
-    store.cancel_auto_research_child_admission("pending")
-    assert not store.episode_archive_states("project")[parent.episode_id].can_archive
-    store.fail_agent_task(task.operation_id, "Child failed")
-    assert store.episode_archive_states("project")[parent.episode_id].can_archive
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE auto_research_child_admissions SET state = 'accepted' "
-            "WHERE admission_id = 'pending'"
-        )
-    assert not store.episode_archive_states("project")[parent.episode_id].can_archive
-    with pytest.raises(ValueError, match="settled work"):
-        store.set_episode_archived("project", parent.episode_id, user_id, archived=True)
+    before = (store.agent_task(task.operation_id), store.auto_research_child_admission("pending"))
+    assert store.set_episode_archived("project", parent.episode_id, user_id, archived=True).archived
+    assert (
+        store.agent_task(task.operation_id),
+        store.auto_research_child_admission("pending"),
+    ) == before
 
 
-def test_archived_history_outlives_recent_window_and_never_hides_newly_unsettled_work(tmp_path):
+def test_archived_history_outlives_recent_window_and_keeps_visibility_through_lifecycle_changes(
+    tmp_path,
+):
     store, user_id = _store(tmp_path)
     store.create_episode(_episode(store, "old"))
     _end(store, "old")
@@ -257,9 +249,9 @@ def test_archived_history_outlives_recent_window_and_never_hides_newly_unsettled
             "WHERE episode_id = 'old'"
         )
     assert store.episode_archive_states("project")["old"] == EpisodeArchiveState(
-        archived=False, can_archive=False
+        archived=True, can_archive=True
     )
-    assert store.archived_episodes("project") == []
+    assert [episode.episode_id for episode in store.archived_episodes("project")] == ["old"]
     assert not store.set_episode_archived("project", "old", user_id, archived=False).archived
 
 

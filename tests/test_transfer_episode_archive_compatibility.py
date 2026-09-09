@@ -126,7 +126,7 @@ def test_archiving_after_preparation_is_rechecked_under_source_release_lock(tmp_
                 "WHERE episode_id = ?",
                 (episode_id,),
             )
-        assert not source.episode_archive_states(request.project_id)[episode_id].archived
+        assert source.episode_archive_states(request.project_id)[episode_id].archived
     assert source.project_transfer_record_schema_version(request.project_id) == 2
 
     with pytest.raises(ValueError, match="archive state changed after transfer preparation"):
