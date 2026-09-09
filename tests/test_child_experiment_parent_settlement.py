@@ -153,22 +153,59 @@ def test_parent_report_waits_for_child_and_then_enters_wrapup(tmp_path):
     admission = begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
     assert admission.launchable
     assert not reconciler._has_unsettled_visible_episode_task(parent.episode_id)
+    assert not store.auto_research_report_has_later_child_work(parent.episode_id)
 
 
-@pytest.mark.parametrize("entrypoint", ["poll", "restart"])
-def test_previously_admitted_report_waits_for_failed_child_recovery(
-    tmp_path, monkeypatch, entrypoint
+def test_report_snapshot_detects_child_ending_without_another_turn(tmp_path):
+    store, parent, root, child = _parent_with_child(tmp_path)
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path)
+    )
+    store.complete_agent_task(child.operation_id, applied_revision=None, result={})
+    signal = auto_research_exhaustion_signal(store, parent.episode_id)
+    begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
+    assert not store.auto_research_report_has_later_child_work(parent.episode_id)
+
+    store.request_episode_stop(child.episode_id)
+    store.settle_ready_experiment_loop_stops()
+
+    assert store.episode(child.episode_id).ending == "stopped"
+    assert store.auto_research_report_has_later_child_work(parent.episode_id)
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "report_state", "child_completion"),
+    [
+        ("poll", "queued", "recovery"),
+        ("restart", "queued", "recovery"),
+        ("restart", "interrupted", "recovery"),
+        ("restart", "paused", "recovery"),
+        ("poll", "queued", "same_turn"),
+    ],
+)
+@pytest.mark.parametrize("poll_before_recovery", [False, True])
+def test_stale_report_snapshot_fails_visibly_after_child_recovery(
+    tmp_path, monkeypatch, entrypoint, report_state, child_completion, poll_before_recovery
 ):
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
         root.operation_id, native_session_id="root-session", stage_root=str(tmp_path)
     )
-    store.fail_agent_task(child.operation_id, "Recoverable interruption.")
+    if child_completion == "recovery":
+        store.fail_agent_task(child.operation_id, "Recoverable interruption.")
     signal = auto_research_exhaustion_signal(store, parent.episode_id)
     # Reproduce the durable report allocation made by older versions before the
     # child settled. Both startup and the ordinary poll must wait on recovery.
     admission = begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
     assert admission.launchable
+    if report_state != "queued":
+        store.mark_agent_task_running(admission.task.operation_id)
+        attempt = store.allocate_episode_report_attempt(parent.episode_id)
+        store.mark_episode_report_attempt_running(attempt.attempt_id)
+        if report_state == "paused":
+            store.pause_agent_task(admission.task.operation_id, detail="Shutdown checkpoint.")
+        else:
+            store.interrupt_active_agent_tasks()
 
     async def forbidden_stream(*_args, **_kwargs):
         raise AssertionError("The regression must not invoke a provider.")
@@ -187,21 +224,44 @@ def test_previously_admitted_report_waits_for_failed_child_recovery(
         else:
             reconciler.reconcile_auto_research_episode(parent.episode_id, source="test")
 
+    if poll_before_recovery:
+        reconcile()
+        assert not launches
+    if child_completion == "recovery":
+        child = _experiment_task(
+            store,
+            child.episode_id,
+            parent.authorized_by,
+            node_id="exp/child",
+            parent_operation_id=child.operation_id,
+            attempt=2,
+            session_id="child-session",
+            stage_root=str(tmp_path),
+        )
+        store.create_experiment_recovery_task(child)
+        if poll_before_recovery:
+            reconcile()
+            assert not launches
+    store.complete_agent_task(child.operation_id, applied_revision=None, result={})
     reconcile()
     assert not launches
-    recovery = _experiment_task(
-        store,
-        child.episode_id,
-        parent.authorized_by,
-        node_id="exp/child",
-        parent_operation_id=child.operation_id,
-        attempt=2,
-        session_id="child-session",
-        stage_root=str(tmp_path),
+    ended = store.episode(parent.episode_id)
+    assert ended.status == "needs_action" and ended.ending == "exhausted"
+    assert ended.wrapup_state == "failed"
+    assert "saved summary was captured before child Experiment work finished" in ended.wrapup_error
+    retained = store.episode_wrapup(parent.episode_id)
+    assert retained.receipt_json == admission.wrapup.receipt_json
+    assert retained.receipt_sha256 == admission.wrapup.receipt_sha256
+    assert retained.allocation_operation_id == admission.task.operation_id
+    assert store.agent_task(admission.task.operation_id).status == "failed"
+    assert store.episode_report(parent.episode_id) is None
+    assert ended.report_attempts_used == (0 if report_state == "queued" else 1)
+    assert all(
+        attempt.status == "failed" for attempt in store.episode_report_attempts(parent.episode_id)
     )
-    store.create_experiment_recovery_task(recovery)
+    assert store.auto_research_experiment_allowance(parent.episode_id).used == 1
+    assert serialize_episode(
+        store, parent.project_id, ended, include_graph_branch=False
+    ).can_reauthorize
     reconcile()
     assert not launches
-    store.complete_agent_task(recovery.operation_id, applied_revision=None, result={})
-    reconcile()
-    assert launches == [admission.task.operation_id]

@@ -255,6 +255,10 @@ wait for unfinished child Experiment turns and their exact recovery. A parent
 ending does not revoke an already-paid child recovery or spend E again. It still
 refuses new invocations; pending watcher completion remains unconsumed when the
 parent has ended or the shared E allowance is exhausted.
+An older report allocation whose snapshot predates child settlement cannot
+produce an accurate final report. Once the child settles, that allocation ends
+with a visible nonblocking report error; its immutable receipt and attempt
+history are preserved. It does not generate a report from stale child facts.
 
 Episode Stop retires child watchers in the same admission fence as the root's
 watchers and persists Stop on its live child Experiments, including their late

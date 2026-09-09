@@ -1742,6 +1742,36 @@ class AutoResearchStoreMixin:
         with self.connection() as connection:
             return self._auto_research_is_quiescent_in_connection(connection, episode_id)
 
+    def auto_research_report_has_later_child_work(self, episode_id: str) -> bool:
+        """Detect old report snapshots taken before a child Experiment settled."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT wrapup.created_at AS frozen_at, task.finished_at,
+                       child.ended_at AS child_ended_at,
+                       task.rowid > report.rowid AS later_task
+                FROM episode_wrapups AS wrapup
+                JOIN graph_runs AS report
+                  ON report.operation_id = wrapup.allocation_operation_id
+                JOIN auto_research_child_experiments AS route
+                  ON route.auto_research_episode_id = wrapup.episode_id
+                JOIN episodes AS child ON child.episode_id = route.child_episode_id
+                JOIN graph_runs AS task ON task.episode_id = child.episode_id
+                WHERE wrapup.episode_id = ?
+                """,
+                (episode_id,),
+            ).fetchall()
+        for row in rows:
+            frozen_at = self._parse_time(row["frozen_at"])
+            assert frozen_at is not None
+            if row["later_task"] or any(
+                (finished := self._parse_time(row[field])) is not None and finished > frozen_at
+                for field in ("finished_at", "child_ended_at")
+            ):
+                return True
+        return False
+
     def auto_research_can_end_for_merge(self, episode_id: str) -> bool:
         """Whether a human may retire the paused orchestrator and merge its branch."""
 
