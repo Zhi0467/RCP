@@ -53,8 +53,14 @@ class EpisodeReconciler:
         episode = self.store.episode(episode_id)
         if episode is None:
             return False
+        owned_episode_ids = {episode_id}
+        if episode.mode == "auto_research":
+            owned_episode_ids.update(
+                route.child_episode_id
+                for route in self.store.auto_research_child_experiments(episode_id)
+            )
         return any(
-            task.visible and task.episode_id == episode_id
+            task.visible and task.episode_id in owned_episode_ids
             for task in self.store.unsettled_graph_target_tasks(
                 episode.project_id, episode.graph_target
             )

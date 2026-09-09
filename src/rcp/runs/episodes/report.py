@@ -35,6 +35,8 @@ def start_episode_report(
         raise KeyError(episode_id)
     if episode.status != "wrapping_up" or episode.wrapup_state not in {"pending", "running"}:
         return None
+    if episode.mode == "auto_research" and not store.auto_research_is_quiescent(episode_id):
+        return None
     wrapup = store.episode_wrapup(episode_id)
     if wrapup is None or wrapup.allocation_operation_id is None:
         raise ValueError("The episode report lost its durable allocation fence.")
@@ -48,6 +50,15 @@ def start_episode_report(
             return None
     task = store.requeue_interrupted_episode_report_allocation(episode_id)
     if task.status != "queued":
+        return None
+    if episode.mode == "auto_research" and store.auto_research_report_has_later_child_work(
+        episode_id
+    ):
+        store.fail_episode_report_allocation_unlaunchable(
+            episode_id,
+            "Report unavailable: its saved summary was captured before child Experiment work "
+            "finished. The saved summary is retained; inspect the child run for its outcome.",
+        )
         return None
     if task.kind != "episode_report" or task.visible or task.episode_id != episode_id:
         raise ValueError("The episode report allocation lost its hidden task boundary.")

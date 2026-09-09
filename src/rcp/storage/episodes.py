@@ -145,7 +145,9 @@ class EpisodeStoreMixin:
             ).fetchone()
         return self._episode_record(row) if row is not None else None
 
-    def episodes(self, project_id: str, *, limit: int = 50) -> list[EpisodeRecord]:
+    def episodes(self, project_id: str, *, limit: int | None = 50) -> list[EpisodeRecord]:
+        """List recent history, or all episodes for runtime reconciliation."""
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
@@ -154,7 +156,7 @@ class EpisodeStoreMixin:
                 ORDER BY created_at DESC, episode_id DESC
                 LIMIT ?
                 """,
-                (project_id, max(1, min(limit, 500))),
+                (project_id, -1 if limit is None else max(1, min(limit, 500))),
             ).fetchall()
         return [self._episode_record(row) for row in rows]
 
