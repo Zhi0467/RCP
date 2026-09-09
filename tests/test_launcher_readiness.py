@@ -4,10 +4,13 @@ import subprocess
 import sys
 from contextlib import aclosing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
+from rcp.agents.launcher import work_like_launch_problem
+from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
 
 _SANDBOX_REASON = "sandbox required but unavailable: bubblewrap (bwrap) not installed"
 
@@ -173,3 +176,45 @@ def test_remote_probe_closes_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", run)
     AgentLauncher._probe("compute.example", ["claude", "--input-format", "stream-json"])
     assert observed["input"] == ""
+
+
+def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
+    ready = ProviderReadiness(provider="claude", installed=True, authenticated=True)
+    assert work_like_launch_problem(ready) is None
+    unchecked = ready.model_copy(update={"work_like_available": None})
+    assert work_like_launch_problem(unchecked) is None
+    blocked = ready.model_copy(
+        update={"work_like_available": False, "work_like_reason": _SANDBOX_REASON}
+    )
+    assert work_like_launch_problem(blocked) == _SANDBOX_REASON
+    inconclusive = ready.model_copy(
+        update={"work_like_available": None, "work_like_reason": "could not be checked"}
+    )
+    # A probe that could not run is still a refusal: Work must not start blind.
+    assert work_like_launch_problem(inconclusive) == "could not be checked"
+
+
+def test_auto_research_retry_is_refused_before_allocation_on_a_host_that_cannot_sandbox() -> None:
+    """Retry admission consults the same policy as launch instead of installed+authenticated."""
+    blocked = ProviderReadiness(
+        provider="claude",
+        installed=True,
+        authenticated=True,
+        work_like_available=False,
+        work_like_reason=_SANDBOX_REASON,
+    )
+    machine = SimpleNamespace(host="gpu.example", provider_paths={"claude": "/bin/claude"})
+    service = SimpleNamespace(
+        manifest=SimpleNamespace(machine_map={"remote-1": machine}),
+        launcher=SimpleNamespace(readiness=lambda *_args, **_kwargs: blocked),
+    )
+    request = SimpleNamespace(provider="claude", run_on="remote-1")
+    with pytest.raises(ValueError, match="bubblewrap"):
+        _require_auto_research_retry_target_ready(service, request)
+
+    service.launcher = SimpleNamespace(
+        readiness=lambda *_args, **_kwargs: blocked.model_copy(
+            update={"work_like_available": True, "work_like_reason": None}
+        )
+    )
+    _require_auto_research_retry_target_ready(service, request)

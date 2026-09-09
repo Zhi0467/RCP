@@ -18,6 +18,12 @@ and the confirmed journey in
 
 - Claude lifecycle `started` establishes readiness; matching `queued` acknowledges
   a follow-up. Replay echoes and `queued_turn_count` establish neither.
+- Placement is Claude's, not RCP's. Probed 2026-09-09 on 2.1.263: a message sent
+  while a Bash call was running was `started` and `completed` inside the first
+  turn and the single result attributed both UUIDs (`STEERED`); a message sent
+  with no tool running was queued and ran as a second turn. Receipts say
+  **Delivered** and the composer says **Send to the running turn**; nothing
+  promises "after the current turn". Attribution settles the stop in both cases.
 - Only RCP-generated outstanding command UUIDs may extend a process beyond its
   first result. Missing usable result UUIDs retain the stop fence.
 - Follow-ups retain the running capability, scope, stage, and session. Answers
@@ -53,7 +59,7 @@ acceptance pass. Archive this handoff when that remaining drive is complete.
 - Focused protocol, API, launcher, and documentation regressions pass. The real
   background task and fake CLI integration stores one assistant message joining
   both results, and preserves stderr in a failed task's human-visible error.
-- A disposable served app on port 62215 with fake Claude verified a Queued
+- A disposable served app on port 62215 with fake Claude verified a delivered
   receipt and one successful combined answer through HTTP. Its requests returned
   200/202; server logs contained only the unrelated browser favicon 404.
 - Safari rendered the disposable project index, then human activity changed its
@@ -64,11 +70,11 @@ acceptance pass. Archive this handoff when that remaining drive is complete.
   final check counts and commands are in the root work summary. One episode
   acceptance timeout in the full parallel run passed with all six tests in its
   isolated file rerun; no episode code or timeout was changed.
-- Existing usage-forwarding gap, left unchanged as explicitly requested:
-  `src/rcp/runs/shared.py` consumes answer events before forwarding their usage
-  to the background task. Both Claude result events carry usage, but this chat
-  path does not persist those rows. The S134 separate-usage assertion remains
-  unverified until that independent issue is resolved.
+- Usage forwarding is fixed in this branch, not left as a gap: `_stream_agent_events`
+  now forwards an answer's usage on its own frame, and the regression test was
+  checked against the unfixed code, where it fails with zero usage rows. The S134
+  separate-usage assertion is exercised by the two-result protocol test; its
+  live-provider drive is still part of the external S134 run.
 
 The pending/blocked acceptance scan found no additional completed journey. S134
 retains `blocked-external`; S35 still needs packaged/live-host verification, S60

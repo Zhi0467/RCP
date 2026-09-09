@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
 
-from rcp.agents.launcher import AgentLauncher, ProviderReadiness
+from rcp.agents.launcher import AgentLauncher, ProviderReadiness, work_like_launch_problem
 from rcp.config import AGENT_EXECUTION_PROFILES, AgentExecutionProfile, load_manifest
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.server_ops._local_primitives import canonical_json_bytes
@@ -561,6 +561,10 @@ class ProviderReadinessCoordinator:
                 "login",
                 readiness.reason or f"{label} is not authenticated on the selected account.",
             )
+        if _PROFILE_CAPABILITY[target.profile] in {"work_auto", "orchestrate"}:
+            work_problem = work_like_launch_problem(readiness)
+            if work_problem is not None:
+                return _ReadinessProblem("configuration", work_problem)
         try:
             _resolved_runtime_id(target.provider, target.runtime_id)
         except ValueError:

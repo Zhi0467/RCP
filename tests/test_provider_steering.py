@@ -161,6 +161,34 @@ def test_claude_queued_follow_up_continues_until_final_result(tmp_path: Path, uu
         turn.render_steer(turn_id, "late", "Late")
 
 
+def test_claude_follow_up_injected_during_a_tool_call_ends_with_the_first_result(
+    tmp_path: Path,
+) -> None:
+    """Claude 2.1.263 trace: a message sent while Bash runs joins the running turn.
+
+    Its lifecycle completes before the result, which attributes both UUIDs. No
+    second turn follows, and nothing is lost: the running turn consumed it.
+    Lifecycle alone could not decide this; attribution is what settles the stop.
+    """
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "Reply STEERED instead of ORIGINAL.")
+    delivered = _lifecycle(turn, "queued", "follow-up")
+    assert delivered.steer_receipts[0][1].status == "delivered"
+    _lifecycle(turn, "started", "follow-up")
+    _lifecycle(turn, "completed", "follow-up")
+    step = turn.receive_line(
+        json.dumps(
+            {"type": "result", "result": "STEERED", "user_message_uuids": [turn_id, "follow-up"]}
+        )
+    )
+    assert [event.text for event in step.events if event.event == "answer"] == ["STEERED"]
+    assert step.complete and step.stop_process and step.explicit_terminal
+    # The initial command's own `completed` line lands after its result and is inert.
+    assert not _lifecycle(turn, "completed", turn_id).events
+    assert not turn.steering_state().can_steer
+
+
 def test_claude_failing_result_ends_the_invocation_despite_an_accepted_follow_up(
     tmp_path: Path,
 ) -> None:

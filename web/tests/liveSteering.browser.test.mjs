@@ -6,7 +6,7 @@ import { createServer } from "vite";
 
 for (const [actionLabel, receiptLabel] of [
   ["Steer running turn", "Delivered"],
-  ["Queue a follow-up turn", "Queued"],
+  ["Send to the running turn", "Delivered"],
 ]) {
   test(`the composer renders ${actionLabel} and stored receipts without retry`, async () => {
     const server = await createServer({

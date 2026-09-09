@@ -80,9 +80,11 @@ The recorded actual runtime also decides live human steering support. Codex
 app-server accepts `turn/steer` against the recorded thread and active turn id;
 `expectedTurnId` is the provider's precondition. Claude stream-json keeps stdin
 open and launches with `--replay-user-messages`; each additional user message
-with an RCP-generated UUID queues a follow-up provider turn in the same session.
-It does not inject into the turn already running. Each runtime declares its
-steering behavior and composer action label. Codex exec has no inbound channel,
+with an RCP-generated UUID is delivered to the running attempt, and Claude
+decides its placement by timing: a message that arrives while a tool call is
+running joins that turn and is attributed to its result, otherwise it runs as
+the next turn in the same session. RCP promises delivery, not placement. Each
+runtime declares its steering behavior and composer action label. Codex exec has no inbound channel,
 including when it was selected by the pre-prompt fallback. The backend publishes the disabled reason
 for an unsupported runtime instead of offering a send that cannot be delivered.
 
@@ -311,10 +313,21 @@ matching responses before marking outstanding receipts unknown at stream shutdow
 Claude becomes ready when `command_lifecycle state=started` names the initial
 RCP command UUID. `state=queued` for a pending follow-up UUID acknowledges
 acceptance immediately; replayed user echoes are consumed but never establish
-readiness or delivery. Its durable `delivered` receipt is labelled **Queued**
-and explains that the follow-up runs after the current turn, with the captured
-capability and write scope. Injecting runtimes retain **Delivered**. Labels are
+readiness or delivery. Its durable `delivered` receipt is labelled **Delivered**
+with a reason saying Claude decides where the message lands — inside the running
+turn when a tool call is in progress, otherwise as the next turn — and that it
+keeps the captured capability and write scope either way. Receipt wording is
 chosen from the task's recorded runtime when receipts are written.
+
+Both placements are handled by one rule. Lifecycle lines admit a command to the
+outstanding set and `completed` removes it; a result then removes the commands
+it attributes. Injected: the follow-up's `queued`, `started`, and `completed`
+all arrive inside the first turn, the result attributes both UUIDs, and the set
+is empty, so the invocation stops with the message consumed. Queued: the first
+result attributes only the initial UUID, the follow-up stays outstanding, and the
+process runs on to the second result. Attribution is what settles the stop;
+lifecycle alone cannot, because `completed` for a command lands after that
+command's own result in the queued case.
 
 RCP tracks accepted, unfinished command UUIDs that it generated itself:
 `queued` and `started` add them, `completed` removes them. Unknown command UUIDs

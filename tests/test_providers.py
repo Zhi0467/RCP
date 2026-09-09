@@ -633,7 +633,7 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
 @pytest.mark.parametrize(
     ("provider", "runtime_id", "behavior", "label"),
     [
-        ("claude", "claude.stream-json.v1", "queue", "Queue a follow-up turn"),
+        ("claude", "claude.stream-json.v1", "queue", "Send to the running turn"),
         ("codex", "codex.app-server-stdio.v1", "inject", "Steer running turn"),
         ("codex", "codex.exec-json.v1", "unsupported", None),
     ],

@@ -52,13 +52,17 @@ not establish the served-app or SSH promises below.
    runtime governs the composer.
 5. Select Claude stream-json and start a long Discuss turn. The composer becomes
    ready on the initial command's `started` lifecycle, before its replay echo,
-   and visibly says **Queue a follow-up turn**, matching the send-button label.
-   Send a question about a recognizable detail in the original prompt. Its
-   matching `queued` lifecycle immediately establishes **Queued**, with a reason
-   saying it runs after the current turn. The first result answers the original
-   prompt; the follow-up then runs in the same session and remembers the detail.
-   Both answers appear in one assistant message joined by a blank line, with
-   separate usage rows. Repeat with Work and verify the same scope and stage,
+   and visibly says **Send to the running turn**, matching the send-button label.
+   Send a question about a recognizable detail in the original prompt while no
+   tool call is running. Its matching `queued` lifecycle immediately establishes
+   **Delivered**, with a reason saying Claude decides where it lands. The first
+   result answers the original prompt; the follow-up then runs in the same
+   session and remembers the detail. Both answers appear in one assistant
+   message joined by a blank line, with separate usage rows. Then start a turn
+   that runs a long shell command and send a change of instruction while it is
+   still running: that message joins the running turn instead, its lifecycle
+   completes before the single result, the result attributes both UUIDs and
+   reflects the change, and no second turn runs. Repeat with Work and verify the same scope and stage,
    one final Patch read, and no extra graph-change channel. Mode controls cannot
    change the running capability. With no follow-up, the first result still
    ends the process. Race unacknowledged input with the final result: it is

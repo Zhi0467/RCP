@@ -116,6 +116,23 @@ class ProviderReadiness(BaseModel):
         return self
 
 
+def work_like_launch_problem(readiness: object) -> str | None:
+    """The one reason a Work-like launch is refused on readiness grounds.
+
+    Launch, `rcp server provider check`, and Auto-research Retry admission all
+    consult this, so a host that cannot sandbox is refused before a task is
+    allocated rather than after its stream begins. `None` means launch may
+    proceed; an unchecked probe is not a refusal.
+    """
+
+    if getattr(readiness, "work_like_available", None) is False:
+        return getattr(readiness, "work_like_reason", None) or (
+            "Provider Work readiness is unavailable."
+        )
+    reason = getattr(readiness, "work_like_reason", None)
+    return reason or None
+
+
 class ProviderExecutionAccount(BaseModel):
     """The nonsecret OS identity reached by the provider launch transport."""
 
@@ -725,14 +742,13 @@ class AgentLauncher:
                 return
 
         profile = profile_for(provider)
-        if capability in {"work_auto", "orchestrate"} and (
-            getattr(readiness, "work_like_available", None) is False
-            or getattr(readiness, "work_like_reason", None)
-        ):
-            yield AgentEvent(
-                event="error",
-                text=readiness.work_like_reason or "Provider Work readiness is unavailable.",
-            )
+        work_problem = (
+            work_like_launch_problem(readiness)
+            if capability in {"work_auto", "orchestrate"}
+            else None
+        )
+        if work_problem is not None:
+            yield AgentEvent(event="error", text=work_problem)
             return
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider

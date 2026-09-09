@@ -187,6 +187,12 @@ class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
 
     id: str
+    #: `inject` puts the message into the turn already running and the provider
+    #: confirms it. `queue` names RCP's continuation contract, not a placement
+    #: promise: the process may run past its first result while accepted
+    #: follow-ups are outstanding. Claude decides placement by timing — a
+    #: message that lands during a tool call joins the running turn and is
+    #: attributed to its result, otherwise it runs as the next turn.
     steering_behavior: Literal["unsupported", "inject", "queue"] = "unsupported"
 
     @property
@@ -196,7 +202,7 @@ class ProviderRuntime:
     @property
     def steer_action_label(self) -> str | None:
         if self.steering_behavior == "queue":
-            return "Queue a follow-up turn"
+            return "Send to the running turn"
         if self.steering_behavior == "inject":
             return "Steer running turn"
         return None

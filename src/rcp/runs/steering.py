@@ -66,18 +66,22 @@ def _receipt(
     record: AgentTaskRecord, attempt: int, turn_id: str, status: str, reason: str | None
 ) -> SteeringReceipt:
     runtime = _recorded_runtime(record)
-    queued = runtime is not None and runtime.steering_behavior == "queue"
-    if status == "delivered" and queued:
-        reason = "The follow-up runs after the current turn, with the running turn's capability and write scope."
+    if status == "delivered" and runtime is not None and runtime.steering_behavior == "queue":
+        # Delivery is certain; placement is the provider's. Claude joins the
+        # running turn when a tool call is in progress and otherwise runs the
+        # message as the next turn, so the receipt must not promise either.
+        reason = (
+            "Claude decides where it lands: inside the running turn when a tool call is in "
+            "progress, otherwise as the next turn in this session. Either way it keeps the "
+            "running turn's capability and write scope."
+        )
     return SteeringReceipt(
         attempt=attempt,
         turn_id=turn_id,
         status=status,
-        label={
-            "delivered": "Queued" if queued else "Delivered",
-            "refused": "Refused",
-            "unknown": "Delivery unknown",
-        }[status],
+        label={"delivered": "Delivered", "refused": "Refused", "unknown": "Delivery unknown"}[
+            status
+        ],
         reason=reason,
     )
 

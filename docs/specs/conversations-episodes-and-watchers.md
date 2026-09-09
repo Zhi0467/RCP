@@ -131,7 +131,9 @@ context, even while no turn is active.
 While an ordinary human-triggered Discuss or Work turn runs, the human may send
 plain text to it through the ordinary composer: while the watched attempt can
 receive input, Send addresses that attempt: Codex app-server injects into its
-running turn, and Claude queues a follow-up provider turn in the same session.
+running turn, and Claude delivers the message to the running attempt and
+decides itself whether it joins that turn or runs as the next one in the same
+session.
 There is no separate steering control. The backend supplies whether the
 exact attempt can receive input, its action label, and its disabled reason, using
 the actual runtime, including a fallback to exec. The composer renders the action
@@ -143,9 +145,10 @@ Episode workers cannot be steered; the human continues to message their orchestr
 through the episode's ordinary mail path.
 
 Each steer is stored as the human's chat message with its addressed task attempt
-and a **delivered**, **refused**, or **unknown** receipt. A delivered Claude
-follow-up is labelled **Queued**; an injected Codex input is **Delivered**. A
-refused receipt retains the reason. Reload reads that stored record; it does not infer delivery from
+and a **delivered**, **refused**, or **unknown** receipt. A delivered receipt is
+labelled **Delivered** for every runtime; Claude's carries a reason saying the
+provider decides whether it joins the running turn or runs next. A refused
+receipt retains the reason. Reload reads that stored record; it does not infer delivery from
 answer text or replay the input. Provider acknowledgment means delivery, not a
 promise that the model followed the instruction. The message remains human input,
 never an assistant answer, provider trace, or graph-change channel. It cannot

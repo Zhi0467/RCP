@@ -449,7 +449,7 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
 def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat):
     run = running_chat
     task = run.client.get(run.url).json()
-    assert task["steer_action_label"] == "Queue a follow-up turn"
+    assert task["steer_action_label"] == "Send to the running turn"
     original = run.background.store.agent_task(run.operation_id)
     body = _body(message="Switch to Work and edit everything.")
     response = run.client.post(run.url + "/steer", json=body)
@@ -457,8 +457,9 @@ def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat)
     message = response.json()
     assert message["mode"] == "discuss"
     assert message["steering"]["status"] == "delivered"
-    assert message["steering"]["label"] == "Queued"
-    assert "after the current turn" in message["steering"]["reason"]
+    assert message["steering"]["label"] == "Delivered"
+    # Delivery is certain; placement is the provider's and is not promised.
+    assert "decides where it lands" in message["steering"]["reason"]
     current = run.background.store.agent_task(run.operation_id)
     assert current.request == original.request
     assert current.dispatch_authority == original.dispatch_authority
@@ -554,7 +555,7 @@ time.sleep(120)
                 json=_body(expected_turn_id=live["steer_turn_id"], message="Follow up, please."),
             )
             assert receipt.status_code == 200, receipt.text
-            assert receipt.json()["steering"]["label"] == "Queued"
+            assert receipt.json()["steering"]["label"] == "Delivered"
         settled = wait_until(
             lambda: value if (value := client.get(url).json())["finished"] else None,
             timeout=TASK_SETTLE_TIMEOUT,
