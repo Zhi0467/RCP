@@ -316,12 +316,23 @@ scope, independent of the default repository selection for ordinary runs.
 `repositories_read` remains empty. A membership change after dispatch requires
 a new merge; provenance outside current membership is rejected.
 
-RCP builds authorable non-conflicting node creations, asserted ordinary node
-updates, and legal edge creations/removals from the same semantic paths checked
-by merge validation.
+RCP builds authorable non-conflicting node creations, ordinary node updates, and
+legal edge creations/removals from the same semantic paths checked by merge
+validation.
 Already-present values are omitted. Protected changes, conflicting nodes, Decision
 outcomes, removals, and source Proposals remain together in the agent's residue.
 This keeps coupled fields such as Decision options and selection in one update.
+
+An ordinary agent update resets standing, on main exactly as it did on the branch,
+so an edit to a node main merely accepts is built rather than deferred. Where
+branch and main still agree on a stronger standing, the build restores it so the
+update cannot quietly drop it. What is deferred is a human standing move on main
+after the fork: carrying the branch edit would discard that judgment, so the merge
+decides it explicitly.
+
+Every residue path carries the reason it needs judgment, and the merge contract
+renders that same resolved mapping. The built plan reaches the agent as a staged
+input file rather than inlined prompt text.
 
 Experiment guidance text is merged; its backend-owned freshness flags are not
 source changes. Main's transition recomputes validity from the merged dependencies,

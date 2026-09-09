@@ -740,34 +740,18 @@ def test_removed_accepted_ordinary_node_requires_main_review(review_branch, monk
 
 
 @pytest.mark.parametrize("review_branch", ["accepted_blocker"], indirect=True)
-@pytest.mark.parametrize("restore", [True, False])
-def test_ordinary_content_merge_restores_only_its_source_standing(
-    review_branch, monkeypatch, restore
-):
+def test_ordinary_content_merge_keeps_the_standing_both_sides_agree_on(review_branch, monkeypatch):
     harness = review_branch
     _edit(harness, "blk/merge-ready", {"description": "Revised description."})
-    before = harness.service.history.state()
-    operations = [
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "blk/merge-ready",
-                    "changes": {"description": "Revised description."},
-                }
-            ],
-        }
-    ]
-    if restore:
-        operations.append(
-            {"op": "set_standing", "node_id": "blk/merge-ready", "standing": "accepted"}
-        )
-    _merge(harness, monkeypatch, *operations, expect="succeeded" if restore else "failed")
+
+    _task, launcher = _merge(harness, monkeypatch)
+
+    # Branch and main still agree the node is accepted, so the merge carries the
+    # edit and its standing itself rather than asking an agent to restore it.
+    assert launcher.calls == 0
     main = harness.service.history.state()
     assert main.nodes["blk/merge-ready"].standing == "accepted"
-    assert main.nodes["blk/merge-ready"].description == (
-        "Revised description." if restore else before.nodes["blk/merge-ready"].description
-    )
+    assert main.nodes["blk/merge-ready"].description == "Revised description."
 
 
 def test_stale_source_proposal_stays_on_branch_while_its_edit_is_reviewed(
