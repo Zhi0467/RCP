@@ -250,8 +250,15 @@ session with one immutable receipt. Human Stop uses the common graceful fence
 and skips the report. Reauthorization always creates a new episode, native
 session, and branch; it never reopens an exhausted parent.
 
+Parent settlement and report launch, including restart of an allocated report,
+wait for unfinished child Experiment turns and their exact recovery. A parent
+ending does not revoke an already-paid child recovery or spend E again. It still
+refuses new invocations; pending watcher completion remains unconsumed when the
+parent has ended or the shared E allowance is exhausted.
+
 Episode Stop retires child watchers in the same admission fence as the root's
-watchers. The root's child `stop` verb likewise fences that route and retires its
+watchers and persists Stop on its live child Experiments, including their late
+watcher handoffs. The root's child `stop` verb likewise fences that route and retires its
 armed watchers. A completion on a stopping or stopped route cannot create a
 wake. These fences do not cancel compute jobs.
 

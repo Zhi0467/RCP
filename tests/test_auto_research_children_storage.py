@@ -2242,7 +2242,8 @@ def test_guarded_finish_and_command_start_admission_are_one_serializable_decisio
         assert command is not None and command.exited_at is None
 
 
-def test_routed_experiment_recovery_respects_parent_stop_fence(tmp_path) -> None:
+@pytest.mark.parametrize("ending", ["stop", "exhausted", "failed", "human_pause"])
+def test_routed_experiment_recovery_settles_paid_turn_behind_parent_fence(tmp_path, ending) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     parent, root = _auto_parent(store, ceiling=2)
@@ -2251,7 +2252,10 @@ def test_routed_experiment_recovery_respects_parent_stop_fence(tmp_path) -> None
     route = _experiment_route(store, parent, root, task)
     store.create_experiment_episode_with_invocation(task, auto_research_route=route)
     store.fail_agent_task(task.operation_id, "network failed")
-    store.request_episode_stop(parent.episode_id)
+    if ending == "stop":
+        store.request_auto_research_stop_and_settle_watchers(parent.episode_id)
+    else:
+        store.fence_auto_research_ending_and_settle_watchers(parent.episode_id, ending)
     recovery = _experiment_task(
         store,
         child_id,
@@ -2261,11 +2265,18 @@ def test_routed_experiment_recovery_respects_parent_stop_fence(tmp_path) -> None
         attempt=2,
     )
 
-    with pytest.raises(EpisodeNotRunning, match="Auto-research episode"):
-        store.create_experiment_recovery_task(recovery)
+    store.create_experiment_recovery_task(recovery)
 
     assert store.auto_research_experiment_allowance(parent.episode_id).used == 1
-    assert store.agent_task(recovery.operation_id) is None
+    assert store.episode(child_id).invocations_used == 1
+    assert store.agent_task(recovery.operation_id).parent_operation_id == task.operation_id
+    assert (store.episode(child_id).stop_requested_at is not None) == (ending == "stop")
+    fresh = _experiment_task(store, str(uuid.uuid4()), parent.authorized_by, node_id="exp/fresh")
+    with pytest.raises(EpisodeNotRunning, match="Auto-research episode"):
+        store.create_experiment_episode_with_invocation(
+            fresh, auto_research_route=_experiment_route(store, parent, root, fresh)
+        )
+    assert store.agent_task(fresh.operation_id) is None
 
 
 def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -> None:

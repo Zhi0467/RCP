@@ -96,6 +96,7 @@ def test_auto_research_reconciliation_keeps_terminal_wrapup_immutable(
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
+        auto_research_child_experiments=lambda _episode_id: [],
     )
     background = SimpleNamespace()
     monkeypatch.setattr(
@@ -128,6 +129,7 @@ def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuildi
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
+        auto_research_child_experiments=lambda _episode_id: [],
     )
     started: list[str] = []
     background = SimpleNamespace()
@@ -162,6 +164,7 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
     store = SimpleNamespace(
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
+        auto_research_child_experiments=lambda _episode_id: [],
         record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
     )
 

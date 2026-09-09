@@ -382,7 +382,14 @@ class ExperimentStoreMixin:
                 connection,
                 str(route["auto_research_episode_id"]),
             )
-            self._validate_auto_research_parent_admission(parent)
+            # Recovery settles an already-paid invocation, including behind its
+            # parent's Stop or ending fence. Only a new invocation needs E and
+            # the parent's new-work admission check.
+            if (
+                parent.project_id != episode.project_id
+                or parent.graph_target != episode.graph_target
+            ):
+                raise ValueError("The Experiment recovery changed its parent graph target.")
         if (
             episode.status not in {"running", "stopping"}
             or episode.ending is not None

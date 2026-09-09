@@ -21,6 +21,7 @@ from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
+    AutoResearchExperimentAllowanceReached,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
@@ -180,10 +181,19 @@ def start_watcher_notification(
                     watcher_ids,
                 )
             elif experiment_wake:
-                stored = tasks.store.create_experiment_watcher_invocation(
-                    record,
-                    watcher_ids,
-                )
+                try:
+                    stored = tasks.store.create_experiment_watcher_invocation(
+                        record,
+                        watcher_ids,
+                    )
+                except (
+                    AutoResearchExperimentAllowanceReached,
+                    EpisodeInvocationCeilingReached,
+                    EpisodeNotRunning,
+                ):
+                    # Keep completion pending when the atomic claim finds a
+                    # spent budget or an ending parent, including preflight races.
+                    return
             else:
                 stored = tasks.store.create_watcher_notification_task(
                     record,

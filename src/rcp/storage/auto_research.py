@@ -1641,6 +1641,19 @@ class AutoResearchStoreMixin:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             episode = self._request_episode_stop_in_connection(connection, episode_id, now=now)
+            children = connection.execute(
+                """
+                SELECT child.episode_id FROM auto_research_child_experiments AS route
+                JOIN episodes AS child ON child.episode_id = route.child_episode_id
+                WHERE route.auto_research_episode_id = ? AND child.ending IS NULL
+                  AND child.status IN ('queued', 'running', 'stopping')
+                """,
+                (episode_id,),
+            ).fetchall()
+            for child in children:
+                self._request_episode_stop_in_connection(
+                    connection, str(child["episode_id"]), now=now
+                )
             self._settle_auto_research_watchers_in_connection(
                 connection,
                 episode_id=episode_id,
@@ -1706,9 +1719,21 @@ class AutoResearchStoreMixin:
                       WHERE origin.operation_id = watchers.origin_operation_id
                         AND origin.episode_id = ?
                   )
+                  OR (? AND episode_id IN (
+                      SELECT child_episode_id FROM auto_research_child_experiments
+                      WHERE auto_research_episode_id = ?
+                  ))
               )
             """,
-            (reason, stopped_at, retain_child_observers, episode_id, episode_id),
+            (
+                reason,
+                stopped_at,
+                retain_child_observers,
+                episode_id,
+                episode_id,
+                episode.stop_requested_at is not None,
+                episode_id,
+            ),
         ).rowcount
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:
@@ -1837,7 +1862,9 @@ class AutoResearchStoreMixin:
     ) -> bool:
         rows = connection.execute(
             """
-            SELECT run.operation_id, run.status, invocation.role,
+            SELECT run.operation_id, run.status,
+                   COALESCE(invocation.role, 'experiment') AS role,
+                   experiment.ending AS experiment_ending,
                    EXISTS (
                      SELECT 1 FROM graph_runs AS child
                      WHERE child.parent_operation_id = run.operation_id
@@ -1847,7 +1874,9 @@ class AutoResearchStoreMixin:
                    EXISTS (
                      SELECT 1 FROM graph_run_receipts AS receipt
                      WHERE receipt.operation_id = run.operation_id
-                       AND receipt.category = 'auto_research_recovery_abandoned'
+                       AND receipt.category IN (
+                         'auto_research_recovery_abandoned', 'experiment_recovery_abandoned'
+                       )
                    ) AS recovery_abandoned,
                    EXISTS (
                      SELECT 1 FROM graph_run_receipts AS receipt
@@ -1862,11 +1891,14 @@ class AutoResearchStoreMixin:
                      ORDER BY recovery.updated_at DESC LIMIT 1
                    ) AS recovery_status
             FROM graph_runs AS run
-            JOIN auto_research_invocations AS invocation
+            LEFT JOIN auto_research_invocations AS invocation
               ON invocation.operation_id = run.operation_id
-            WHERE invocation.episode_id = ?
+            LEFT JOIN auto_research_child_experiments AS route
+              ON route.child_episode_id = run.episode_id
+            LEFT JOIN episodes AS experiment ON experiment.episode_id = route.child_episode_id
+            WHERE invocation.episode_id = ? OR route.auto_research_episode_id = ?
             """,
-            (episode_id,),
+            (episode_id, episode_id),
         ).fetchall()
         for row in rows:
             if row["has_recovery_child"] or row["recovery_abandoned"] or row["terminal_failure"]:
@@ -1874,10 +1906,12 @@ class AutoResearchStoreMixin:
             status = str(row["status"])
             if status in ACTIVE_AGENT_TASK_STATUSES or status == "paused":
                 return False
-            if (
-                status in {"failed", "interrupted"}
-                and row["role"] == "orchestrator"
-                and row["recovery_status"] not in {"blocked", "exhausted"}
+            if status in {"failed", "interrupted"} and (
+                (
+                    row["role"] == "orchestrator"
+                    and row["recovery_status"] not in {"blocked", "exhausted"}
+                )
+                or (row["role"] == "experiment" and row["experiment_ending"] is None)
             ):
                 return False
         return True

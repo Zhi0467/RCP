@@ -35,6 +35,8 @@ def start_episode_report(
         raise KeyError(episode_id)
     if episode.status != "wrapping_up" or episode.wrapup_state not in {"pending", "running"}:
         return None
+    if episode.mode == "auto_research" and not store.auto_research_is_quiescent(episode_id):
+        return None
     wrapup = store.episode_wrapup(episode_id)
     if wrapup is None or wrapup.allocation_operation_id is None:
         raise ValueError("The episode report lost its durable allocation fence.")
