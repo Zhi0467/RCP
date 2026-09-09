@@ -166,6 +166,14 @@ repository roots. They never use `bypassPermissions`. RCP suppresses user
 settings and unrelated MCP configuration for this enforced launch. Public
 WebSearch and WebFetch remain available under the provider contract.
 
+Claude's sandbox denies the `AF_UNIX` socket family outright: creating one fails
+with `EPERM` before any path is touched, while `AF_INET` succeeds. RCP's staged
+command client therefore cannot reach this turn's command broker, so a Claude
+Work turn's pre-flight validator self-check always fails and the turn proceeds
+on Apply-time validation alone. Codex is unaffected. No filesystem allow-list
+entry can change this; the broker transport itself is what would have to change,
+and that decision is not yet taken.
+
 ### Version failure
 
 Provider profiles own the minimum supported CLI contract. If the installed
@@ -257,7 +265,10 @@ persists the task, task attempt, authorizer, capability, target, exact stage,
 provider identity, and write-scope binding. Immediately before prompt delivery
 it persists the actual provider runtime. Provider events retain labelled
 answers, native session ids, usage, diagnostics, Patch results, and launch
-receipts.
+receipts. A provider's final result is both its answer and its accounting
+boundary, and a labelled answer is withheld from the wire, so its usage is
+forwarded on its own frame. A turn that succeeds is counted exactly like one
+that fails, and a queued follow-up's second result is counted once more.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, host, stage, and external-effect

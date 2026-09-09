@@ -35,7 +35,7 @@ from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.paper import WritingSession
-from rcp.providers import ProviderSkill
+from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
@@ -540,9 +540,16 @@ class ScriptedLauncher:
     one entry long.
     """
 
-    def __init__(self, turns: list[dict[str, str]], *, message: str = "") -> None:
+    def __init__(
+        self,
+        turns: list[dict[str, str]],
+        *,
+        message: str = "",
+        usage: ProviderUsage | None = None,
+    ) -> None:
         self.turns = turns
         self.message = message
+        self.usage = usage
         self.native_session_id = str(uuid.uuid4())
         self.prompts: list[str] = []
         self.resumed_sessions: list[str | None] = []
@@ -581,7 +588,7 @@ class ScriptedLauncher:
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="session", session_id=self.native_session_id)
         if self.message:
-            yield AgentEvent(event="answer", text=self.message)
+            yield AgentEvent(event="answer", text=self.message, usage=self.usage)
         yield AgentEvent(event="done")
 
 
@@ -8482,3 +8489,47 @@ def test_decisions_awaiting_choice_matches_the_shared_frontend_fixture() -> None
     awaiting = [node.id for node in nodes if decision_awaits_choice(node)]
 
     assert awaiting == fixture["expected_awaiting_choice"]
+
+
+def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(manifest, tmp_path) -> None:
+    """The answer is withheld from the wire, so its usage needs its own frame.
+
+    Only a failing turn used to be counted, because an error event is forwarded
+    and a labelled answer is not.
+    """
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    usage = ProviderUsage(
+        provider_profile="claude.query.v1",
+        provider_event_type="result",
+        dedupe_key="result-1",
+        processed_input_tokens=11,
+        generated_tokens=7,
+    )
+    launcher = ScriptedLauncher([{}], message="Answered.", usage=usage)
+    app.state.catalog.launcher.stream = launcher.stream
+    client = TestClient(app)
+
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "message": "Explain this project.",
+            "mode": "discuss",
+            "run_truth_scope": ["repo-a"],
+        },
+    )
+    assert started.status_code == 202, started.text
+    operation_id = started.json()["operation_id"]
+    completed = _wait_for_run(client, project_id, operation_id)
+    assert completed["status"] == "succeeded"
+
+    detail = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
+    counted = [
+        receipt["payload"]
+        for receipt in detail["debug_receipts"]
+        if isinstance(receipt.get("payload"), dict) and "usage_id" in receipt["payload"]
+    ]
+    assert len(counted) == 1
+    assert counted[0]["processed_input_tokens"] == 11
+    assert counted[0]["generated_tokens"] == 7

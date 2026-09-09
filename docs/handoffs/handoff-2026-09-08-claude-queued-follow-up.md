@@ -27,6 +27,16 @@ and the confirmed journey in
   remains independent of that Work-like precondition.
 - No new provider daemon, task, answer file, graph channel, credential change,
   automatic resend, or authority widening is authorized.
+- Claude Work turns cannot reach the command broker, and a write allow-list
+  cannot fix it. Probed on the bubblewrap host on 2026-09-09: inside the Work
+  sandbox `socket.socket(AF_UNIX, SOCK_STREAM)` fails `EPERM` at creation, while
+  `AF_INET` succeeds, so the denial is the socket family rather than the socket
+  path. A grant was implemented, verified against the real host, observed not to
+  help, and reverted. Changing the broker transport is open work with no
+  decision taken; the spec records the current limitation.
+- A succeeding turn records the usage its result reported. A labelled answer is
+  withheld from the wire, so before this only a failing turn — whose error event
+  is forwarded — was ever counted.
 
 ## Remaining acceptance drive
 
