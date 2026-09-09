@@ -39,6 +39,16 @@ test("every other visible chat keeps the viewed graph", () => {
   );
 });
 
+test("a chat selected while viewing a branch keeps that branch", () => {
+  // Without an exact route the chat id comes from the viewed graph's own
+  // project projection, so the viewed target is the correct one; defaulting to
+  // main here would 404 every Experiment chat opened inside a branch view.
+  assert.deepEqual(
+    visibleChatTranscriptTarget("experiment-chat", "experiment-chat", BRANCH, BRANCH),
+    BRANCH,
+  );
+});
+
 test("a main-target Experiment chat keeps the viewed graph", () => {
   assert.deepEqual(
     visibleChatTranscriptTarget("experiment-chat", "experiment-chat", MAIN_GRAPH, MAIN_GRAPH),
