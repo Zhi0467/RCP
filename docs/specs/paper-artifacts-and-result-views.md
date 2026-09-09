@@ -106,7 +106,7 @@ type, selector, card, or authoring request, and the task API rejects new legacy
 create or revise intents.
 
 Every supported task artifact opens through one viewer shell. The shell owns
-**Keep** and transient selection-to-prompt interaction. The artifact remains the
+**Keep** and selection-to-prompt interaction. The artifact remains the
 dominant visual object. The shell adds only a narrow selection rail and the
 controls needed to add the selections to the originating chat. Episode reports
 use the same shell and selection vocabulary while retaining their immutable
@@ -134,7 +134,10 @@ whether a task artifact or an episode report whose concluding task is not a chat
 turn, keeps ordinary browser gestures and never draws a selection rail; it keeps
 Keep or Save copy.
 
-Selections are temporary prompt inputs, not persistent annotations. Highlighting
+Selections and comments are saved per artifact in the current browser or desktop
+profile. Closing and reopening the viewer restores them, including comments
+already added to a chat draft. **Remove** deletes an individual saved selection.
+They remain prompt inputs, separate from the artifact and graph. Highlighting
 text remains an ordinary browser selection. Dragging from a figure or blank
 space draws an area immediately, without a separate Box mode; starting on text
 preserves native highlighting, and ordinary controls keep their own gestures.
@@ -144,6 +147,9 @@ never adds prompt context. The human may add one comment or question per
 confirmed selection, review the
 assembled draft, and add it to the ordinary chat composer. Nothing is sent until
 the human sends that composer turn.
+After adding selections, **Open chat** opens that exact conversation and graph
+target with the draft ready to review. In the desktop it brings the existing RCP
+window forward; in a browser it follows the chat link in the current tab.
 
 RCP carries selected text with limited surrounding text. A box carries bounded
 viewport-relative coordinates and the intersecting visible text or SVG labels;

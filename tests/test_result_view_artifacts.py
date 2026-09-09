@@ -86,7 +86,9 @@ def test_selection_runtime_is_included_in_the_frozen_backend() -> None:
     hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text()
     assert 'SOURCE_ROOT / "rcp" / "artifact_selection.js"' in sidecar
     assert '(str(ARTIFACT_SELECTION), "rcp")' in sidecar
+    assert '(str(ARTIFACT_VIEWER), "rcp")' in sidecar
     assert "_selection_script()" in hook
+    assert "_viewer_script()" in hook
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:

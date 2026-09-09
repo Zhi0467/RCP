@@ -43,6 +43,7 @@ import {
 } from "react";
 import { isActiveTask } from "./agentTasks";
 import { loadChatTranscript } from "./chatApi";
+import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
   chatEntryConversationId,
@@ -773,6 +774,11 @@ export default function App() {
     };
   });
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [requestedChat, setRequestedChat] = useState(() => ({
+    projectId: initialRoute.project.projectId,
+    chatId: initialRoute.project.chatId,
+    graphTarget: initialRoute.graphTarget,
+  }));
   const activeGraphTargetRef = useRef(graphTarget);
   activeGraphTargetRef.current = graphTarget;
   const {
@@ -1112,6 +1118,7 @@ export default function App() {
     chatSummariesLoading,
     visibleChatSummaries,
     selectChat,
+    selectCanonicalChat,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
@@ -1860,6 +1867,11 @@ export default function App() {
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
+      setRequestedChat({
+        projectId: route.projectId,
+        chatId: route.chatId,
+        graphTarget: nextTarget,
+      });
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
@@ -2409,6 +2421,54 @@ export default function App() {
     clearNodeSelections();
     changeView("chats");
   };
+
+  useEffect(() => {
+    if (!desktop || !backendSessionReady) return;
+    return listenForArtifactChatNavigation(async (hash) => {
+      if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+      else window.location.hash = hash;
+      await desktopShowReady();
+    });
+  }, [desktop, backendSessionReady]);
+
+  useEffect(() => {
+    if (
+      !requestedChat.chatId ||
+      loading ||
+      view !== "chats" ||
+      !backendSessionReady ||
+      project?.id !== requestedChat.projectId ||
+      !sameGraphTarget(graphTarget, requestedChat.graphTarget)
+    )
+      return;
+    let cancelled = false;
+    void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
+      .then((transcript) => {
+        if (cancelled) return;
+        selectCanonicalChat(transcript);
+        clearNodeSelections();
+        setRequestedChat((current) =>
+          current === requestedChat ? { ...current, chatId: undefined } : current,
+        );
+      })
+      .catch((error) => {
+        if (!cancelled) reportErrorNotice(`Conversation could not be opened: ${String(error)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    requestedChat,
+    loading,
+    view,
+    backendSessionReady,
+    project?.id,
+    graphTarget,
+    apiBase,
+    selectCanonicalChat,
+    clearNodeSelections,
+    reportErrorNotice,
+  ]);
 
   useEffect(() => {
     if (mutationsDisabled) {

@@ -10,6 +10,10 @@ const script = await readFile(
 );
 const browserType = process.env.RCP_PREVIEW_BROWSER === "webkit" ? webkit : chromium;
 const renderer = await readFile(new URL("../../src/rcp/artifacts.py", import.meta.url), "utf8");
+const viewerScript = await readFile(
+  new URL("../../src/rcp/artifact_viewer.js", import.meta.url),
+  "utf8",
+);
 // Execute the actual renderer bridge, not a parallel implementation of its gates.
 const bootstrap = renderer.match(
   /\+ _selection_script\(\)\s*\+ """([\s\S]*?)\}\)\(\);<\/script>"""/,
@@ -29,6 +33,109 @@ async function drag(page, from, to) {
   await page.mouse.move(...to, { steps: 8 });
   await page.mouse.up();
 }
+
+test("preview comments survive reopening and Open chat hands off the exact conversation", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  const browser = await browserType.launch();
+  try {
+    await server.listen();
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await browser.newContext();
+    const errors = [];
+    const chatHash = "#/projects/project?view=chats&chat=originating-chat&branch_id=source-branch";
+    await context.route(`${origin}/viewer*`, (route) => {
+      const config = {
+        projectId: "project",
+        chatId: "originating-chat",
+        chatAvailable: true,
+        operationId: "operation",
+        source: "task",
+        episodeId: null,
+        artifactId: new URL(route.request().url()).searchParams.get("artifact") || "a".repeat(24),
+        artifactName: "plot.png",
+        mediaType: "image/png",
+        chatOpenTimeoutMs: 5000,
+      };
+      return route.fulfill({
+        contentType: "text/html",
+        body: `
+        <style>#boxLayer{position:absolute;inset:0 auto auto 0;width:600px;height:400px}aside{position:absolute;left:620px}</style>
+        <div id="boxLayer"></div><aside>
+        <section id="pending" hidden><div class="excerpt"></div><button data-confirm>Comment</button><button data-cancel>Cancel</button></section>
+        <div id="items"></div><div id="empty"></div><button id="add" disabled>Add to chat</button>
+        <a id="open-chat" href="/${chatHash}" hidden>Open chat</a><div id="notice"></div></aside>
+        <script>(()=>{const config=${JSON.stringify(config)};${script}\n${viewerScript}})();</script>`,
+      });
+    });
+    await context.route(`${origin}/receiver`, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<title>RCP chat window</title>",
+      }),
+    );
+    const reopen = async () => {
+      const page = await context.newPage();
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(`${origin}/viewer`);
+      return page;
+    };
+    let preview = await reopen();
+    await drag(preview, [30, 30], [220, 160]);
+    await preview.getByRole("button", { name: "Comment", exact: true }).click();
+    const comment = "Why are these so different?\nCompare the two runs.";
+    await preview.getByPlaceholder("Comment or question").fill(comment);
+    await preview.close();
+    preview = await reopen();
+    assert.equal(await preview.getByPlaceholder("Comment or question").inputValue(), comment);
+    assert.equal(await preview.getByRole("link", { name: "Open chat" }).isVisible(), false);
+    await preview.getByRole("button", { name: "Add to chat" }).click();
+    const payload = await preview.evaluate(() =>
+      JSON.parse(localStorage.getItem("rcp:artifact-context:project:originating-chat")),
+    );
+    assert.equal(payload.selections[0].comment, comment);
+    await preview.close();
+    preview = await reopen();
+    assert.equal(await preview.getByPlaceholder("Comment or question").inputValue(), comment);
+    assert.equal(
+      await preview.getByRole("link", { name: "Open chat" }).getAttribute("href"),
+      `/${chatHash}`,
+    );
+    assert.equal(await preview.getByRole("link", { name: "Open chat" }).isVisible(), true);
+
+    const main = await context.newPage();
+    await main.goto(`${origin}/receiver`);
+    await main.evaluate(async () => {
+      const { listenForArtifactChatNavigation } = await import("/src/artifactChatNavigation.ts");
+      listenForArtifactChatNavigation(async (hash) => {
+        window.location.hash = hash;
+      });
+    });
+    await preview.evaluate(() => {
+      window.__TAURI_INTERNALS__ = {};
+    });
+    await preview.getByRole("link", { name: "Open chat" }).click();
+    await main.waitForURL(`${origin}/receiver${chatHash}`);
+    await preview.getByText("Opened the originating chat.").waitFor();
+    assert.equal(preview.url(), `${origin}/viewer`, "desktop keeps the preview open");
+    await preview.goto(`${origin}/viewer?artifact=${"b".repeat(24)}`);
+    assert.equal(await preview.getByPlaceholder("Comment or question").count(), 0);
+    await preview.goto(`${origin}/viewer`);
+    assert.equal(await preview.getByPlaceholder("Comment or question").inputValue(), comment);
+    await preview.getByRole("button", { name: "Remove selection 1" }).click();
+    await preview.close();
+    preview = await reopen();
+    assert.equal(await preview.getByPlaceholder("Comment or question").count(), 0);
+    assert.deepEqual(errors, []);
+    await context.close();
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+});
 
 test("only a confirmation-shell parent can enable HTML selection across opaque frames", async () => {
   const browser = await browserType.launch();

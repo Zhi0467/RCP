@@ -13,7 +13,7 @@ from contextlib import suppress
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +21,7 @@ from rcp.artifact_replace import (
     recover_regular_file_replacement_in_open_directory,
     replace_regular_file_in_open_directory,
 )
+from rcp.limits import ARTIFACT_CHAT_OPEN_TIMEOUT_MS
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -494,6 +495,10 @@ def _selection_script() -> str:
     return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
 
 
+def _viewer_script() -> str:
+    return importlib.resources.files("rcp").joinpath("artifact_viewer.js").read_text("utf-8")
+
+
 _KEEP_SAVE_HANDLERS_JS = (
     # Shared by both viewer shells; each defines `config` with keepUrl/saveUrl and `notice`.
     "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,{method:'POST',credentials:'same-origin'});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
@@ -512,6 +517,7 @@ def artifact_viewer_document(
     source: Literal["task", "episode_report"] = "task",
     episode_id: str | None = None,
     save_url: str | None = None,
+    branch_id: str | None = None,
 ) -> tuple[str, str]:
     """Build the common task-artifact shell around one isolated preview."""
 
@@ -525,6 +531,7 @@ def artifact_viewer_document(
         "projectId": project_id,
         "chatId": chat_id,
         "chatAvailable": chat_id is not None,
+        "chatOpenTimeoutMs": ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
         "operationId": operation_id,
         "source": source,
         "episodeId": episode_id,
@@ -533,6 +540,10 @@ def artifact_viewer_document(
         "mediaType": descriptor.media_type,
         "kept": descriptor.kept_filename is not None,
     }
+    chat_query = {"view": "chats", "chat": chat_id or ""}
+    if branch_id is not None:
+        chat_query["branch_id"] = branch_id
+    chat_href = f"/#/projects/{quote(project_id, safe='')}?{urlencode(chat_query)}"
     preview_markup = (
         f'<iframe id="preview" sandbox="allow-scripts" src={js(preview_url)} '
         f"title={js(descriptor.name)}></iframe>"
@@ -611,49 +622,20 @@ iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:bloc
 aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}#pending{{border:1px solid var(--accent);padding:12px;margin-bottom:12px}}#pending button{{margin-top:10px}}#pending [data-confirm]{{background:var(--accent);color:white;border-color:var(--accent)}}
 .empty{{color:var(--muted);font-family:Georgia,serif;font-style:italic}}#pending:not([hidden]) + #empty{{display:none}}.selection{{border-top:1px solid var(--rule);padding:12px 0}}
 .selection b{{display:block;margin-bottom:5px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
+.selection .remove{{float:right;padding:2px 6px;font-size:11px}}
 .excerpt{{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}}
 textarea{{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif}}
 .add{{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}}.add:hover{{background:var(--accent);color:white}}
+.open-chat{{display:block;margin-top:10px;padding:8px;text-align:center;border:1px solid var(--accent);color:var(--accent);text-decoration:none}}.open-chat[hidden]{{display:none}}
 .notice{{margin-top:10px;color:var(--accent);font-size:12px}}@media(max-width:760px){{main{{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}}.canvas{{border-right:0;border-bottom:1px solid var(--rule)}}aside{{max-height:42vh}}}}
 </style></head><body>
 <header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"report" if source == "episode_report" else "kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span>{'<button id="save" type="button">Save copy</button>' if save_url else ""}{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
 <main><div class="canvas">{preview_markup}</div>
-<aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
+<aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><a id="open-chat" class="open-chat" href="{html.escape(chat_href, quote=True)}" hidden>Open chat</a><div id="notice" class="notice" role="status"></div></aside></main>
 <script>(()=>{{
 {_selection_script()}
-const config={js(config)};const selections=[];const frame=document.getElementById('preview'),boxLayer=document.getElementById('boxLayer');
-const items=document.getElementById('items'),empty=document.getElementById('empty'),add=document.getElementById('add'),notice=document.getElementById('notice');
-const bounded=(value,limit)=>String(value||'').replace(/\\s+/g,' ').trim().slice(0,limit);
-function render(){{items.replaceChildren();empty.hidden=selections.length>0;add.disabled=selections.length===0||!config.chatAvailable;
-  selections.forEach((selection,index)=>{{const card=document.createElement('section');card.className='selection';
-    const label=document.createElement('b');label.textContent=`${{index+1}} · ${{selection.kind}}`;
-    const excerpt=document.createElement('div');excerpt.className='excerpt';excerpt.textContent=selection.kind==='text'?selection.text:(selection.labels||`Box ${{Math.round(selection.rect.x*100)}}–${{Math.round((selection.rect.x+selection.rect.width)*100)}}%`);
-    const comment=document.createElement('textarea');comment.placeholder='Comment or question';comment.value=selection.comment||'';comment.addEventListener('input',()=>selection.comment=bounded(comment.value,2048));
-    card.append(label,excerpt,comment);items.append(card);}});
-}}
-function appendSelection(selection){{if(selections.length>=12){{notice.textContent='A prompt can include at most 12 selections.';return;}}selections.push(selection);render();items.lastElementChild?.querySelector('textarea')?.focus();}}
-let clearImageSelection=null;
-const offerSelection=installSelectionConfirmation(document.getElementById('pending'),appendSelection,()=>{{
-  if(frame) frame.contentWindow?.postMessage({{type:'rcp-artifact-selection-clear'}},'*');
-  else clearImageSelection?.();
-}});
-window.addEventListener('message',(event)=>{{if(!frame||event.source!==frame.contentWindow) return;const value=event.data;
-  if(!value||value.type!=='rcp-artifact-selection'||value.version!==1||!('selection' in value)) return;
-  const raw=value.selection;if(raw===null){{offerSelection(null);return;}}
-  if(raw.kind==='text'&&typeof raw.text==='string') offerSelection({{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}});
-  else if(raw.kind==='box'&&raw.rect&&raw.viewport) offerSelection({{kind:'box',rect:raw.rect,viewport:raw.viewport,labels:bounded(raw.labels,4096),comment:''}});
-}});
-if(frame){{
-  const enableSelection=()=>frame.contentWindow?.postMessage({{type:'rcp-artifact-selection-enable'}},'*');
-  frame.addEventListener('load',enableSelection);
-  enableSelection();
-}}
-if(boxLayer) clearImageSelection=installArtifactSelection(boxLayer,offerSelection);
-add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent='The originating chat is unavailable.';return;}}const payload={{type:'rcp-artifact-context',version:1,project_id:config.projectId,chat_id:config.chatId,operation_id:config.operationId,artifact_id:config.artifactId,artifact_name:config.artifactName,media_type:config.mediaType,selections}};
-  payload.source=config.source;payload.episode_id=config.episodeId;const key=`rcp:artifact-context:${{encodeURIComponent(config.projectId)}}:${{encodeURIComponent(config.chatId)}}`;localStorage.setItem(key,JSON.stringify(payload));
-  try{{const channel=new BroadcastChannel('rcp-artifact-context');channel.postMessage(payload);channel.close();}}catch{{}}
-  notice.textContent='Added to the originating chat draft.';
-}});
+const config={js(config)};
+{_viewer_script()}
 {_KEEP_SAVE_HANDLERS_JS}
 }})();</script></body></html>"""
     csp = (

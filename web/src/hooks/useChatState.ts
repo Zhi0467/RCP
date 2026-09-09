@@ -265,6 +265,17 @@ export function useChatState({
     setFloatingChatState(next);
   }, []);
 
+  const selectCanonicalChat = useCallback(
+    (transcript: ChatTranscript) => {
+      selectChat(transcript.chat_id);
+      selectedCanonicalChatRef.current = transcript;
+      setSelectedCanonicalChat(transcript);
+      setChatTranscripts((current) => new Map(current).set(transcript.chat_id, transcript));
+      setFloatingChatState(null);
+    },
+    [selectChat],
+  );
+
   const reconcileFloatingChat = useCallback(
     (nodes: Record<string, GraphNode>, retainMissing: boolean) => {
       setFloatingChatState((current) =>
@@ -531,6 +542,7 @@ export function useChatState({
     chatSummariesLoading,
     visibleChatSummaries,
     selectChat,
+    selectCanonicalChat,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,

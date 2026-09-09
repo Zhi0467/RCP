@@ -476,6 +476,7 @@ export function NodeChat({
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
+  const appliedArtifactContextKey = `${artifactContextKey}:applied`;
   const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
@@ -643,14 +644,17 @@ export function NodeChat({
           : {}),
         selections: payload.selections,
       });
+      // The preview can bring a different window or chat surface forward. Keep
+      // the attachment with its draft without appending its text again on mount.
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+      if (readStorage(appliedArtifactContextKey) === signature) return;
       const addition = artifactContextDraft(payload);
       setMessage((current) => {
         const next = current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
         writeStorage(draftKey, next);
+        writeStorage(appliedArtifactContextKey, signature);
         return next;
       });
-      removeStorage(artifactContextKey);
-      window.requestAnimationFrame(() => textareaRef.current?.focus());
     };
     const stored = readStorage(artifactContextKey);
     if (stored) {
@@ -680,7 +684,7 @@ export function NodeChat({
       window.removeEventListener("storage", storage);
       channel?.close();
     };
-  }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
+  }, [artifactContextKey, appliedArtifactContextKey, chatId, draftKey, project.id, relatedTasks]);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
@@ -1278,7 +1282,12 @@ export function NodeChat({
       // reset so they cannot attach themselves to the next ordinary turn.
       setMessage((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      setArtifactContext((current) => (current === draftArtifactContext ? null : current));
+      setArtifactContext((current) => {
+        if (current !== draftArtifactContext) return current;
+        removeStorage(artifactContextKey);
+        removeStorage(appliedArtifactContextKey);
+        return null;
+      });
       setAnnotationsOpen(false);
       skills.reset();
       lastArtifactContextRef.current = null;
@@ -1355,6 +1364,8 @@ export function NodeChat({
       skills.reset();
       setAttachments([]);
       setArtifactContext(null);
+      removeStorage(artifactContextKey);
+      removeStorage(appliedArtifactContextKey);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
@@ -2042,6 +2053,8 @@ export function NodeChat({
                 aria-label="Remove artifact selections"
                 onClick={() => {
                   setArtifactContext(null);
+                  removeStorage(artifactContextKey);
+                  removeStorage(appliedArtifactContextKey);
                   lastArtifactContextRef.current = null;
                 }}
               >
