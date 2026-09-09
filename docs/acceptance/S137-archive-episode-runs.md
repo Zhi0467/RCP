@@ -15,14 +15,13 @@ covered_by:
 invariants: [1, 3, 9, 10g]
 reported_by: human, 2026-09-07
 last_passed: >-
-  2026-09-07 — a disposable served project exercised Archive and Unarchive for
-  a failed child and its Auto-research parent in project and space Runs. Counts,
-  nested links, reload persistence, Show archived, and recorded starter profiles
-  matched the stored state. All archive requests returned 200, with no browser
-  console or server errors. API checks verified shared team visibility and
-  membership; regressions covered the former active-work refusal, retained history,
-  migration, backup, transfer, older-reader refusal before release, and stale
-  browser polls.
+  2026-09-09 — a disposable served project exercised Archive and Unarchive for
+  Needs Action Auto-research and Experiment episodes, preserving status, budgets,
+  and task records. Every archive request returned 200; no Stop was dispatched.
+  Browser regressions covered live parent/child controls, project and space
+  visibility, counts, restoration, and stale reads. API tests covered both modes
+  in every lifecycle state and shared team access. Full backend and web suites
+  passed, including migration, backup, and transfer coverage.
 ---
 
 # Archive an episode without erasing its work
