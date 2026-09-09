@@ -66,6 +66,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "35a89ceb4cd6021dfd343f576d370ea5b3aae4237ffa22bd36821c532d1956ed",
         "e6dbd365780f41b9215a44a73dc7964dd09d9e558951318377203e5cd6d824e4",
         "17025e0e308d205392777308b1fc9a5d5f65a32a48879d66c77e61e4ec3e603f",
+        "ca5d6cfb6e1a5513742e7d1e3f854af21165a4b1388ed64ecb5715166410f533",
         # v0.3.5 release shape (pre-compute-jobs-v14-7d6546f), missed when its era shipped.
         "c49a8922bd0fee351f656333eafc183c5f2e6f65c95648b39e4f1ccf961b3c5e",
     }

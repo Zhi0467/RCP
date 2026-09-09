@@ -113,6 +113,10 @@ remain chat context, not graph-editing controls or Evidence creation shortcuts.
 
 ## DAG controls
 
+At viewport widths of 560px or less, DAG controls start closed behind a
+chevron disclosure so the canvas is the primary content. Opening the disclosure
+exposes the same controls; wider views keep them visible.
+
 Boundary-aware page scroll chaining, brighten/dim-all, fullscreen with visible
 node details, **Release all pins**, and per-node pin release. Repulsion must
 visibly affect spacing, and the canvas must leave generous room for manual
@@ -139,6 +143,12 @@ assistant prose is unboxed. Current task activity folds behind a muted Activity
 row when its underlying status can already be inspected, while failures and
 recovery controls stay explicit. The composer is a calm contained writing
 surface rather than a full-width control bar.
+
+At viewport widths of 560px or less, Chats uses a single column. The conversation
+list starts closed behind a **Chats** disclosure above the conversation and
+closes after selecting a chat. Wider views retain the resizable list and its
+saved collapse preference; changing viewport size does not overwrite that
+preference or the saved list width.
 
 Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
 arrows highlight, Enter selects the highlight instead of sending, and Escape

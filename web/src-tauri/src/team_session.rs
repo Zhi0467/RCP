@@ -163,6 +163,7 @@ pub struct ProjectTransferTargetReadback {
 pub struct TeamSessionState {
     certificate_der: Vec<u8>,
     established: Mutex<HashMap<String, EstablishedTeamSession>>,
+    cookies: Mutex<HashMap<String, Zeroizing<String>>>,
 }
 
 impl TeamSessionState {
@@ -170,6 +171,7 @@ impl TeamSessionState {
         Self {
             certificate_der: identity.certificate_der().to_vec(),
             established: Mutex::new(HashMap::new()),
+            cookies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -201,6 +203,7 @@ impl TeamSessionState {
     }
 
     pub fn forget(&self, connection_id: &str) -> Result<(), String> {
+        self.acquire_cookies()?.remove(connection_id);
         self.acquire()?.remove(connection_id);
         Ok(())
     }
@@ -211,27 +214,9 @@ impl TeamSessionState {
         connection_id: &str,
         request_id: &str,
     ) -> Result<ProjectProvisionReadback, String> {
-        let connection = connections
-            .list()?
-            .into_iter()
-            .find(|connection| connection.connection_id == connection_id)
-            .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
-        let client = self.client(&connection.local_origin)?;
-        let health = read_health(&client, &connection.local_origin).await?;
-        let protocol = validate_health(&health, Some(&connection))?;
-        let token = connections.load_member_token(connection_id)?;
-        let (identity, set_cookie) = exchange_session(
-            &client,
-            &connection.local_origin,
-            &token,
-            protocol,
-            installed_server_commit(&health),
-        )
-        .await?;
-        validate_identity(&identity, &health)?;
-        let cookie = request_cookie(&set_cookie)?;
-        let header = HeaderValue::from_str(&cookie)
-            .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        let (connection, client, header) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
         let response = client
             .get(endpoint(
                 &connection.local_origin,
@@ -735,15 +720,17 @@ impl TeamSessionState {
         )
         .await?;
         connections.save_metadata(connection.clone())?;
+        let native_cookie = request_cookie(&cookie)?;
         install_team_session_cookie(window, &ready.local_origin, cookie).await?;
+        self.acquire_cookies()?
+            .insert(connection_id.to_string(), native_cookie);
         self.record(connection, identity, &health)
     }
 
     /// Establish the saved member session for a native-only operation. This
     /// deliberately does not touch the WebView cookie or browser navigation;
-    /// the native request methods exchange the saved member token again for
-    /// each authenticated request. It lets a resumed transfer recover after
-    /// a desktop restart while keeping the browser session optional.
+    /// native requests reuse the cached session cookie. It lets a resumed transfer
+    /// recover after a desktop restart while keeping the browser session optional.
     pub(crate) async fn ensure_native_session(
         &self,
         connections: &TeamConnectionState,
@@ -766,7 +753,7 @@ impl TeamSessionState {
         let health = read_health(&client, &ready.local_origin).await?;
         let protocol = validate_health(&health, Some(&connection))?;
         let token = connections.load_member_token(connection_id)?;
-        let (identity, _cookie) = exchange_session(
+        let (identity, cookie) = exchange_session(
             &client,
             &ready.local_origin,
             &token,
@@ -775,6 +762,8 @@ impl TeamSessionState {
         )
         .await?;
         validate_identity(&identity, &health)?;
+        self.acquire_cookies()?
+            .insert(connection_id.to_string(), request_cookie(&cookie)?);
         self.record(connection, identity, &health)
     }
 
@@ -876,7 +865,10 @@ impl TeamSessionState {
         )
         .await?;
         connections.save_metadata(connection.clone())?;
+        let native_cookie = request_cookie(&cookie)?;
         install_team_session_cookie(window, &connection.local_origin, cookie).await?;
+        self.acquire_cookies()?
+            .insert(connection.connection_id.clone(), native_cookie);
         self.record(connection, identity, &health)
     }
 
@@ -951,6 +943,32 @@ impl TeamSessionState {
     ) -> Result<(TeamConnectionMetadata, Client, HeaderValue), String> {
         let (connection, session) = self.saved_established(connections, connection_id)?;
         let (client, health, protocol) = self.native_client(&connection, &session).await?;
+        let cached_cookie = self.acquire_cookies()?.get(connection_id).cloned();
+        if let Some(cookie) = cached_cookie {
+            let header = HeaderValue::from_str(&cookie)
+                .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+            let response = client
+                .get(endpoint(&connection.local_origin, "/api/identity")?)
+                .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
+                .header(COOKIE, header.clone())
+                .send()
+                .await
+                .map_err(|error| format!("could not verify team session identity: {error}"))?;
+            if response.status().is_success() {
+                let identity = response.json::<TeamIdentity>().await.map_err(|_| {
+                    "team session verification returned an invalid identity".to_string()
+                })?;
+                validate_identity(&identity, &health)?;
+                return Ok((connection, client, header));
+            }
+            if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+                return Err(format!(
+                    "team session verification was rejected (HTTP {})",
+                    response.status().as_u16()
+                ));
+            }
+            self.acquire_cookies()?.remove(connection_id);
+        }
         let token = connections.load_member_token(connection_id)?;
         let (identity, set_cookie) = exchange_session(
             &client,
@@ -964,7 +982,17 @@ impl TeamSessionState {
         let cookie = request_cookie(&set_cookie)?;
         let header = HeaderValue::from_str(&cookie)
             .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        self.acquire_cookies()?
+            .insert(connection_id.to_string(), cookie);
         Ok((connection, client, header))
+    }
+
+    fn acquire_cookies(
+        &self,
+    ) -> Result<MutexGuard<'_, HashMap<String, Zeroizing<String>>>, String> {
+        self.cookies
+            .lock()
+            .map_err(|_| "the team session cookie state is unavailable".to_string())
     }
 
     fn acquire(&self) -> Result<MutexGuard<'_, HashMap<String, EstablishedTeamSession>>, String> {
@@ -1844,6 +1872,55 @@ mod tests {
             headers.insert(SET_COOKIE, HeaderValue::from_str(invalid).unwrap());
             assert!(session_cookie(&headers).is_err(), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn connection_reuses_only_its_own_request_cookie() {
+        let state = TeamSessionState {
+            certificate_der: Vec::new(),
+            established: Mutex::new(HashMap::new()),
+            cookies: Mutex::new(HashMap::new()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            SET_COOKIE,
+            HeaderValue::from_static(
+                "__Host-rcp_session=test-session; Path=/; Secure; HttpOnly; SameSite=lax",
+            ),
+        );
+        let cookie = request_cookie(&session_cookie(&headers).unwrap()).unwrap();
+        state
+            .acquire_cookies()
+            .unwrap()
+            .insert("team-a".into(), cookie);
+
+        let cookies = state.acquire_cookies().unwrap();
+        assert_eq!(
+            cookies.get("team-a").unwrap().as_str(),
+            "__Host-rcp_session=test-session"
+        );
+        assert!(!cookies.contains_key("team-b"));
+    }
+
+    #[test]
+    fn forgetting_a_connection_removes_only_its_cookie() {
+        let state = TeamSessionState {
+            certificate_der: Vec::new(),
+            established: Mutex::new(HashMap::new()),
+            cookies: Mutex::new(HashMap::new()),
+        };
+        for connection_id in ["team-a", "team-b"] {
+            state.acquire_cookies().unwrap().insert(
+                connection_id.into(),
+                request_cookie("__Host-rcp_session=test-session; Path=/; Secure; HttpOnly")
+                    .unwrap(),
+            );
+        }
+
+        state.forget("team-a").unwrap();
+        let cookies = state.acquire_cookies().unwrap();
+        assert!(!cookies.contains_key("team-a"));
+        assert!(cookies.contains_key("team-b"));
     }
 
     #[test]

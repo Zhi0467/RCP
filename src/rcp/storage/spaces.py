@@ -14,6 +14,7 @@ from rcp.limits import (
     TEAM_INVITATION_TTL_DAYS,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_SESSION_IDLE_DAYS,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
     TEAM_SESSION_TOKEN_MAX_LENGTH,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
@@ -28,6 +29,7 @@ from rcp.storage.models import (
     TeamAuthenticationError,
     TeamInvitationRecord,
     TeamMemberAuthorityRecord,
+    TeamSessionRecord,
     _canonical_space_id,
     _canonical_uuid4,
     _new_enrollment_code,
@@ -699,7 +701,11 @@ class SpaceStoreMixin:
                 ).fetchone()
         return TeamInvitationRecord.model_validate(dict(row))
 
-    def create_team_session(self, token: str) -> tuple[str, SpaceUserRecord]:
+    def create_team_session(
+        self, token: str, *, label: str = "Unnamed device"
+    ) -> tuple[str, SpaceUserRecord]:
+        if not isinstance(label, str) or len(label) > TEAM_SESSION_LABEL_MAX_LENGTH:
+            raise ValueError("The device label exceeds its length limit or is not text.")
         if (
             not isinstance(token, str)
             or len(token) > TEAM_MEMBER_TOKEN_MAX_LENGTH
@@ -731,10 +737,10 @@ class SpaceStoreMixin:
                 connection.execute(
                     """
                     INSERT INTO team_sessions (
-                        session_hash, user_id, created_at, last_seen_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        session_hash, session_id, label, user_id, created_at, last_seen_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_hash, member.user_id, now, now, expires_at),
+                    (session_hash, str(uuid.uuid4()), label, member.user_id, now, now, expires_at),
                 )
         if member is None:
             raise TeamAuthenticationError(
@@ -817,6 +823,46 @@ class SpaceStoreMixin:
                 (now, expires_at, session_hash),
             )
             return member
+
+    def team_sessions(
+        self, user_id: str, *, authenticating_session: str | None = None
+    ) -> list[TeamSessionRecord]:
+        current_hash = _sha256(authenticating_session) if authenticating_session else None
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT session_id, label, created_at, last_seen_at, expires_at,
+                       session_hash IS ? AS is_current
+                FROM team_sessions WHERE user_id = ? AND expires_at > ?
+                ORDER BY created_at DESC, session_id
+                """,
+                (current_hash, user_id, self.now()),
+            ).fetchall()
+        return [
+            TeamSessionRecord.model_validate({**dict(row), "is_current": bool(row["is_current"])})
+            for row in rows
+        ]
+
+    def revoke_team_session(
+        self, session_id: str, user_id: str, *, authenticating_session: str | None = None
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT session_hash FROM team_sessions "
+                "WHERE session_id = ? AND user_id = ? AND expires_at > ?",
+                (session_id, user_id, self.now()),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            if authenticating_session and hmac.compare_digest(
+                row["session_hash"], _sha256(authenticating_session)
+            ):
+                raise ValueError("Use Logout to end the current session.")
+            connection.execute(
+                "DELETE FROM team_sessions WHERE session_id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
 
     def delete_team_session(self, session: str | None) -> None:
         if not session:

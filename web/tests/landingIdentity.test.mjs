@@ -14,7 +14,7 @@ const server = await createServer({
 const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/views/ProjectLanding.tsx",
 );
-const { IdentityProvenanceSlip, copyIdentityId } = await server.ssrLoadModule(
+const { IdentityProvenanceSlip, TeamSessionList, copyIdentityId } = await server.ssrLoadModule(
   "/src/components/LandingIdentityMenu.tsx",
 );
 
@@ -228,6 +228,63 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
   assert.doesNotMatch(html, /not implemented|coming later/i);
   assert.doesNotMatch(html, /<(form|input|textarea|select)\b/i);
   assert.doesNotMatch(html, /password|access token|private key/i);
+  assert.doesNotMatch(html, />Devices</);
+});
+
+test("the team identity panel exposes Devices beside invitations", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(IdentityProvenanceSlip, {
+      identity: { ...identity, space_kind: "team" },
+      identityError: null,
+      teamNoticeId: "team-status",
+      copyStatus: "idle",
+      onCopy() {},
+      onEdit() {},
+    }),
+  );
+  assert.match(html, />Devices</);
+  assert.match(html, />Team invitations</);
+});
+
+test("devices render backend current and revoke decisions and dispatch the public ID", () => {
+  const session = {
+    session_id: "current-public-id",
+    label: 'My <img src="x" onerror="alert(1)"> phone',
+    created_at: "2026-09-09T10:00:00Z",
+    last_seen_at: "2026-09-09T11:00:00Z",
+    expires_at: "2026-09-23T11:00:00Z",
+    is_current: true,
+    can_revoke: false,
+  };
+  const sessions = [
+    session,
+    { ...session, session_id: "other-public-id", is_current: false, can_revoke: true },
+  ];
+  let revoked = null;
+  const props = {
+    sessions,
+    revoking: null,
+    onRevoke(id) {
+      revoked = id;
+    },
+  };
+  const html = renderToStaticMarkup(React.createElement(TeamSessionList, props));
+  assert.match(html, /Current device/);
+  assert.match(html, /My &lt;img/);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /Last seen/);
+  assert.equal((html.match(/<button/g) ?? []).length, 1);
+  const tree = TeamSessionList(props);
+  findElement(tree, (element) => element.type === "button").props.onClick();
+  assert.equal(revoked, "other-public-id");
+
+  const unavailable = renderToStaticMarkup(
+    React.createElement(TeamSessionList, {
+      ...props,
+      sessions: [{ ...session, is_current: false, can_revoke: false }],
+    }),
+  );
+  assert.doesNotMatch(unavailable, /<button/);
 });
 
 test("the identity record names the team spaces already saved on this desktop", () => {

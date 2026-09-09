@@ -12,6 +12,7 @@ from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, normalize_display_name
 from rcp.limits import (
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
+    TEAM_SESSION_LABEL_MAX_LENGTH,
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
 from rcp.storage.models import TeamInvitationRecord
@@ -49,6 +50,19 @@ class TeamSessionExchangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
+    label: str = Field(default="Unnamed device", max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
+
+
+class TeamSessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str
+    label: str
+    created_at: str
+    last_seen_at: str
+    expires_at: str
+    is_current: bool
+    can_revoke: bool
 
 
 class TeamSpaceUpdateRequest(BaseModel):
@@ -182,7 +196,7 @@ def exchange_team_session(
 ) -> dict[str, object]:
     acknowledge_team_shell_protocol(request, response, required_on_installed_server=True)
     identity_access.require_team_space()
-    session, member = store.create_team_session(body.token)
+    session, member = store.create_team_session(body.token, label=body.label)
     identity_access.set_team_session_cookie(response, session)
     return identity_access.identity_payload(member)
 
@@ -199,6 +213,48 @@ def logout_team_session(
     identity_access.acting_user(request)
     store.delete_team_session(request.cookies.get(TEAM_SESSION_COOKIE))
     identity_access.clear_team_session_cookie(response)
+    return {"ok": True}
+
+
+@router.get("/api/team/sessions")
+def team_sessions(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> list[TeamSessionResponse]:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    sessions = store.team_sessions(
+        member.user_id,
+        authenticating_session=identity_access.authenticating_team_session(request),
+    )
+    return [
+        TeamSessionResponse(**session.model_dump(), can_revoke=not session.is_current)
+        for session in sessions
+    ]
+
+
+@router.post("/api/team/sessions/{session_id}/revoke")
+def revoke_team_session(
+    request: Request,
+    session_id: str,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> dict[str, bool]:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    try:
+        store.revoke_team_session(
+            session_id,
+            member.user_id,
+            authenticating_session=identity_access.authenticating_team_session(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="That session was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -320,6 +376,7 @@ __all__ = [
     "TeamEnrollmentRequest",
     "TeamInvitationResponse",
     "TeamSessionExchangeRequest",
+    "TeamSessionResponse",
     "TeamSpaceUpdateRequest",
     "create_team_invitation",
     "enroll_team_member",
@@ -327,9 +384,11 @@ __all__ = [
     "get_identity",
     "logout_team_session",
     "revoke_team_credential",
+    "revoke_team_session",
     "rotate_team_credential",
     "router",
     "team_invitations",
+    "team_sessions",
     "update_identity",
     "update_team_space",
 ]

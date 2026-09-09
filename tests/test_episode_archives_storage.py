@@ -264,9 +264,12 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
     before = store.episode("episode")
     with store.connection() as connection:
         connection.execute("DROP TABLE episode_archives")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 13")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 13")
     snapshot = AppStore.open_read_only(store.path)
-    assert snapshot.check_storage_schema_migrations()[2] == ("episode_archives_v1",)
+    assert snapshot.check_storage_schema_migrations()[2] == (
+        "episode_archives_v1",
+        "team_session_ids_v1",
+    )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before
     assert migrated.episode_archive_states("project")["episode"] == EpisodeArchiveState(

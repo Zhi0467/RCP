@@ -20,6 +20,7 @@ import type {
   StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
+  TeamSession,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
@@ -126,6 +127,17 @@ export function exchangeTeamSession(token: string): Promise<IdentityResponse> {
 
 export function loadTeamInvitations(): Promise<TeamInvitation[]> {
   return api<TeamInvitation[]>("/api/team/invitations");
+}
+
+export function loadTeamSessions(): Promise<TeamSession[]> {
+  return api<TeamSession[]>("/api/team/sessions");
+}
+
+export function revokeTeamSession(sessionId: string): Promise<{ ok: boolean }> {
+  return api<{ ok: boolean }>(`/api/team/sessions/${encodeURIComponent(sessionId)}/revoke`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function loadSpaceUsers(): Promise<SpaceUserSummary[]> {
