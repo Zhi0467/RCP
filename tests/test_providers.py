@@ -339,6 +339,7 @@ def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -
         MachineConfig(alias="remote", host="gpu.example", os_account="alice@example")
 
 
+@pytest.mark.real_provider_discovery
 def test_failed_version_command_does_not_publish_stderr_as_a_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -364,6 +365,7 @@ def test_failed_version_command_does_not_publish_stderr_as_a_version(
     assert readiness.version is None
 
 
+@pytest.mark.real_provider_discovery
 def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -398,6 +400,7 @@ def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
     assert readiness.authenticated is True
 
 
+@pytest.mark.real_provider_discovery
 def test_local_provider_discovery_keeps_a_stable_symlink_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

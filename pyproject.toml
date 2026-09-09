@@ -61,6 +61,9 @@ pythonpath = ["supervisor/src"]
 # worker, which bounds the fixture churn and keeps a failure reproducible with a
 # plain single-file run. Pass `-n0` to debug serially.
 addopts = "-q --strict-markers -n auto --dist loadfile"
+markers = [
+  "real_provider_discovery: exercise the real local provider discovery helper; only for a test that stubs `shutil.which` and `pwd.getpwuid` itself",
+]
 
 [tool.ruff]
 target-version = "py311"
