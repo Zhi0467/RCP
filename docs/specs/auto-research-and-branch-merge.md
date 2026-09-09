@@ -323,6 +323,10 @@ Already-present values are omitted. Protected changes, conflicting nodes, Decisi
 outcomes, removals, and source Proposals remain together in the agent's residue.
 This keeps coupled fields such as Decision options and selection in one update.
 
+Experiment guidance text is merged; its backend-owned freshness flags are not
+source changes. Main's transition recomputes validity from the merged dependencies,
+so guidance that was fresh on the branch may become stale on main.
+
 An empty residue commits without a provider turn. Otherwise, the agent writes
 only the residue operations; RCP prepends the built operations for both self-check
 and commit. Unsupported configuration changes, invalid fixed operations, and

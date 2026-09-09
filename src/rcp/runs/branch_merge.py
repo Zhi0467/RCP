@@ -107,7 +107,10 @@ from rcp.service import RunRequest, _proposal_judgment_patch
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
-_SEMANTIC_NODE_BOOKKEEPING = frozenset({"created_rev", "updated_rev"})
+# Main's transition recomputes guidance validity from its merged dependencies.
+_SEMANTIC_NODE_BOOKKEEPING = frozenset(
+    {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
+)
 _SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
 _SEMANTIC_PROPOSAL_BOOKKEEPING = frozenset(
     {
@@ -916,7 +919,7 @@ def build_deterministic_merge_ops(
         if field == "$" and node is not None and current is None and node.standing == "asserted":
             raw = node.model_dump(
                 mode="json",
-                exclude={"created_rev", "updated_rev", "standing"},
+                exclude=_SEMANTIC_NODE_BOOKKEEPING | {"standing"},
                 exclude_defaults=True,
             )
             try:

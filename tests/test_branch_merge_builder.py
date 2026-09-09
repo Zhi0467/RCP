@@ -171,6 +171,89 @@ class _NoProvider:
         pytest.fail("An ordinary deterministic merge must not launch a provider")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_experiment", [False, True])
+@pytest.mark.parametrize("refresh_guidance", [False, True])
+async def test_merge_recomputes_guidance_validity_without_provider(
+    manifest, tmp_path: Path, new_experiment: bool, refresh_guidance: bool
+) -> None:
+    history = HistoryManager(manifest)
+    experiment = {
+        "id": "exp/guided",
+        "type": "experiment",
+        "title": "Guided experiment",
+        "objective": "Follow the gate result.",
+        "status": "implementing",
+        "current_summary": "Waiting for the gate.",
+        "next_action": "Resolve the gate.",
+    }
+    create_experiment = {"op": "create_nodes", "nodes": [experiment]}
+    create_edge = {
+        "op": "create_edges",
+        "edges": [
+            {
+                "id": "edge/gate",
+                "source": experiment["id"],
+                "target": "blk/branch-only",
+                "relation": "blocked_by",
+            }
+        ],
+    }
+    _append(history, _new_blocker())
+    if not new_experiment:
+        _append(history, create_experiment, create_edge)
+    template = _context()
+    base_head = history.head_ref()
+    branch = history.create_auto_research_branch(
+        template.metadata.model_copy(
+            update={
+                "base_head": base_head,
+                "head": base_head.model_copy(update={"target": template.metadata.head.target}),
+            }
+        )
+    )
+    if new_experiment:
+        _append(branch, create_experiment, create_edge)
+    guidance = _update(
+        experiment["id"], current_summary="The gate is resolved.", next_action="Continue the work."
+    )
+    _append(branch, _update("blk/branch-only", status="resolved"), guidance)
+    if refresh_guidance:
+        _append(branch, guidance)
+    source = branch.state()
+    assert source.nodes[experiment["id"]].current_summary_stale is not refresh_guidance
+
+    def load_context() -> BranchMergeContext:
+        metadata = branch.branch_metadata()
+        return BranchMergeContext.create(
+            merge_task_id=template.merge_task_id,
+            authorized_by=template.authorized_by,
+            metadata=metadata,
+            eligibility=BranchMergeEligibility(
+                branch_head=metadata.head, episode_ending="completed"
+            ),
+            base_graph=branch.base_state(),
+            branch_graph=source,
+            main_head=history.head_ref(),
+            main_graph=history.state(),
+            run_truth_scope=["repo-a"],
+        )
+
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    assert outcome.correction_rounds == 0
+    assert history.state().revision == base_head.revision + 1
+    merged = history.state().nodes[experiment["id"]]
+    assert merged.status == "implementing"
+    assert merged.current_summary == "The gate is resolved."
+    assert merged.next_action == "Continue the work."
+    assert merged.current_summary_stale is True
+    assert merged.next_action_stale is True
+    assert history.state().nodes["blk/branch-only"].status == "resolved"
+    assert branch.state() == source
+
+
 async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
     root = tmp_path / "stage"
     workspace = root / "workspace"
