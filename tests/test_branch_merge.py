@@ -26,7 +26,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import GraphTransitionManager
-from rcp.core.validation import ValidationReport
+from rcp.core.validation import ValidationReport, validate_patch
 from rcp.history import RevisionConflict
 from rcp.runs.branch_merge import (
     BranchMergeCandidateProblem,
@@ -185,6 +185,102 @@ def _local_scope(stage: BranchMergeStage, context: BranchMergeContext) -> Projec
         repositories=[],
         protected_write_paths=[str(stage.local_stage.parent / "state" / ".research")],
     )
+
+
+def _branch_source_ref(*, repository: str = "repo", record: str = "record-merge") -> dict:
+    return {
+        "machine": "laptop",
+        "truth_repository": repository,
+        "source": "codex",
+        "session_id": "session-merge",
+        "record_uuid": record,
+        "timestamp": "2026-08-12T00:00:00Z",
+        "excerpt": "The branch task recorded this source.",
+    }
+
+
+def _sourced_blocker_context(*, refs: list[dict]) -> BranchMergeContext:
+    """A branch that added one sourced Blocker main has never seen."""
+
+    blocker = Blocker.model_validate(
+        {
+            "id": "blk/branch-only",
+            "type": "blocker",
+            "title": "Reflector arm is absent",
+            "description": "The textual arm has no reflector.",
+            "created_rev": 3,
+            "updated_rev": 3,
+            "source_refs": refs,
+        }
+    )
+    context = _context()
+    branch_graph = context.branch_graph.model_copy(
+        update={"nodes": {**context.branch_graph.nodes, blocker.id: blocker}}
+    )
+    return context.model_copy(update={"branch_graph": branch_graph})
+
+
+def _sourced_blocker_candidate(*, refs: list[dict]) -> str:
+    return json.dumps(
+        {
+            "summary": "Carry the branch Blocker onto main.",
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/branch-only",
+                            "type": "blocker",
+                            "title": "Reflector arm is absent",
+                            "description": "The textual arm has no reflector.",
+                            "source_refs": refs,
+                        }
+                    ],
+                }
+            ],
+            "repositories_read": [],
+            "change_summary": ["Carried the branch Blocker."],
+        }
+    )
+
+
+def test_merge_carries_branch_provenance_without_declaring_a_repository_read() -> None:
+    """A graph-only merge reads no repository, so carrying provenance must still admit.
+
+    Source refs stay bound to the run truth scope; nothing requires the carrying
+    patch to have read the repository that the branch task already read.
+    """
+
+    recorded = _branch_source_ref()
+    context = _sourced_blocker_context(refs=[recorded])
+    candidate = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[recorded]), context)
+
+    report = validate_patch(
+        context.main_graph,
+        candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
+        ["repo"],
+    )
+
+    assert candidate.repositories_read == []
+    assert not report.rejected, [message.message for message in report.messages]
+
+
+def test_merge_still_rejects_a_carried_ref_outside_the_run_truth_scope() -> None:
+    """Removing the read record keeps the scope boundary RCP itself supplies."""
+
+    foreign = _branch_source_ref(repository="unscoped-repo")
+    context = _sourced_blocker_context(refs=[foreign])
+    candidate = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[foreign]), context)
+
+    report = validate_patch(
+        context.main_graph,
+        candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
+        ["repo", "unscoped-repo"],
+    )
+
+    assert any(message.code == "source-outside-run-scope" for message in report.messages), [
+        message.message for message in report.messages
+    ]
 
 
 def test_semantic_delta_is_typed_and_ignores_revision_bookkeeping() -> None:

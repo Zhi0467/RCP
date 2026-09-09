@@ -4662,7 +4662,7 @@ export default function App() {
         <ProjectHistoryDrawer
           projectId={project.id}
           summaries={historyRevisionSummaries}
-          tasks={tasks}
+          tasks={projectTasks}
           loading={historySummariesRevision !== graph.revision}
           error={historySummariesError}
           onInspectTask={(taskId) => {

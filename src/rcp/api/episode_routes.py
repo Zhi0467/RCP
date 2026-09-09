@@ -631,7 +631,7 @@ def _resolved_branch_merge_request(
         model=profile.model,
         reasoning=profile.reasoning,
         run_on=profile.run_on,
-        run_truth_scope=sorted(set(service.manifest.agent.default_run_truth_scope)),
+        run_truth_scope=sorted(set(service.history.state().project_truth_scope)),
         chat_scope="project",
         mode="work",
         trigger="human",

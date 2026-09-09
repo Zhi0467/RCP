@@ -6,6 +6,8 @@ driver: pytest + browser
 covered_by:
   - tests/test_branch_history.py
   - tests/test_branch_merge.py
+  - tests/test_branch_merge_builder.py
+  - tests/test_branch_merge_scope.py
   - tests/test_branch_merge_proposals.py
   - tests/test_branch_merge_api.py
   - tests/test_paused_branch_merge.py
@@ -19,12 +21,12 @@ last_passed: 2026-08-18 — focused/full backend and Web suites plus a served li
   Codex browser drive kept branch-only Evidence off main, advanced main
   independently, merged one attributable transition, and kept console/server clean
 last_checked: >-
-  2026-09-07 — full backend and Web suites passed. Hermetic merge API workflows
-  cover direct changes plus pending main Proposals, repeated human approval,
-  three successive source value changes, stable retry identity, unchanged
-  rejected reviews, and writer admission fences. A disposable served-browser
-  drive verified ordinary branch editing and chats with a deterministic provider;
-  no current live-provider or SSH qualification is claimed.
+  2026-09-08 — focused merge regressions and a disposable served-browser drive
+  verified an ordinary branch merge without a provider call, one attributable
+  main transition, retained branch history, and both tasks visible on main.
+  Browser console warnings/errors were empty. Regressions cover mixed residue
+  correction, main movement, protected reviews, scope drift, and impossible-plan
+  rejection before launch. No current live-provider or SSH qualification is claimed.
 invariants: [1, 3, 6, 7b, 10g]
 reported_by: confirmed design handoff, 2026-08-17
 ---
@@ -37,9 +39,10 @@ editable. Repository files and provider sessions remain ordinary project state;
 this is a graph branch, not a reversible project sandbox.
 
 After the episode completes or pauses for a human, Runs can dispatch a dedicated
-orchestrator-authority merge agent. The agent rebases the branch's typed semantic
-delta onto current main, resolves conflicts through its bounded correction loop,
-and commits one attributable main transition or nothing. The branch remains as
+orchestrator-authority merge task. RCP builds ordinary non-conflicting changes
+without a provider turn. An agent handles remaining changes and conflicts through
+its bounded correction loop. RCP commits one attributable main transition or
+nothing. The branch remains as
 replayable canonical history after any merge.
 
 The human confirmed on 2026-09-05 that a merged paused episode cannot resume.
@@ -60,7 +63,8 @@ branch history remain intact, and a failed merge can be retried.
    a merge. Let the episode reach a durable ending or human pause with no
    branch-writing task active.
 5. Click **Merge to main**. Follow the ordinary merge task detail while the
-   graph-only agent runs and, if needed, corrects its candidate.
+   merge completes. Ordinary non-conflicting changes require no provider turn;
+   other merges retain the graph-only agent and correction history.
 6. Confirm one successful main transition appears with branch, episode, head,
    task, and human provenance. The branch detail reports the merged head and
    remains present; there is no discard or conflict viewer.
