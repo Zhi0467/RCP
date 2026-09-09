@@ -12,6 +12,11 @@ Active:
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
 
+- [Phone access: device sessions and mobile rendering](handoff-2026-09-09-phone-access-device-sessions.md)
+  — a member should see their own connected devices and revoke any one of them.
+  Nothing is implemented yet; the authentication facts and the mobile scan are
+  verified, and the transport question is deliberately excluded.
+
 - [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
   — production adoption, promoted release, complete backup, and doctor are
   verified. The separate controller fix and unfinished Ubuntu reboot/restore
