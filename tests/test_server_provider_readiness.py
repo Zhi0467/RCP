@@ -367,6 +367,50 @@ def test_orchestrator_uses_the_real_provider_version_floor(tmp_path: Path) -> No
     assert "requires 0.138.0 or newer" in checked.step.message
 
 
+def test_work_like_profile_check_refuses_a_host_that_cannot_sandbox(tmp_path: Path) -> None:
+    """`rcp server provider check` applies the same Work precondition as launch.
+
+    Before this, an authenticated Claude without bubblewrap checked out as ready
+    for the orchestrator and failed only once a task had been allocated.
+    """
+    store, authorizer = _team_store(tmp_path)
+    blocked = _ready_provider().model_copy(
+        update={
+            "provider": "claude",
+            "work_like_available": False,
+            "work_like_reason": "sandbox required but unavailable: bubblewrap (bwrap) not installed",
+        }
+    )
+    launcher = _FakeLauncher(
+        account=ProviderExecutionAccount(host="", reachable=True, os_account="rcp"),
+        readiness=blocked,
+    )
+    coordinator = _coordinator(store, launcher, tmp_path)
+
+    orchestrator = _request(store, authorizer, profile="orchestrator")
+    plan = coordinator.plan("request", orchestrator.request_id)
+    checked = coordinator.check(
+        "request",
+        orchestrator.request_id,
+        boundary_sha256=plan.boundary_sha256,
+        target_id=plan.targets[0].target_id,
+    )
+    assert checked.step.state == "operator_action_needed"
+    assert "bubblewrap" in checked.step.message
+
+    # Discuss never needs the sandbox, so the same readiness is not a fault there.
+    chat = _request(store, authorizer, profile="project_chat")
+    plan = coordinator.plan("request", chat.request_id)
+    checked = coordinator.check(
+        "request",
+        chat.request_id,
+        boundary_sha256=plan.boundary_sha256,
+        target_id=plan.targets[0].target_id,
+    )
+    assert checked.step.state != "operator_action_needed"
+    assert "bubblewrap" not in (checked.step.message or "")
+
+
 def test_unexpected_launcher_failure_is_not_misreported_as_missing_install(
     tmp_path: Path,
 ) -> None:

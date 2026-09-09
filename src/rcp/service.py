@@ -39,6 +39,7 @@ from rcp.config import (
     Manifest,
     ResolvedComputeContext,
     ResolvedComputeProfile,
+    launches_work_like,
 )
 from rcp.control import derive_experiment_control_state
 from rcp.core.attention import (
@@ -2514,6 +2515,9 @@ class ProjectService:
             saved = manifest.agent_profile(surface)
             exported = saved.model_dump(mode="json")
             exported["effective_model"] = cls._with_catalog_head(manifest, launcher, saved).model
+            # Whether a Work-like launch precondition applies here at all, so no
+            # surface has to infer it from a capability that is only the default.
+            exported["work_like_capable"] = launches_work_like(surface)
             profiles[surface] = exported
         return profiles
 

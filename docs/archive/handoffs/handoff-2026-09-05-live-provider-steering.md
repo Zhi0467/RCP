@@ -1,7 +1,10 @@
 # Live provider steering handoff
 
 Date: 2026-09-05
-Status: active, human-confirmed on 2026-09-05. Phase 1 local probes are recorded
+Status: superseded on 2026-09-08 by the Claude queued-follow-up brief.
+Historical evidence only; the replay/injection contract below is retired.
+
+Previous status: active, human-confirmed on 2026-09-05. Phase 1 local probes are recorded
 and committed as `44626b2`. Phase 2 implements exact-attempt human chat steering
 for Codex app-server and Claude stream-json, durable human message receipts,
 backend eligibility and disabled reasons, and composer delivery. Local provider

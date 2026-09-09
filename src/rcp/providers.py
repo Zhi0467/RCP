@@ -187,7 +187,25 @@ class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
 
     id: str
-    supports_steering: bool = False
+    #: `inject` puts the message into the turn already running and the provider
+    #: confirms it. `queue` names RCP's continuation contract, not a placement
+    #: promise: the process may run past its first result while accepted
+    #: follow-ups are outstanding. Claude decides placement by timing — a
+    #: message that lands during a tool call joins the running turn and is
+    #: attributed to its result, otherwise it runs as the next turn.
+    steering_behavior: Literal["unsupported", "inject", "queue"] = "unsupported"
+
+    @property
+    def supports_steering(self) -> bool:
+        return self.steering_behavior != "unsupported"
+
+    @property
+    def steer_action_label(self) -> str | None:
+        if self.steering_behavior == "queue":
+            return "Send to the running turn"
+        if self.steering_behavior == "inject":
+            return "Steer running turn"
+        return None
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         raise NotImplementedError
@@ -251,6 +269,8 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         self._ready = False
         self._completed = False
         self._pending: set[str] = set()
+        self._generated: set[str] = {self._turn_id}
+        self._outstanding: set[str] = set()
 
     @staticmethod
     def _user_input(message_id: str, text: str) -> bytes:
@@ -286,9 +306,10 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             raise ValueError(state.reason)
         if expected_turn_id != self._turn_id:
             raise ValueError("The addressed provider turn is no longer active.")
-        if message_id in self._pending or message_id == self._turn_id:
+        if message_id in self._generated:
             raise ValueError("This message was already sent to the provider.")
         self._pending.add(message_id)
+        self._generated.add(message_id)
         return self._user_input(message_id, text)
 
     def receive_line(self, line: str) -> ProviderRuntimeStep:
@@ -299,19 +320,46 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         except json.JSONDecodeError:
             return super().receive_line(line)
         if isinstance(value, dict):
-            if value.get("type") == "user" and value.get("isReplay") is True:
-                message_id = value.get("uuid")
-                if message_id == self._turn_id:
+            if value.get("type") == "command_lifecycle":
+                message_id = value.get("command_uuid")
+                if not isinstance(message_id, str) or message_id not in self._generated:
+                    return ProviderRuntimeStep()
+                state = value.get("state")
+                if state in {"queued", "started"}:
+                    self._outstanding.add(message_id)
+                elif state == "completed":
+                    self._outstanding.discard(message_id)
+                if state == "started" and message_id == self._turn_id:
                     self._ready = True
-                if isinstance(message_id, str) and message_id in self._pending:
+                if state == "queued" and message_id in self._pending:
                     self._pending.remove(message_id)
                     return ProviderRuntimeStep(
                         steer_receipts=((message_id, ProviderSteerReceipt("delivered")),)
                     )
                 return ProviderRuntimeStep()
+            if value.get("type") == "user" and value.get("isReplay") is True:
+                return ProviderRuntimeStep()
             if value.get("type") == "result":
-                self._completed = True
+                message_ids = value.get("user_message_uuids")
+                finished = (
+                    {item for item in message_ids if isinstance(item, str) and item.strip()}
+                    if isinstance(message_ids, list)
+                    else set()
+                )
+                if not finished:
+                    message_id = value.get("user_message_uuid")
+                    if isinstance(message_id, str) and message_id.strip():
+                        finished.add(message_id)
+                self._outstanding.difference_update(finished)
                 event = self._profile.decode_event(value, line)
+                # A failing result ends the invocation even with a follow-up
+                # accepted: the task engine stops at the first error anyway, so
+                # continuing would only run a turn whose task has already
+                # failed. Ending here keeps the error path terminal, which is
+                # what the launcher's stderr drain and stop assume.
+                if finished and self._outstanding and event.event != "error":
+                    return ProviderRuntimeStep(events=(event,))
+                self._completed = True
                 receipts = tuple(
                     (message_id, ProviderSteerReceipt("refused", "Turn completed before delivery."))
                     for message_id in self._pending
@@ -329,7 +377,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
 
 class _ClaudeStreamRuntime(ProviderRuntime):
     id = "claude.stream-json.v1"
-    supports_steering = True
+    steering_behavior = "queue"
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _ClaudeStreamTurn(ClaudeProfile(), request)
@@ -401,6 +449,10 @@ class ProviderProfile:
                     actual=actual,
                     minimum=minimum,
                 )
+
+    def work_like_probe_command(self, binary: str) -> list[str] | None:
+        """Zero-model-call startup check; the caller must supply empty stdin."""
+        return None
 
     def is_authenticated(self, result: subprocess.CompletedProcess[str]) -> bool:
         raise NotImplementedError
@@ -800,6 +852,27 @@ class ClaudeProfile(ProviderProfile):
         except (json.JSONDecodeError, AttributeError):
             return False
 
+    def work_like_probe_command(self, binary: str) -> list[str]:
+        return [
+            binary,
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "dontAsk",
+            "--input-format",
+            "stream-json",
+            "--no-session-persistence",
+            "--setting-sources",
+            "",
+            "--settings",
+            json.dumps(_claude_write_settings(), separators=(",", ":")),
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+        ]
+
     def skill_probe(self, binary: str) -> ProviderSkillProbe:
         return ProviderSkillProbe(
             command=[
@@ -999,8 +1072,8 @@ def _provider_error_text(value: dict[str, object]) -> str:
             message = candidate.get("message")
             if isinstance(message, str) and message.strip():
                 return message.strip()
-            return json.dumps(candidate, ensure_ascii=False)
-    return ""
+    subtype = value.get("subtype")
+    return subtype.strip() if isinstance(subtype, str) else ""
 
 
 def _usage_int(value: object) -> int:
@@ -1076,15 +1149,18 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
     )
 
 
-def _claude_write_settings(scope: ProjectWriteScope) -> dict[str, object]:
+def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, object]:
+    # Readiness validates this same sandbox with no project write authority.
+    writable_roots = scope.writable_roots if scope is not None else []
+    protected_write_paths = scope.protected_write_paths if scope is not None else []
     allow_patterns = [
         f"{tool}({_claude_absolute_pattern(path)})"
-        for path in scope.writable_roots
+        for path in writable_roots
         for tool in ("Edit", "Write")
     ]
     deny_patterns = [
         f"{tool}({_claude_absolute_pattern(path)})"
-        for path in scope.protected_write_paths
+        for path in protected_write_paths
         for tool in ("Edit", "Write")
     ]
     return {
@@ -1102,8 +1178,8 @@ def _claude_write_settings(scope: ProjectWriteScope) -> dict[str, object]:
             "autoAllowBashIfSandboxed": True,
             "allowUnsandboxedCommands": False,
             "filesystem": {
-                "allowWrite": scope.writable_roots,
-                "denyWrite": scope.protected_write_paths,
+                "allowWrite": writable_roots,
+                "denyWrite": protected_write_paths,
             },
             "network": {"allowedDomains": ["*"]},
         },

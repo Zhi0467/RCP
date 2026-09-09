@@ -123,9 +123,10 @@ disrupting other DAG interactions.
 ## Conversation composer
 
 Discuss and Work are switchable on every node and project conversation. Discuss
-is plum, Work is dark forest, `Shift+Tab` toggles while the composer is focused,
-and every sent turn keeps an immutable visible mode label. A resumed task keeps
-its original mode regardless of the current composer setting.
+is plum, Work is dark forest, `Shift+Tab` toggles while the composer is focused
+and is not addressing a running attempt, and every sent turn keeps an immutable
+visible mode label. A resumed task keeps its original mode regardless of the
+current composer setting.
 
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity

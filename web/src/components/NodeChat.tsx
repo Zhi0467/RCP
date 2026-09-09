@@ -576,6 +576,9 @@ export function NodeChat({
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
+  const composerHint = steeringTask
+    ? steeringTask.steer_action_label
+    : [...relatedTasks].reverse().find((task) => task.active)?.steer_unavailable_reason;
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
   const revisionReviewTask = revisionReview
     ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
@@ -886,8 +889,12 @@ export function NodeChat({
   );
 
   const toggleMode = useCallback(() => {
+    // A follow-up inherits the running turn's capability, so the toggle would
+    // describe something it cannot change. While a turn merely runs unsteerable,
+    // the choice still belongs to the next turn and stays available.
+    if (steeringTask) return;
     selectMode(toggleConversationMode(modeRef.current));
-  }, [selectMode]);
+  }, [steeringTask, selectMode]);
 
   useEffect(() => {
     if (presentation !== "workspace" || readOnly) return;
@@ -1937,6 +1944,11 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
+          {composerHint && (
+            <div className="chat-composer-hint" role="status">
+              {composerHint}
+            </div>
+          )}
           {annotations.length > 0 && (
             <div className="chat-annotation-summary">
               <button
@@ -2103,6 +2115,7 @@ export function NodeChat({
                     className={option}
                     aria-pressed={mode === option}
                     title={MODE_HINTS[option]}
+                    disabled={Boolean(steeringTask)}
                     onClick={() => selectMode(option)}
                     key={option}
                   >
@@ -2205,7 +2218,9 @@ export function NodeChat({
                       !providerReady)
                 }
                 onClick={() => void send()}
-                aria-label={steeringTask ? "Steer running turn" : `Start ${modeLabel(mode)} turn`}
+                aria-label={
+                  steeringTask ? steeringTask.steer_action_label : `Start ${modeLabel(mode)} turn`
+                }
               >
                 <Send size={15} />
               </button>

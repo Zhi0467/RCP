@@ -776,6 +776,14 @@ async def _stream_agent_events(
                     continue
             if event.event == "answer":
                 outcome.answers.append(event.text)
+                if event.usage is not None:
+                    # A provider's final result is both its answer and its
+                    # accounting boundary. The answer text is withheld from the
+                    # wire, so without forwarding the usage on its own a
+                    # succeeding turn records none at all — only a failing one,
+                    # whose error event is forwarded, was ever counted. A queued
+                    # follow-up makes this two results, each counted once.
+                    yield _sse(AgentEvent(event="raw", usage=event.usage))
                 continue
             if event.event == "message":
                 if event.text.strip() and len(outcome.trace_messages) < 16:

@@ -6274,6 +6274,11 @@ button.relation-map-node:hover {
   margin-top: 8px;
 }
 
+.chat-composer-hint {
+  flex-basis: 100%;
+  font-size: 12px;
+}
+
 .chat-send {
   align-items: flex-end;
   display: flex;
@@ -6403,6 +6408,12 @@ button.relation-map-node:hover {
   flex: 1;
   overflow: auto;
   padding: clamp(20px, 4vw, 42px);
+  /* Contain `.chat-task-live`. Absolutely positioned descendants resolve
+     against the nearest positioned ancestor, so without this the 1px live
+     region escapes this scroller, is never clipped by its overflow, and
+     stretches the document to the full transcript height — the page then
+     scrolls into empty space below the composer. */
+  position: relative;
 }
 .node-chat-line {
   border-radius: 0;

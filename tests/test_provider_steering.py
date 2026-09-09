@@ -16,7 +16,7 @@ from rcp.providers import ProviderTurnRequest, profile_for
 from tests.helpers import async_wait_until
 
 
-def _turn(tmp_path: Path, provider: str):
+def _turn(tmp_path: Path, provider: str, *, ready: bool = True):
     profile = profile_for(provider)
     runtime_id = "codex.app-server-stdio.v1" if provider == "codex" else profile.legacy_runtime_id
     turn = profile.runtime(runtime_id).turn(
@@ -49,9 +49,13 @@ def _turn(tmp_path: Path, provider: str):
             {"id": 4, "result": {"turn": {"id": "turn"}}},
         ):
             turn.receive_line(json.dumps(value))
-    else:
+    elif ready:
         initial = json.loads(turn.initial_input())
-        turn.receive_line(json.dumps({**initial, "isReplay": True}))
+        turn.receive_line(
+            json.dumps(
+                {"type": "command_lifecycle", "state": "started", "command_uuid": initial["uuid"]}
+            )
+        )
     return turn
 
 
@@ -79,32 +83,184 @@ def test_steer_wire_is_bound_to_exact_turn_and_unique_message(tmp_path: Path, pr
         turn.render_steer(active.turn_id, "message", "Steer again")
 
 
-def test_claude_only_exact_replay_before_first_result_acknowledges(tmp_path: Path):
+def _lifecycle(turn, state, command_uuid):
+    return turn.receive_line(
+        json.dumps({"type": "command_lifecycle", "state": state, "command_uuid": command_uuid})
+    )
+
+
+def test_claude_ready_on_initial_started_not_replay(tmp_path: Path):
+    turn = _turn(tmp_path, "claude", ready=False)
+    initial = json.loads(turn.initial_input())
+    assert not turn.steering_state().can_steer
+    assert "acknowledge" in turn.steering_state().reason
+    turn.receive_line(json.dumps({**initial, "isReplay": True}))
+    _lifecycle(turn, "queued", initial["uuid"])
+    _lifecycle(turn, "started", "foreign")
+    assert not turn.steering_state().can_steer
+    _lifecycle(turn, "started", initial["uuid"])
+    assert turn.steering_state().can_steer
+
+
+def test_claude_acknowledges_only_pending_generated_queued_command(tmp_path: Path):
     turn = _turn(tmp_path, "claude")
     turn_id = turn.steering_state().turn_id
-    turn.render_steer(turn_id, "echoed", "One")
-    turn.render_steer(turn_id, "racing", "Two")
+    turn.render_steer(turn_id, "follow-up", "One")
     for value in (
-        {"type": "user", "uuid": "echoed"},
-        {"type": "user", "uuid": "foreign", "isReplay": True},
+        {"type": "user", "uuid": "follow-up", "isReplay": True},
+        {"type": "command_lifecycle", "state": "queued", "command_uuid": "foreign"},
+        {"type": "command_lifecycle", "state": "started", "command_uuid": "follow-up"},
     ):
         assert not turn.receive_line(json.dumps(value)).steer_receipts
-    delivered = turn.receive_line(json.dumps({"type": "user", "uuid": "echoed", "isReplay": True}))
+    delivered = _lifecycle(turn, "queued", "follow-up")
+    assert [(key, receipt.status) for key, receipt in delivered.steer_receipts] == [
+        ("follow-up", "delivered")
+    ]
+    assert not _lifecycle(turn, "queued", "follow-up").steer_receipts
+    with pytest.raises(ValueError, match="already sent"):
+        turn.render_steer(turn_id, "follow-up", "Again")
+
+
+@pytest.mark.parametrize("uuid_field", ["user_message_uuids", "user_message_uuid"])
+def test_claude_queued_follow_up_continues_until_final_result(tmp_path: Path, uuid_field):
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "One")
+    _lifecycle(turn, "queued", "follow-up")
+    _lifecycle(turn, "queued", "foreign")
+    _lifecycle(turn, "started", "foreign")
+    answers = []
+    for message_id, answer in ((turn_id, "First"), ("follow-up", "Second")):
+        value = [message_id] if uuid_field == "user_message_uuids" else message_id
+        step = turn.receive_line(
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": answer,
+                    uuid_field: value,
+                    "queued_turn_count": 0,
+                    "uuid": message_id,
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                }
+            )
+        )
+        answers.extend(event.text for event in step.events if event.event == "answer")
+        usage = step.events[0].usage
+        assert usage is not None
+        assert usage.dedupe_key == message_id
+        assert usage.generated_tokens == 2
+        final = message_id == "follow-up"
+        assert step.complete == step.stop_process == step.explicit_terminal == final
+        if not final:
+            assert turn.steering_state().can_steer
+            _lifecycle(turn, "completed", turn_id)
+            _lifecycle(turn, "started", "follow-up")
+    assert answers == ["First", "Second"]
+    assert not turn.steering_state().can_steer
+    with pytest.raises(ValueError, match="completed"):
+        turn.render_steer(turn_id, "late", "Late")
+
+
+def test_claude_follow_up_injected_during_a_tool_call_ends_with_the_first_result(
+    tmp_path: Path,
+) -> None:
+    """Claude 2.1.263 trace: a message sent while Bash runs joins the running turn.
+
+    Its lifecycle completes before the result, which attributes both UUIDs. No
+    second turn follows, and nothing is lost: the running turn consumed it.
+    Lifecycle alone could not decide this; attribution is what settles the stop.
+    """
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "Reply STEERED instead of ORIGINAL.")
+    delivered = _lifecycle(turn, "queued", "follow-up")
     assert delivered.steer_receipts[0][1].status == "delivered"
-    result = turn.receive_line(json.dumps({"type": "result", "result": "Final"}))
+    _lifecycle(turn, "started", "follow-up")
+    _lifecycle(turn, "completed", "follow-up")
+    step = turn.receive_line(
+        json.dumps(
+            {"type": "result", "result": "STEERED", "user_message_uuids": [turn_id, "follow-up"]}
+        )
+    )
+    assert [event.text for event in step.events if event.event == "answer"] == ["STEERED"]
+    assert step.complete and step.stop_process and step.explicit_terminal
+    # The initial command's own `completed` line lands after its result and is inert.
+    assert not _lifecycle(turn, "completed", turn_id).events
+    assert not turn.steering_state().can_steer
+
+
+def test_claude_failing_result_ends_the_invocation_despite_an_accepted_follow_up(
+    tmp_path: Path,
+) -> None:
+    """The task engine stops at the first error, so a queued turn cannot help."""
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "One")
+    _lifecycle(turn, "queued", "follow-up")
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": None,
+                "user_message_uuids": [turn_id],
+            }
+        )
+    )
+    assert [event.event for event in step.events] == ["error"]
+    # The subtype is the only diagnostic this result carries.
+    assert step.events[0].text == "error_during_execution"
+    assert step.complete and step.stop_process and step.explicit_terminal
+    assert not turn.steering_state().can_steer
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"user_message_uuids": []},
+        {"user_message_uuids": [None, "", " ", 3]},
+        {"user_message_uuid": None},
+    ],
+)
+def test_claude_missing_usable_result_uuid_stops_and_refuses_pending(tmp_path: Path, fields):
+    turn = _turn(tmp_path, "claude")
+    turn.render_steer(turn.steering_state().turn_id, "queued", "One")
+    turn.render_steer(turn.steering_state().turn_id, "racing", "Two")
+    _lifecycle(turn, "queued", "queued")
+    result = turn.receive_line(json.dumps({"type": "result", "result": "Final", **fields}))
     assert result.complete and result.stop_process and result.explicit_terminal
     assert [(key, receipt.status) for key, receipt in result.steer_receipts] == [
         ("racing", "refused")
     ]
-    assert "completed before delivery" in result.steer_receipts[0][1].reason
-    assert not turn.receive_line(
-        json.dumps({"type": "user", "uuid": "racing", "isReplay": True})
-    ).steer_receipts
+    assert not _lifecycle(turn, "queued", "racing").steer_receipts
     assert not turn.receive_line(
         json.dumps({"type": "result", "result": "Unwanted next turn"})
     ).events
-    with pytest.raises(ValueError, match="completed"):
-        turn.render_steer(turn_id, "late", "Late")
+
+
+def test_claude_without_follow_up_stops_at_first_result(tmp_path: Path):
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    _lifecycle(turn, "queued", "foreign")
+    step = turn.receive_line(
+        json.dumps({"type": "result", "result": "Final", "user_message_uuids": [turn_id]})
+    )
+    assert step.complete and step.stop_process and step.explicit_terminal
+    assert not step.steer_receipts
+
+
+def test_claude_completed_command_no_longer_holds_process_open(tmp_path: Path):
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "One")
+    _lifecycle(turn, "queued", "follow-up")
+    _lifecycle(turn, "completed", "follow-up")
+    step = turn.receive_line(
+        json.dumps({"type": "result", "result": "Final", "user_message_uuids": [turn_id]})
+    )
+    assert step.complete and step.stop_process
 
 
 @pytest.mark.parametrize(
@@ -191,11 +347,19 @@ for line in sys.stdin:
     else:
         if value['message']['content'] == 'Original prompt':
             emit({{'type':'system','subtype':'init','session_id':'session'}})
-            emit({{**value,'isReplay':True}})
+            initial_uuid = value['uuid']
+            emit({{'type':'command_lifecycle','state':'started','command_uuid':initial_uuid}})
         else:
             if {behavior!r} == 'disconnect': raise SystemExit(3)
-            if {behavior!r} == 'delivered': emit({{**value,'isReplay':True}})
-            emit({{'type':'result','result':'Final'}})
+            if {behavior!r} == 'delivered':
+                emit({{'type':'command_lifecycle','state':'queued','command_uuid':value['uuid']}})
+                emit({{'type':'result','result':'First','user_message_uuids':[initial_uuid]}})
+                emit({{'type':'command_lifecycle','state':'completed','command_uuid':initial_uuid}})
+                emit({{'type':'command_lifecycle','state':'started','command_uuid':value['uuid']}})
+                emit({{**value,'isReplay':True}})
+                emit({{'type':'result','result':'Final','user_message_uuids':[value['uuid']]}})
+            else:
+                emit({{'type':'result','result':'Final'}})
             time.sleep(10)
             Path({str(unwanted)!r}).write_text('A subsequent turn must not run')
             emit({{'type':'result','result':'Unwanted next turn'}})
@@ -285,7 +449,10 @@ async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
         assert "Stale" not in capture.read_text() and "Late" not in capture.read_text()
         assert not unwanted.exists()
         answers = [event.text for event in events if event.event == "answer"]
-        assert answers == ([] if behavior == "disconnect" else ["Final"])
+        expected_answers = [] if behavior == "disconnect" else ["Final"]
+        if provider == "claude" and behavior == "delivered":
+            expected_answers = ["First", "Final"]
+        assert answers == expected_answers
         assert events[-1].event == ("error" if behavior == "disconnect" else "done")
     finally:
         if not task.done():

@@ -7,7 +7,7 @@ Active:
   OS-owned helper for ordinary processes. Integrated checks and the real
   team-server/Codex journey remain; the predecessor compute-runner plan is archived.
 
-- [Live provider steering](handoff-2026-09-05-live-provider-steering.md) — Phase 2 implemented; local Codex API and browser-component receipts verified; full served-browser, Claude live and SSH verification open.
+- [Claude queued follow-up](handoff-2026-09-08-claude-queued-follow-up.md) — queued provider turns, honest errors, and sandbox readiness implemented; integrated local/SSH acceptance verification remains open.
 
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.

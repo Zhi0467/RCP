@@ -27,7 +27,7 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   allowlist or claim supported domains from speculative rankings; describe actual
   capabilities and complement external specialized tools.
 - **Live steering:** retain the modest provider-call extension settled in
-  [the steering handoff](../handoffs/handoff-2026-09-05-live-provider-steering.md),
+  [the steering handoff](../handoffs/handoff-2026-09-08-claude-queued-follow-up.md),
   not a persistent session daemon. The
   [current provider contract](../specs/providers-and-containment.md#live-human-steering)
   bounds delivery to one ordinary human chat attempt and preserves authority and

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from rcp.agents.launcher import work_like_launch_problem
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import (
@@ -1609,10 +1610,15 @@ def _require_auto_research_retry_target_ready(
         binary=binary,
         refresh=True,
     )
-    if readiness.installed and readiness.authenticated:
+    work_problem = (
+        work_like_launch_problem(readiness)
+        if readiness.installed and readiness.authenticated
+        else None
+    )
+    if readiness.installed and readiness.authenticated and work_problem is None:
         return
     diagnostic = (
-        readiness.reason or f"{request.provider} is not ready on {request.run_on}"
+        work_problem or readiness.reason or f"{request.provider} is not ready on {request.run_on}"
     ).strip()
     if diagnostic.endswith("."):
         diagnostic = diagnostic[:-1]

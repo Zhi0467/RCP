@@ -628,3 +628,51 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
         "The connection to gpu0 ended (SIGKILL) before codex finished."
     )
     assert _exit_reason("codex", -9, "") == "codex was stopped by SIGKILL."
+
+
+@pytest.mark.parametrize(
+    ("provider", "runtime_id", "behavior", "label"),
+    [
+        ("claude", "claude.stream-json.v1", "queue", "Send to the running turn"),
+        ("codex", "codex.app-server-stdio.v1", "inject", "Steer running turn"),
+        ("codex", "codex.exec-json.v1", "unsupported", None),
+    ],
+)
+def test_runtime_declares_steering_behavior(provider, runtime_id, behavior, label):
+    runtime = profile_for(provider).runtime(runtime_id)
+    assert runtime.steering_behavior == behavior
+    assert runtime.supports_steering == (behavior != "unsupported")
+    assert runtime.steer_action_label == label
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"result": None, "error": None, "message": None}, "error_during_execution"),
+        ({"result": " ", "error": {"message": None}}, "error_during_execution"),
+        ({"error": {"message": " Concrete cause "}}, "Concrete cause"),
+        ({"error": {}, "message": "Concrete cause"}, "Concrete cause"),
+    ],
+)
+def test_claude_error_uses_text_then_result_subtype(fields, expected):
+    event = ClaudeProfile().decode_event(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True, **fields},
+        "",
+    )
+    assert event.event == "error"
+    assert event.text == expected
+
+
+def test_claude_work_readiness_probe_uses_fail_closed_sandbox_without_a_prompt():
+    command = ClaudeProfile().work_like_probe_command("/bin/claude")
+    assert command[0] == "/bin/claude"
+    assert command[command.index("--input-format") + 1] == "stream-json"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert command[command.index("--setting-sources") + 1] == ""
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["disableAllHooks"] is True
+    assert settings["sandbox"]["enabled"] is True
+    assert settings["sandbox"]["failIfUnavailable"] is True
+    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
+    assert settings["sandbox"]["filesystem"]["allowWrite"] == []
+    assert CodexProfile().work_like_probe_command("codex") is None
