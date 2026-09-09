@@ -109,6 +109,7 @@ import {
 import { useActorIdentity } from "./hooks/useActorIdentity";
 import {
   cloneChatStateSnapshot,
+  experimentChatFreshnessToken,
   useChatState,
   visibleChatTranscriptIds,
   visibleUnreadChatId,
@@ -1080,12 +1081,27 @@ export default function App() {
       selectedExperimentRoute,
       selectedExperimentRunId ? project?.experiment_control[selectedExperimentRunId] : undefined,
     );
-  const selectedExperimentChatId =
+  const selectedExperimentOperational =
     view === "execution" && selectedExperimentRunId && selectedMainExperimentRouteIsCurrent
       ? selectedExperimentUsesBranch
-        ? (selectedBranchExperiment?.control.operational.chat_id ?? null)
-        : (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
+        ? (selectedBranchExperiment?.control.operational ?? null)
+        : (project?.experiment_control[selectedExperimentRunId]?.operational ?? null)
       : null;
+  const selectedExperimentChatId = selectedExperimentOperational?.chat_id ?? null;
+  // The Runs panel keeps a branch-scoped Experiment's graph out of the viewed
+  // target, so its chat must be loaded against the route's own graph. Without
+  // an exact route the chat id comes from the viewed graph's own projection, so
+  // that target stays correct and is the default.
+  const selectedExperimentChatTarget =
+    selectedExperimentUsesBranch && selectedExperimentRoute
+      ? selectedExperimentRoute.graph_target
+      : graphTarget;
+  const selectedExperimentChatFreshness = experimentChatFreshnessToken(
+    selectedExperimentChatId,
+    selectedExperimentOperational,
+    selectedExperimentChatTarget,
+    graphTarget,
+  );
   const resolveVisibleChatTranscriptIds = useCallback(
     (selectedId: string | null, floatingId: string | null) =>
       visibleChatTranscriptIds(view, selectedId, floatingId, selectedExperimentChatId),
@@ -1112,6 +1128,8 @@ export default function App() {
     apiBase,
     graphTarget,
     selectedExperimentChatId,
+    selectedExperimentChatTarget,
+    selectedExperimentChatFreshness,
     isActiveProject: isActiveGraph,
     visibleTranscriptIds: resolveVisibleChatTranscriptIds,
     reportError: reportErrorNotice,

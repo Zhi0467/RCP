@@ -1,4 +1,4 @@
-import { MAIN_GRAPH } from "../graphTarget";
+import { MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
@@ -17,7 +17,20 @@ import {
   type ChatKind,
   type DraftConversation,
 } from "../chatWorkspace";
-import type { AgentTask, AppView, ChatSummary, ChatTranscript, GraphNode } from "../types";
+import type {
+  AgentTask,
+  AppView,
+  ChatSummary,
+  ChatTranscript,
+  ExperimentOperationalState,
+  GraphNode,
+} from "../types";
+
+/** The run progress that stands in for a cross-graph chat's summary freshness. */
+export type ExperimentChatProgress = Pick<
+  ExperimentOperationalState,
+  "current_operation_id" | "current_status" | "current_last_activity_at"
+>;
 
 export interface FloatingChat {
   chatId: string;
@@ -42,6 +55,8 @@ interface UseChatStateOptions {
   apiBase: string;
   graphTarget?: GraphTargetRef;
   selectedExperimentChatId: string | null;
+  selectedExperimentChatTarget?: GraphTargetRef;
+  selectedExperimentChatFreshness?: string;
   isActiveProject: (projectId: string) => boolean;
   visibleTranscriptIds: (selectedChatId: string | null, floatingChatId: string | null) => string[];
   reportError: (message: string) => void;
@@ -84,6 +99,50 @@ export function visibleUnreadChatId(
   return null;
 }
 
+export function visibleChatTranscriptTarget(
+  chatId: string,
+  experimentChatId: string | null,
+  experimentChatTarget: GraphTargetRef,
+  graphTarget: GraphTargetRef,
+): GraphTargetRef {
+  // The Runs panel routes an Experiment by its own graph, which it keeps
+  // separate from the graph being viewed: its href carries `branch`, while the
+  // viewed target comes from `branch_id`. A branch-scoped Experiment therefore
+  // selects a branch chat while the app still views main, and loading that
+  // transcript against main can only 404.
+  return chatId === experimentChatId ? experimentChatTarget : graphTarget;
+}
+
+export function experimentChatFreshnessToken(
+  experimentChatId: string | null,
+  operational: ExperimentChatProgress | null,
+  experimentChatTarget: GraphTargetRef,
+  graphTarget: GraphTargetRef,
+): string {
+  // A chat on another graph never enters the viewed graph's summaries, so the
+  // summary `updated_at` that refires this fetch for every other chat never
+  // arrives. The run's own backend-exported progress stands in: it advances
+  // when the turn does, which is exactly when a new transcript exists.
+  if (!experimentChatId || sameGraphTarget(experimentChatTarget, graphTarget)) return "";
+  return [
+    operational?.current_operation_id ?? "",
+    operational?.current_status ?? "",
+    operational?.current_last_activity_at ?? "",
+  ].join("|");
+}
+
+export function transcriptAbsenceIsExpected(
+  chatId: string,
+  experimentChatId: string | null,
+  error: unknown,
+): boolean {
+  // The Experiment chat is the one transcript loaded without a summary to prove
+  // it exists, because a run's chat need not be on the current summary page.
+  // Until a Work turn is captured it has no graph transcript at all, so its 404
+  // is the ordinary state of a run that has just started, not a failure.
+  return chatId === experimentChatId && error instanceof ApiError && error.status === 404;
+}
+
 export function shouldLoadVisibleChatTranscript(
   chatId: string,
   summaries: readonly Pick<ChatSummary, "chat_id">[],
@@ -99,6 +158,8 @@ export function useChatState({
   apiBase,
   graphTarget = MAIN_GRAPH,
   selectedExperimentChatId,
+  selectedExperimentChatTarget = MAIN_GRAPH,
+  selectedExperimentChatFreshness = "",
   isActiveProject,
   visibleTranscriptIds,
   reportError,
@@ -140,6 +201,11 @@ export function useChatState({
     )
     .join("|");
 
+  const experimentChatTargetKey =
+    selectedExperimentChatTarget.kind === "branch"
+      ? `branch:${selectedExperimentChatTarget.branch_id}`
+      : "main";
+
   useEffect(() => {
     if (!apiBase || visibleChatIds.length === 0) return;
     let cancelled = false;
@@ -149,23 +215,42 @@ export function useChatState({
       ) {
         return;
       }
-      void loadChatTranscript(apiBase, chatId, api, graphTarget)
+      void loadChatTranscript(
+        apiBase,
+        chatId,
+        api,
+        visibleChatTranscriptTarget(
+          chatId,
+          selectedExperimentChatId,
+          selectedExperimentChatTarget,
+          graphTarget,
+        ),
+      )
         .then((transcript) => {
           if (cancelled) return;
           setChatTranscripts((current) => new Map(current).set(chatId, transcript));
         })
         .catch((error) => {
-          if (!cancelled) {
-            reportError(
-              `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
+          if (cancelled) return;
+          if (transcriptAbsenceIsExpected(chatId, selectedExperimentChatId, error)) return;
+          reportError(
+            `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+          );
         });
     });
     return () => {
       cancelled = true;
     };
-  }, [apiBase, graphTarget, selectedExperimentChatId, visibleChatVersions]);
+    // The Experiment target is derived per render, so its identity cannot be a
+    // dependency; the key below changes exactly when the target does.
+  }, [
+    apiBase,
+    graphTarget,
+    selectedExperimentChatId,
+    experimentChatTargetKey,
+    selectedExperimentChatFreshness,
+    visibleChatVersions,
+  ]);
 
   const selectChat = useCallback((chatId: string | null) => {
     selectedChatIdRef.current = chatId;
