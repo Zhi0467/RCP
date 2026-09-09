@@ -1086,6 +1086,11 @@ export default function App() {
         ? (selectedBranchExperiment?.control.operational.chat_id ?? null)
         : (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
       : null;
+  // The Runs panel keeps a branch-scoped Experiment's graph out of the viewed
+  // target, so its chat must be loaded against the route's own graph.
+  const selectedExperimentChatTarget = selectedExperimentUsesBranch
+    ? (selectedExperimentRoute?.graph_target ?? MAIN_GRAPH)
+    : MAIN_GRAPH;
   const resolveVisibleChatTranscriptIds = useCallback(
     (selectedId: string | null, floatingId: string | null) =>
       visibleChatTranscriptIds(view, selectedId, floatingId, selectedExperimentChatId),
@@ -1112,6 +1117,7 @@ export default function App() {
     apiBase,
     graphTarget,
     selectedExperimentChatId,
+    selectedExperimentChatTarget,
     isActiveProject: isActiveGraph,
     visibleTranscriptIds: resolveVisibleChatTranscriptIds,
     reportError: reportErrorNotice,
