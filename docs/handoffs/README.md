@@ -13,9 +13,9 @@ Active:
   — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
 
 - [Phone access: device sessions and mobile rendering](handoff-2026-09-09-phone-access-device-sessions.md)
-  — a member should see their own connected devices and revoke any one of them.
-  Nothing is implemented yet; the authentication facts and the mobile scan are
-  verified, and the transport question is deliberately excluded.
+  — device session ids, the member-scoped list and revoke routes, the Devices
+  panel, stored labels, and both narrow-screen fixes are implemented; the
+  tailnet transport is chosen but not stood up, and the pairing screen remains.
 
 - [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
   — production adoption, promoted release, complete backup, and doctor are

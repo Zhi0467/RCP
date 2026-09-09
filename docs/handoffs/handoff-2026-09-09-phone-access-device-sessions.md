@@ -1,11 +1,12 @@
 # Phone access: device sessions and mobile rendering
 
 Date: 2026-09-09
-Status: partly implemented on `feat/team-device-sessions`. Sessions carry an
-independent public UUID through storage migration 14, the member-scoped list and
-revoke routes exist, and the identity panel has a Devices section. Stored device
-labels and the two mobile fixes below are in progress on the same branch. All
-three open questions are settled; see "Settled decisions". Nothing has been
+Status: implemented on `feat/team-device-sessions` except the pairing screen.
+Sessions carry an independent public UUID through storage migration 14, the
+member-scoped list and revoke routes exist, the identity panel has a Devices
+section, exchange stores a human-typed label, and both narrow-screen fixes
+below are in. All three open questions are settled; see "Settled decisions".
+The transport is chosen but not stood up; see "Transport". Nothing has been
 verified against a real phone yet, because no pairing flow exists.
 
 Close this handoff when a member can see their own connected devices in the
