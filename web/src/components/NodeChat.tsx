@@ -666,7 +666,6 @@ export function NodeChat({
       // the attachment with its draft without appending its text again on mount.
       window.requestAnimationFrame(() => textareaRef.current?.focus());
       const previousSignature = readStorage(appliedArtifactContextKey);
-      if (previousSignature === signature) return;
       setMessage((current) => {
         const next = updateArtifactContextDraft(current, payload, previousSignature);
         writeStorage(draftKey, next);
@@ -2072,7 +2071,6 @@ export function NodeChat({
                 onClick={() => {
                   setArtifactContext(null);
                   removeStorage(artifactContextKey);
-                  removeStorage(appliedArtifactContextKey);
                   lastArtifactContextRef.current = null;
                 }}
               >
