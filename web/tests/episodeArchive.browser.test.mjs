@@ -92,16 +92,16 @@ function control(episode) {
     episode_id: episode.episode_id,
     episode,
     paused: false,
-    active: false,
+    active: episode.live,
     stop_pending: false,
     governing_decisions: [],
     decision_drift: [],
-    health: "failed",
-    recommendation: "none",
-    run_section: "completed",
-    live: false,
+    health: episode.live ? "waiting_on_watchers" : episode.health,
+    recommendation: episode.live ? "wait" : "review",
+    run_section: episode.run_section,
+    live: episode.live,
     can_start: false,
-    can_stop: false,
+    can_stop: episode.can_stop,
     can_open_report: false,
     can_switch_provider: false,
     node_closed: false,
@@ -109,11 +109,11 @@ function control(episode) {
     report_episode_id: null,
     operational: {
       task_active: false,
-      detached_work_active: false,
+      detached_work_active: episode.live,
       watcher_degraded: false,
       watcher_completion_pending: false,
-      episode_exited: true,
-      episode_live: false,
+      episode_exited: !episode.live,
+      episode_live: episode.live,
       stop_requested: false,
       stop_settled: false,
       chat_id: null,
@@ -140,7 +140,7 @@ function control(episode) {
   };
 }
 
-test("episode archiving hides child cards and links, survives stale reads, and restores shared runs", async () => {
+test("active and unresolved episodes archive without stopping work and restore across shared run views", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -163,12 +163,19 @@ test("episode archiving hides child cards and links, survives stale reads, and r
       child: node("experiment/child", "Reproduce the baseline"),
     };
     const records = [
-      episode({}),
+      episode({ status: "needs_action", health: "needs_action" }),
       episode({
         episode_id: "child",
         mode: "experiment_loop",
         control_node_id: nodes.child.id,
-        run_section: "completed",
+        status: "running",
+        health: "active",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
+        can_stop: true,
+        ended_at: null,
+        ending: null,
       }),
       episode({
         episode_id: "main-current",
@@ -176,7 +183,9 @@ test("episode archiving hides child cards and links, survives stale reads, and r
         control_node_id: nodes.main.id,
         graph_target: main,
         authorized_by: grace,
-        run_section: "completed",
+        status: "needs_action",
+        health: "needs_action",
+        run_section: "actionable",
       }),
       episode({
         episode_id: "main-old",
@@ -184,7 +193,6 @@ test("episode archiving hides child cards and links, survives stale reads, and r
         control_node_id: nodes.main.id,
         graph_target: main,
         archived: true,
-        can_archive: false,
         authorized_by: null,
         created_at: "2026-08-01T12:00:00Z",
         run_section: "completed",
@@ -194,10 +202,9 @@ test("episode archiving hides child cards and links, survives stale reads, and r
         graph_target: main,
         authorized_by: grace,
         status: "running",
-        health: "running",
-        recommendation: "continue",
+        health: "active",
+        recommendation: "wait",
         run_section: "running",
-        can_archive: false,
         live: true,
         can_stop: true,
         ended_at: null,
@@ -209,7 +216,6 @@ test("episode archiving hides child cards and links, survives stale reads, and r
         control_node_id: nodes.main.id,
         graph_target: branch,
         archived: true,
-        can_archive: false,
         created_at: "2026-08-01T12:00:00Z",
         run_section: "completed",
       }),
@@ -272,21 +278,25 @@ test("episode archiving hides child cards and links, survives stale reads, and r
         authorized_by: item.authorized_by,
       }));
     const writes = [];
+    const mutationPaths = [];
     let holdReads = false;
     let notifyHeld;
     const held = [];
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
+      if (request.method() !== "GET") mutationPaths.push(url.pathname);
       const archiveMatch = url.pathname.match(/\/episodes\/([^/]+)\/archive$/);
       if (archiveMatch) {
         const item = records.find(
           (record) => record.episode_id === decodeURIComponent(archiveMatch[1]),
         );
-        const { archived } = request.postDataJSON();
+        assert.equal(request.method(), "POST");
+        const body = request.postDataJSON();
+        assert.deepEqual(Object.keys(body), ["archived"]);
+        const { archived } = body;
         writes.push([item.episode_id, archived]);
         item.archived = archived;
-        item.can_archive = !archived;
         await route.fulfill({ json: item });
         return;
       }
@@ -320,15 +330,12 @@ test("episode archiving hides child cards and links, survives stale reads, and r
     const projectCard = (id) => project.locator(`[data-episode-id="${id}"]`);
     const spaceCard = (id) => space.locator(`[data-episode-id="${id}"]`);
     await project.getByRole("link", { name: /Reproduce the baseline/ }).waitFor();
-    await project.locator("details.episode-type-group").first().locator("summary").click();
     await projectCard("child").getByRole("button", { name: "Archive", exact: true }).waitFor();
     await projectCard("main-current")
       .getByRole("button", { name: "Archive", exact: true })
       .waitFor();
-    assert.equal(
-      await projectCard("active").getByRole("button", { name: "Archive", exact: true }).count(),
-      0,
-    );
+    await projectCard("active").getByRole("button", { name: "Archive", exact: true }).waitFor();
+    await projectCard("parent").getByRole("button", { name: "Archive", exact: true }).waitFor();
     assert.equal(
       await projectCard("parent").locator('[title="Started by Ada Lovelace"]').count(),
       1,
@@ -342,6 +349,45 @@ test("episode archiving hides child cards and links, survives stale reads, and r
       1,
     );
     assert.equal(await projectCard("main-old").count(), 0);
+
+    await projectCard("active").getByRole("button", { name: "Archive", exact: true }).click();
+    await projectCard("active").waitFor({ state: "detached" });
+    await spaceCard("active").waitFor({ state: "detached" });
+    await project.getByRole("checkbox", { name: "Show archived" }).check();
+    await space.getByRole("checkbox", { name: "Show archived" }).check();
+    await projectCard("active").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
+    assert.equal(
+      await projectCard("active").locator(".campaign-run-meta .status-pill").textContent(),
+      "Active",
+    );
+    await projectCard("active")
+      .getByRole("button", { name: /Expand auto-research episode/ })
+      .click();
+    assert.equal(
+      await projectCard("active").getByRole("button", { name: "Stop", exact: true }).isEnabled(),
+      true,
+    );
+    await spaceCard("active").getByRole("button", { name: "Unarchive", exact: true }).click();
+    await projectCard("active").getByRole("button", { name: "Archive", exact: true }).waitFor();
+    assert.equal(records[4].live, true);
+    assert.equal(records[4].status, "running");
+    assert.equal(records[4].stop_requested_at, null);
+    await project.getByRole("checkbox", { name: "Show archived" }).uncheck();
+    await space.getByRole("checkbox", { name: "Show archived" }).uncheck();
+
+    // A Needs Action parent can be hidden while its child continues independently.
+    await spaceCard("parent").getByRole("button", { name: "Archive", exact: true }).click();
+    await projectCard("parent").waitFor({ state: "detached" });
+    await spaceCard("parent").waitFor({ state: "detached" });
+    assert.equal(await projectCard("child").count(), 1);
+    assert.equal(await spaceCard("child").count(), 1);
+    assert.equal(records[1].live, true);
+    assert.equal(records[1].archived, false);
+    await project.getByRole("checkbox", { name: "Show archived" }).check();
+    await projectCard("parent").getByRole("button", { name: "Unarchive", exact: true }).click();
+    await spaceCard("parent").getByRole("button", { name: "Archive", exact: true }).waitFor();
+    await project.getByRole("checkbox", { name: "Show archived" }).uncheck();
+    await project.getByRole("link", { name: /Reproduce the baseline/ }).waitFor();
 
     holdReads = true;
     const readsHeld = new Promise((resolve) => {
@@ -361,6 +407,12 @@ test("episode archiving hides child cards and links, survives stale reads, and r
 
     await project.getByRole("checkbox", { name: "Show archived" }).check();
     await projectCard("child").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
+    assert.equal(
+      await projectCard("child").locator(".campaign-run-meta .status-pill").textContent(),
+      "Waiting on watchers",
+    );
+    assert.equal(records[1].live, true);
+    assert.equal(records[1].stop_requested_at, null);
     await projectCard("main-old").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
     assert.equal(await projectCard("main-old").locator(".episode-author").count(), 0);
     assert.match(await projectCard("main-old").textContent(), /Measure transfer/);
@@ -372,8 +424,8 @@ test("episode archiving hides child cards and links, survives stale reads, and r
     assert.doesNotMatch(await projectCard("branch-old").textContent(), /Measure transfer/);
     await projectCard("main-old").getByRole("button", { name: "Open History" }).click();
     await page.getByRole("dialog", { name: "Project History" }).waitFor();
-    assert.equal(await project.locator(".needs-action > header > span").textContent(), "1");
-    assert.equal(await project.locator(".completed > header > span").textContent(), "1");
+    assert.equal(await project.locator(".needs-action > header > span").textContent(), "2");
+    assert.equal(await project.locator(".completed > header > span").textContent(), "0");
 
     await space.getByRole("checkbox", { name: "Show archived" }).check();
     await spaceCard("child").getByRole("button", { name: "Unarchive", exact: true }).click();
@@ -384,30 +436,21 @@ test("episode archiving hides child cards and links, survives stale reads, and r
     await projectCard("main-current").waitFor({ state: "detached" });
     assert.equal(await projectCard("child").count(), 1);
     assert.deepEqual(writes, [
+      ["active", true],
+      ["active", false],
+      ["parent", true],
+      ["parent", false],
       ["child", true],
       ["child", false],
       ["main-current", true],
     ]);
 
-    Object.assign(records[4], {
-      live: false,
-      status: "succeeded",
-      health: "completed",
-      run_section: "completed",
-      recommendation: "review",
-      can_stop: false,
-      can_archive: true,
-      ended_at: "2026-09-01T13:00:00Z",
-      ending: "completed",
-    });
-    await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
-    await projectCard("active")
-      .getByRole("button", { name: "Archive", exact: true, includeHidden: true })
-      .waitFor({ state: "attached" });
-    // Another project member archives the parent after every run has ended.
+    // A teammate archives the unresolved parent while its child is still live.
     records[0].archived = true;
-    records[0].can_archive = false;
+    await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
     await projectCard("parent").waitFor({ state: "detached" });
+    assert.equal(await projectCard("child").count(), 1);
+    assert.equal(records[1].live, true);
 
     await page.goto(
       `http://127.0.0.1:${address.port}/tests/fixtures/episodeArchive.html#/projects/project-one?view=runs&experiment=experiment%2Fmain&episode=main-old&target=main`,
@@ -431,7 +474,6 @@ test("episode archiving hides child cards and links, survives stale reads, and r
 
     // A teammate archives the selected run without changing this viewer's route.
     records[2].archived = true;
-    records[2].can_archive = false;
     await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
     await projectCard("main-current")
       .getByRole("button", { name: "Unarchive", exact: true })
@@ -448,6 +490,12 @@ test("episode archiving hides child cards and links, survives stale reads, and r
     await page.evaluate(() => new Promise(requestAnimationFrame));
     assert.equal(await showArchived.isChecked(), false);
     assert.equal(await projectCard("main-current").count(), 0);
+    assert.equal(records[4].live, true);
+    assert.deepEqual(
+      mutationPaths,
+      writes.map(([episodeId]) => `/api/projects/project-one/episodes/${episodeId}/archive`),
+      "Archive and unarchive never call stop, watcher, or other mutation endpoints",
+    );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

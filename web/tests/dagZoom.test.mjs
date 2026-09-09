@@ -36,12 +36,27 @@ test("pinch zoom preserves the graph point beneath the focal point", () => {
   assert.ok(Math.abs((result.scrollTop + base.focalY) / result.zoom - beforeY) < 1e-9);
 });
 
+test("pinch keeps the focal graph point after Fit adds canvas space", () => {
+  const centered = { ...base, offsetX: 430, offsetY: 24 };
+  const beforeX = (centered.scrollLeft + centered.focalX - centered.offsetX) / centered.zoom;
+  const beforeY = (centered.scrollTop + centered.focalY - centered.offsetY) / centered.zoom;
+  const result = zoomDagAtPoint({ ...centered, deltaY: -120 });
+  assert.ok(
+    Math.abs((result.scrollLeft + centered.focalX - centered.offsetX) / result.zoom - beforeX) <
+      1e-9,
+  );
+  assert.ok(
+    Math.abs((result.scrollTop + centered.focalY - centered.offsetY) / result.zoom - beforeY) <
+      1e-9,
+  );
+});
+
 const wideGraph = [
   { left: 0, top: 0, width: 200, height: 100 },
   { left: 1400, top: 900, width: 200, height: 100 },
 ];
 
-test("fit frames a graph that overflows the pane and never magnifies a small one", () => {
+test("fit fills the width, leaves tall graphs scrollable, and never magnifies a small one", () => {
   const fitted = fitDagToViewport({
     nodes: wideGraph,
     viewportWidth: 800,
@@ -49,13 +64,14 @@ test("fit frames a graph that overflows the pane and never magnifies a small one
   });
   assert.ok(fitted);
   assert.ok(fitted.zoom < 1, "an oversized graph zooms out to fit");
-  // Every node lands inside the pane once the fit is applied.
+  // Every column lands inside the pane, even when the graph is taller than it.
   for (const node of wideGraph) {
-    assert.ok(node.left * fitted.zoom - fitted.scrollLeft >= -1e-6);
-    assert.ok((node.left + node.width) * fitted.zoom - fitted.scrollLeft <= 800 + 1e-6);
-    assert.ok(node.top * fitted.zoom - fitted.scrollTop >= -1e-6);
-    assert.ok((node.top + node.height) * fitted.zoom - fitted.scrollTop <= 500 + 1e-6);
+    assert.ok(node.left * fitted.zoom + fitted.offsetX - fitted.scrollLeft >= 32 - 1e-6);
+    assert.ok(
+      (node.left + node.width) * fitted.zoom + fitted.offsetX - fitted.scrollLeft <= 768 + 1e-6,
+    );
   }
+  assert.equal(fitted.offsetY - fitted.scrollTop, 32);
 
   const small = fitDagToViewport({
     nodes: [{ left: 10, top: 10, width: 120, height: 60 }],
@@ -66,8 +82,7 @@ test("fit frames a graph that overflows the pane and never magnifies a small one
   assert.equal(small.zoom, 1, "a graph that already fits keeps its authored size");
 });
 
-test("fit reaches below the pinch floor so a large graph actually fits", () => {
-  // The graph that motivated framing: ~1680x2090px of nodes in a ~475px pane.
+test("fit reaches below the pinch floor when columns exceed the pane width", () => {
   const tall = fitDagToViewport({
     nodes: [
       { left: 0, top: 0, width: 10, height: 10 },
@@ -79,8 +94,40 @@ test("fit reaches below the pinch floor so a large graph actually fits", () => {
 
   assert.equal(tall.floor, tall.zoom);
   assert.ok(tall.zoom < DAG_ZOOM_MIN, "the pinch floor cannot frame this graph");
-  assert.ok(2090 * tall.zoom <= 475, "every node fits the pane at the fitted scale");
-  assert.ok(1680 * tall.zoom <= 900);
+  assert.ok(2090 * tall.zoom > 475, "height does not force all rows into the pane");
+  assert.equal(1680 * tall.zoom, 900 - 64);
+});
+
+test("Fit centers columns near the origin and starts tall graphs at the top", () => {
+  for (const [contentWidth, contentHeight] of [
+    [1600, 2400],
+    [2400, 300],
+  ]) {
+    const fitted = fitDagToViewport({
+      nodes: [{ left: 54, top: 56, width: contentWidth, height: contentHeight }],
+      viewportWidth: 1500,
+      viewportHeight: 650,
+    });
+    const left = 54 * fitted.zoom + fitted.offsetX - fitted.scrollLeft;
+    const top = 56 * fitted.zoom + fitted.offsetY - fitted.scrollTop;
+    assert.ok(left >= 32 - 1e-9 && top >= 32 - 1e-9);
+    assert.ok(Math.abs(left + (contentWidth * fitted.zoom) / 2 - 750) < 1e-9);
+    if (contentHeight * fitted.zoom > 650 - 64) {
+      assert.ok(Math.abs(top - 32) < 1e-9);
+    } else {
+      assert.ok(Math.abs(top + (contentHeight * fitted.zoom) / 2 - 325) < 1e-9);
+    }
+  }
+});
+
+test("adding rows never shrinks the fitted columns", () => {
+  const fit = (height) =>
+    fitDagToViewport({
+      nodes: [{ left: 54, top: 56, width: 2000, height }],
+      viewportWidth: 1500,
+      viewportHeight: 650,
+    });
+  assert.equal(fit(100).zoom, fit(3000).zoom);
 });
 
 test("fit still has a floor rather than collapsing to nothing", () => {

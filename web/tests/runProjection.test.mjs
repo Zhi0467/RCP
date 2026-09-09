@@ -322,6 +322,28 @@ test("graph watchers stay ungrouped and expose condition labels and evaluation t
   );
 });
 
+test("Chats retain completed graph watchers only for their node or conversation", () => {
+  const loop = graphWatcher(
+    "loop-completed",
+    "experiment/shared-loop",
+    "episode-shared-loop",
+    "completed",
+    { node_id: "blk/upstream", status_in: ["resolved"] },
+  );
+  const selfWake = {
+    ...loop,
+    watcher_id: "self-completed",
+    chat_id: "work-chat",
+    continuation: { ...loop.continuation, patch_kind: "work", control_node_id: null },
+  };
+  const watchers = [loop, selfWake, { ...selfWake, watcher_id: "stopped", status: "stopped" }];
+  const ids = (chatId, node) =>
+    visibleChatWatchers(watchers, chatId, node).map((item) => item.watcher_id);
+  assert.deepEqual(ids("new-chat", experiment("experiment/shared-loop")), ["loop-completed"]);
+  assert.deepEqual(ids("work-chat", null), ["self-completed"]);
+  assert.deepEqual(ids("other-chat", experiment("experiment/other")), []);
+});
+
 test("Chats project node-owned loop watchers separately from conversation self-wake watchers", () => {
   const node = experiment("experiment/shared-loop");
   const episodeId = "episode-shared-loop";

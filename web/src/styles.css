@@ -6401,6 +6401,11 @@ button.relation-map-node:hover {
   grid-column: 1 / -1;
   justify-self: start;
 }
+.chat-watcher-row > .watcher-action {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
 .chat-watcher-row > [role="alert"] {
   color: var(--red);
 }

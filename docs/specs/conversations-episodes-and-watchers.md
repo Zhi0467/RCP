@@ -211,13 +211,14 @@ generation do not consume another operational unit.
 
 ### Episode archive
 
-A project member may archive an ended, settled episode and unarchive it later.
+A project member may archive any episode and unarchive it later, including an
+episode that is running, waiting, recovering, stopping, or generating its report.
 The archive is shared by every member of the project in personal and team
 spaces. It records the acting human and time independently of the episode's
 original authorizer. It changes presentation only: lifecycle, budgets, reports,
 tasks, watchers, retained stages, and canonical graph history remain intact.
-Archive does not stop or settle work. The backend refuses it while the episode
-or its admitted work remains unresolved or its report is still running.
+Archive does not stop or settle work. Running tasks, admitted children, watchers,
+and reports continue, and lifecycle changes do not undo the archive choice.
 
 Archive applies to the selected episode. A child Experiment has its own archive
 control; archiving its parent does not archive the child. Starting another
@@ -226,8 +227,8 @@ and project transfer without conferring authority on historical identities.
 
 `POST /api/projects/{project_id}/episodes/{episode_id}/archive` accepts exactly
 `{"archived": true}` or `{"archived": false}` under ordinary human project
-membership and write admission. It checks current eligibility atomically with
-the archive mutation and returns the episode. Episode projections export
+membership and write admission. It checks project and member access atomically
+with the archive mutation and returns the episode. Episode projections export
 `archived` and `can_archive`; the browser never infers eligibility from status.
 Lists retain archived records for the explicit **Show archived** view.
 

@@ -60,8 +60,8 @@ wait for reconciliation, and blocking remote refreshes run off the web event loo
 The visible projections are **Research** and **Runs**.
 
 Research shows question-centered paths with unconnected records separated. Its
-DAG **Research flow** columns follow semantic stage rather than relation-arrow
-direction.
+DAG **Research flow** gives each node type its own column in research order,
+as defined in the Research projection spec.
 
 Runs is the episode ledger for bounded Experiment loops and Auto-research. It
 carries no page title and is ordered **Needs Action**, **In progress**, then
@@ -119,6 +119,12 @@ visibly affect spacing, and the canvas must leave generous room for manual
 dragging beyond auto-layout positions. Touchpad pinch zoom stays anchored at the
 gesture focal point without turning ordinary two-finger scrolling into zoom or
 disrupting other DAG interactions.
+
+**Fit** fits and centers the graph horizontally without magnifying past authored
+node size. Tall columns remain vertically scrollable, starting at the top; short
+graphs are centered vertically. Adding rows must not shrink the fitted columns.
+Fit preserves manual pins, and leaving and returning restores the zoom, scroll,
+and centering offsets.
 
 ## Conversation composer
 
@@ -189,6 +195,12 @@ independent of graph read-only mode or Experiment action locks because the API
 owns project write admission. The action response updates the displayed receipt;
 the existing watcher refresh owns observation. The browser does not infer
 cancellation availability from watcher status.
+
+Watcher actions sit at the right of the row. Completed shell and graph-condition
+watchers offer **Hide**, which removes the full watcher row or detail card from Chat
+and Runs on this device and browser origin, scoped to the project. **Show hidden watchers** restores
+them. This display preference preserves the watcher record and other viewers'
+lists; a watcher that becomes active again is visible regardless of the preference.
 
 ## Paper
 

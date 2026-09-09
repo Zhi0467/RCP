@@ -7,7 +7,6 @@ import uuid
 
 from rcp.core.models import AuthorizedHuman
 from rcp.storage.models import (
-    ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
     AutoResearchSpaceRunEpisodeState,
@@ -170,7 +169,6 @@ class EpisodeStoreMixin:
 
         with self.connection() as connection:
             connection.execute("BEGIN")
-            states = self._episode_archive_states_in_connection(connection, project_id)
             rows = connection.execute(
                 """
                 SELECT episode.* FROM episodes AS episode
@@ -180,7 +178,7 @@ class EpisodeStoreMixin:
                 """,
                 (project_id,),
             ).fetchall()
-        return [self._episode_record(row) for row in rows if states[row["episode_id"]].archived]
+        return [self._episode_record(row) for row in rows]
 
     def set_episode_archived(
         self,
@@ -215,8 +213,6 @@ class EpisodeStoreMixin:
             if state is None:
                 raise KeyError(episode_id)
             if archived:
-                if not state.can_archive:
-                    raise ValueError("Only ended episodes with settled work can be archived.")
                 if member.display_name is None:
                     raise ValueError("Choose a display name before archiving an episode.")
                 space_id = connection.execute(
@@ -246,90 +242,21 @@ class EpisodeStoreMixin:
         connection: sqlite3.Connection,
         project_id: str,
     ) -> dict[str, EpisodeArchiveState]:
-        """Use one admission decision for both projection and the locked mutation."""
+        """Archive is a recorded visibility choice, independent of execution state."""
 
         episodes = connection.execute(
             """
-            SELECT episode.episode_id, episode.ending, episode.status, episode.wrapup_state,
-                   archive.archived_at
+            SELECT episode.episode_id, archive.archived_at
             FROM episodes AS episode
             LEFT JOIN episode_archives AS archive ON archive.episode_id = episode.episode_id
             WHERE episode.project_id = ?
             """,
             (project_id,),
         ).fetchall()
-        if not episodes:
-            return {}
-        eligible = {
-            str(row["episode_id"])
-            for row in episodes
-            if row["ending"] is not None
-            and row["status"] in {"completed", "stopped", "failed", "needs_action"}
-            and row["wrapup_state"] not in {"pending", "running"}
-        }
-        active_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
-        unsettled = connection.execute(
-            f"""
-            SELECT DISTINCT run.episode_id FROM graph_runs AS run
-            JOIN episodes AS episode ON episode.episode_id = run.episode_id
-            WHERE episode.project_id = ? AND (
-                run.status IN ({",".join("?" * len(active_statuses))})
-                OR (
-                    run.status = 'paused' AND run.history_only = 0
-                    AND NOT EXISTS (
-                        SELECT 1 FROM graph_runs AS child
-                        WHERE child.parent_operation_id = run.operation_id
-                          AND child.episode_id = run.episode_id
-                          AND child.attempt = run.attempt + 1
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM graph_run_receipts AS receipt
-                        WHERE receipt.operation_id = run.operation_id
-                          AND receipt.category IN (
-                              'auto_research_recovery_abandoned',
-                              'experiment_recovery_abandoned',
-                              'auto_research_orchestrator_failure'
-                          )
-                    )
-                )
-            )
-            UNION
-            SELECT attempt.episode_id FROM episode_report_attempts AS attempt
-            JOIN episodes AS episode ON episode.episode_id = attempt.episode_id
-            WHERE episode.project_id = ? AND attempt.status IN ('queued', 'running')
-            UNION
-            SELECT admission.episode_id FROM auto_research_child_admissions AS admission
-            JOIN episodes AS episode ON episode.episode_id = admission.episode_id
-            WHERE episode.project_id = ? AND admission.state = 'accepted'
-            """,
-            (project_id, *active_statuses, project_id, project_id),
-        ).fetchall()
-        eligible.difference_update(str(row["episode_id"]) for row in unsettled)
-        children = connection.execute(
-            """
-            SELECT route.auto_research_episode_id, route.child_episode_id, route.state,
-                   child.episode_id AS recorded_child_id
-            FROM auto_research_child_experiments AS route
-            JOIN episodes AS parent ON parent.episode_id = route.auto_research_episode_id
-            LEFT JOIN episodes AS child ON child.episode_id = route.child_episode_id
-            WHERE parent.project_id = ?
-            """,
-            (project_id,),
-        ).fetchall()
-        for child in children:
-            if (
-                child["state"] == "pending"
-                or (
-                    child["recorded_child_id"] is not None
-                    and child["child_episode_id"] not in eligible
-                )
-                or (child["state"] == "running" and child["recorded_child_id"] is None)
-            ):
-                eligible.discard(str(child["auto_research_episode_id"]))
         return {
             str(row["episode_id"]): EpisodeArchiveState(
-                archived=row["archived_at"] is not None and row["episode_id"] in eligible,
-                can_archive=row["episode_id"] in eligible,
+                archived=row["archived_at"] is not None,
+                can_archive=True,
             )
             for row in episodes
         }

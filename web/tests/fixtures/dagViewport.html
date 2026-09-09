@@ -45,6 +45,80 @@
         replay_failure: null,
       };
 
+      if (new URLSearchParams(location.search).has("representative")) {
+        const columns = [
+          ["research_question", 2],
+          ["hypothesis", 2],
+          ["decision", 15],
+          ["blocker", 4],
+          ["experiment", 7],
+          ["evidence", 12],
+        ];
+        graph.nodes = Object.fromEntries(
+          columns.flatMap(([type, count]) =>
+            Array.from({ length: count }, (_, index) => {
+              const id = `${type}/${index}`;
+              return [
+                id,
+                {
+                  ...graph.nodes["hyp/first"],
+                  id,
+                  type,
+                  title: `${type.replaceAll("_", " ")} ${index + 1}`,
+                  status: type === "blocker" ? "open" : undefined,
+                },
+              ];
+            }),
+          ),
+        );
+        const edges = [
+          ["research_question/0", "research_question/1", "has_subquestion"],
+          ...Array.from({ length: 2 }, (_, index) => [
+            `hypothesis/${index}`,
+            "research_question/1",
+            "addresses",
+          ]),
+          ...Array.from({ length: 15 }, (_, index) => [
+            `experiment/${index % 7}`,
+            `decision/${index}`,
+            "governed_by",
+          ]),
+          ...Array.from({ length: 4 }, (_, index) => [
+            `experiment/${index}`,
+            `blocker/${index}`,
+            "blocked_by",
+          ]),
+          ...Array.from({ length: 7 }, (_, index) => [
+            `experiment/${index}`,
+            `hypothesis/${index % 2}`,
+            "tests",
+          ]),
+          ...Array.from({ length: 12 }, (_, index) => [
+            `evidence/${index}`,
+            `experiment/${index % 7}`,
+            "result_of",
+          ]),
+        ];
+        graph.edges = Object.fromEntries(
+          edges.map(([source, target, relation], index) => {
+            const id = `edge/${index}`;
+            return [id, { id, source, target, relation, layer: "seam" }];
+          }),
+        );
+      }
+
+      if (new URLSearchParams(location.search).has("sparse")) {
+        graph.nodes = {
+          "evidence/0": {
+            ...Object.values(graph.nodes)[0],
+            id: "evidence/0",
+            type: "evidence",
+            title: "Pinned result",
+          },
+        };
+        graph.edges = {};
+      }
+
       function Fixture() {
         const viewport = useRef(null);
         const [visible, setVisible] = useState(true);

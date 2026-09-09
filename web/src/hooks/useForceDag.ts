@@ -126,7 +126,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     const stored = readStoredPositions(storageKey);
     const initial =
       mode === "flow"
-        ? flowPositions(flowLayout, metrics.width, metrics.height)
+        ? flowPositions(flowLayout, metrics.width)
         : initialPositions(stableNodes, metrics.width, metrics.height);
     const forceNodes: ForceNode[] = stableNodes.map((node) => {
       const prior = previous.get(node.id);
@@ -298,7 +298,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
       node.fy = null;
 
       if (mode === "flow") {
-        const flowPosition = flowPositions(flowLayout, metrics.width, metrics.height)[nodeId];
+        const flowPosition = flowPositions(flowLayout, metrics.width)[nodeId];
         if (flowPosition) {
           node.x = flowPosition.x;
           node.y = flowPosition.y;
@@ -418,17 +418,13 @@ function initialPositions(
 function flowPositions(
   flowLayout: SemanticLaneLayout,
   width: number,
-  height: number,
 ): Record<string, StoredPosition> {
   const positions: Record<string, StoredPosition> = {};
   flowLayout.lanes.forEach((nodeIds, lane) => {
-    const occupiedHeight =
-      nodeIds.length * DAG_NODE_HEIGHT + Math.max(0, nodeIds.length - 1) * FLOW_ROW_GAP;
-    const firstY = Math.max(VERTICAL_PADDING, (height - occupiedHeight) / 2) + DAG_NODE_HEIGHT / 2;
     nodeIds.forEach((nodeId, index) => {
       positions[nodeId] = {
         x: rankX(lane, flowLayout.lanes.length, width),
-        y: firstY + index * (DAG_NODE_HEIGHT + FLOW_ROW_GAP),
+        y: VERTICAL_PADDING + DAG_NODE_HEIGHT / 2 + index * (DAG_NODE_HEIGHT + FLOW_ROW_GAP),
       };
     });
   });

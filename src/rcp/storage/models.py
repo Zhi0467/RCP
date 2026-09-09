@@ -2317,7 +2317,7 @@ class EpisodeRecord(BaseModel):
 
 
 class EpisodeArchiveState(BaseModel):
-    """Shared Runs visibility and the current lifecycle admission decision."""
+    """Shared Runs visibility and availability of its archive control."""
 
     model_config = ConfigDict(extra="forbid")
 

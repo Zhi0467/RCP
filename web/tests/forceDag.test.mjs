@@ -51,6 +51,19 @@ test("force canvas is generous and automatic lanes leave manual-layout gutters",
   assert.ok(dragCenterMaximum - rightLane >= 350);
 });
 
+test("force canvas retains its grouped stages independently of research-flow columns", () => {
+  const sameType = Array.from({ length: 24 }, () => ({ type: "hypothesis" }));
+  const mixedTypes = Array.from({ length: 24 }, (_, index) => ({
+    type: index % 2 === 0 ? "hypothesis" : "decision",
+  }));
+  const experimentTypes = mixedTypes.map((node) => ({
+    type: node.type === "hypothesis" ? "experiment" : "blocker",
+  }));
+
+  assert.deepEqual(forceCanvasMetrics(mixedTypes), forceCanvasMetrics(sameType));
+  assert.deepEqual(forceCanvasMetrics(experimentTypes), forceCanvasMetrics(sameType));
+});
+
 test("semantic graph identity ignores fresh snapshots but changes with simulation data", () => {
   const nodes = [graphNode("question", "research_question"), graphNode("evidence", "evidence")];
   const edges = [graphEdge("supports", "question", "evidence", "supports")];
