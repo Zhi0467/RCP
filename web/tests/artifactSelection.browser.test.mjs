@@ -63,6 +63,7 @@ test("preview comments survive reopening and Open chat hands off the exact conve
       return route.fulfill({
         contentType: "text/html",
         body: `
+        <meta charset="utf-8">
         <style>#boxLayer{position:absolute;inset:0 auto auto 0;width:600px;height:400px}aside{position:absolute;left:620px}</style>
         <div id="boxLayer"></div><aside>
         <section id="pending" hidden><div class="excerpt"></div><button data-confirm>Comment</button><button data-cancel>Cancel</button></section>
@@ -111,6 +112,9 @@ test("preview comments survive reopening and Open chat hands off the exact conve
     await main.evaluate(async () => {
       const { listenForArtifactChatNavigation } = await import("/src/artifactChatNavigation.ts");
       listenForArtifactChatNavigation(async (hash) => {
+        await new Promise((resolve, reject) => {
+          window.finishNavigation = (error) => (error ? reject(new Error(error)) : resolve());
+        });
         window.location.hash = hash;
       });
     });
@@ -118,6 +122,17 @@ test("preview comments survive reopening and Open chat hands off the exact conve
       window.__TAURI_INTERNALS__ = {};
     });
     await preview.getByRole("link", { name: "Open chat" }).click();
+    await main.waitForFunction(() => typeof window.finishNavigation === "function");
+    assert.equal(await preview.locator("#notice").textContent(), "Opening chat…");
+    assert.equal(main.url(), `${origin}/receiver`, "navigation waits for the conversation");
+    await main.evaluate(() => window.finishNavigation("Conversation could not be opened."));
+    await preview.getByText("Error: Conversation could not be opened.", { exact: true }).waitFor();
+    await main.evaluate(() => {
+      delete window.finishNavigation;
+    });
+    await preview.getByRole("link", { name: "Open chat" }).click();
+    await main.waitForFunction(() => typeof window.finishNavigation === "function");
+    await main.evaluate(() => window.finishNavigation());
     await main.waitForURL(`${origin}/receiver${chatHash}`);
     await preview.getByText("Opened the originating chat.").waitFor();
     assert.equal(preview.url(), `${origin}/viewer`, "desktop keeps the preview open");

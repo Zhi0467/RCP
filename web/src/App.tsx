@@ -775,10 +775,16 @@ export default function App() {
   });
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
   const [requestedChat, setRequestedChat] = useState(() => ({
+    hash: window.location.hash,
     projectId: initialRoute.project.projectId,
     chatId: initialRoute.project.chatId,
     graphTarget: initialRoute.graphTarget,
   }));
+  const pendingArtifactChatNavigation = useRef<{
+    hash: string;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null>(null);
   const activeGraphTargetRef = useRef(graphTarget);
   activeGraphTargetRef.current = graphTarget;
   const {
@@ -1864,10 +1870,16 @@ export default function App() {
 
   useEffect(() => {
     const handleHashChange = () => {
+      const pending = pendingArtifactChatNavigation.current;
+      if (pending && pending.hash !== window.location.hash) {
+        pending.reject(new Error("Chat navigation was cancelled."));
+        pendingArtifactChatNavigation.current = null;
+      }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
       setRequestedChat({
+        hash: window.location.hash,
         projectId: route.projectId,
         chatId: route.chatId,
         graphTarget: nextTarget,
@@ -2424,11 +2436,20 @@ export default function App() {
 
   useEffect(() => {
     if (!desktop || !backendSessionReady) return;
-    return listenForArtifactChatNavigation(async (hash) => {
-      if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
-      else window.location.hash = hash;
+    const stopListening = listenForArtifactChatNavigation(async (hash) => {
+      await new Promise<void>((resolve, reject) => {
+        pendingArtifactChatNavigation.current?.reject(new Error("Chat navigation was replaced."));
+        pendingArtifactChatNavigation.current = { hash, resolve, reject };
+        if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+        else window.location.hash = hash;
+      });
       await desktopShowReady();
     });
+    return () => {
+      stopListening();
+      pendingArtifactChatNavigation.current?.reject(new Error("RCP disconnected."));
+      pendingArtifactChatNavigation.current = null;
+    };
   }, [desktop, backendSessionReady]);
 
   useEffect(() => {
@@ -2442,17 +2463,28 @@ export default function App() {
     )
       return;
     let cancelled = false;
+    const pending = pendingArtifactChatNavigation.current;
+    const navigation = pending?.hash === requestedChat.hash ? pending : null;
     void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
       .then((transcript) => {
         if (cancelled) return;
         selectCanonicalChat(transcript);
         clearNodeSelections();
+        navigation?.resolve();
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = `Conversation could not be opened: ${String(error)}`;
+        reportErrorNotice(message);
+        navigation?.reject(new Error(message));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (pendingArtifactChatNavigation.current === navigation)
+          pendingArtifactChatNavigation.current = null;
         setRequestedChat((current) =>
           current === requestedChat ? { ...current, chatId: undefined } : current,
         );
-      })
-      .catch((error) => {
-        if (!cancelled) reportErrorNotice(`Conversation could not be opened: ${String(error)}`);
       });
     return () => {
       cancelled = true;
