@@ -164,8 +164,8 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   a command string.
 - Prompt prose describing enforcement must render the same resolved object used
   by enforcement. Do not maintain parallel human-written allowlists.
-- Graph branches are the narrow Auto-research graph exception, not Git branches,
-  repository rollback, branch discard, or a conflict editor.
+- Graph branches version the research graph, never Git branches or repository
+  rollback. Scope is reopened; read `decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
 - One SQLite file is acceptable. Add compound transactions for proven harmful
   partial-write windows; do not split `AppStore` for aesthetic breadth alone.
 

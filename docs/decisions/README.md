@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Graph-branch scope is reopened](2026-09-08-graph-branch-scope-is-reopened.md)
+  retires the outright rejection of a version-control model for the research
+  graph, fixes what human authority keeps, and puts the deterministic merge core
+  first.
+
 - [Graph authoring and product boundaries](2026-09-05-graph-authoring-and-product-boundaries.md)
   records glossary authoring, validator advice, human graph editing and the
   explicit exclusions replacing the retired open-question register.

@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from rcp.agents import AgentEvent, AgentLauncher, agent_output_schema, parse_agent_patch_json
 from rcp.agents.branch_merge_prompt import (
@@ -42,10 +42,13 @@ from rcp.core.models import (
     Patch,
     ProjectNode,
     Proposal,
+    SourceRef,
 )
 from rcp.core.operations import (
+    CreateNodesOperation,
     CreateProposalsOperation,
     HumanEditCause,
+    ProposalContentChangeOperation,
     ProposalOperation,
     ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
@@ -1213,6 +1216,58 @@ def branch_merge_provenance(context: BranchMergeContext) -> BranchMergeProvenanc
     )
 
 
+def _candidate_source_refs(patch: Patch) -> Iterator[tuple[str, list[Any]]]:
+    """Every node id and raw source ref list the candidate writes, reviews included."""
+
+    for operation in patch.ops:
+        if isinstance(operation, CreateNodesOperation):
+            for node in operation.nodes:
+                yield node.id, [ref.model_dump(mode="json") for ref in node.source_refs]
+        elif isinstance(operation, UpdateNodesOperation):
+            for update in operation.nodes:
+                yield update.id, list(update.changes.get("source_refs") or [])
+        elif isinstance(operation, CreateProposalsOperation):
+            for proposal in operation.proposals:
+                for review in proposal.ops:
+                    if isinstance(review, ProposalContentChangeOperation):
+                        for update in review.nodes:
+                            yield update.id, list(update.changes.get("source_refs") or [])
+
+
+def _fingerprint_source_ref(value: object) -> str | None:
+    try:
+        ref = SourceRef.model_validate(value)
+    except ValidationError:
+        return None
+    return json.dumps(ref.model_dump(mode="json"), sort_keys=True)
+
+
+def branch_merge_inherited_repositories(patch: Patch, context: BranchMergeContext) -> list[str]:
+    """Truth repositories whose carried source refs already exist on the branch head.
+
+    A graph-only merge reads no repository, so it authors no provenance. Every
+    ref it carries was validated when the branch task recorded it, and the merge
+    inherits exactly those reads. A ref the candidate invented matches nothing on
+    the branch, stays unclaimed, and is still rejected as an unread source.
+    """
+
+    inherited: set[str] = set()
+    for node_id, raw_refs in _candidate_source_refs(patch):
+        source = context.branch_graph.nodes.get(node_id)
+        if source is None:
+            continue
+        known = {
+            fingerprint
+            for ref in source.source_refs
+            if (fingerprint := _fingerprint_source_ref(ref)) is not None
+        }
+        for item in raw_refs:
+            fingerprint = _fingerprint_source_ref(item)
+            if fingerprint is not None and fingerprint in known:
+                inherited.add(SourceRef.model_validate(item).truth_repository)
+    return sorted(inherited)
+
+
 def parse_branch_merge_candidate(value: str, context: BranchMergeContext) -> Patch:
     """Parse semantic-only output and stamp all non-agent merge provenance."""
 
@@ -1232,6 +1287,9 @@ def parse_branch_merge_candidate(value: str, context: BranchMergeContext) -> Pat
         run_truth_scope=context.run_truth_scope,
         source_operation_id=context.merge_task_id,
         profile="orchestrator",
+    )
+    patch = patch.model_copy(
+        update={"repositories_read": branch_merge_inherited_repositories(patch, context)}
     )
     for operation in patch.ops:
         if not isinstance(operation, CreateProposalsOperation):

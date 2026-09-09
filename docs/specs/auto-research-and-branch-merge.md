@@ -397,8 +397,12 @@ or foreign branch fails explicitly; it never substitutes main state or a main
 conversation. Historical episode reports remain immutable, so later branch
 edits are visible through the graph and its provenance.
 
-There is no general branch manager, conflict editor, cherry-pick, discard,
-repository-branch control, or automatic merge.
+Today's surface is one branch per episode and one human-dispatched merge. There
+is no general branch manager, conflict editor, cherry-pick, discard, or
+repository-branch control, and no merge runs without a human dispatching it. That
+is current scope rather than a permanent exclusion; a version-control model for
+the graph is admitted in
+[the graph-branch scope decision](../decisions/2026-09-08-graph-branch-scope-is-reopened.md).
 
 ## Verification contract
 
