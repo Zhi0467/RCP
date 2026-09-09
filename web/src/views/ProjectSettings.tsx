@@ -1147,6 +1147,7 @@ export function ProjectSettings({
                 }
                 locked={writesDisabled}
                 runOnLocked={id !== "paper_coach"}
+                workLikeCapable={project.agent_profiles[id]?.work_like_capable ?? true}
                 onRefreshReadiness={onRefreshReadiness}
                 readinessPending={readinessRequest?.pending ?? false}
                 readinessError={readinessRequest?.providerError ?? null}

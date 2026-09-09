@@ -32,6 +32,12 @@ interface Props {
   readinessPending?: boolean;
   readinessError?: string | null;
   /**
+   * `work_like_capable` for the profile being configured. A profile that never
+   * launches a Work-like capability, such as the paper coach, is unaffected by
+   * the Work readiness precondition and must not show its warning.
+   */
+  workLikeCapable?: boolean;
+  /**
    * The profile runtime this configuration runs on. A run request cannot
    * override it, so a surface that only builds a request passes `locked` and
    * shows what the profile will use.
@@ -79,6 +85,7 @@ export function AgentConfigControls({
   onRefreshReadiness,
   readinessPending = false,
   readinessError = null,
+  workLikeCapable = true,
   runtime,
   effectiveModel = "",
   children,
@@ -88,11 +95,14 @@ export function AgentConfigControls({
   const onMachine = project.provider_readiness[value.run_on] ?? {};
   const readiness = onMachine[value.provider];
   const machine = project.machines.find((item) => item.alias === value.run_on);
-  // Work-like launches need more than an authenticated CLI. `reason` also
-  // carries benign notes, such as a discovered path, so the badge reads the
-  // backend's own decision instead of treating any prose as a fault.
+  // Work-like launches need more than an authenticated CLI, but only where this
+  // profile can launch one. `reason` also carries benign notes, such as a
+  // discovered path, so the badge reads the backend's own decisions rather than
+  // treating any prose as a fault.
   const workBlocked =
-    readiness?.work_like_available === false || Boolean(readiness?.work_like_reason);
+    workLikeCapable &&
+    (readiness?.work_like_available === false || Boolean(readiness?.work_like_reason));
+  const workReason = workBlocked ? readiness?.work_like_reason : null;
   const update = (patch: Partial<AgentRunConfig>) => onChange({ ...value, ...patch });
   const className = compact ? "agent-config compact" : "agent-config";
   const providerName = readiness?.label || value.provider;
@@ -230,7 +240,7 @@ export function AgentConfigControls({
                   ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
                   : readinessError ||
                     `${value.provider} status is unavailable on ${machine?.host || "this machine"}. Re-check it.`
-                : readiness.work_like_reason ||
+                : workReason ||
                   (readiness.authenticated
                     ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
                     : readiness.reason ||

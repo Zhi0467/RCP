@@ -161,6 +161,32 @@ def test_claude_queued_follow_up_continues_until_final_result(tmp_path: Path, uu
         turn.render_steer(turn_id, "late", "Late")
 
 
+def test_claude_failing_result_ends_the_invocation_despite_an_accepted_follow_up(
+    tmp_path: Path,
+) -> None:
+    """The task engine stops at the first error, so a queued turn cannot help."""
+    turn = _turn(tmp_path, "claude")
+    turn_id = turn.steering_state().turn_id
+    turn.render_steer(turn_id, "follow-up", "One")
+    _lifecycle(turn, "queued", "follow-up")
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": None,
+                "user_message_uuids": [turn_id],
+            }
+        )
+    )
+    assert [event.event for event in step.events] == ["error"]
+    # The subtype is the only diagnostic this result carries.
+    assert step.events[0].text == "error_during_execution"
+    assert step.complete and step.stop_process and step.explicit_terminal
+    assert not turn.steering_state().can_steer
+
+
 @pytest.mark.parametrize(
     "fields",
     [

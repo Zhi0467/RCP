@@ -71,9 +71,10 @@ test("missing readiness is called checking only while a request is actually pend
 });
 
 /** Render the badge for one authenticated Claude readiness shape. */
-function readinessMarkup(extra) {
+function readinessMarkup(extra, props = {}) {
   return renderToStaticMarkup(
     React.createElement(AgentConfigControls, {
+      ...props,
       project: {
         ...project,
         provider_readiness: {
@@ -102,6 +103,22 @@ test("authenticated providers still show a failed Work precondition", () => {
   assert.ok(markup.includes(work_like_reason));
   assert.match(markup, /agent-readiness warning/);
   assert.doesNotMatch(markup, /ready on/);
+});
+
+test("a profile that never launches Work ignores the Work precondition", () => {
+  // The paper coach launches paper_readonly, so a missing Work sandbox is not
+  // its problem and must not make its card read as unavailable.
+  const markup = readinessMarkup(
+    {
+      work_like_available: false,
+      work_like_reason: "Claude Work sandbox unavailable: bubblewrap (bwrap) not installed.",
+    },
+    { workLikeCapable: false },
+  );
+
+  assert.match(markup, /agent-readiness ready/);
+  assert.match(markup, /ready on/);
+  assert.doesNotMatch(markup, /bubblewrap/);
 });
 
 test("a benign readiness note does not make a working provider read as broken", () => {

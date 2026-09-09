@@ -539,8 +539,13 @@ available while it runs.
 After authentication succeeds, the Claude profile also supplies a zero-cost
 Work-like startup probe using its strict sandbox settings, stream-json input,
 and closed empty stdin. Sandbox validation happens before any model call. The
-cached readiness result records Work-like availability and its concrete reason;
-Settings renders that readiness reason. A Work or orchestrate launch checks this
+cached readiness result records Work-like availability and its concrete reason,
+kept apart from the general readiness reason, which also carries benign notes
+such as a discovered path. Settings renders it only on a profile the projection
+marks as able to launch a Work-like capability, which a profile's default
+capability cannot establish: a chat profile defaults to Discuss and still
+launches Work. The paper coach is never subject to it. A Work or orchestrate
+launch checks this
 precondition alongside the profile's version requirement before starting its
 provider turn. A missing sandbox fails with the provider's actual diagnostic;
 connection loss or an unreachable host is reported as such, not diagnosed as a

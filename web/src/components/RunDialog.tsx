@@ -131,6 +131,7 @@ export function RunDialog({
               : ""
           }
           onChange={setConfig}
+          workLikeCapable={project.agent_profiles[kind]?.work_like_capable ?? true}
           runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
           runOnLocked
           collapsible

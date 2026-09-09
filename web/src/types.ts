@@ -1769,6 +1769,13 @@ export interface AgentProfile {
   reasoning: string;
   run_on: string;
   permissions: AgentPermissions;
+  /**
+   * Whether a turn on this profile can ask for a Work-like capability, and so
+   * whether a Work-like launch precondition applies to it. `permissions` cannot
+   * answer this: it describes a chat profile's default Discuss capability, not
+   * the Work turn the same profile can launch. Exported, never derived here.
+   */
+  work_like_capable: boolean;
 }
 
 export interface AgentRunConfig {

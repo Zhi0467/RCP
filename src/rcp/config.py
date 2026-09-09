@@ -428,6 +428,19 @@ AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
 )
 
 
+#: Surfaces whose turns can launch a Work-like capability. The map below gives a
+#: chat surface's *default* capability, `discuss`, but a Work turn on that same
+#: profile launches `work_auto`, so the default cannot answer this on its own.
+#: Only these profiles are subject to a Work-like launch precondition.
+_WORK_LIKE_SURFACES: frozenset[str] = frozenset({"node_chat", "project_chat", "orchestrator"})
+
+
+def launches_work_like(surface: AgentExecutionProfile) -> bool:
+    """Whether any turn on this profile can ask for `work_auto` or `orchestrate`."""
+
+    return surface in _WORK_LIKE_SURFACES
+
+
 def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPermissions:
     """Return the immutable authority envelope for one launch capability."""
 

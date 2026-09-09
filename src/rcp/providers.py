@@ -346,7 +346,12 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                         finished.add(message_id)
                 self._outstanding.difference_update(finished)
                 event = self._profile.decode_event(value, line)
-                if finished and self._outstanding:
+                # A failing result ends the invocation even with a follow-up
+                # accepted: the task engine stops at the first error anyway, so
+                # continuing would only run a turn whose task has already
+                # failed. Ending here keeps the error path terminal, which is
+                # what the launcher's stderr drain and stop assume.
+                if finished and self._outstanding and event.event != "error":
                     return ProviderRuntimeStep(events=(event,))
                 self._completed = True
                 receipts = tuple(
