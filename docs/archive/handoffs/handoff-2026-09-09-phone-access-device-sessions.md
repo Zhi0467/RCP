@@ -9,8 +9,9 @@ with a code and a required name (migration 15, `team_device_pairings`), both
 narrow-screen fixes below are in, and the source-built desktop keeps one session
 per saved connection across launches and Reconnects; see "Resolved: one desktop,
 one session". All three open questions are settled; see "Settled decisions".
-The transport is chosen but not stood up; see "Transport". Nothing has been
-verified against a real phone yet; that needs the tailnet.
+The transport is an operator procedure, now in `docs/server.md` under "Reach
+the team space from a phone"; running it needs the host's sudo password and a
+Tailscale login, which only the operator holds. Development work is complete.
 
 Close this handoff when a member can see their own connected devices in the
 identity panel, revoke any one of them without disturbing the others, and reach
@@ -240,9 +241,9 @@ and never retire the one it replaced, so a member who only ever used one
 computer saw a dozen `Unnamed device` rows. It now saves the exchanged session
 cookie in the Keychain beside the member token, verifies it at launch, at
 Reconnect, and before native requests, and exchanges again only on 401. The
-desktop's own row still reads `Unnamed device`: the shell sends no label, and
-the settled decisions forbid inferring one. A typed name for the desktop at
-**Add team space** is a possible follow-up, not part of this work.
+desktop's own row still reads `Unnamed device`: the shell sends no label, the
+settled decisions forbid inferring one, and the **Current device** marker
+already identifies it, so no desktop naming is added.
 
 ## Pairing flow
 

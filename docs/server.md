@@ -492,6 +492,42 @@ it is missing, so an installation from before that rule converges by rerunning
 install. Short jobs may still finish inline. See
 [compute jobs](specs/compute-jobs.md) for the contract and limits.
 
+## Reach the team space from a phone
+
+The listener stays on loopback. A phone reaches it over the operator's tailnet:
+the host joins Tailscale and `tailscale serve` terminates HTTPS in front of
+port 8421. Nothing opens to the public internet, and member session
+authentication still applies on top, so joining the tailnet is not authority.
+
+Once, as the sudo-capable operator, with HTTPS certificates enabled for the
+tailnet in the Tailscale admin console (DNS, Enable HTTPS):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+sudo tailscale serve --bg 8421
+tailscale serve status
+```
+
+`tailscale up` prints a login URL; the operator opens it and approves the host.
+`tailscale serve status` then names the address members use, of the form
+`https://<host>.<tailnet>.ts.net`.
+
+The proxy must preserve `Host` and set `X-Forwarded-Proto: https`, because the
+team mutation-origin check compares the browser `Origin` against the request's
+own scheme and host. `tailscale serve` does both (its reverse proxy copies the
+incoming `Host` and sets `X-Forwarded-Proto`), and uvicorn already trusts
+forwarded headers from `127.0.0.1`. A proxy that drops either header answers
+403 on every mutation while reads keep working; verify with a pairing before
+adopting any other terminator.
+
+Each member installs the Tailscale app on the phone, joins the same tailnet, and
+opens that address. The login screen offers **Connect this device**. On a
+signed-in device, the member opens their profile, chooses **Connect a device**
+under Devices, and types the ten-minute code into the phone together with a
+name for it. The phone holds an ordinary session, never the member token; the
+desktop lists it under Devices and can revoke it.
+
 ## Inspect and stop the service
 
 ```bash
@@ -503,7 +539,8 @@ sudo systemctl start rcp.service
 ```
 
 The listener is intentionally loopback-only. Team desktops reach it through an
-SSH tunnel; opening port 8421 publicly is not a supported deployment.
+SSH tunnel and phones through the tailnet above; opening port 8421 publicly is
+not a supported deployment.
 
 ## Update the server release
 
