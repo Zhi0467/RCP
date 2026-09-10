@@ -737,6 +737,19 @@ impl TeamSessionState {
         protocol: u32,
     ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
         let _renewal = self.renewal.lock().await;
+        self.resume_or_exchange_session_locked(connections, client, connection, health, protocol)
+            .await
+    }
+
+    /// The body of [`Self::resume_or_exchange_session`]; the caller holds `renewal`.
+    async fn resume_or_exchange_session_locked(
+        &self,
+        connections: &TeamConnectionState,
+        client: &Client,
+        connection: &TeamConnectionMetadata,
+        health: &TeamHealth,
+        protocol: u32,
+    ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
         let connection_id = connection.connection_id.as_str();
         if let Some(saved) = connections.load_session_cookie(connection_id)? {
             if let Ok(set_cookie) = validate_set_cookie(&saved) {
@@ -974,6 +987,10 @@ impl TeamSessionState {
     ) -> Result<(TeamConnectionMetadata, Client, HeaderValue), String> {
         let (connection, session) = self.saved_established(connections, connection_id)?;
         let (client, health, protocol) = self.native_client(&connection, &session).await?;
+        // Hold the renewal lock across verify, remove, and replace, so a second
+        // request that finds the same dead cookie waits and then reuses the
+        // replacement instead of deleting it and minting another.
+        let _renewal = self.renewal.lock().await;
         let cached_cookie = self.acquire_cookies()?.get(connection_id).cloned();
         if let Some(cookie) = cached_cookie {
             let header = HeaderValue::from_str(&cookie)
@@ -991,10 +1008,9 @@ impl TeamSessionState {
                 return Ok((connection, client, header));
             }
             self.acquire_cookies()?.remove(connection_id);
-            connections.remove_session_cookie(connection_id)?;
         }
         let (_identity, set_cookie) = self
-            .resume_or_exchange_session(connections, &client, &connection, &health, protocol)
+            .resume_or_exchange_session_locked(connections, &client, &connection, &health, protocol)
             .await?;
         let cookie = request_cookie(&set_cookie)?;
         let header = HeaderValue::from_str(&cookie)
