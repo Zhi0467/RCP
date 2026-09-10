@@ -210,6 +210,7 @@ class TeamPublicAuthBodyLimit:
         if scope["type"] != "http" or scope.get("path") not in {
             "/api/team/enroll",
             "/api/team/session/exchange",
+            "/api/team/devices/pair",
         }:
             await self.app(scope, receive, send)
             return
@@ -1660,6 +1661,7 @@ def create_app(
             "/api/health",
             "/api/team/enroll",
             "/api/team/session/exchange",
+            "/api/team/devices/pair",
         }
         session_ending_paths = {
             "/api/team/session/logout",
@@ -1796,6 +1798,10 @@ def create_app(
             "enrollment_code_consumed": 409,
             "enrollment_code_expired": 410,
             "enrollment_code_locked": 429,
+            "device_pairing_code_invalid": 401,
+            "device_pairing_code_consumed": 409,
+            "device_pairing_code_expired": 410,
+            "device_pairing_code_locked": 429,
         }
         return JSONResponse(
             status_code=status_by_code.get(exc.code, 401),

@@ -269,6 +269,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
     assert snapshot.check_storage_schema_migrations()[2] == (
         "episode_archives_v1",
         "team_session_ids_v1",
+        "team_device_pairings_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

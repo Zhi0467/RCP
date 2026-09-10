@@ -701,16 +701,9 @@ impl TeamSessionState {
         let client = self.client(&ready.local_origin)?;
         let health = read_health(&client, &ready.local_origin).await?;
         let protocol = validate_health(&health, Some(&connection))?;
-        let token = connections.load_member_token(connection_id)?;
-        let (identity, cookie) = exchange_session(
-            &client,
-            &connection.local_origin,
-            &token,
-            protocol,
-            installed_server_commit(&health),
-        )
-        .await?;
-        validate_identity(&identity, &health)?;
+        let (identity, cookie) = self
+            .resume_or_exchange_session(connections, &client, &connection, &health, protocol)
+            .await?;
         connection.last_known_cards = read_project_cards(
             &client,
             &ready.local_origin,
@@ -725,6 +718,45 @@ impl TeamSessionState {
         self.acquire_cookies()?
             .insert(connection_id.to_string(), native_cookie);
         self.record(connection, identity, &health)
+    }
+
+    /// Resume the session this desktop already holds for the connection, and
+    /// exchange a new one only when the server no longer accepts it. One desktop
+    /// therefore stays one row in the member's device list across launches and
+    /// Reconnects. Returns the verified identity and the session's Set-Cookie.
+    async fn resume_or_exchange_session(
+        &self,
+        connections: &TeamConnectionState,
+        client: &Client,
+        connection: &TeamConnectionMetadata,
+        health: &TeamHealth,
+        protocol: u32,
+    ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
+        let connection_id = connection.connection_id.as_str();
+        if let Some(saved) = connections.load_session_cookie(connection_id)? {
+            if let Ok(set_cookie) = validate_set_cookie(&saved) {
+                let cookie = request_cookie(&set_cookie)?;
+                if let Some(identity) =
+                    verify_session(client, &connection.local_origin, &cookie, protocol, health)
+                        .await?
+                {
+                    return Ok((identity, set_cookie));
+                }
+            }
+            connections.remove_session_cookie(connection_id)?;
+        }
+        let token = connections.load_member_token(connection_id)?;
+        let (identity, set_cookie) = exchange_session(
+            client,
+            &connection.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(health),
+        )
+        .await?;
+        validate_identity(&identity, health)?;
+        connections.store_session_cookie(connection_id, &set_cookie)?;
+        Ok((identity, set_cookie))
     }
 
     /// Establish the saved member session for a native-only operation. This
@@ -752,16 +784,9 @@ impl TeamSessionState {
         let client = self.client(&ready.local_origin)?;
         let health = read_health(&client, &ready.local_origin).await?;
         let protocol = validate_health(&health, Some(&connection))?;
-        let token = connections.load_member_token(connection_id)?;
-        let (identity, cookie) = exchange_session(
-            &client,
-            &ready.local_origin,
-            &token,
-            protocol,
-            installed_server_commit(&health),
-        )
-        .await?;
-        validate_identity(&identity, &health)?;
+        let (identity, cookie) = self
+            .resume_or_exchange_session(connections, &client, &connection, &health, protocol)
+            .await?;
         self.acquire_cookies()?
             .insert(connection_id.to_string(), request_cookie(&cookie)?);
         self.record(connection, identity, &health)
@@ -856,6 +881,7 @@ impl TeamSessionState {
         )
         .await?;
         validate_identity(&identity, &health)?;
+        connections.store_session_cookie(&connection.connection_id, &cookie)?;
         connection.last_known_cards = read_project_cards(
             &client,
             &connection.local_origin,
@@ -947,38 +973,24 @@ impl TeamSessionState {
         if let Some(cookie) = cached_cookie {
             let header = HeaderValue::from_str(&cookie)
                 .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
-            let response = client
-                .get(endpoint(&connection.local_origin, "/api/identity")?)
-                .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
-                .header(COOKIE, header.clone())
-                .send()
-                .await
-                .map_err(|error| format!("could not verify team session identity: {error}"))?;
-            if response.status().is_success() {
-                let identity = response.json::<TeamIdentity>().await.map_err(|_| {
-                    "team session verification returned an invalid identity".to_string()
-                })?;
-                validate_identity(&identity, &health)?;
+            if verify_session(
+                &client,
+                &connection.local_origin,
+                &cookie,
+                protocol,
+                &health,
+            )
+            .await?
+            .is_some()
+            {
                 return Ok((connection, client, header));
             }
-            if response.status() != reqwest::StatusCode::UNAUTHORIZED {
-                return Err(format!(
-                    "team session verification was rejected (HTTP {})",
-                    response.status().as_u16()
-                ));
-            }
             self.acquire_cookies()?.remove(connection_id);
+            connections.remove_session_cookie(connection_id)?;
         }
-        let token = connections.load_member_token(connection_id)?;
-        let (identity, set_cookie) = exchange_session(
-            &client,
-            &connection.local_origin,
-            &token,
-            protocol,
-            installed_server_commit(&health),
-        )
-        .await?;
-        validate_identity(&identity, &health)?;
+        let (_identity, set_cookie) = self
+            .resume_or_exchange_session(connections, &client, &connection, &health, protocol)
+            .await?;
         let cookie = request_cookie(&set_cookie)?;
         let header = HeaderValue::from_str(&cookie)
             .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
@@ -1157,6 +1169,42 @@ async fn exchange_session(
         .await
         .map_err(|_| "team session exchange returned an invalid identity".to_string())?;
     Ok((identity, cookie))
+}
+
+/// Ask the server whether a held session is still accepted. `None` means the
+/// server answered 401 and the session should be dropped; any other rejection
+/// is an error the caller reports instead of silently exchanging again.
+async fn verify_session(
+    client: &Client,
+    origin: &str,
+    cookie: &str,
+    protocol: u32,
+    health: &TeamHealth,
+) -> Result<Option<TeamIdentity>, String> {
+    let header = HeaderValue::from_str(cookie)
+        .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+    let response = client
+        .get(endpoint(origin, "/api/identity")?)
+        .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
+        .header(COOKIE, header)
+        .send()
+        .await
+        .map_err(|error| format!("could not verify team session identity: {error}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!(
+            "team session verification was rejected (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    let identity = response
+        .json::<TeamIdentity>()
+        .await
+        .map_err(|_| "team session verification returned an invalid identity".to_string())?;
+    validate_identity(&identity, health)?;
+    Ok(Some(identity))
 }
 
 async fn read_project_cards(
@@ -1466,6 +1514,12 @@ fn session_cookie(headers: &HeaderMap) -> Result<Zeroizing<String>, String> {
     let value = values[0]
         .to_str()
         .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+    validate_set_cookie(value)
+}
+
+/// Accept a Set-Cookie value only when it carries the `__Host-` session with the
+/// browser protections the server promises; a saved value is held to the same bar.
+fn validate_set_cookie(value: &str) -> Result<Zeroizing<String>, String> {
     if value.len() > MAX_SESSION_COOKIE_BYTES
         || !value.starts_with(SESSION_COOKIE_PREFIX)
         || value.contains(['\r', '\n', ','])

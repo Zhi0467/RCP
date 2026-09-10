@@ -804,6 +804,7 @@ export default function App() {
     settleActorNamePrompt,
     saveActorName,
     authenticateTeamSession: authenticateIdentityTeamSession,
+    pairTeamDevice: pairIdentityTeamDevice,
     reportIdentityIssue,
     reverifyIdentity,
     currentActiveAgentTasks,
@@ -1605,13 +1606,25 @@ export default function App() {
     teamSessionRequired,
   ]);
 
+  const settleTeamSignIn = useCallback(() => {
+    clearProjectRoute();
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }, [clearProjectRoute]);
+
   const authenticateTeamSession = useCallback(
     async (token: string) => {
       await authenticateIdentityTeamSession(token);
-      clearProjectRoute();
-      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      settleTeamSignIn();
     },
-    [authenticateIdentityTeamSession, clearProjectRoute],
+    [authenticateIdentityTeamSession, settleTeamSignIn],
+  );
+
+  const pairTeamDevice = useCallback(
+    async (code: string, label: string) => {
+      await pairIdentityTeamDevice(code, label);
+      settleTeamSignIn();
+    },
+    [pairIdentityTeamDevice, settleTeamSignIn],
   );
 
   useEffect(() => {
@@ -3793,6 +3806,7 @@ export default function App() {
         <TeamLoginBoundary
           spaceName={verifiedHealth?.space_name ?? null}
           onAuthenticate={authenticateTeamSession}
+          onPair={pairTeamDevice}
         />
         {acceptanceAgentSurface}
       </>

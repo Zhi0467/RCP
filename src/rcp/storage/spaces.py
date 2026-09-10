@@ -11,6 +11,7 @@ from typing import Literal
 from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,
+    TEAM_DEVICE_PAIRING_TTL_MINUTES,
     TEAM_INVITATION_TTL_DAYS,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_SESSION_IDLE_DAYS,
@@ -27,14 +28,17 @@ from rcp.storage.models import (
     SpaceUserRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
+    TeamDevicePairingRecord,
     TeamInvitationRecord,
     TeamMemberAuthorityRecord,
     TeamSessionRecord,
     _canonical_space_id,
     _canonical_uuid4,
+    _new_device_pairing_code,
     _new_enrollment_code,
     _new_member_token,
     _new_session_token,
+    _parse_device_pairing_code,
     _parse_enrollment_code,
     _required_timestamp,
     _sha256,
@@ -748,6 +752,148 @@ class SpaceStoreMixin:
             )
         return session, member
 
+    def create_team_device_pairing(self, created_by: str) -> tuple[TeamDevicePairingRecord, str]:
+        """Issue one short-lived code that lets another device join as this member.
+
+        A member holds one live code at a time: issuing a new one withdraws the
+        previous unused code, so the panel never has to list or revoke them.
+        """
+
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(minutes=TEAM_DEVICE_PAIRING_TTL_MINUTES)
+        ).isoformat()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, created_by)
+            connection.execute(
+                """
+                UPDATE team_device_pairings SET revoked_at = ?
+                WHERE created_by = ? AND consumed_at IS NULL AND revoked_at IS NULL
+                """,
+                (now, created_by),
+            )
+            for _ in range(8):
+                code, pairing_id, code_hash = _new_device_pairing_code()
+                taken = connection.execute(
+                    "SELECT 1 FROM team_device_pairings WHERE pairing_id = ?", (pairing_id,)
+                ).fetchone()
+                if taken is None:
+                    break
+            else:  # pragma: no cover - eight collisions in a million-slot space
+                raise RuntimeError("RCP could not allocate a device pairing code.")
+            connection.execute(
+                """
+                INSERT INTO team_device_pairings (
+                    pairing_id, code_hash, created_by, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (pairing_id, code_hash, created_by, now, expires_at),
+            )
+        return (
+            TeamDevicePairingRecord(
+                pairing_id=pairing_id, created_by=created_by, created_at=now, expires_at=expires_at
+            ),
+            code,
+        )
+
+    def pair_team_device(self, code: str, label: str) -> tuple[str, SpaceUserRecord]:
+        """Redeem a pairing code for a browser session; the device never sees a token."""
+
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or len(label) > TEAM_SESSION_LABEL_MAX_LENGTH
+        ):
+            raise ValueError("A device name is required and must fit its length limit.")
+        parsed = _parse_device_pairing_code(code)
+        if parsed is None:
+            raise TeamAuthenticationError(
+                "device_pairing_code_invalid", "The device code is invalid."
+            )
+        pairing_id, supplied_hash = parsed
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)
+        ).isoformat()
+        session, session_hash = _new_session_token()
+        error: TeamAuthenticationError | None = None
+        member: SpaceUserRecord | None = None
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space pairs devices.")
+            row = connection.execute(
+                "SELECT * FROM team_device_pairings WHERE pairing_id = ?", (pairing_id,)
+            ).fetchone()
+            if row is None or row["revoked_at"] is not None:
+                error = TeamAuthenticationError(
+                    "device_pairing_code_invalid", "The device code is invalid."
+                )
+            elif row["consumed_at"] is not None:
+                error = TeamAuthenticationError(
+                    "device_pairing_code_consumed", "The device code has already been used."
+                )
+            elif row["locked_at"] is not None:
+                error = TeamAuthenticationError(
+                    "device_pairing_code_locked", "The device code is locked."
+                )
+            elif row["expires_at"] <= now:
+                error = TeamAuthenticationError(
+                    "device_pairing_code_expired", "The device code has expired."
+                )
+            elif not hmac.compare_digest(row["code_hash"], supplied_hash):
+                failed_attempts = int(row["failed_attempts"]) + 1
+                locked_at = now if failed_attempts >= TEAM_CODE_FAILED_ATTEMPT_LIMIT else None
+                connection.execute(
+                    "UPDATE team_device_pairings SET failed_attempts = ?, locked_at = ? "
+                    "WHERE pairing_id = ?",
+                    (failed_attempts, locked_at, pairing_id),
+                )
+                error = TeamAuthenticationError(
+                    "device_pairing_code_locked" if locked_at else "device_pairing_code_invalid",
+                    "The device code is locked." if locked_at else "The device code is invalid.",
+                )
+            else:
+                candidate = self._space_user_from_connection(connection, row["created_by"])
+                if (
+                    candidate is None
+                    or candidate.identity_kind != "team_member"
+                    or candidate.removal_started_at is not None
+                    or candidate.removed_at is not None
+                ):
+                    error = TeamAuthenticationError(
+                        "device_pairing_code_invalid", "The device code is invalid."
+                    )
+                else:
+                    member = candidate
+                    connection.execute(
+                        "UPDATE team_device_pairings SET consumed_at = ? WHERE pairing_id = ?",
+                        (now, pairing_id),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO team_sessions (
+                            session_hash, session_id, label, user_id,
+                            created_at, last_seen_at, expires_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_hash,
+                            str(uuid.uuid4()),
+                            label,
+                            member.user_id,
+                            now,
+                            now,
+                            expires_at,
+                        ),
+                    )
+        if error is not None:
+            raise error
+        if member is None:  # pragma: no cover - exhaustive transition above
+            raise RuntimeError("RCP device pairing did not produce a session.")
+        return session, member
+
     def authenticate_team_member_token(self, token: str) -> SpaceUserRecord:
         """Resolve one permanent token without creating a browser session."""
 
@@ -895,6 +1041,14 @@ class SpaceStoreMixin:
         connection.execute(
             """
             UPDATE team_invitations
+            SET revoked_at = COALESCE(revoked_at, ?)
+            WHERE consumed_at IS NULL AND revoked_at IS NULL
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            UPDATE team_device_pairings
             SET revoked_at = COALESCE(revoked_at, ?)
             WHERE consumed_at IS NULL AND revoked_at IS NULL
             """,

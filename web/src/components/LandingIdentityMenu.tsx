@@ -5,11 +5,13 @@ import {
   Link2,
   Pencil,
   RefreshCw,
+  Smartphone,
   UserPlus,
   UserRound,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import {
+  createTeamDevicePairing,
   createTeamInvitation,
   loadSpaceUsers,
   loadTeamInvitations,
@@ -21,6 +23,7 @@ import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desk
 import type {
   IdentityResponse,
   SpaceUserSummary,
+  TeamDevicePairing,
   TeamInvitation,
   TeamInvitationIssue,
   TeamSession,
@@ -193,16 +196,25 @@ export function PersonalTeamSeam({
   );
 }
 
+const DEVICE_PAIRING_POLL_MS = 4000;
+
 export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
   const [sessions, setSessions] = useState<TeamSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [pairing, setPairing] = useState<(TeamDevicePairing & { known: number }) | null>(null);
+  const [issuing, setIssuing] = useState(false);
   const titleId = useId();
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // A pairing code is shown once, while the panel is open. Closing it
+      // discards the code; the server still holds it until it expires.
+      setPairing(null);
+      return;
+    }
     let stopped = false;
     setLoading(true);
     setError(null);
@@ -221,6 +233,33 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
     };
   }, [active, refreshVersion]);
 
+  // While a code is on screen, watch for the device it lets in, so the person
+  // holding the phone sees it appear here without pressing Refresh.
+  useEffect(() => {
+    if (!active || !pairing) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      if (Date.parse(pairing.expires_at) <= Date.now()) {
+        setPairing(null);
+        setError("The device code expired before a device connected. Issue a new one.");
+        return;
+      }
+      void loadTeamSessions()
+        .then((next) => {
+          if (stopped) return;
+          setSessions(next);
+          if (next.length > pairing.known) setPairing(null);
+        })
+        .catch(() => {
+          // A missed poll is not an error the person can act on; the next tick retries.
+        });
+    }, DEVICE_PAIRING_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [active, pairing]);
+
   const revoke = async (sessionId: string) => {
     setRevoking(sessionId);
     setError(null);
@@ -231,6 +270,20 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
       setError("That device could not be revoked. Refresh devices and try again.");
     } finally {
       setRevoking(null);
+    }
+  };
+
+  const connectDevice = async () => {
+    if (issuing) return;
+    setIssuing(true);
+    setError(null);
+    try {
+      const issued = await createTeamDevicePairing();
+      setPairing({ ...issued, known: sessions.length });
+    } catch {
+      setError("A device code could not be issued. Try again.");
+    } finally {
+      setIssuing(false);
     }
   };
 
@@ -247,6 +300,16 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
           Refresh
         </button>
       </header>
+      <button
+        className="landing-team-connect-device"
+        type="button"
+        disabled={issuing || loading}
+        onClick={() => void connectDevice()}
+      >
+        <Smartphone size={13} aria-hidden="true" />
+        {issuing ? "Issuing code" : "Connect a device"}
+      </button>
+      {pairing && <TeamDevicePairingCard pairing={pairing} onDismiss={() => setPairing(null)} />}
       {error && <p role="alert">{error}</p>}
       {loading ? (
         <p role="status">Loading devices…</p>
@@ -254,6 +317,32 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
         <TeamSessionList sessions={sessions} revoking={revoking} onRevoke={revoke} />
       )}
     </section>
+  );
+}
+
+export function TeamDevicePairingCard({
+  pairing,
+  onDismiss,
+}: {
+  pairing: TeamDevicePairing;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="landing-team-pairing" aria-live="polite">
+      <p>
+        On the other device, open this team space in its browser, choose{" "}
+        <strong>Connect this device</strong>, and enter this code with a name for the device.
+      </p>
+      <code tabIndex={0} aria-label={`Device code ${pairing.code}`}>
+        {pairing.code}
+      </code>
+      <div>
+        <span>Expires {formatInvitationTime(pairing.expires_at)}</span>
+        <button type="button" onClick={onDismiss}>
+          Done
+        </button>
+      </div>
+    </div>
   );
 }
 

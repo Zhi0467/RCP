@@ -797,6 +797,41 @@ button:disabled {
   flex-shrink: 0;
   min-height: 44px;
 }
+.landing-team-connect-device {
+  justify-content: center;
+  margin-top: 10px;
+  width: 100%;
+  border: 1px solid var(--landing-rule);
+  font-size: 10px;
+  font-weight: 700;
+}
+.landing-team-pairing {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--landing-rule);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.landing-team-pairing p {
+  margin: 0;
+}
+.landing-team-pairing code {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: center;
+  padding: 6px 0;
+  user-select: all;
+}
+.landing-team-pairing > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .rcp-mark {
   align-items: center;
   color: inherit;
@@ -9401,6 +9436,23 @@ button.relation-map-node:hover {
   justify-self: stretch;
   margin-top: 5px;
   min-height: 39px;
+}
+.team-login-hint {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+.team-login-switch {
+  background: none;
+  border: none;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11px;
+  margin-top: 14px;
+  min-height: 44px;
+  padding: 0;
+  text-decoration: underline;
 }
 .team-login-error {
   background: var(--rose-paper);

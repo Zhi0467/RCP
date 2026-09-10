@@ -1,17 +1,16 @@
 # Phone access: device sessions and mobile rendering
 
 Date: 2026-09-09
-Status: implemented on `feat/team-device-sessions` except the pairing screen.
-Sessions carry an independent public UUID through storage migration 14, the
-member-scoped list and revoke routes exist, the identity panel has a Devices
-section, exchange stores a human-typed label, and both narrow-screen fixes
-below are in, and within one launch the source-built desktop's native requests
-reuse the window's session instead of exchanging a new one per request. Sessions
-replaced at launch or Reconnect are not yet retired; see "Open". All three open
-questions are
-settled; see "Settled decisions".
+Status: implemented, including the pairing screen. Sessions carry an
+independent public UUID through storage migration 14, the member-scoped list and
+revoke routes exist, the identity panel has a Devices section with **Connect a
+device**, exchange stores a human-typed label, the login boundary pairs a device
+with a code and a required name (migration 15, `team_device_pairings`), both
+narrow-screen fixes below are in, and the source-built desktop keeps one session
+per saved connection across launches and Reconnects; see "Resolved: one desktop,
+one session". All three open questions are settled; see "Settled decisions".
 The transport is chosen but not stood up; see "Transport". Nothing has been
-verified against a real phone yet, because no pairing flow exists.
+verified against a real phone yet; that needs the tailnet.
 
 Close this handoff when a member can see their own connected devices in the
 identity panel, revoke any one of them without disturbing the others, and reach
@@ -234,16 +233,28 @@ Nothing here has been stood up yet. Do not document these steps in
 `docs/server.md` as operator procedure until someone has run them against a real
 team server; that guide describes procedures that work.
 
-## Open: sessions replaced at connect are not retired
+## Resolved: one desktop, one session
 
-The desktop exchanges a new session each time it establishes a saved connection,
-on every app launch and every explicit Reconnect, and never retires the one it
-replaces. Within one launch its native requests now reuse the window's session,
-so one launch is one row; across launches the rows accumulate until their
-fourteen-day idle expiry, each reading `Unnamed device`. Fix this with the
-pairing screen: either reuse the WebView's persisted session across launches or
-retire the replaced session at Reconnect and at Quit. A native logout is one
-request; the mutation-origin check passes when no `Origin` header is sent.
+The desktop used to exchange a new session on every launch and every Reconnect
+and never retire the one it replaced, so a member who only ever used one
+computer saw a dozen `Unnamed device` rows. It now saves the exchanged session
+cookie in the Keychain beside the member token, verifies it at launch, at
+Reconnect, and before native requests, and exchanges again only on 401. The
+desktop's own row still reads `Unnamed device`: the shell sends no label, and
+the settled decisions forbid inferring one. A typed name for the desktop at
+**Add team space** is a possible follow-up, not part of this work.
+
+## Pairing flow
+
+`POST /api/team/devices/pairings` (authenticated) issues one ten-minute,
+single-use code per member; issuing again withdraws the previous unused code.
+`POST /api/team/devices/pair` (public, same body bound as exchange) redeems it
+with a required label and sets the ordinary session cookie. The Devices panel
+shows the code once and polls the session list until the device appears. The
+login boundary offers pairing first and keeps token sign-in behind a switch.
+The desktop cannot show the phone-reachable address, because it only knows its
+tunnel origin; the instructions therefore say "open this team space in its
+browser", and the operator gives members the tailnet URL.
 
 ## Deliberately out of scope
 
@@ -253,9 +264,9 @@ request; the mutation-origin check passes when no `Origin` header is sent.
 - **Session caps and eviction.** Rejected by the human on 2026-09-09.
 - **A rotate control.** Rotate has no caller in any client. Per-session revoke
   covers the device case, so a rotate button is not required by this work.
-- **The pairing screen.** It belongs with the transport work, and it is where
-  mandatory naming is enforced. Until it ships, every row reads `Unnamed device`
-  and devices are told apart by last-seen time and the current-device marker.
+- **A QR code or a phone-reachable URL on the desktop.** The desktop knows only
+  its tunnel origin, and the server has no configured public address; the code is
+  typed. Revisit once the tailnet is stood up and the address is known.
 - **A rename route.** Deliberately omitted. Naming happens once, at pairing.
   Adding rename would reintroduce the label lifecycle this design removes.
 - **The desktop shell supplying its own machine name.** That is a

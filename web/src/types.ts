@@ -646,6 +646,11 @@ export interface TeamSession {
   can_revoke: boolean;
 }
 
+export interface TeamDevicePairing {
+  code: string;
+  expires_at: string;
+}
+
 export interface SourceRef {
   machine: string;
   truth_repository: string;

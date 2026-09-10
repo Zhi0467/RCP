@@ -14,9 +14,8 @@ const server = await createServer({
 const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/views/ProjectLanding.tsx",
 );
-const { IdentityProvenanceSlip, TeamSessionList, copyIdentityId } = await server.ssrLoadModule(
-  "/src/components/LandingIdentityMenu.tsx",
-);
+const { IdentityProvenanceSlip, TeamDevicePairingCard, TeamSessionList, copyIdentityId } =
+  await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
 
 after(() => server.close());
 
@@ -243,7 +242,24 @@ test("the team identity panel exposes Devices beside invitations", () => {
     }),
   );
   assert.match(html, />Devices</);
+  assert.match(html, /Connect a device/);
   assert.match(html, />Team invitations</);
+});
+
+test("an issued device code is shown once with its expiry and can be dismissed", () => {
+  let dismissed = false;
+  const props = {
+    pairing: { code: "ABCD-EFGHJK", expires_at: new Date(Date.now() + 600_000).toISOString() },
+    onDismiss() {
+      dismissed = true;
+    },
+  };
+  const html = renderToStaticMarkup(React.createElement(TeamDevicePairingCard, props));
+  assert.match(html, /<code[^>]*>ABCD-EFGHJK<\/code>/);
+  assert.match(html, /Expires/);
+  assert.match(html, /Connect this device/);
+  findElement(TeamDevicePairingCard(props), (element) => element.type === "button").props.onClick();
+  assert.equal(dismissed, true);
 });
 
 test("devices render backend current and revoke decisions and dispatch the public ID", () => {

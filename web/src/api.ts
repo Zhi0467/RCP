@@ -20,6 +20,7 @@ import type {
   StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
+  TeamDevicePairing,
   TeamSession,
 } from "./types";
 
@@ -131,6 +132,20 @@ export function loadTeamInvitations(): Promise<TeamInvitation[]> {
 
 export function loadTeamSessions(): Promise<TeamSession[]> {
   return api<TeamSession[]>("/api/team/sessions");
+}
+
+export function createTeamDevicePairing(): Promise<TeamDevicePairing> {
+  return api<TeamDevicePairing>("/api/team/devices/pairings", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function pairTeamDevice(code: string, label: string): Promise<IdentityResponse> {
+  return api<IdentityResponse>("/api/team/devices/pair", {
+    method: "POST",
+    body: JSON.stringify({ code, label }),
+  });
 }
 
 export function revokeTeamSession(sessionId: string): Promise<{ ok: boolean }> {

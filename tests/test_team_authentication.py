@@ -17,6 +17,7 @@ from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,
+    TEAM_DEVICE_PAIRING_TTL_MINUTES,
     TEAM_SESSION_IDLE_DAYS,
     TEAM_SESSION_LABEL_MAX_LENGTH,
 )
@@ -693,10 +694,17 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
         == 401
     )
     assert client.post("/api/team/session/exchange", json={"token": "invalid"}).status_code == 401
+    assert (
+        client.post(
+            "/api/team/devices/pair", json={"code": "AAAA-AAAAAA", "label": "Phone"}
+        ).status_code
+        == 401
+    )
     oversized = "x" * 5000
     for path, body in (
         ("/api/team/enroll", {"code": oversized, "display_name": "Alice"}),
         ("/api/team/session/exchange", {"token": oversized}),
+        ("/api/team/devices/pair", {"code": oversized, "label": "Phone"}),
     ):
         response = client.post(path, json=body)
         assert response.status_code == 413
@@ -712,7 +720,127 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
         response = client.get(path)
         assert response.status_code == 401, (path, response.text)
         assert response.json()["detail"]["code"] == "team_identity_required"
+    issued = client.post("/api/team/devices/pairings", json={})
+    assert issued.status_code == 401
+    assert issued.json()["detail"]["code"] == "team_identity_required"
     assert store.space_users() == []
+
+
+def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_member(
+    tmp_path,
+) -> None:
+    store, _, alice, _alice_token = _claimed_team(tmp_path)
+    _, _, bob, _bob_token = _enroll_invited_member(store, alice.user_id, "Bob")
+
+    pairing, code = store.create_team_device_pairing(alice.user_id)
+    assert re.fullmatch(r"[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{6}", code)
+    assert pairing.created_by == alice.user_id
+    assert datetime.fromisoformat(pairing.expires_at) - datetime.fromisoformat(
+        pairing.created_at
+    ) == timedelta(minutes=TEAM_DEVICE_PAIRING_TTL_MINUTES)
+    secret = code.split("-", 1)[1]
+    assert secret.encode() not in _sqlite_bytes(store.path)
+
+    with pytest.raises(ValueError):
+        store.pair_team_device(code, "   ")
+    with pytest.raises(TeamAuthenticationError) as invalid:
+        store.pair_team_device(code[:-1] + ("2" if code[-1] != "2" else "3"), "Ada's phone")
+    assert invalid.value.code == "device_pairing_code_invalid"
+
+    # A person types the code as they see it: case and separators are forgiven.
+    session, member = store.pair_team_device(f" {code.lower().replace('-', ' ')} ", "Ada's phone")
+    assert member == alice
+    assert store.resolve_team_session(session) == alice
+    labels = {item.label for item in store.team_sessions(alice.user_id)}
+    assert labels == {"Ada's phone"}
+    assert store.team_sessions(bob.user_id) == []
+
+    with pytest.raises(TeamAuthenticationError) as consumed:
+        store.pair_team_device(code, "Second phone")
+    assert consumed.value.code == "device_pairing_code_consumed"
+
+    # Issuing a new code withdraws the previous unused one, so a member holds one.
+    _, first = store.create_team_device_pairing(alice.user_id)
+    _, second = store.create_team_device_pairing(alice.user_id)
+    with pytest.raises(TeamAuthenticationError) as withdrawn:
+        store.pair_team_device(first, "Tablet")
+    assert withdrawn.value.code == "device_pairing_code_invalid"
+
+    # Wrong secrets lock only the targeted code.
+    wrong = second[:-1] + ("2" if second[-1] != "2" else "3")
+    for _ in range(TEAM_CODE_FAILED_ATTEMPT_LIMIT - 1):
+        with pytest.raises(TeamAuthenticationError) as attempt:
+            store.pair_team_device(wrong, "Tablet")
+        assert attempt.value.code == "device_pairing_code_invalid"
+    with pytest.raises(TeamAuthenticationError) as locked:
+        store.pair_team_device(wrong, "Tablet")
+    assert locked.value.code == "device_pairing_code_locked"
+    with pytest.raises(TeamAuthenticationError) as still_locked:
+        store.pair_team_device(second, "Tablet")
+    assert still_locked.value.code == "device_pairing_code_locked"
+
+    _, expiring = store.create_team_device_pairing(alice.user_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE team_device_pairings SET expires_at = ? WHERE pairing_id = ?",
+            ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), expiring.split("-")[0]),
+        )
+    with pytest.raises(TeamAuthenticationError) as expired:
+        store.pair_team_device(expiring, "Tablet")
+    assert expired.value.code == "device_pairing_code_expired"
+    assert {item.label for item in store.team_sessions(alice.user_id)} == {"Ada's phone"}
+
+
+def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
+    tmp_path,
+) -> None:
+    store, _, alice, alice_token = _claimed_team(tmp_path)
+    app = create_app(data_dir=tmp_path)
+    desktop = TestClient(app, base_url="https://testserver")
+    phone = TestClient(app, base_url="https://testserver")
+    assert (
+        desktop.post("/api/team/session/exchange", json={"token": alice_token}).status_code == 200
+    )
+
+    issued = desktop.post("/api/team/devices/pairings", json={})
+    assert issued.status_code == 200
+    assert set(issued.json()) == {"code", "expires_at"}
+    code = issued.json()["code"]
+    assert alice_token not in issued.text
+
+    assert phone.get("/api/identity").status_code == 401
+    unnamed = phone.post("/api/team/devices/pair", json={"code": code})
+    assert unnamed.status_code == 422
+    blank = phone.post("/api/team/devices/pair", json={"code": code, "label": "  "})
+    assert blank.status_code == 422
+    paired = phone.post("/api/team/devices/pair", json={"code": code, "label": "Ada's iPhone"})
+    assert paired.status_code == 200
+    assert paired.json()["user"]["user_id"] == alice.user_id
+    assert alice_token not in paired.text
+    cookie = paired.headers["set-cookie"].lower()
+    assert cookie.startswith("__host-rcp_session=rcp_session_")
+    assert "httponly" in cookie and "secure" in cookie
+    assert phone.get("/api/identity").status_code == 200
+
+    replay = TestClient(app, base_url="https://testserver").post(
+        "/api/team/devices/pair", json={"code": code, "label": "Someone else"}
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["code"] == "device_pairing_code_consumed"
+
+    listed = desktop.get("/api/team/sessions")
+    assert listed.status_code == 200
+    by_label = {item["label"]: item for item in listed.json()}
+    assert set(by_label) == {"Unnamed device", "Ada's iPhone"}
+    assert by_label["Unnamed device"]["is_current"] is True
+    assert by_label["Ada's iPhone"]["can_revoke"] is True
+    assert code not in listed.text
+
+    phone_session_id = by_label["Ada's iPhone"]["session_id"]
+    revoked = desktop.post(f"/api/team/sessions/{phone_session_id}/revoke", json={})
+    assert revoked.status_code == 200
+    assert phone.get("/api/identity").status_code == 401
+    assert store.team_sessions(alice.user_id)[0].label == "Unnamed device"
 
 
 def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_path) -> None:

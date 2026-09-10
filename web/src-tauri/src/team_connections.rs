@@ -269,8 +269,52 @@ impl TeamConnectionState {
 
     pub fn remove_member_token(&self, connection_id: &str) -> Result<RemovalResult, String> {
         let reference = credential_reference(connection_id)?;
+        let session = session_reference(connection_id)?;
         let _guard = self.acquire()?;
-        remove_keychain_password(&reference).map(|removed| RemovalResult { removed })
+        let removed = remove_keychain_password(&reference)?;
+        remove_keychain_password(&session)?;
+        Ok(RemovalResult { removed })
+    }
+
+    /// Keep the browser session the desktop exchanged beside the token that
+    /// minted it, so a relaunch resumes that session instead of adding one more
+    /// row to the member's device list. The value is the server's Set-Cookie.
+    pub(crate) fn store_session_cookie(
+        &self,
+        connection_id: &str,
+        set_cookie: &str,
+    ) -> Result<(), String> {
+        let reference = session_reference(connection_id)?;
+        let _guard = self.acquire()?;
+        if !self
+            .read_registry()?
+            .connections
+            .iter()
+            .any(|connection| connection.connection_id == connection_id)
+        {
+            return Err("team connection metadata must be saved before its session".into());
+        }
+        store_keychain_password(&reference, set_cookie.as_bytes())
+    }
+
+    pub(crate) fn load_session_cookie(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<Zeroizing<String>>, String> {
+        let reference = session_reference(connection_id)?;
+        let _guard = self.acquire()?;
+        let Some(bytes) = load_keychain_password(&reference)? else {
+            return Ok(None);
+        };
+        let value = String::from_utf8(bytes.to_vec())
+            .map_err(|_| "the saved team session is invalid".to_string())?;
+        Ok(Some(Zeroizing::new(value)))
+    }
+
+    pub(crate) fn remove_session_cookie(&self, connection_id: &str) -> Result<bool, String> {
+        let reference = session_reference(connection_id)?;
+        let _guard = self.acquire()?;
+        remove_keychain_password(&reference)
     }
 
     fn acquire(&self) -> Result<MutexGuard<'_, ()>, String> {
@@ -684,6 +728,14 @@ fn credential_reference(connection_id: &str) -> Result<CredentialReference, Stri
     Ok(CredentialReference {
         service: KEYCHAIN_SERVICE,
         account: format!("team-connection/{connection_id}"),
+    })
+}
+
+fn session_reference(connection_id: &str) -> Result<CredentialReference, String> {
+    validate_uuid4(connection_id, "team connection identity")?;
+    Ok(CredentialReference {
+        service: KEYCHAIN_SERVICE,
+        account: format!("team-connection/{connection_id}/session"),
     })
 }
 

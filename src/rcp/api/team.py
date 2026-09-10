@@ -10,6 +10,7 @@ from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, normalize_display_name
 from rcp.limits import (
+    TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_SESSION_LABEL_MAX_LENGTH,
@@ -51,6 +52,27 @@ class TeamSessionExchangeRequest(BaseModel):
 
     token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
     label: str = Field(default="Unnamed device", max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
+
+
+class TeamDevicePairingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    code: str = Field(min_length=1, max_length=TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH)
+    label: str = Field(min_length=1, max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
+
+    @field_validator("label")
+    @classmethod
+    def label_names_the_device(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A device name is required.")
+        return value
+
+
+class TeamDevicePairingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    code: str
+    expires_at: str
 
 
 class TeamSessionResponse(BaseModel):
@@ -214,6 +236,35 @@ def logout_team_session(
     store.delete_team_session(request.cookies.get(TEAM_SESSION_COOKIE))
     identity_access.clear_team_session_cookie(response)
     return {"ok": True}
+
+
+@router.post("/api/team/devices/pairings")
+def create_team_device_pairing(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> TeamDevicePairingResponse:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    pairing, code = store.create_team_device_pairing(member.user_id)
+    return TeamDevicePairingResponse(code=code, expires_at=pairing.expires_at)
+
+
+@router.post("/api/team/devices/pair")
+def pair_team_device(
+    body: TeamDevicePairingRequest,
+    response: Response,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    """Public like exchange: the device presents a code, never the member token."""
+
+    identity_access.require_team_space()
+    session, member = store.pair_team_device(body.code, body.label)
+    identity_access.set_team_session_cookie(response, session)
+    return identity_access.identity_payload(member)
 
 
 @router.get("/api/team/sessions")

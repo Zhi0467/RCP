@@ -12,9 +12,8 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ApiError } = await server.ssrLoadModule("/src/api.ts");
-const { TeamLoginBoundary, teamLoginFailureMessage } = await server.ssrLoadModule(
-  "/src/components/TeamLoginBoundary.tsx",
-);
+const { TeamLoginBoundary, teamLoginFailureMessage, teamPairingFailureMessage } =
+  await server.ssrLoadModule("/src/components/TeamLoginBoundary.tsx");
 const { IdentityProvenanceSlip, TeamInvitationLedger, TeamMemberRoster, invitationCopyBlock } =
   await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
 
@@ -57,6 +56,8 @@ test("team login uses a focused secret field without a URL or storage seam", () 
     React.createElement(TeamLoginBoundary, {
       spaceName: teamIdentity.space_name,
       async onAuthenticate() {},
+      async onPair() {},
+      initialMode: "token",
     }),
   );
 
@@ -64,7 +65,42 @@ test("team login uses a focused secret field without a URL or storage seam", () 
   assert.match(html, /<input[^>]*type="password"/);
   assert.match(html, /data-team-login="credential-slip"/);
   assert.match(html, /<form[^>]*autoComplete="off"/);
+  assert.match(html, /Connect with a device code instead/);
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+});
+
+test("an unauthenticated browser is offered device pairing first, with a required name", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamLoginBoundary, {
+      spaceName: teamIdentity.space_name,
+      async onAuthenticate() {},
+      async onPair() {},
+    }),
+  );
+
+  assert.match(html, /Connect this device to Causal Systems Lab/);
+  assert.match(html, /data-team-login="device-pairing"/);
+  assert.match(html, /<input[^>]*id="team-login-code"/);
+  assert.match(html, /<input[^>]*id="team-login-device-name"/);
+  assert.match(html, /<button[^>]*type="submit"[^>]*disabled/);
+  assert.match(html, /Sign in with a team token instead/);
+  assert.doesNotMatch(html, /type="password"/);
+  assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+});
+
+test("pairing errors name the next step without echoing the code", () => {
+  const code = "ABCD-EFGHJK";
+  for (const [status, expected] of [
+    [401, /not accepted/],
+    [409, /already used/],
+    [410, /expired/],
+    [429, /Too many attempts/],
+  ]) {
+    const message = teamPairingFailureMessage(new ApiError(code, status));
+    assert.match(message, expected);
+    assert.doesNotMatch(message, new RegExp(code));
+  }
+  assert.doesNotMatch(teamPairingFailureMessage(new Error(code)), new RegExp(code));
 });
 
 test("team login errors never reflect the submitted token", () => {
