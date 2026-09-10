@@ -261,7 +261,7 @@ def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
 
 
 def test_stage_checkpoints_leave_agent_symlinks_out_while_owned_trees_still_refuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     stage = tmp_path / "run-stage" / "chat-1"
     workspace = stage / "workspace" / "pytest-0"
@@ -291,6 +291,10 @@ def test_stage_checkpoints_leave_agent_symlinks_out_while_owned_trees_still_refu
     assert not any("current" in entry or entry.endswith("python") for entry in directories)
     copied_links = [path for path in (tmp_path / "copied").rglob("*") if path.is_symlink()]
     assert copied_links == []
+    # The loss is logged once, so a later rollback that lacks them is explicable.
+    assert [
+        record.getMessage() for record in caplog.records if "symbolic link" in record.getMessage()
+    ] == [f"checkpoint of {stage} leaves out 2 symbolic link(s) as agent scratch"]
 
     # Skipped links still count toward the inventory bound.
     monkeypatch.setattr("rcp.server_ops.application_snapshot.BACKUP_INVENTORY_MAX_ENTRIES", 40)

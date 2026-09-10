@@ -1417,7 +1417,7 @@ fn launch_error(stderr: &[u8], fallback: &str) -> String {
     let diagnostics: Vec<&str> = lines
         .iter()
         .copied()
-        .filter(|line| !line.starts_with("[stdout] "))
+        .filter(|line| !is_build_progress(line))
         .collect();
     let chosen = if diagnostics.is_empty() {
         lines
@@ -1453,6 +1453,18 @@ fn launch_error(stderr: &[u8], fallback: &str) -> String {
     }
 }
 
+/// Relayed stdout is build progress (Vite chunk sizes, npm banners) unless it
+/// carries a diagnostic; `tsc` prints its compile errors on stdout.
+fn is_build_progress(line: &str) -> bool {
+    match line.strip_prefix("[stdout] ") {
+        Some(rest) => {
+            let lowered = rest.to_ascii_lowercase();
+            !(lowered.contains("error") || lowered.contains("warn"))
+        }
+        None => false,
+    }
+}
+
 /// Keep the whole launcher capture where the person can read it; the dialog
 /// names the file. Failing to write it is not a second error worth surfacing.
 fn save_launch_output(app: &AppHandle, output: &[u8]) -> Option<PathBuf> {
@@ -1479,6 +1491,19 @@ mod tests {
         assert!(!message.contains("[stdout]"));
         assert!(message.ends_with("RuntimeError: RCP storage schema validation failed"));
         assert!(message.starts_with("backend ended: Building the RCP frontend..."));
+    }
+
+    #[test]
+    fn launch_error_keeps_stdout_diagnostics_beside_the_stderr_wrapper() {
+        let output = "[stdout] > web@0.0.0 build\n\
+                      [stdout] src/App.tsx(12,5): error TS2322: Type 'string' is not assignable to type 'number'.\n\
+                      [stdout] Found 1 error in src/App.tsx:12\n\
+                      WebBuildError: The RCP frontend build failed; see the npm output above.\n";
+        let message = launch_error(output.as_bytes(), "backend ended");
+        assert!(message.contains("error TS2322"));
+        assert!(message.contains("Found 1 error"));
+        assert!(!message.contains("web@0.0.0 build"));
+        assert!(message.ends_with("see the npm output above."));
     }
 
     #[test]
