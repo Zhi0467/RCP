@@ -21,6 +21,7 @@ import type {
   TeamInvitation,
   TeamInvitationIssue,
   TeamDevicePairing,
+  TeamDevicePairingStatus,
   TeamSession,
 } from "./types";
 
@@ -139,6 +140,12 @@ export function createTeamDevicePairing(): Promise<TeamDevicePairing> {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export function loadTeamDevicePairing(pairingId: string): Promise<TeamDevicePairingStatus> {
+  return api<TeamDevicePairingStatus>(
+    `/api/team/devices/pairings/${encodeURIComponent(pairingId)}`,
+  );
 }
 
 export function pairTeamDevice(code: string, label: string): Promise<IdentityResponse> {

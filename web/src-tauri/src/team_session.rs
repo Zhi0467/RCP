@@ -33,7 +33,7 @@ use crate::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
 // Protocol 3 carries reviewed commits; protocol 4 also preserves episode archive

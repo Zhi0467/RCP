@@ -2000,6 +2000,7 @@ class AppStoreBase:
                 pairing_id TEXT PRIMARY KEY,
                 code_hash TEXT NOT NULL,
                 created_by TEXT NOT NULL,
+                issuing_session_hash TEXT,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 consumed_at TEXT,

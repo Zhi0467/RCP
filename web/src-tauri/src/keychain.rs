@@ -10,8 +10,9 @@ use zeroize::Zeroizing;
 const SECURITY_TOOL: &str = "/usr/bin/security";
 const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
 // A member token is under 64 bytes. A saved team session is the server's whole
-// Set-Cookie line, attributes included, which is about 130 bytes today.
-const MAX_VALUE_BYTES: usize = 256;
+// Set-Cookie line, attributes included; the desktop accepts such a line up to
+// 4 KiB (`team_session::MAX_SESSION_COOKIE_BYTES`), so this bound matches it.
+const MAX_VALUE_BYTES: usize = 4 * 1024;
 const MAX_ENCODED_OUTPUT_BYTES: usize = MAX_VALUE_BYTES * 2 + 2;
 
 fn security_command() -> Command {
@@ -245,12 +246,7 @@ mod tests {
         assert!(set("unused", "unused", &[0; MAX_VALUE_BYTES + 1]).is_err());
     }
 
-    #[test]
-    fn a_saved_team_session_set_cookie_fits_the_value_bound() {
-        let token = "a".repeat(43);
-        let set_cookie = format!(
-            "__Host-rcp_session=rcp_session_{token}; HttpOnly; Max-Age=1209600; Path=/; SameSite=lax; Secure"
-        );
-        assert!(set_cookie.len() <= MAX_VALUE_BYTES);
-    }
+    // Every Set-Cookie the desktop accepts must also be storable, or a valid
+    // exchange would be followed by a failed save.
+    const _: () = assert!(crate::team_session::MAX_SESSION_COOKIE_BYTES <= MAX_VALUE_BYTES);
 }

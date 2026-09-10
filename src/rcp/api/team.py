@@ -16,7 +16,7 @@ from rcp.limits import (
     TEAM_SESSION_LABEL_MAX_LENGTH,
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
-from rcp.storage.models import TeamInvitationRecord
+from rcp.storage.models import TeamDevicePairingRecord, TeamInvitationRecord
 
 router = APIRouter()
 
@@ -71,8 +71,38 @@ class TeamDevicePairingRequest(BaseModel):
 class TeamDevicePairingResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    pairing_id: str
     code: str
     expires_at: str
+
+
+TeamDevicePairingStatus = Literal["waiting", "consumed", "expired", "revoked", "locked"]
+
+
+class TeamDevicePairingStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pairing_id: str
+    expires_at: str
+    status: TeamDevicePairingStatus
+
+
+def _team_device_pairing_status(
+    pairing: TeamDevicePairingRecord, *, now: str
+) -> TeamDevicePairingStatusResponse:
+    if pairing.consumed_at is not None:
+        status: TeamDevicePairingStatus = "consumed"
+    elif pairing.revoked_at is not None:
+        status = "revoked"
+    elif pairing.locked_at is not None:
+        status = "locked"
+    elif pairing.expires_at <= now:
+        status = "expired"
+    else:
+        status = "waiting"
+    return TeamDevicePairingStatusResponse(
+        pairing_id=pairing.pairing_id, expires_at=pairing.expires_at, status=status
+    )
 
 
 class TeamSessionResponse(BaseModel):
@@ -247,8 +277,29 @@ def create_team_device_pairing(
 ) -> TeamDevicePairingResponse:
     identity_access.require_team_space()
     member = identity_access.acting_user(request)
-    pairing, code = store.create_team_device_pairing(member.user_id)
-    return TeamDevicePairingResponse(code=code, expires_at=pairing.expires_at)
+    pairing, code = store.create_team_device_pairing(
+        member.user_id, issuing_session=identity_access.authenticating_team_session(request)
+    )
+    return TeamDevicePairingResponse(
+        pairing_id=pairing.pairing_id, code=code, expires_at=pairing.expires_at
+    )
+
+
+@router.get("/api/team/devices/pairings/{pairing_id}")
+def team_device_pairing_status(
+    request: Request,
+    pairing_id: str,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> TeamDevicePairingStatusResponse:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    try:
+        pairing = store.team_device_pairing(pairing_id, member.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="That device code was not found.") from exc
+    return _team_device_pairing_status(pairing, now=store.now())
 
 
 @router.post("/api/team/devices/pair")

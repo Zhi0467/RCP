@@ -203,9 +203,13 @@ successful revoke, and offers an explicit Refresh action.
 
 **Connect a device** in that panel issues a pairing code through
 `POST /api/team/devices/pairings` and shows it once, with its expiry, until the
-member dismisses it or a device connects; while the code is visible the panel
-polls the session list so the new device appears without a Refresh. A member
-holds one live code: issuing another withdraws the previous unused one. Codes are
+member dismisses it or the code ends; while the code is visible the panel polls
+`GET /api/team/devices/pairings/{pairing_id}`, whose `status` is `waiting`,
+`consumed`, `expired`, `revoked`, or `locked`, and refreshes Devices on
+`consumed`. A code is bound to the session that issued it: when that session is
+revoked, logged out, expired, or removed by credential rotation, the code reads
+`revoked` and cannot be redeemed. A member holds one live code: issuing another
+withdraws the previous unused one. Codes are
 ten characters from an alphabet without I, O, 0, or 1, shown as `ABCD-EFGHJK`,
 expire after ten minutes, are single use, and lock after five wrong secrets like
 enrollment codes; the server stores only the hash of the secret.

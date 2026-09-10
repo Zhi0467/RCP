@@ -729,7 +729,7 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
 def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_member(
     tmp_path,
 ) -> None:
-    store, _, alice, _alice_token = _claimed_team(tmp_path)
+    store, _, alice, alice_token = _claimed_team(tmp_path)
     _, _, bob, _bob_token = _enroll_invited_member(store, alice.user_id, "Bob")
 
     pairing, code = store.create_team_device_pairing(alice.user_id)
@@ -790,6 +790,30 @@ def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_memb
     assert expired.value.code == "device_pairing_code_expired"
     assert {item.label for item in store.team_sessions(alice.user_id)} == {"Ada's phone"}
 
+    # A code lives only as long as the session that issued it: revoking that
+    # device, or rotating the credential, kills the code with it.
+    desktop_session, _ = store.create_team_session(alice_token, label="Desktop")
+    pairing, bound = store.create_team_device_pairing(
+        alice.user_id, issuing_session=desktop_session
+    )
+    assert store.team_device_pairing(pairing.pairing_id, alice.user_id).revoked_at is None
+    with pytest.raises(KeyError):
+        store.team_device_pairing(pairing.pairing_id, bob.user_id)
+    store.delete_team_session(desktop_session)
+    assert store.team_device_pairing(pairing.pairing_id, alice.user_id).revoked_at is not None
+    with pytest.raises(TeamAuthenticationError) as orphaned:
+        store.pair_team_device(bound, "Tablet")
+    assert orphaned.value.code == "device_pairing_code_invalid"
+
+    rotating_session, _ = store.create_team_session(alice_token, label="Desktop")
+    _, rotated_away = store.create_team_device_pairing(
+        alice.user_id, issuing_session=rotating_session
+    )
+    store.rotate_team_token(alice.user_id)
+    with pytest.raises(TeamAuthenticationError) as after_rotation:
+        store.pair_team_device(rotated_away, "Tablet")
+    assert after_rotation.value.code == "device_pairing_code_invalid"
+
 
 def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     tmp_path,
@@ -804,9 +828,18 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
 
     issued = desktop.post("/api/team/devices/pairings", json={})
     assert issued.status_code == 200
-    assert set(issued.json()) == {"code", "expires_at"}
+    assert set(issued.json()) == {"pairing_id", "code", "expires_at"}
     code = issued.json()["code"]
+    pairing_id = issued.json()["pairing_id"]
     assert alice_token not in issued.text
+    waiting = desktop.get(f"/api/team/devices/pairings/{pairing_id}")
+    assert waiting.status_code == 200
+    assert waiting.json() == {
+        "pairing_id": pairing_id,
+        "expires_at": issued.json()["expires_at"],
+        "status": "waiting",
+    }
+    assert desktop.get("/api/team/devices/pairings/ZZZZ").status_code == 404
 
     assert phone.get("/api/identity").status_code == 401
     unnamed = phone.post("/api/team/devices/pair", json={"code": code})
@@ -827,6 +860,10 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     )
     assert replay.status_code == 409
     assert replay.json()["detail"]["code"] == "device_pairing_code_consumed"
+    assert desktop.get(f"/api/team/devices/pairings/{pairing_id}").json()["status"] == "consumed"
+
+    # A code issued by the phone dies with the phone's session.
+    phone_issued = phone.post("/api/team/devices/pairings", json={}).json()
 
     listed = desktop.get("/api/team/sessions")
     assert listed.status_code == 200
@@ -841,6 +878,12 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     assert revoked.status_code == 200
     assert phone.get("/api/identity").status_code == 401
     assert store.team_sessions(alice.user_id)[0].label == "Unnamed device"
+    orphaned = desktop.get(f"/api/team/devices/pairings/{phone_issued['pairing_id']}")
+    assert orphaned.json()["status"] == "revoked"
+    redeemed = TestClient(app, base_url="https://testserver").post(
+        "/api/team/devices/pair", json={"code": phone_issued["code"], "label": "Intruder"}
+    )
+    assert redeemed.status_code == 401
 
 
 def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_path) -> None:

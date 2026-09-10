@@ -249,7 +249,11 @@ test("the team identity panel exposes Devices beside invitations", () => {
 test("an issued device code is shown once with its expiry and can be dismissed", () => {
   let dismissed = false;
   const props = {
-    pairing: { code: "ABCD-EFGHJK", expires_at: new Date(Date.now() + 600_000).toISOString() },
+    pairing: {
+      pairing_id: "ABCD",
+      code: "ABCD-EFGHJK",
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+    },
     onDismiss() {
       dismissed = true;
     },

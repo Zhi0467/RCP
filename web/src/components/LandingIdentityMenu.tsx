@@ -13,6 +13,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import {
   createTeamDevicePairing,
   createTeamInvitation,
+  loadTeamDevicePairing,
   loadSpaceUsers,
   loadTeamInvitations,
   loadTeamSessions,
@@ -24,6 +25,7 @@ import type {
   IdentityResponse,
   SpaceUserSummary,
   TeamDevicePairing,
+  TeamDevicePairingState,
   TeamInvitation,
   TeamInvitationIssue,
   TeamSession,
@@ -197,6 +199,14 @@ export function PersonalTeamSeam({
 }
 
 const DEVICE_PAIRING_POLL_MS = 4000;
+const DEVICE_PAIRING_ENDED: Record<
+  Exclude<TeamDevicePairingState, "waiting" | "consumed">,
+  string
+> = {
+  expired: "The device code expired before a device connected. Issue a new one.",
+  revoked: "The device code was withdrawn. Issue a new one.",
+  locked: "The device code was locked after too many wrong attempts. Issue a new one.",
+};
 
 export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
   const [sessions, setSessions] = useState<TeamSession[]>([]);
@@ -204,7 +214,7 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [pairing, setPairing] = useState<(TeamDevicePairing & { known: number }) | null>(null);
+  const [pairing, setPairing] = useState<TeamDevicePairing | null>(null);
   const [issuing, setIssuing] = useState(false);
   const titleId = useId();
 
@@ -233,22 +243,21 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
     };
   }, [active, refreshVersion]);
 
-  // While a code is on screen, watch for the device it lets in, so the person
-  // holding the phone sees it appear here without pressing Refresh.
+  // While a code is on screen, watch that code's own state, so the person
+  // holding the phone sees the device appear here without pressing Refresh.
   useEffect(() => {
     if (!active || !pairing) return;
     let stopped = false;
     const timer = window.setInterval(() => {
-      if (Date.parse(pairing.expires_at) <= Date.now()) {
-        setPairing(null);
-        setError("The device code expired before a device connected. Issue a new one.");
-        return;
-      }
-      void loadTeamSessions()
-        .then((next) => {
-          if (stopped) return;
-          setSessions(next);
-          if (next.length > pairing.known) setPairing(null);
+      void loadTeamDevicePairing(pairing.pairing_id)
+        .then((state) => {
+          if (stopped || state.status === "waiting") return;
+          setPairing(null);
+          if (state.status === "consumed") {
+            setRefreshVersion((current) => current + 1);
+          } else {
+            setError(DEVICE_PAIRING_ENDED[state.status]);
+          }
         })
         .catch(() => {
           // A missed poll is not an error the person can act on; the next tick retries.
@@ -278,8 +287,7 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
     setIssuing(true);
     setError(null);
     try {
-      const issued = await createTeamDevicePairing();
-      setPairing({ ...issued, known: sessions.length });
+      setPairing(await createTeamDevicePairing());
     } catch {
       setError("A device code could not be issued. Try again.");
     } finally {

@@ -194,6 +194,9 @@ class TeamDevicePairingRecord(BaseModel):
     created_by: str
     created_at: str
     expires_at: str
+    consumed_at: str | None = None
+    locked_at: str | None = None
+    revoked_at: str | None = None
 
 
 class TeamInvitationRecord(BaseModel):

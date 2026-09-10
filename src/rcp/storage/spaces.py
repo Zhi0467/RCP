@@ -752,14 +752,20 @@ class SpaceStoreMixin:
             )
         return session, member
 
-    def create_team_device_pairing(self, created_by: str) -> tuple[TeamDevicePairingRecord, str]:
+    def create_team_device_pairing(
+        self, created_by: str, *, issuing_session: str | None = None
+    ) -> tuple[TeamDevicePairingRecord, str]:
         """Issue one short-lived code that lets another device join as this member.
 
         A member holds one live code at a time: issuing a new one withdraws the
-        previous unused code, so the panel never has to list or revoke them.
+        previous unused code, so the panel never has to list or revoke them. The
+        code is bound to the session that issued it: once that session is gone,
+        by revoke, logout, expiry, or credential rotation, the code is dead too,
+        so a compromised device cannot leave a live capability behind.
         """
 
         now = self.now()
+        issuing_session_hash = _sha256(issuing_session) if issuing_session else None
         expires_at = (
             datetime.fromisoformat(now) + timedelta(minutes=TEAM_DEVICE_PAIRING_TTL_MINUTES)
         ).isoformat()
@@ -785,10 +791,11 @@ class SpaceStoreMixin:
             connection.execute(
                 """
                 INSERT INTO team_device_pairings (
-                    pairing_id, code_hash, created_by, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    pairing_id, code_hash, created_by, issuing_session_hash,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (pairing_id, code_hash, created_by, now, expires_at),
+                (pairing_id, code_hash, created_by, issuing_session_hash, now, expires_at),
             )
         return (
             TeamDevicePairingRecord(
@@ -796,6 +803,56 @@ class SpaceStoreMixin:
             ),
             code,
         )
+
+    def team_device_pairing(self, pairing_id: str, user_id: str) -> TeamDevicePairingRecord:
+        """Read one of the member's own codes; a code whose issuer is gone reads revoked."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM team_device_pairings WHERE pairing_id = ? AND created_by = ?",
+                (pairing_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(pairing_id)
+            self._withdraw_orphaned_device_pairing(connection, row, now)
+            row = connection.execute(
+                "SELECT * FROM team_device_pairings WHERE pairing_id = ?", (pairing_id,)
+            ).fetchone()
+        return TeamDevicePairingRecord(
+            pairing_id=row["pairing_id"],
+            created_by=row["created_by"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            consumed_at=row["consumed_at"],
+            locked_at=row["locked_at"],
+            revoked_at=row["revoked_at"],
+        )
+
+    @staticmethod
+    def _withdraw_orphaned_device_pairing(
+        connection: sqlite3.Connection, row: sqlite3.Row, now: str
+    ) -> bool:
+        """Revoke an unused code whose issuing session no longer exists."""
+
+        if (
+            row["issuing_session_hash"] is None
+            or row["consumed_at"] is not None
+            or row["revoked_at"] is not None
+        ):
+            return False
+        issuer = connection.execute(
+            "SELECT 1 FROM team_sessions WHERE session_hash = ? AND expires_at > ?",
+            (row["issuing_session_hash"], now),
+        ).fetchone()
+        if issuer is not None:
+            return False
+        connection.execute(
+            "UPDATE team_device_pairings SET revoked_at = ? WHERE pairing_id = ?",
+            (now, row["pairing_id"]),
+        )
+        return True
 
     def pair_team_device(self, code: str, label: str) -> tuple[str, SpaceUserRecord]:
         """Redeem a pairing code for a browser session; the device never sees a token."""
@@ -826,7 +883,11 @@ class SpaceStoreMixin:
             row = connection.execute(
                 "SELECT * FROM team_device_pairings WHERE pairing_id = ?", (pairing_id,)
             ).fetchone()
-            if row is None or row["revoked_at"] is not None:
+            if (
+                row is None
+                or row["revoked_at"] is not None
+                or self._withdraw_orphaned_device_pairing(connection, row, now)
+            ):
                 error = TeamAuthenticationError(
                     "device_pairing_code_invalid", "The device code is invalid."
                 )
