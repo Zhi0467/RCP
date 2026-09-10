@@ -203,7 +203,17 @@ successful revoke, and offers an explicit Refresh action.
 
 **Connect a device** in that panel issues a pairing code through
 `POST /api/team/devices/pairings` and shows it once, with its expiry, until the
-member dismisses it or the code ends; while the code is visible the panel polls
+member dismisses it or the code ends. A team may carry an **access address**, the
+https origin members open on their own devices (typically the tailnet front in
+front of the server). It is operator-set in the installed server configuration
+(`[team] access_url` in `/etc/rcp/server.toml`, or `RCP_TEAM_ACCESS_URL` for a
+source-run server) and read-only to members: `GET /api/team/space` returns it
+with the team name, `PATCH /api/team/space` changes only `name`, and doctor
+reports it as `team_access_url`. When the address is set, the issued code carries
+`connect_url = <access_url>/#pair=<code>` and the card draws it as a QR code
+beside the code; a phone that scans it lands on the login screen with the code
+filled in. Without an address the card says how to set one. While the code is
+visible the panel polls
 `GET /api/team/devices/pairings/{pairing_id}`, whose `status` is `waiting`,
 `consumed`, `expired`, `revoked`, or `locked`, and refreshes Devices on
 `consumed`. A code is bound to the session that issued it: when that session is

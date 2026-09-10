@@ -338,7 +338,10 @@ and all non-deployment machine operations retain their concrete application
 owners.
 
 Installed config schema 3 has `[release] followed = "stable"` and an optional
-explicit `pin = "vX.Y.Z"`. Stable is the newest non-prerelease GitHub Release;
+explicit `pin = "vX.Y.Z"`. An optional `[team] access_url` names the one https
+origin members' own devices open (the tailnet front in front of the loopback
+listener); it is operator-set, read-only to members through the team API, and
+doctor reports it as `team_access_url`. Stable is the newest non-prerelease GitHub Release;
 prereleases, missing assets, unsupported selectors, altered hashes, and
 inconsistent wheel/manifest identities refuse without choosing another source.
 The release metadata binds the full commit to the wheel's short commit suffix.

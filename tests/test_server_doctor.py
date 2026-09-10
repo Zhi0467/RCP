@@ -123,7 +123,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 49
+    assert len(fields) == 50
     assert fields["overall_state"] == "healthy"
     assert fields["configured_authentication"] == "public"
     assert fields["candidate_commit"] == "none"
@@ -140,7 +140,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     for name, value in list(fields.items())[:8]:
         assert f"{name.replace('_', ' ')}: {value}" in interactive
     assert "source public key fingerprint: none" not in interactive
-    assert "41 more field(s); use --machine-readable for the complete record" in interactive
+    assert "42 more field(s); use --machine-readable for the complete record" in interactive
 
 
 def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:
@@ -536,6 +536,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         paths=SimpleNamespace(model_dump=lambda: layout.recorded_paths()),
         backup=None,
         release=ServerReleaseConfig(),
+        team=None,
     )
 
     def config_loader(_path: Path):

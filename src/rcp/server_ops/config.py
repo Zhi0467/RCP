@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, mo
 from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import SERVER_CLI_MAX_FIELD_CHARS
+from rcp.storage.models import normalize_space_access_url
 
 SERVER_CONFIG_SCHEMA_VERSION = 3
 LEGACY_SERVER_CONFIG_SCHEMA_VERSION = 1
@@ -148,6 +149,21 @@ class ServerBackupConfig(_StrictModel):
         return validate_age_recipient(value)
 
 
+class ServerTeamConfig(_StrictModel):
+    """How members' own devices reach this server: one https origin.
+
+    Typically the tailnet front in front of the loopback listener, of the form
+    `https://<host>.<tailnet>.ts.net`. Members read it; only the operator sets it.
+    """
+
+    access_url: str
+
+    @field_validator("access_url")
+    @classmethod
+    def validate_access_url(cls, value: str) -> str:
+        return normalize_space_access_url(value)
+
+
 class InstalledServerConfig(_StrictModel):
     schema_version: Literal[SERVER_CONFIG_SCHEMA_VERSION] = SERVER_CONFIG_SCHEMA_VERSION
     installation_id: str
@@ -157,6 +173,7 @@ class InstalledServerConfig(_StrictModel):
     release: ServerReleaseConfig = ServerReleaseConfig()
     paths: ServerPathsConfig
     backup: ServerBackupConfig | None = None
+    team: ServerTeamConfig | None = None
 
     @field_validator("installation_id")
     @classmethod
@@ -217,6 +234,10 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
         backup.add("retention", config.backup.retention)
         backup.add("age_recipient", config.backup.age_recipient)
         document.add("backup", backup)
+    if config.team is not None:
+        team = tomlkit.table()
+        team.add("access_url", config.team.access_url)
+        document.add("team", team)
     content = tomlkit.dumps(document)
     if parse_installed_server_config(content) != config:
         raise RuntimeError("rendered installed-server configuration changed meaning")
@@ -402,6 +423,7 @@ __all__ = [
     "ServerBackupConfig",
     "ServerPathsConfig",
     "ServerSourceConfig",
+    "ServerTeamConfig",
     "create_installed_server_config",
     "load_installed_server_config",
     "parse_installed_server_config",

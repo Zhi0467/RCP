@@ -196,6 +196,8 @@ curl --fail --silent http://127.0.0.1:8421/api/health
 ```
 
 The independent supervisor recovers locally before systemd admits the service.
+The wizard's final line also names the one optional follow-up: letting members
+connect phones and other devices, which is [`device-pairing.md`](device-pairing.md).
 
 ## 10. Configure one operator route
 
@@ -494,39 +496,14 @@ install. Short jobs may still finish inline. See
 
 ## Reach the team space from a phone
 
-The listener stays on loopback. A phone reaches it over the operator's tailnet:
-the host joins Tailscale and `tailscale serve` terminates HTTPS in front of
-port 8421. Nothing opens to the public internet, and member session
-authentication still applies on top, so joining the tailnet is not authority.
-
-Once, as the sudo-capable operator, with HTTPS certificates enabled for the
-tailnet in the Tailscale admin console (DNS, Enable HTTPS):
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-sudo tailscale serve --bg 8421
-tailscale serve status
-```
-
-`tailscale up` prints a login URL; the operator opens it and approves the host.
-`tailscale serve status` then names the address members use, of the form
-`https://<host>.<tailnet>.ts.net`.
-
-The proxy must preserve `Host` and set `X-Forwarded-Proto: https`, because the
-team mutation-origin check compares the browser `Origin` against the request's
-own scheme and host. `tailscale serve` does both (its reverse proxy copies the
-incoming `Host` and sets `X-Forwarded-Proto`), and uvicorn already trusts
-forwarded headers from `127.0.0.1`. A proxy that drops either header answers
-403 on every mutation while reads keep working; verify with a pairing before
-adopting any other terminator.
-
-Each member installs the Tailscale app on the phone, joins the same tailnet, and
-opens that address. The login screen offers **Connect this device**. On a
-signed-in device, the member opens their profile, chooses **Connect a device**
-under Devices, and types the ten-minute code into the phone together with a
-name for it. The phone holds an ordinary session, never the member token; the
-desktop lists it under Devices and can revoke it.
+Phones and other devices reach the loopback listener through the operator's
+tailnet and sign in with a device code, never with a member token. The full
+walkthrough for the operator, the desktop app, and each member's phone is
+[`device-pairing.md`](device-pairing.md). In short: install Tailscale on the
+host, `sudo tailscale up`, `sudo tailscale serve --bg 8421`, add
+`[team] access_url = "https://<host>.<tailnet>.ts.net"` to
+`/etc/rcp/server.toml`, and share the machine with each member from the
+Tailscale admin console. Doctor reports the address as `team_access_url`.
 
 ## Inspect and stop the service
 

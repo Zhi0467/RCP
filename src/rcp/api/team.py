@@ -17,6 +17,7 @@ from rcp.limits import (
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
 from rcp.storage.models import TeamDevicePairingRecord, TeamInvitationRecord
+from rcp.team_access import team_access_url
 
 router = APIRouter()
 
@@ -74,6 +75,9 @@ class TeamDevicePairingResponse(BaseModel):
     pairing_id: str
     code: str
     expires_at: str
+    # The address a phone opens with this code filled in, when the team has an
+    # access address; the Devices card renders it as a QR code.
+    connect_url: str | None
 
 
 TeamDevicePairingStatus = Literal["waiting", "consumed", "expired", "revoked", "locked"]
@@ -126,6 +130,17 @@ class TeamSpaceUpdateRequest(BaseModel):
     @classmethod
     def normalize_name(cls, value: str) -> str:
         return normalize_space_name(value)
+
+
+class TeamSpaceResponse(BaseModel):
+    """The team's name and, when the operator configured one, the https origin
+    members open on their own devices. Both are read-only here; the address is
+    set in the server configuration."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    space_name: str | None
+    access_url: str | None
 
 
 TeamInvitationStatus = Literal["waiting", "joined", "revoked", "locked", "expired"]
@@ -280,8 +295,12 @@ def create_team_device_pairing(
     pairing, code = store.create_team_device_pairing(
         member.user_id, issuing_session=identity_access.authenticating_team_session(request)
     )
+    access_url = team_access_url()
     return TeamDevicePairingResponse(
-        pairing_id=pairing.pairing_id, code=code, expires_at=pairing.expires_at
+        pairing_id=pairing.pairing_id,
+        code=code,
+        expires_at=pairing.expires_at,
+        connect_url=f"{access_url}/#pair={code}" if access_url else None,
     )
 
 
@@ -460,6 +479,18 @@ def revoke_team_credential(
     return {"ok": True}
 
 
+@router.get("/api/team/space")
+def team_space(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> TeamSpaceResponse:
+    identity_access.require_team_space()
+    identity_access.acting_user(request)
+    return TeamSpaceResponse(space_name=store.space_name, access_url=team_access_url())
+
+
 @router.patch("/api/team/space")
 def update_team_space(
     request: Request,
@@ -467,10 +498,10 @@ def update_team_space(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> dict[str, str]:
+) -> TeamSpaceResponse:
     identity_access.require_team_space()
     identity_access.acting_user(request)
-    return {"space_name": store.rename_space(body.name)}
+    return TeamSpaceResponse(space_name=store.rename_space(body.name), access_url=team_access_url())
 
 
 __all__ = [
@@ -479,6 +510,7 @@ __all__ = [
     "TeamInvitationResponse",
     "TeamSessionExchangeRequest",
     "TeamSessionResponse",
+    "TeamSpaceResponse",
     "TeamSpaceUpdateRequest",
     "create_team_invitation",
     "enroll_team_member",

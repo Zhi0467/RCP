@@ -138,6 +138,7 @@ class ServerDoctorReport(_StrictModel):
     last_backup_failure: str | None = None
     followed_release: str = "stable"
     release_pin: str | None = None
+    team_access_url: str | None = None
     selected_release_tag: str | None = None
     supervisor_version: str | None = None
     update_operation_state: str = "none"
@@ -201,6 +202,7 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="overall_state", value=self.overall_state),
             NonsecretField(name="followed_release", value=self.followed_release),
             NonsecretField(name="release_pin", value=_shown(self.release_pin)),
+            NonsecretField(name="team_access_url", value=_shown(self.team_access_url)),
             NonsecretField(name="selected_release_tag", value=_shown(self.selected_release_tag)),
             NonsecretField(name="supervisor_version", value=_shown(self.supervisor_version)),
             NonsecretField(name="installation_id", value=_shown(self.installation_id)),
@@ -524,6 +526,7 @@ class LinuxServerDoctorMachine:
         return ServerDoctorReport(
             followed_release=config.release.followed if config else "stable",
             release_pin=config.release.pin if config else None,
+            team_access_url=config.team.access_url if config and config.team else None,
             selected_release_tag=self._selected["release_tag"] if self._selected else None,
             supervisor_version=self._selected["supervisor_version"] if self._selected else None,
             overall_state=overall_state,

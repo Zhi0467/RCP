@@ -33,6 +33,7 @@ from rcp.server_ops.config import (
     InstalledServerConfig,
     ServerBackupConfig,
     ServerSourceConfig,
+    ServerTeamConfig,
     create_installed_server_config,
     parse_installed_server_config,
     render_installed_server_config,
@@ -889,3 +890,23 @@ def test_install_reactivation_runs_backup_before_enabling_a_disabled_timer(
         "enable",
         "readback_enabled",
     ]
+
+
+def test_team_access_address_round_trips_as_one_https_origin() -> None:
+    configured = InstalledServerConfig.model_validate(
+        {
+            **_installed().model_dump(mode="python"),
+            "team": ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/"),
+        }
+    )
+    rendered = render_installed_server_config(configured)
+
+    assert parse_installed_server_config(rendered) == configured
+    assert "[team]" in rendered
+    assert 'access_url = "https://wth-gpu-01.tail1234.ts.net"' in rendered
+    assert set(tomllib.loads(rendered)["team"]) == {"access_url"}
+    assert parse_installed_server_config(render_installed_server_config(_installed())).team is None
+    with pytest.raises(ValueError):
+        ServerTeamConfig(access_url="http://wth-gpu-01.tail1234.ts.net")
+    with pytest.raises(ValueError):
+        ServerTeamConfig(access_url="https://wth-gpu-01.tail1234.ts.net/team")

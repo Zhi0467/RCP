@@ -158,7 +158,8 @@ Current sources have this precedence:
    may not silently change current design.
 5. [`archive/`](archive/) is historical and non-authoritative.
 
-[`server.md`](server.md) and [`desktop.md`](desktop.md) are operator and
+[`server.md`](server.md), [`device-pairing.md`](device-pairing.md), and
+[`desktop.md`](desktop.md) are operator and
 developer guides. They own the exact procedure an operator runs and the native
 build, verification, and release steps, so a scenario may cite one for a manual
 path. They are subordinate to specifications and never define product behavior:

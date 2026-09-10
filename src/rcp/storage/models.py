@@ -9,6 +9,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
 SpaceKind = Literal["personal", "team"]
 SpaceUserKind = Literal["local_owner", "team_member"]
 SPACE_NAME_MAX_LENGTH = 120
+SPACE_ACCESS_URL_MAX_LENGTH = 200
 
 
 class TeamAuthenticationError(RuntimeError):
@@ -3347,6 +3349,35 @@ def _stored_space_kind(value: object) -> SpaceKind:
     raise RuntimeError("RCP space kind is invalid.")
 
 
+def normalize_space_access_url(value: str) -> str:
+    """One https origin members open on their own devices: scheme and host only.
+
+    The operator learns it from the tailnet front (`tailscale serve status`). It is
+    display text with no authority; it tells a phone where the team space is.
+    """
+
+    normalized = value.strip()
+    if not normalized or len(normalized) > SPACE_ACCESS_URL_MAX_LENGTH:
+        raise ValueError(
+            f"the access address must be 1 to {SPACE_ACCESS_URL_MAX_LENGTH} characters"
+        )
+    parsed = urlsplit(normalized)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        raise ValueError(
+            "the access address must be an https origin such as https://host.tailnet.ts.net"
+        )
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"https://{parsed.hostname.lower()}{port}"
+
+
 def normalize_space_name(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError("space name must be text")
@@ -3660,6 +3691,7 @@ __all__ = [
     "ResultViewConflict",
     "ResultViewRecord",
     "RunStageLifecycleRecord",
+    "SPACE_ACCESS_URL_MAX_LENGTH",
     "SPACE_NAME_MAX_LENGTH",
     "SpaceKind",
     "SpaceUserKind",
@@ -3674,6 +3706,7 @@ __all__ = [
     "WatcherRecord",
     "WatcherStatus",
     "WatcherStopRequest",
+    "normalize_space_access_url",
     "normalize_space_name",
     "watcher_next_check_at",
 ]

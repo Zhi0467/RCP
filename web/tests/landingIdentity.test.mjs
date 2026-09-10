@@ -253,6 +253,7 @@ test("an issued device code is shown once with its expiry and can be dismissed",
       pairing_id: "ABCD",
       code: "ABCD-EFGHJK",
       expires_at: new Date(Date.now() + 600_000).toISOString(),
+      connect_url: null,
     },
     onDismiss() {
       dismissed = true;
@@ -448,4 +449,35 @@ test("an invitation card carries no explanatory line under it", () => {
 
   assert.doesNotMatch(html, /you have been invited/i);
   assert.doesNotMatch(html, /accept to join/i);
+});
+
+test("a pairing card with an access address shows a scannable QR code and the address", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamDevicePairingCard, {
+      pairing: {
+        pairing_id: "ABCD",
+        code: "ABCD-EFGHJK",
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        connect_url: "https://lab.tail1234.ts.net/#pair=ABCD-EFGHJK",
+      },
+      onDismiss() {},
+    }),
+  );
+  assert.match(html, /<svg[^>]*class="landing-team-qr"/);
+  assert.match(
+    html,
+    /aria-label="QR code for https:\/\/lab\.tail1234\.ts\.net\/#pair=ABCD-EFGHJK"/,
+  );
+  assert.match(html, /<strong>https:\/\/lab\.tail1234\.ts\.net<\/strong>/);
+  assert.match(html, />ABCD-EFGHJK</);
+});
+
+test("a scanned pairing link prefills the code and only accepts the code shape", async () => {
+  const { pairingCodeFromHash } = await server.ssrLoadModule("/src/pairingLink.ts");
+  assert.equal(pairingCodeFromHash("#pair=ABCD-EFGHJK"), "ABCD-EFGHJK");
+  assert.equal(pairingCodeFromHash("#pair=abcd-efghjk"), "ABCD-EFGHJK");
+  assert.equal(pairingCodeFromHash("#pair=ABCD-EFGHJK&x=1"), null);
+  assert.equal(pairingCodeFromHash("#/projects/abc"), null);
+  assert.equal(pairingCodeFromHash("#pair=<script>"), null);
+  assert.equal(pairingCodeFromHash(""), null);
 });
