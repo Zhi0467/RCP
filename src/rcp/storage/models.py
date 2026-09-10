@@ -39,6 +39,7 @@ from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
+    TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_SESSION_LABEL_MAX_LENGTH,
     WATCHER_ERROR_BACKOFF_SECONDS,
@@ -184,6 +185,18 @@ class TeamSessionRecord(BaseModel):
     last_seen_at: str
     expires_at: str
     is_current: bool
+
+
+class TeamDevicePairingRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pairing_id: str
+    created_by: str
+    created_at: str
+    expires_at: str
+    consumed_at: str | None = None
+    locked_at: str | None = None
+    revoked_at: str | None = None
 
 
 class TeamInvitationRecord(BaseModel):
@@ -3365,6 +3378,35 @@ def _new_enrollment_code(kind: Literal["bootstrap", "invite"]) -> tuple[str, str
     code_id = secrets.token_urlsafe(12)
     secret = secrets.token_urlsafe(32)
     return f"rcp_{kind}_{code_id}.{secret}", code_id, _sha256(secret)
+
+
+# Typed on a phone, so short and free of the glyphs people confuse: no I, O, 0, 1.
+_DEVICE_PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_DEVICE_PAIRING_ID_LENGTH = 4
+_DEVICE_PAIRING_SECRET_LENGTH = 6
+
+
+def _new_device_pairing_code() -> tuple[str, str, str]:
+    pairing_id = "".join(
+        secrets.choice(_DEVICE_PAIRING_ALPHABET) for _ in range(_DEVICE_PAIRING_ID_LENGTH)
+    )
+    secret = "".join(
+        secrets.choice(_DEVICE_PAIRING_ALPHABET) for _ in range(_DEVICE_PAIRING_SECRET_LENGTH)
+    )
+    return f"{pairing_id}-{secret}", pairing_id, _sha256(secret)
+
+
+def _parse_device_pairing_code(code: str) -> tuple[str, str] | None:
+    """Split a typed code into its public row id and the hash of its secret."""
+
+    if not isinstance(code, str) or len(code) > TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH:
+        return None
+    normalized = "".join(char for char in code.upper() if char not in " -")
+    if len(normalized) != _DEVICE_PAIRING_ID_LENGTH + _DEVICE_PAIRING_SECRET_LENGTH or any(
+        char not in _DEVICE_PAIRING_ALPHABET for char in normalized
+    ):
+        return None
+    return normalized[:_DEVICE_PAIRING_ID_LENGTH], _sha256(normalized[_DEVICE_PAIRING_ID_LENGTH:])
 
 
 def _parse_enrollment_code(

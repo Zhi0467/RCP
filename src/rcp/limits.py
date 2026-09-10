@@ -31,6 +31,8 @@ TEAM_ENROLLMENT_CODE_MAX_LENGTH = 128
 TEAM_MEMBER_TOKEN_MAX_LENGTH = 64
 TEAM_SESSION_TOKEN_MAX_LENGTH = 80
 TEAM_SESSION_LABEL_MAX_LENGTH = 80
+TEAM_DEVICE_PAIRING_TTL_MINUTES = 10
+TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH = 32
 # Exact inventories are rendered into the bounded server CLI contract. Thirty-two
 # identifiers fit in one nonsecret field; larger consequence sets must be reduced
 # before an operator can confirm them safely.

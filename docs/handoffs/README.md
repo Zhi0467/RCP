@@ -16,15 +16,14 @@ Active:
   — human-confirmed on 2026-08-15 and not yet implemented: a refused Apply
   gets a terminal `refused` state and a plain-language explanation.
 
-- [Phone access: device sessions and mobile rendering](handoff-2026-09-09-phone-access-device-sessions.md)
-  — device session ids, the member-scoped list and revoke routes, the Devices
-  panel, stored labels, and both narrow-screen fixes are implemented; the
-  tailnet transport is chosen but not stood up, and the pairing screen remains.
-
 - [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
   — production adoption, promoted release, complete backup, and doctor are
   verified. The separate controller fix and unfinished Ubuntu reboot/restore
   cases remain; the original deployment handoff is archived.
+
+The [phone-access handoff is closed](../archive/handoffs/handoff-2026-09-09-phone-access-device-sessions.md):
+device sessions, the Devices panel, pairing, and single-session desktops shipped;
+the tailnet is an operator procedure in `docs/server.md`.
 
 The [team-space/server handoff is closed](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md):
 the backed-up CoT project was transferred and verified through the desktop on

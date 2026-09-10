@@ -9,7 +9,10 @@ use zeroize::Zeroizing;
 
 const SECURITY_TOOL: &str = "/usr/bin/security";
 const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
-const MAX_VALUE_BYTES: usize = 64;
+// A member token is under 64 bytes. A saved team session is the server's whole
+// Set-Cookie line, attributes included; the desktop accepts such a line up to
+// 4 KiB (`team_session::MAX_SESSION_COOKIE_BYTES`), so this bound matches it.
+const MAX_VALUE_BYTES: usize = 4 * 1024;
 const MAX_ENCODED_OUTPUT_BYTES: usize = MAX_VALUE_BYTES * 2 + 2;
 
 fn security_command() -> Command {
@@ -242,4 +245,8 @@ mod tests {
     fn keychain_writer_rejects_values_the_tool_would_truncate() {
         assert!(set("unused", "unused", &[0; MAX_VALUE_BYTES + 1]).is_err());
     }
+
+    // Every Set-Cookie the desktop accepts must also be storable, or a valid
+    // exchange would be followed by a failed save.
+    const _: () = assert!(crate::team_session::MAX_SESSION_COOKIE_BYTES <= MAX_VALUE_BYTES);
 }

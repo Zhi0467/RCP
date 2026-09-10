@@ -10,12 +10,13 @@ from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, normalize_display_name
 from rcp.limits import (
+    TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
     TEAM_SESSION_LABEL_MAX_LENGTH,
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
-from rcp.storage.models import TeamInvitationRecord
+from rcp.storage.models import TeamDevicePairingRecord, TeamInvitationRecord
 
 router = APIRouter()
 
@@ -51,6 +52,57 @@ class TeamSessionExchangeRequest(BaseModel):
 
     token: str = Field(min_length=1, max_length=TEAM_MEMBER_TOKEN_MAX_LENGTH)
     label: str = Field(default="Unnamed device", max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
+
+
+class TeamDevicePairingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    code: str = Field(min_length=1, max_length=TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH)
+    label: str = Field(min_length=1, max_length=TEAM_SESSION_LABEL_MAX_LENGTH)
+
+    @field_validator("label")
+    @classmethod
+    def label_names_the_device(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A device name is required.")
+        return value
+
+
+class TeamDevicePairingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pairing_id: str
+    code: str
+    expires_at: str
+
+
+TeamDevicePairingStatus = Literal["waiting", "consumed", "expired", "revoked", "locked"]
+
+
+class TeamDevicePairingStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pairing_id: str
+    expires_at: str
+    status: TeamDevicePairingStatus
+
+
+def _team_device_pairing_status(
+    pairing: TeamDevicePairingRecord, *, now: str
+) -> TeamDevicePairingStatusResponse:
+    if pairing.consumed_at is not None:
+        status: TeamDevicePairingStatus = "consumed"
+    elif pairing.revoked_at is not None:
+        status = "revoked"
+    elif pairing.locked_at is not None:
+        status = "locked"
+    elif pairing.expires_at <= now:
+        status = "expired"
+    else:
+        status = "waiting"
+    return TeamDevicePairingStatusResponse(
+        pairing_id=pairing.pairing_id, expires_at=pairing.expires_at, status=status
+    )
 
 
 class TeamSessionResponse(BaseModel):
@@ -214,6 +266,56 @@ def logout_team_session(
     store.delete_team_session(request.cookies.get(TEAM_SESSION_COOKIE))
     identity_access.clear_team_session_cookie(response)
     return {"ok": True}
+
+
+@router.post("/api/team/devices/pairings")
+def create_team_device_pairing(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> TeamDevicePairingResponse:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    pairing, code = store.create_team_device_pairing(
+        member.user_id, issuing_session=identity_access.authenticating_team_session(request)
+    )
+    return TeamDevicePairingResponse(
+        pairing_id=pairing.pairing_id, code=code, expires_at=pairing.expires_at
+    )
+
+
+@router.get("/api/team/devices/pairings/{pairing_id}")
+def team_device_pairing_status(
+    request: Request,
+    pairing_id: str,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> TeamDevicePairingStatusResponse:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    try:
+        pairing = store.team_device_pairing(pairing_id, member.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="That device code was not found.") from exc
+    return _team_device_pairing_status(pairing, now=store.now())
+
+
+@router.post("/api/team/devices/pair")
+def pair_team_device(
+    body: TeamDevicePairingRequest,
+    response: Response,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    """Public like exchange: the device presents a code, never the member token."""
+
+    identity_access.require_team_space()
+    session, member = store.pair_team_device(body.code, body.label)
+    identity_access.set_team_session_cookie(response, session)
+    return identity_access.identity_payload(member)
 
 
 @router.get("/api/team/sessions")

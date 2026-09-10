@@ -74,6 +74,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (12, "compute_job_labels_v1"),
         (13, "episode_archives_v1"),
         (14, "team_session_ids_v1"),
+        (15, "team_device_pairings_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -241,6 +242,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
             (12,),
             (13,),
             (14,),
+            (15,),
         ]
 
     reopened = AppStore(path)

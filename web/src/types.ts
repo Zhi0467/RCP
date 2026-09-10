@@ -646,6 +646,20 @@ export interface TeamSession {
   can_revoke: boolean;
 }
 
+export interface TeamDevicePairing {
+  pairing_id: string;
+  code: string;
+  expires_at: string;
+}
+
+export type TeamDevicePairingState = "waiting" | "consumed" | "expired" | "revoked" | "locked";
+
+export interface TeamDevicePairingStatus {
+  pairing_id: string;
+  expires_at: string;
+  status: TeamDevicePairingState;
+}
+
 export interface SourceRef {
   machine: string;
   truth_repository: string;

@@ -48,6 +48,7 @@ class AppStoreBase:
         (12, "compute_job_labels_v1"),
         (13, "episode_archives_v1"),
         (14, "team_session_ids_v1"),
+        (15, "team_device_pairings_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -515,6 +516,12 @@ class AppStoreBase:
             version=14,
             name="team_session_ids_v1",
             migration=self._migrate_team_session_ids,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=15,
+            name="team_device_pairings_v1",
+            migration=self._migrate_team_device_pairings,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1946,6 +1953,7 @@ class AppStoreBase:
         self._migrate_child_work_watchers(connection)
         self._migrate_compute_job_labels(connection)
         self._migrate_episode_archives(connection)
+        self._migrate_team_device_pairings(connection)
         self._migrate_team_session_ids(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
@@ -1982,6 +1990,29 @@ class AppStoreBase:
             )
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS team_sessions_public_id ON team_sessions(session_id)"
+        )
+
+    @staticmethod
+    def _migrate_team_device_pairings(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_device_pairings (
+                pairing_id TEXT PRIMARY KEY,
+                code_hash TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                issuing_session_hash TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_at TEXT,
+                revoked_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS team_device_pairings_creator "
+            "ON team_device_pairings(created_by, created_at DESC)"
         )
 
     @staticmethod

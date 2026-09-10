@@ -201,6 +201,28 @@ sessions with connection and last-seen times. **Current device** has no Revoke
 control; ending it remains Logout. The panel refreshes on opening and after a
 successful revoke, and offers an explicit Refresh action.
 
+**Connect a device** in that panel issues a pairing code through
+`POST /api/team/devices/pairings` and shows it once, with its expiry, until the
+member dismisses it or the code ends; while the code is visible the panel polls
+`GET /api/team/devices/pairings/{pairing_id}`, whose `status` is `waiting`,
+`consumed`, `expired`, `revoked`, or `locked`, and refreshes Devices on
+`consumed`. A code is bound to the session that issued it: when that session is
+revoked, logged out, expired, or removed by credential rotation, the code reads
+`revoked` and cannot be redeemed. A member holds one live code: issuing another
+withdraws the previous unused one. Codes are
+ten characters from an alphabet without I, O, 0, or 1, shown as `ABCD-EFGHJK`,
+expire after ten minutes, are single use, and lock after five wrong secrets like
+enrollment codes; the server stores only the hash of the secret.
+
+The unauthenticated team login boundary offers device pairing first: a **Device
+code** field and a required **Name this device** field, submitted to the public
+`POST /api/team/devices/pair`, which creates an ordinary session carrying that
+label and sets the same cookie as exchange. A second mode, **Sign in with a team
+token instead**, keeps the credential slip. The pairing route never sees or
+returns the member token, needs no team-shell protocol declaration, and shares
+the public-body size bound with enrollment and exchange. Its failures map to
+401 (invalid), 409 (used), 410 (expired), and 429 (locked).
+
 `POST /api/team/session/exchange` accepts an optional human-authored `label`
 string of at most 80 characters. Omission stores `Unnamed device`; migration 14
 also assigns that literal to existing sessions. The label is stored and rendered
@@ -214,12 +236,13 @@ Each entry exports `session_id`, `label`, `created_at`, `last_seen_at`, `expires
 the current authenticated session as not revocable. Public identifiers are
 independent random UUIDs, never session tokens, hashes, or derivatives of either.
 Listing does not refresh other sessions' idle expiry.
-The source-built desktop's native operations reuse the session its window holds
-instead of exchanging a new one per request; the shell verifies that session
-before each native request and exchanges again only when the server answers 401.
-Each app launch or explicit Reconnect still exchanges a new session without
-retiring the previous one, so a desktop's earlier launches remain listed until
-they expire.
+The source-built desktop holds one session per saved connection. It keeps the
+exchanged session cookie in the Keychain beside the member token, verifies it
+against `/api/identity` at launch, at Reconnect, and before each native request,
+and exchanges a new session only when the server answers 401. One desktop is
+therefore one row in Devices across launches. Forgetting the connection on the
+desktop discards the saved session locally; its server row idles out or is
+revoked from another device.
 
 `POST /api/team/sessions/{session_id}/revoke` deletes that member's named session
 and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all

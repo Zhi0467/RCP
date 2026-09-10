@@ -78,6 +78,7 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "space_users",
         "storage_schema_migrations",
         "team_bootstrap_codes",
+        "team_device_pairings",
         "team_invitations",
         "team_member_tokens",
         "team_sessions",

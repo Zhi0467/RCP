@@ -70,13 +70,20 @@ HTTP-only, `Secure`, `SameSite=Lax` cookie with centrally configured idle
 expiry. Restart does not re-enroll members. A member may rotate or revoke only
 their own credential and may log out their own session.
 
+A second device joins by pairing, not by receiving the token: a signed-in
+session issues a short-lived single-use code, and the new device redeems it
+with a human-typed device name for an ordinary session of its own. Restoring a
+backup revokes outstanding pairing codes along with invitations.
+
 A team space binds only loopback because credentials may not cross plaintext
 HTTP. The source-built desktop **Add team space** flow reaches it through an SSH
 tunnel, enrolls a new member with a bootstrap or invitation code, or reconnects
-an existing member with their permanent token. Direct public HTTPS and declared
-VPN transport are not current product paths. An unauthenticated browser receives
-the focused team login boundary; a personal space remains locally owned without
-a team credential.
+an existing member with their permanent token. A phone reaches the same
+loopback listener through the operator's tailnet, where `tailscale serve`
+terminates HTTPS in front of it; the procedure is in the server guide. A public
+HTTPS front is not a product path. An unauthenticated browser receives the
+focused team login boundary; a personal space remains locally owned without a
+team credential.
 
 Credential revocation does not cancel already-authorized tasks. Stopping work
 and changing project membership are separate authority actions.

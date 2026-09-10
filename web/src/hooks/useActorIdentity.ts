@@ -3,6 +3,7 @@ import {
   api,
   ApiError,
   exchangeTeamSession,
+  pairTeamDevice as pairTeamDeviceRequest,
   pinApiInstance,
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
@@ -133,13 +134,23 @@ export function useActorIdentity() {
     };
   }, [identityIssue, identityReady, verifiedHealth?.space_id, verifiedHealth?.space_kind]);
 
-  const authenticateTeamSession = useCallback(async (token: string) => {
-    const identity = await exchangeTeamSession(token);
+  const adoptTeamIdentity = useCallback((identity: IdentityResponse) => {
     setActorIdentity(identity);
     setActorIdentityError(null);
     setActorIdentityChecked(true);
     setTeamSessionRequired(false);
   }, []);
+
+  const authenticateTeamSession = useCallback(
+    async (token: string) => adoptTeamIdentity(await exchangeTeamSession(token)),
+    [adoptTeamIdentity],
+  );
+
+  const pairTeamDevice = useCallback(
+    async (code: string, label: string) =>
+      adoptTeamIdentity(await pairTeamDeviceRequest(code, label)),
+    [adoptTeamIdentity],
+  );
 
   const reportIdentityIssue = useCallback((message: string) => {
     setIdentityIssue(message);
@@ -173,6 +184,7 @@ export function useActorIdentity() {
     settleActorNamePrompt,
     saveActorName,
     authenticateTeamSession,
+    pairTeamDevice,
     reportIdentityIssue,
     reverifyIdentity,
     currentActiveAgentTasks,
