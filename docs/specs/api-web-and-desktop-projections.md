@@ -237,7 +237,9 @@ the current authenticated session as not revocable. Public identifiers are
 independent random UUIDs, never session tokens, hashes, or derivatives of either.
 Listing does not refresh other sessions' idle expiry.
 The source-built desktop holds one session per saved connection. It keeps the
-exchanged session cookie in the Keychain beside the member token, verifies it
+exchanged session's secret (the cookie value alone; Apple's Keychain tool keeps
+only 128 prompt characters, so the whole Set-Cookie line does not survive) in
+the Keychain beside the member token, rebuilds the cookie from it, verifies it
 against `/api/identity` at launch, at Reconnect, and before each native request,
 and exchanges a new session only when the server answers 401. One desktop is
 therefore one row in Devices across launches. Forgetting the connection on the
