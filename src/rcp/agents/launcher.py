@@ -1020,10 +1020,24 @@ class AgentLauncher:
                     )
                 )
                 raise _PrePromptRuntimeFailure(detail)
+            paused = control is not None and control.pause_requested.is_set()
+            turn_failed = bool(
+                completion_stop_failed
+                or provider_failed
+                or (return_code and not stopped_at_result)
+                or (turn.requires_protocol_completion and not protocol_complete)
+            )
             # A provider that succeeded can still have dropped part of the
             # launch. Its stderr says so, but stderr itself is the vendor's
-            # channel; the profile turns it into one sentence RCP owns.
-            degradation = profile.launch_degradation(stderr, requested_reasoning=reasoning)
+            # channel; the profile turns it into one sentence RCP owns. Only a
+            # turn that finished gets the note: a failed or paused turn already
+            # tells the human why it stopped, and saying how it ran would
+            # compete with that rather than add to it.
+            degradation = (
+                None
+                if paused or turn_failed
+                else profile.launch_degradation(stderr, requested_reasoning=reasoning)
+            )
             yield AgentEvent(
                 event="provider_exit",
                 text=json.dumps(
@@ -1038,7 +1052,7 @@ class AgentLauncher:
                     separators=(",", ":"),
                 ),
             )
-            if control is not None and control.pause_requested.is_set():
+            if paused:
                 yield AgentEvent(event="paused", text="Provider process paused.")
             elif completion_stop_failed:
                 yield AgentEvent(

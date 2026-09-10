@@ -398,10 +398,10 @@ def agent_tasks(
         if branch_id is not None
         else None
     )
-    degradations = store.agent_task_degradations(project_id)
+    records = store.agent_tasks(project_id, graph_target=target)
+    degradations = store.agent_task_degradations([record.operation_id for record in records])
     return [
-        _agent_task_response(store, record, background_tasks, degradations)
-        for record in store.agent_tasks(project_id, graph_target=target)
+        _agent_task_response(store, record, background_tasks, degradations) for record in records
     ]
 
 
@@ -419,7 +419,7 @@ def agent_task(
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
     detail = _agent_task_response(
-        store, record, background_tasks, store.agent_task_degradations(project_id)
+        store, record, background_tasks, store.agent_task_degradations([operation_id])
     )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)

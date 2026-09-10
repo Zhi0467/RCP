@@ -307,6 +307,51 @@ def create_terminal_auto_episode(
     return stored_episode, root, report
 
 
+def test_the_episode_wire_carries_a_setting_the_turn_provider_ignored(manifest, tmp_path) -> None:
+    """Runs reads episode turns from this payload, so the note has to reach it.
+
+    The task endpoints already export the note. An episode turn is the same kind
+    of provider call, and it is listed by a different projection, so the wire it
+    travels on is asserted here rather than assumed from the other one.
+    """
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    tasks = app.state.background_tasks
+    store = tasks.store
+    stage = tmp_path / "auto-stage"
+    stage.mkdir()
+    tasks.stream = settling_auto_research_stream(stage)
+    note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/projects/{project_id}/episodes",
+            json={
+                "mode": "auto_research",
+                "invocation_ceiling": 3,
+                "starting_instruction": "Follow the contradictory evidence.",
+            },
+        )
+        assert started.status_code == 202
+        operation_id = started.json()["root_operation_id"]
+        wait_for_task(store, operation_id, expect="succeeded")
+
+        untroubled = client.get(f"/api/projects/{project_id}/episodes")
+        assert untroubled.status_code == 200
+        assert [task["degradation"] for task in untroubled.json()[0]["tasks"]] == [None]
+
+        store.record_agent_task_receipt(
+            operation_id,
+            "provider_exit",
+            {"return_code": 0, "degradation": note},
+        )
+        degraded = client.get(f"/api/projects/{project_id}/episodes")
+        assert degraded.status_code == 200
+        assert [task["degradation"] for task in degraded.json()[0]["tasks"]] == [note]
+
+
 def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id

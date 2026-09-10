@@ -203,6 +203,49 @@ def _begin_report(
     return allocation_operation_id, attempt.attempt_id
 
 
+def test_episode_turn_carries_a_setting_its_provider_ignored(tmp_path) -> None:
+    """An episode turn is a provider call, so Runs must say when one was degraded.
+
+    The note is read from the same exit receipt the operational task list reads,
+    so both surfaces answer from one durable original.
+    """
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "degraded")
+    note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+    store.record_agent_task_receipt(
+        root.operation_id,
+        "provider_exit",
+        {"return_code": 0, "degradation": note},
+    )
+
+    response = serialize_episode(
+        store,
+        "project",
+        store.episode(episode.episode_id) or episode,
+        branch_summary=_branch_summary,
+    )
+
+    assert [task.degradation for task in response.tasks] == [note]
+
+
+def test_an_undegraded_episode_turn_claims_nothing(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "clean")
+    store.record_agent_task_receipt(root.operation_id, "provider_exit", {"return_code": 0})
+
+    response = serialize_episode(
+        store,
+        "project",
+        store.episode(episode.episode_id) or episode,
+        branch_summary=_branch_summary,
+    )
+
+    assert [task.degradation for task in response.tasks] == [None]
+
+
 def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)

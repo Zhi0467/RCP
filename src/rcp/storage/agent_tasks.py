@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import PurePosixPath
@@ -2124,26 +2125,31 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
-    def agent_task_degradations(self, project_id: str) -> dict[str, str]:
-        """Return each task's provider-degradation note, keyed by operation.
+    def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:
+        """Return the named tasks' provider-degradation notes, keyed by operation.
 
         Read from the exit receipt that already records it rather than from a
-        task column: the receipt is the durable original, and one indexed query
-        serves a whole task list. A correction round records a second exit for
-        the same task, so the newest note wins; it describes the pass that
+        task column: the receipt is the durable original. Callers pass the tasks
+        they are about to project, so the read stays on the receipt index and
+        costs what that page of tasks costs. Those ids carry their own project
+        check: every caller resolves its tasks through a project-scoped read
+        before asking for their notes. A correction round records a second exit
+        for the same task, so the newest note wins; it describes the pass that
         actually stands.
         """
 
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("?" for _ in operation_ids)
         with self.connection() as connection:
             rows = connection.execute(
-                """
-                SELECT receipt.operation_id AS operation_id, receipt.payload_json AS payload_json
-                FROM graph_run_receipts AS receipt
-                JOIN graph_runs AS task ON task.operation_id = receipt.operation_id
-                WHERE task.project_id = ? AND receipt.category = 'provider_exit'
-                ORDER BY receipt.receipt_id ASC
-                """,
-                (project_id,),
+                f"""
+                SELECT operation_id, payload_json
+                FROM graph_run_receipts
+                WHERE operation_id IN ({placeholders}) AND category = 'provider_exit'
+                ORDER BY receipt_id ASC
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
             ).fetchall()
         notes: dict[str, str] = {}
         for row in rows:
