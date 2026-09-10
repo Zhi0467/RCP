@@ -319,9 +319,13 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         )
         files.extend(copied)
         for stage in stages:
+            # A stage's workspace is the agent's scratch, where pytest, virtual
+            # environments, and node_modules leave symlinks. A link there is not a
+            # recovery input, so it is left out rather than refusing the whole
+            # checkpoint; that refusal blocked a release update on 2026-09-10.
             prefix = PurePosixPath("run-stage") / stage.root.name
             _, copied = _snapshot_tree(
-                stage.root, app.joinpath(*prefix.parts), relative_prefix=prefix
+                stage.root, app.joinpath(*prefix.parts), relative_prefix=prefix, skip_links=True
             )
             files.extend(copied)
         with checkpoint_attachment_sets(data_dir / "chat-attachments") as attachments:

@@ -211,8 +211,9 @@ def _snapshot_tree(
     destination: Path,
     *,
     relative_prefix: PurePosixPath,
+    skip_links: bool = False,
 ) -> tuple[tuple[str, ...], list[ApplicationSnapshotFile]]:
-    initial = _tree_inventory(source)
+    initial = _tree_inventory(source, skip_links=skip_links)
     destination.mkdir(mode=_DIRECTORY_MODE, parents=True)
     for relative in initial[0]:
         destination.joinpath(*PurePosixPath(relative).parts).mkdir(
@@ -229,7 +230,7 @@ def _snapshot_tree(
             restore_mode=signature[-1],
         )
         files.append(copied)
-    if _tree_inventory(source) != initial:
+    if _tree_inventory(source, skip_links=skip_links) != initial:
         raise ApplicationSnapshotRefused("A recovery-critical tree changed during checkpointing.")
     directories: set[str] = set()
     for path in (relative_prefix, *(relative_prefix / path for path in initial[0])):
@@ -242,7 +243,16 @@ def _snapshot_tree(
 
 def _tree_inventory(
     root: Path,
+    *,
+    skip_links: bool = False,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, tuple[int, ...]], ...]]:
+    """Inventory one tree's directories and regular files.
+
+    A link is never followed or copied. By default its presence refuses the
+    whole tree, which is right for trees RCP writes itself. ``skip_links`` leaves
+    links out of the inventory instead, for trees an agent writes into.
+    """
+
     if not root.is_dir() or root.is_symlink():
         raise ApplicationSnapshotRefused("A recovery-critical root is not an ordinary directory.")
     directories: list[str] = []
@@ -251,14 +261,19 @@ def _tree_inventory(
         current_path = Path(current)
         directory_names.sort()
         file_names.sort()
-        for name in directory_names:
+        for name in list(directory_names):
             path = current_path / name
+            if skip_links and path.is_symlink():
+                directory_names.remove(name)
+                continue
             metadata = path.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused("A recovery-critical tree contains a link.")
             directories.append(path.relative_to(root).as_posix())
         for name in file_names:
             path = current_path / name
+            if skip_links and path.is_symlink():
+                continue
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused(
