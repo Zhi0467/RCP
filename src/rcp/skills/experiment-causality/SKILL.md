@@ -51,7 +51,7 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
 
 ## Smoke and validation Experiments
 
-An Experiment whose objective is to validate infrastructure, integration, or recovery is itself
+An Experiment whose objective is to verify infrastructure, integration, or recovery is itself
 the resolution path for that uncertainty. Its unpinned parameters, unbuilt images, and unrun checks
 are steps of its own work. Write them into `design`, `expected_outcomes`, and
 `interpretation_rules` so the episode can start and perform them. An open Blocker reached through

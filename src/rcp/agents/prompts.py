@@ -57,7 +57,7 @@ _LOCAL_CAUSAL_CHECK = """Local causal check for this Patch:
 - Once an observation exists, connect Experiment `produces` Evidence, then Evidence `informs`
   Decision or `addresses` Blocker as appropriate. Check edge direction against the actual causal
   story. These edges do not themselves choose the Decision or change the Blocker's status.
-- An Experiment whose objective is to validate infrastructure, integration, or recovery — a smoke
+- An Experiment whose objective is to verify infrastructure, integration, or recovery — a smoke
   test — is itself how that uncertainty gets resolved. Never block it on the state it exists to
   show: unpinned launch parameters, an unbuilt image, or an unrun check are steps of its own
   `design`, `expected_outcomes`, and `interpretation_rules`. An open Blocker reached through

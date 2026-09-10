@@ -190,8 +190,8 @@ the gate instead.
           "design": "First pin the service endpoint, credential variable, seed prompt, and per-cycle budget and record them in the run manifest; rebuild the image with the lock additions; then run one cycle and force one resume across a domain boundary. Its Evidence addresses blk/real-service-unverified.",
           "expected_outcomes": ["One cycle completes against the real service and the resume replays the same domain state."],
           "interpretation_rules": [
-            "A failure while pinning or building is a setup fault to repair inside this Experiment, not a new Blocker.",
-            "A credential the run cannot obtain becomes a Blocker whose resolution condition does not name this smoke."
+            "A repairable failure while pinning or building is a setup fault to fix inside this Experiment, not a new Blocker.",
+            "A constraint the run cannot clear, such as a credential or registry access nobody has granted, becomes a Blocker whose resolution condition does not name this smoke."
           ],
           "completion_criteria": ["Run manifest, cycle log, and resume log are recorded."],
           "status": "proposed"
