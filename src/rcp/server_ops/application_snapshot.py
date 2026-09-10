@@ -257,15 +257,19 @@ def _tree_inventory(
         raise ApplicationSnapshotRefused("A recovery-critical root is not an ordinary directory.")
     directories: list[str] = []
     files: list[tuple[str, tuple[int, ...]]] = []
+    # Skipped links still count toward the bound, so an agent-written tree
+    # cannot make preparation walk an unbounded inventory.
+    skipped = 0
     for current, directory_names, file_names in os.walk(root, followlinks=False):
         current_path = Path(current)
         directory_names.sort()
         file_names.sort()
-        for name in list(directory_names):
+        if skip_links:
+            kept = [name for name in directory_names if not (current_path / name).is_symlink()]
+            skipped += len(directory_names) - len(kept)
+            directory_names[:] = kept
+        for name in directory_names:
             path = current_path / name
-            if skip_links and path.is_symlink():
-                directory_names.remove(name)
-                continue
             metadata = path.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused("A recovery-critical tree contains a link.")
@@ -273,6 +277,7 @@ def _tree_inventory(
         for name in file_names:
             path = current_path / name
             if skip_links and path.is_symlink():
+                skipped += 1
                 continue
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
@@ -292,7 +297,7 @@ def _tree_inventory(
                     ),
                 )
             )
-        if len(directories) + len(files) > BACKUP_INVENTORY_MAX_ENTRIES:
+        if len(directories) + len(files) + skipped > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ApplicationSnapshotRefused(
                 "A recovery-critical tree exceeds its inventory bound."
             )

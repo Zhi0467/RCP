@@ -261,7 +261,7 @@ def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
 
 
 def test_stage_checkpoints_leave_agent_symlinks_out_while_owned_trees_still_refuse(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stage = tmp_path / "run-stage" / "chat-1"
     workspace = stage / "workspace" / "pytest-0"
@@ -291,3 +291,18 @@ def test_stage_checkpoints_leave_agent_symlinks_out_while_owned_trees_still_refu
     assert not any("current" in entry or entry.endswith("python") for entry in directories)
     copied_links = [path for path in (tmp_path / "copied").rglob("*") if path.is_symlink()]
     assert copied_links == []
+
+    # Skipped links still count toward the inventory bound.
+    monkeypatch.setattr("rcp.server_ops.application_snapshot.BACKUP_INVENTORY_MAX_ENTRIES", 40)
+    flood = tmp_path / "run-stage" / "chat-2"
+    flood.mkdir(parents=True)
+    (flood / "target").write_text("x")
+    for index in range(40):
+        (flood / f"link-{index}").symlink_to(flood / "target")
+    with pytest.raises(ApplicationSnapshotRefused, match="inventory bound"):
+        _snapshot_tree(
+            flood,
+            tmp_path / "flooded",
+            relative_prefix=PurePosixPath("run-stage/chat-2"),
+            skip_links=True,
+        )

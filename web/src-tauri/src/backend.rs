@@ -653,6 +653,13 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
         Err(failure) => {
             let error = match failure {
                 LaunchWaitFailure::Ended => {
+                    // A final stdout fragment without a newline is still pending;
+                    // it belongs in both the message and the saved log.
+                    if !stdout_pending.is_empty() {
+                        stderr.extend_from_slice(b"[stdout] ");
+                        stderr.extend_from_slice(&stdout_pending);
+                        stderr.push(b'\n');
+                    }
                     let mut error =
                         launch_error(&stderr, "backend ended before reporting launch status");
                     if let Some(path) = save_launch_output(app, &stderr) {
@@ -1432,12 +1439,12 @@ fn launch_error(stderr: &[u8], fallback: &str) -> String {
     }
     let mut text = chosen[start..].join("\n");
     if text.len() > LAUNCH_ERROR_MAX_BYTES {
-        let mut cut = LAUNCH_ERROR_MAX_BYTES;
+        // Keep the end: a long diagnostic puts its actionable part last.
+        let mut cut = text.len() - LAUNCH_ERROR_MAX_BYTES;
         while !text.is_char_boundary(cut) {
-            cut -= 1;
+            cut += 1;
         }
-        text.truncate(cut);
-        text.push('…');
+        text = format!("…{}", &text[cut..]);
     }
     if start > 0 {
         format!("{fallback}:\n[{start} earlier lines omitted]\n{text}")
@@ -1486,10 +1493,11 @@ mod tests {
         assert_eq!(message.lines().count(), LAUNCH_ERROR_MAX_LINES + 2);
         assert!(message.len() <= LAUNCH_ERROR_MAX_BYTES + 128);
 
-        let long = "x".repeat(10 * LAUNCH_ERROR_MAX_BYTES);
+        let long = format!("{}TAIL", "x".repeat(10 * LAUNCH_ERROR_MAX_BYTES));
         let message = launch_error(long.as_bytes(), "backend ended");
         assert!(message.len() <= LAUNCH_ERROR_MAX_BYTES + 64);
-        assert!(message.ends_with('…'));
+        assert!(message.contains(": …x"));
+        assert!(message.ends_with("TAIL"));
     }
 
     #[test]
