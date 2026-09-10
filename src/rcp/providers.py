@@ -27,7 +27,9 @@ command.
 Where the CLI can enumerate its own models, the profile probes it and RCP offers
 exactly what came back. Where it cannot, the profile declares the lists and
 records the CLI version they were read from, so the staleness is visible to
-whoever maintains them.
+whoever maintains them. A profile may do both: Claude Code cannot enumerate its
+models, but `claude --help` does document the accepted `--effort` values, so
+that list is probed while the model aliases stay declared.
 """
 
 
@@ -551,6 +553,19 @@ class ProviderProfile:
     def project_write_enforcement_mode(self) -> str:
         raise ValueError(f"Provider {self.id!r} has no project write enforcement mode")
 
+    def launch_degradation(self, stderr: str, *, requested_reasoning: str | None) -> str | None:
+        """One RCP-authored sentence when the CLI ignored part of a launch.
+
+        A provider that rejects an unusable launch outright has nothing to add
+        here; that failure already reaches the human on the error path. This is
+        for a CLI that accepts the launch, silently drops part of it, and then
+        succeeds anyway. The sentence is composed from what RCP asked for, never
+        from the provider's own diagnostic text, which is unbounded and unowned.
+        """
+
+        del stderr, requested_reasoning
+        return None
+
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         return ProviderStreamEvent(event="raw", text=raw)
 
@@ -802,11 +817,16 @@ class CodexProfile(ProviderProfile):
         )
 
 
-# Claude Code has no `codex debug models` equivalent, so its lists are read by
-# hand from `claude --help`, which documents the accepted values of `--effort`
-# and the model aliases. Re-read both when bumping the CLI and move
-# `ClaudeProfile.declared_against` to the version you read them from.
+# Claude Code has no `codex debug models` equivalent. The efforts here are the
+# fallback for when the `--help` probe below cannot be read; the aliases are the
+# real hand-maintained list, because `--help` documents them only by example.
+# Re-read the aliases when bumping the CLI and move `ClaudeProfile.declared_against`
+# to the version you read them from.
 _CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+# The values follow `--effort` in its own description. Refusing to cross a `--`
+# keeps a later option's parenthetical from being read as this option's values.
+_CLAUDE_EFFORT_HELP = re.compile(r"--effort <[^>]+>(?:(?!--)[^(])*\(([^)]*)\)")
+_CLAUDE_EFFORT_VALUE = re.compile(r"[a-z][a-z0-9_-]*")
 _CLAUDE_MODELS = tuple(
     ModelChoice(id=slug, label=label, reasoning=_CLAUDE_EFFORTS, default_reasoning="medium")
     for slug, label in (
@@ -832,7 +852,8 @@ class ClaudeProfile(ProviderProfile):
     }
     runtime_choices = (ProviderRuntimeChoice(id="stream-json", label="Claude stream JSON"),)
     work_like_minimum_version = (2, 1, 233)
-    declared_against = "2.1.233"
+    #: Only the model aliases are declared; `declared_against` dates them alone.
+    declared_against = "2.1.267"
     declared = _CLAUDE_MODELS
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
@@ -851,6 +872,47 @@ class ClaudeProfile(ProviderProfile):
             return bool(json.loads(result.stdout).get("loggedIn"))
         except (json.JSONDecodeError, AttributeError):
             return False
+
+    def catalog_command(self, binary: str) -> list[str] | None:
+        # Claude Code cannot enumerate its models, but `--help` states the exact
+        # values `--effort` accepts. Probing beats copying them by hand.
+        return [binary, "--help"]
+
+    def parse_catalog(self, stdout: str) -> list[ModelChoice]:
+        """Read the accepted `--effort` values and give them to every alias.
+
+        Claude's efforts are provider-wide: the same values are reported for
+        every model, and the CLI rejects an unknown one while parsing arguments,
+        before a model is chosen. `--help` wraps the values onto a continuation
+        line, so the text is flattened before matching.
+        """
+
+        match = _CLAUDE_EFFORT_HELP.search(" ".join(stdout.split()))
+        if match is None:
+            return []
+        efforts = [value.strip() for value in match.group(1).split(",") if value.strip()]
+        # A parenthesis moving elsewhere in the description would otherwise turn
+        # prose into offered efforts. Nothing but a bare word is an effort.
+        if not efforts or not all(_CLAUDE_EFFORT_VALUE.fullmatch(value) for value in efforts):
+            return []
+        default = "medium" if "medium" in efforts else efforts[0]
+        return [
+            ModelChoice(
+                id=model.id, label=model.label, reasoning=efforts, default_reasoning=default
+            )
+            for model in _CLAUDE_MODELS
+        ]
+
+    def launch_degradation(self, stderr: str, *, requested_reasoning: str | None) -> str | None:
+        # Claude warns and runs at its default rather than failing, and its
+        # stream reports no effort, so this warning is the only signal that the
+        # turn did not run the way the human asked.
+        if not requested_reasoning or "Unknown --effort value" not in stderr:
+            return None
+        return (
+            f"Claude ignored the requested reasoning effort {requested_reasoning!r} "
+            "and ran at its own default."
+        )
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         return [

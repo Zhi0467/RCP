@@ -2124,6 +2124,38 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def agent_task_degradations(self, project_id: str) -> dict[str, str]:
+        """Return each task's provider-degradation note, keyed by operation.
+
+        Read from the exit receipt that already records it rather than from a
+        task column: the receipt is the durable original, and one indexed query
+        serves a whole task list. A correction round records a second exit for
+        the same task, so the newest note wins; it describes the pass that
+        actually stands.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT receipt.operation_id AS operation_id, receipt.payload_json AS payload_json
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS task ON task.operation_id = receipt.operation_id
+                WHERE task.project_id = ? AND receipt.category = 'provider_exit'
+                ORDER BY receipt.receipt_id ASC
+                """,
+                (project_id,),
+            ).fetchall()
+        notes: dict[str, str] = {}
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except json.JSONDecodeError:
+                continue
+            note = payload.get("degradation") if isinstance(payload, dict) else None
+            if isinstance(note, str) and note:
+                notes[str(row["operation_id"])] = note
+        return notes
+
     def agent_task_continuation_cause(self, operation_id: str) -> str | None:
         """Return the durable launch cause for one task attempt.
 

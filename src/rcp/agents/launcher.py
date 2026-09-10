@@ -1020,6 +1020,10 @@ class AgentLauncher:
                     )
                 )
                 raise _PrePromptRuntimeFailure(detail)
+            # A provider that succeeded can still have dropped part of the
+            # launch. Its stderr says so, but stderr itself is the vendor's
+            # channel; the profile turns it into one sentence RCP owns.
+            degradation = profile.launch_degradation(stderr, requested_reasoning=reasoning)
             yield AgentEvent(
                 event="provider_exit",
                 text=json.dumps(
@@ -1028,6 +1032,7 @@ class AgentLauncher:
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
                         **({"stopped_at_result": True} if stopped_at_result else {}),
+                        **({"degradation": degradation} if degradation else {}),
                     },
                     sort_keys=True,
                     separators=(",", ":"),

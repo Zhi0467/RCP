@@ -2065,6 +2065,9 @@ export interface AgentTask {
   finished_at?: string | null;
   status_message: string;
   error?: string | null;
+  /** Set when the provider succeeded without honouring part of the launch.
+   *  Authored by the backend; render it verbatim. */
+  degradation?: string | null;
   applied_revision?: number | null;
   result?: AgentTaskResult | null;
   attempt: number;

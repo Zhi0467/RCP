@@ -48,6 +48,8 @@ from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
+    _ProviderOutcome,
+    _record_provider_exit,
     _sse,
     _sweep_stale_stages,
     _swept_stage_root,
@@ -2181,6 +2183,50 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp
     assert staged.graph_path == f"{repository_path}/.research/graph.json"
     assert staged.research_md_path == f"{repository_path}/.research/research.md"
     assert staged.facts_dir == f"{repository_path}/.research/facts"
+
+
+SILENT_DOWNGRADE = (
+    "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+)
+
+
+@pytest.mark.parametrize("degraded", [True, False])
+def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
+    manifest, tmp_path, degraded: bool
+) -> None:
+    """A provider that succeeded without honouring the launch must not stay silent."""
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    execution = _agent_task_execution(store, "degraded-operation")
+    outcome = _ProviderOutcome()
+    outcome.exit_evidence = {
+        "return_code": 0,
+        **({"degradation": SILENT_DOWNGRADE} if degraded else {}),
+    }
+
+    _record_provider_exit(execution, outcome, workspace=tmp_path, remote_stage=None)
+
+    expected = SILENT_DOWNGRADE if degraded else None
+    # The durable original stays on the exit receipt...
+    receipts = [
+        receipt
+        for receipt in store.agent_task_receipts("degraded-operation")
+        if receipt.category == "provider_exit"
+    ]
+    assert len(receipts) == 1
+    assert receipts[0].payload.get("degradation") == expected
+
+    # ...and the backend, not the browser, decides what a surface shows. Both the
+    # list a human scans and the detail they open must answer without reading it.
+    project_id = store.projects()[0].project_id
+    with TestClient(app) as client:
+        listed = client.get(f"/api/projects/{project_id}/tasks")
+        detail = client.get(f"/api/projects/{project_id}/tasks/degraded-operation")
+    assert listed.status_code == 200
+    assert detail.status_code == 200
+    row = next(item for item in listed.json() if item["operation_id"] == "degraded-operation")
+    assert row["degradation"] == expected
+    assert detail.json()["degradation"] == expected
 
 
 def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:

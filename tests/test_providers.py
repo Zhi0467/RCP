@@ -18,6 +18,24 @@ def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProces
     return subprocess.CompletedProcess([], returncode, stdout, "")
 
 
+# Copied verbatim from `claude --help` on claude-code 2.1.267. The accepted
+# values sit on a wrapped continuation line and never beside `--effort`, which is
+# the whole reason the parser flattens the text first. Identical at COLUMNS 60,
+# 80 and 200.
+CLAUDE_HELP = """Options:
+  --disable-slash-commands              Disable all skills
+  --effort <level>                      Effort level for the current session
+                                        (low, medium, high, xhigh, max)
+  --environment <environment_id>        Create a new cloud session that runs on
+                                        the given self-hosted environment
+"""
+
+# Also verbatim; the dash is an em dash and the run still exits 0.
+CLAUDE_EFFORT_WARNING = (
+    "Warning: Unknown --effort value 'ultra' \u2014 ignoring it and using the "
+    "default effort. Valid values: low, medium, high, xhigh, max."
+)
+
 CATALOG = json.dumps(
     {
         "models": [
@@ -237,15 +255,70 @@ def test_a_broken_catalog_probe_yields_no_models_rather_than_raising(catalog) ->
     assert CodexProfile().models(catalog) == []
 
 
-def test_claude_declares_its_lists_and_says_which_cli_they_came_from() -> None:
+def test_claude_probes_its_efforts_and_declares_only_its_aliases() -> None:
     profile = ClaudeProfile()
 
-    assert profile.catalog_command("claude") is None, "Claude Code cannot enumerate its models"
-    models = profile.models(None)
-    assert [item.id for item in models] == ["opus", "sonnet", "haiku", "fable"]
-    # `claude --help` documents these as the accepted values of --effort.
-    assert models[0].reasoning == ["low", "medium", "high", "xhigh", "max"]
-    assert profile.declared_against, "a hand-maintained list must record its CLI version"
+    assert profile.catalog_command("claude") == ["claude", "--help"], (
+        "Claude cannot enumerate models, but --help states the accepted efforts"
+    )
+    models = profile.models(_result(CLAUDE_HELP))
+    assert [item.id for item in models] == ["opus", "sonnet", "haiku", "fable"], (
+        "aliases stay hand-declared; --help names them only by example"
+    )
+    # Claude's efforts are provider-wide: the CLI reports the same list for every
+    # model and rejects an unknown one while parsing arguments, before a model is
+    # chosen. Every alias therefore carries the one probed list.
+    for model in models:
+        assert model.reasoning == ["low", "medium", "high", "xhigh", "max"]
+        assert model.default_reasoning == "medium"
+    assert profile.declared_against, "a hand-maintained alias list must record its CLI version"
+
+
+@pytest.mark.parametrize(
+    "help_text",
+    [
+        "usage: claude [options]",
+        "  --effort <level>  Effort level for the current session",
+        # A parenthesis that is prose, not a value list, must not become efforts.
+        "  --effort <level>  Effort level (only works with --print)",
+        # An option that lists no values must not borrow a later option's.
+        "  --effort <level>  Effort level\n  --environment <id>  Run it (self-hosted)",
+    ],
+)
+def test_claude_falls_back_to_its_declared_efforts_when_help_cannot_be_read(
+    help_text: str,
+) -> None:
+    profile = ClaudeProfile()
+
+    assert profile.parse_catalog(help_text) == []
+    # An unreadable probe must degrade to the vendored list rather than leaving
+    # the human with no efforts at all.
+    assert [item.id for item in profile.models(_result(help_text))] == list(
+        item.id for item in profile.declared
+    )
+    assert profile.models(_result(help_text))[0].reasoning == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+
+
+def test_claude_reports_an_effort_it_was_told_was_ignored() -> None:
+    profile = ClaudeProfile()
+
+    assert profile.launch_degradation(CLAUDE_EFFORT_WARNING, requested_reasoning="ultra") == (
+        "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+    ), "the sentence names what RCP asked for, never what the provider printed"
+    assert profile.launch_degradation("", requested_reasoning="high") is None
+    assert profile.launch_degradation(CLAUDE_EFFORT_WARNING, requested_reasoning=None) is None
+    # Codex rejects an unusable effort at the API and fails the run, so it has
+    # nothing to add on a successful exit.
+    assert (
+        CodexProfile().launch_degradation(CLAUDE_EFFORT_WARNING, requested_reasoning="ultra")
+        is None
+    )
 
 
 def test_authentication_is_read_the_way_each_cli_reports_it() -> None:

@@ -508,6 +508,62 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
     assert exit_evidence["return_code"] == 0
 
 
+@pytest.mark.parametrize("warned", [True, False])
+@pytest.mark.asyncio
+async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    warned: bool,
+) -> None:
+    # Claude does not fail on an effort it does not know. It warns on stderr,
+    # runs at its own default, and exits 0, so a successful turn is the only
+    # place this can be caught. The warning is written before the result so the
+    # test cannot race the stop that the result triggers.
+    provider_script = "\n".join(
+        (
+            *(
+                (
+                    "import sys",
+                    "sys.stderr.write('Warning: Unknown --effort value ultra, ignoring it.')",
+                    "sys.stderr.flush()",
+                )
+                if warned
+                else ()
+            ),
+            "import json",
+            'print(json.dumps({"type": "result", "result": "Finished."}), flush=True)',
+        )
+    )
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness", (), {"installed": True, "authenticated": True}
+    )()
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
+    )
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            reasoning="ultra",
+            capability="scratch_patch",
+        )
+    ]
+
+    evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    if warned:
+        assert evidence["degradation"] == (
+            "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+        )
+    else:
+        assert "degradation" not in evidence, "a clean run must not claim a degradation"
+
+
 @pytest.mark.asyncio
 async def test_stream_records_explicit_terminal_provider_event(
     monkeypatch: pytest.MonkeyPatch,
