@@ -366,12 +366,9 @@ The old application prepares the rollback inventory; the candidate application
 migrates and validates only a disposable copy. Application policy retains the
 captured SQLite state, typed recovery stages and attachment sets, immutable
 imported provider histories, complete transfer inboxes, bootstrap/display
-snapshots, and local canonical `.research` roots. Inside a retained recovery
-stage, symbolic links are agent scratch (pytest, virtual environments,
-`node_modules`) and are left out of the checkpoint rather than refusing it; a
-link anywhere else in a checkpointed tree still refuses. Locks, sockets, runtime
-files, caches, provider homes, Git/source checkouts, and remote roots are not
-generic rollback payloads. Unexpected durable state fails classification. Kept artifacts
+snapshots, and local canonical `.research` roots. Locks, sockets, runtime files,
+caches, provider homes, Git/source checkouts, and remote roots are not generic
+rollback payloads. Unexpected durable state fails classification. Kept artifacts
 and result views outside replacement roots are checked by their typed owners.
 An intact startup-effect fence prevents probation from changing external state.
 

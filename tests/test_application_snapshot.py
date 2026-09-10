@@ -6,7 +6,7 @@ import stat
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,6 @@ from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops.application_snapshot import (
     ApplicationSnapshotPolicy,
     ApplicationSnapshotRefused,
-    _snapshot_tree,
 )
 from rcp.storage.models import (
     ProjectTransferUploadCompleteReceipt,
@@ -258,55 +257,3 @@ def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
 
     with pytest.raises(ApplicationSnapshotRefused, match="unknown, partial, or untyped"):
         coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
-
-
-def test_stage_checkpoints_leave_agent_symlinks_out_while_owned_trees_still_refuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    stage = tmp_path / "run-stage" / "chat-1"
-    workspace = stage / "workspace" / "pytest-0"
-    workspace.mkdir(parents=True)
-    (stage / "patch.json").write_text("{}")
-    (workspace / "test_a0").mkdir()
-    (workspace / "test_a0" / "log.txt").write_text("ran")
-    (workspace / "test_acurrent").symlink_to(workspace / "test_a0")
-    (workspace / "python").symlink_to("/usr/bin/python3")
-
-    with pytest.raises(ApplicationSnapshotRefused, match="contains a link"):
-        _snapshot_tree(
-            stage, tmp_path / "refused", relative_prefix=PurePosixPath("run-stage/chat-1")
-        )
-
-    directories, files = _snapshot_tree(
-        stage,
-        tmp_path / "copied",
-        relative_prefix=PurePosixPath("run-stage/chat-1"),
-        skip_links=True,
-    )
-    assert sorted(item.relative_path for item in files) == [
-        "run-stage/chat-1/patch.json",
-        "run-stage/chat-1/workspace/pytest-0/test_a0/log.txt",
-    ]
-    assert "run-stage/chat-1/workspace/pytest-0/test_a0" in directories
-    assert not any("current" in entry or entry.endswith("python") for entry in directories)
-    copied_links = [path for path in (tmp_path / "copied").rglob("*") if path.is_symlink()]
-    assert copied_links == []
-    # The loss is logged once, so a later rollback that lacks them is explicable.
-    assert [
-        record.getMessage() for record in caplog.records if "symbolic link" in record.getMessage()
-    ] == [f"checkpoint of {stage} leaves out 2 symbolic link(s) as agent scratch"]
-
-    # Skipped links still count toward the inventory bound.
-    monkeypatch.setattr("rcp.server_ops.application_snapshot.BACKUP_INVENTORY_MAX_ENTRIES", 40)
-    flood = tmp_path / "run-stage" / "chat-2"
-    flood.mkdir(parents=True)
-    (flood / "target").write_text("x")
-    for index in range(40):
-        (flood / f"link-{index}").symlink_to(flood / "target")
-    with pytest.raises(ApplicationSnapshotRefused, match="inventory bound"):
-        _snapshot_tree(
-            flood,
-            tmp_path / "flooded",
-            relative_prefix=PurePosixPath("run-stage/chat-2"),
-            skip_links=True,
-        )

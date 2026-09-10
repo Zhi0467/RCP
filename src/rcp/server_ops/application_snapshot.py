@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import re
 import sqlite3
@@ -41,7 +40,6 @@ from rcp.storage.models import ProjectTransferUploadRecord
 from rcp.transfer.target import target_transfer_archive_path
 from rcp.transport.state import LocalStateWorkspace, state_workspace_for_probe
 
-logger = logging.getLogger(__name__)
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DIRECTORY_MODE = 0o700
 _PAYLOAD_FILE_MODE = 0o400
@@ -213,16 +211,8 @@ def _snapshot_tree(
     destination: Path,
     *,
     relative_prefix: PurePosixPath,
-    skip_links: bool = False,
 ) -> tuple[tuple[str, ...], list[ApplicationSnapshotFile]]:
-    initial, skipped_links = _tree_inventory(source, skip_links=skip_links)
-    if skipped_links:
-        # Observable loss: a rollback restores this stage without its links.
-        logger.warning(
-            "checkpoint of %s leaves out %d symbolic link(s) as agent scratch",
-            source,
-            skipped_links,
-        )
+    initial = _tree_inventory(source)
     destination.mkdir(mode=_DIRECTORY_MODE, parents=True)
     for relative in initial[0]:
         destination.joinpath(*PurePosixPath(relative).parts).mkdir(
@@ -239,7 +229,7 @@ def _snapshot_tree(
             restore_mode=signature[-1],
         )
         files.append(copied)
-    if _tree_inventory(source, skip_links=skip_links)[0] != initial:
+    if _tree_inventory(source) != initial:
         raise ApplicationSnapshotRefused("A recovery-critical tree changed during checkpointing.")
     directories: set[str] = set()
     for path in (relative_prefix, *(relative_prefix / path for path in initial[0])):
@@ -252,31 +242,15 @@ def _snapshot_tree(
 
 def _tree_inventory(
     root: Path,
-    *,
-    skip_links: bool = False,
-) -> tuple[tuple[tuple[str, ...], tuple[tuple[str, tuple[int, ...]], ...]], int]:
-    """Inventory one tree's directories and regular files, plus the links left out.
-
-    A link is never followed or copied. By default its presence refuses the
-    whole tree, which is right for trees RCP writes itself. ``skip_links`` leaves
-    links out of the inventory instead, for trees an agent writes into.
-    """
-
+) -> tuple[tuple[str, ...], tuple[tuple[str, tuple[int, ...]], ...]]:
     if not root.is_dir() or root.is_symlink():
         raise ApplicationSnapshotRefused("A recovery-critical root is not an ordinary directory.")
     directories: list[str] = []
     files: list[tuple[str, tuple[int, ...]]] = []
-    # Skipped links still count toward the bound, so an agent-written tree
-    # cannot make preparation walk an unbounded inventory.
-    skipped = 0
     for current, directory_names, file_names in os.walk(root, followlinks=False):
         current_path = Path(current)
         directory_names.sort()
         file_names.sort()
-        if skip_links:
-            kept = [name for name in directory_names if not (current_path / name).is_symlink()]
-            skipped += len(directory_names) - len(kept)
-            directory_names[:] = kept
         for name in directory_names:
             path = current_path / name
             metadata = path.lstat()
@@ -285,9 +259,6 @@ def _tree_inventory(
             directories.append(path.relative_to(root).as_posix())
         for name in file_names:
             path = current_path / name
-            if skip_links and path.is_symlink():
-                skipped += 1
-                continue
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused(
@@ -306,11 +277,11 @@ def _tree_inventory(
                     ),
                 )
             )
-        if len(directories) + len(files) + skipped > BACKUP_INVENTORY_MAX_ENTRIES:
+        if len(directories) + len(files) > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ApplicationSnapshotRefused(
                 "A recovery-critical tree exceeds its inventory bound."
             )
-    return (tuple(directories), tuple(files)), skipped
+    return tuple(directories), tuple(files)
 
 
 def _copy_declared_file(
