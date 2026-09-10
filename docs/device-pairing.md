@@ -58,8 +58,11 @@ You need sudo on the host and a Tailscale account with **MagicDNS** and
    ```
 
    `tailscale up` prints a login URL; open it in your browser and approve the
-   machine. `tailscale serve status` then prints the address members will use,
-   of the form `https://<host>.<tailnet>.ts.net`.
+   machine. The first `tailscale serve` on a tailnet prints
+   `Serve is not enabled on your tailnet` with a link; open it, enable Serve
+   (this also turns on HTTPS certificates), and rerun the command.
+   `tailscale serve status` then prints the address members will use, of the
+   form `https://<host>.<tailnet>.ts.net`.
 
 3. Tell RCP that address. Add a `[team]` table to `/etc/rcp/server.toml`, the
    same operator-owned file that holds the release pin:
