@@ -2,7 +2,7 @@
 id: experiment-causality
 kind: skill
 label: Experiment causality
-version: 1.1.0
+version: 1.2.0
 description: Plan, repair, or audit experiment dependencies by tracing input gates and separating intended empirical handoffs from observed Evidence.
 dependencies:
 ---
@@ -49,6 +49,21 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
    outages, repository access, implementation tasks, ordinary retries, or already sufficient
    Evidence.
 
+## Smoke and validation Experiments
+
+An Experiment whose objective is to verify infrastructure, integration, or recovery is itself
+the resolution path for that uncertainty. Its unpinned parameters, unbuilt images, and unrun checks
+are steps of its own work. Write them into `design`, `expected_outcomes`, and
+`interpretation_rules` so the episode can start and perform them. An open Blocker reached through
+`blocked_by` keeps RCP from starting the Experiment, so the smoke itself carries `blocked_by` only
+for a constraint the run cannot remove, such as a credential nobody has granted or a hardware
+allocation, with a `resolution_condition` that does not require running the smoke.
+
+The unverified infrastructure remains a genuine gate for any downstream main Experiment that
+depends on it. Keep that Blocker, connect the main Experiment to it with `blocked_by`, name the
+smoke as the precursor in the Blocker's `resolution_condition`, and connect the smoke's Evidence to
+it with `addresses` once the smoke has run. The gate moves off the precursor, not out of the graph.
+
 ## Check the complete action program
 
 - **Reversed:** a downstream Decision governs, or downstream Blocker blocks, the precursor meant to
@@ -56,7 +71,9 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
 - **Prose-only:** a genuine input gate or observed Evidence handoff exists only in summaries.
   A planned precursor names its intended handoff in prose until Evidence exists.
 - **Circular:** following gates and empirical resolution paths returns to the same node.
-- **Self-blocking:** an Experiment is blocked by the condition its own Evidence is meant to address.
+- **Self-blocking:** an Experiment is blocked by the condition its own Evidence is meant to
+  address, or by a Blocker whose `resolution_condition` amounts to running that Experiment or to
+  setup the Experiment performs itself.
 - **Stale:** lifecycle text or status conflicts with later Evidence or action edges.
 - **Duplicate:** parallel nodes or paths represent the same gate, Experiment, or Evidence.
 - **Incomplete:** a gate requiring a new measurement has no planned precursor, or a known

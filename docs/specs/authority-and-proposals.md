@@ -112,6 +112,9 @@ A Decision records whether it is `open`, `ready`, `revisit`, `decided`, or
 superseded. Agents may create and queue a Decision as `open`, `ready`, or
 `revisit`. `ready` and `revisit` require at least two distinct options and enter
 human attention; ripeness is prompt guidance, not an inferred scientific fact.
+Agents write those options at one level of detail after investigating each
+distinct choice with equal care; a leaning belongs in `rationale`, never in
+option order, length, or wording.
 
 For ordinary work, the node-detail ballot is the only producer of
 `selected_option` plus `status: decided`. Human Sync commits those fields and
