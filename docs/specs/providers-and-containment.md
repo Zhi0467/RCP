@@ -267,10 +267,16 @@ persists the task, task attempt, authorizer, capability, target, exact stage,
 provider identity, and write-scope binding. Immediately before prompt delivery
 it persists the actual provider runtime. Provider events retain labelled
 answers, native session ids, usage, diagnostics, Patch results, and launch
-receipts. A provider's final result is both its answer and its accounting
-boundary, and a labelled answer is withheld from the wire, so its usage is
-forwarded on its own frame. A turn that succeeds is counted exactly like one
-that fails, and a queued follow-up's second result is counted once more.
+receipts. A provider that succeeds while silently dropping part of the launch
+records one backend-authored note on its exit receipt, and the task projection
+exports that note to every surface listing or opening the task: the run reads as
+untroubled otherwise. The note is composed from what RCP requested. Provider
+diagnostic output is never shown to a human as the explanation.
+
+A provider's final result is both its answer and its accounting boundary, and a
+labelled answer is withheld from the wire, so its usage is forwarded on its own
+frame. A turn that succeeds is counted exactly like one that fails, and a queued
+follow-up's second result is counted once more.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, host, stage, and external-effect
@@ -557,6 +563,12 @@ the sole Patch writer.
 Readiness is an app-process service. Startup coalesces provider executable,
 version, authentication, model-catalog, and configured machine probes; results
 are cached for their configured lifetime. Explicit Refresh bypasses the cache.
+A profile probes whatever its CLI can enumerate and declares only the rest.
+Codex reports its models and their per-model reasoning efforts from its own
+catalog. Claude Code cannot enumerate models, so its aliases stay declared and
+dated to the CLI they were read from, while the reasoning efforts it accepts are
+probed from the CLI itself and are provider-wide. A probe that cannot be read
+falls back to the declared list rather than leaving a surface with no models.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.
 

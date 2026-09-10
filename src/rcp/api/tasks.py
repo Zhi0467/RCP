@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import threading
 import uuid
+from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Literal, cast
@@ -204,7 +205,10 @@ def _agent_artifact_response_json(response: AgentArtifactResponse) -> dict[str, 
 
 
 def _agent_task_response(
-    store: AppStore, record: AgentTaskRecord, background_tasks: BackgroundAgentTasks
+    store: AppStore,
+    record: AgentTaskRecord,
+    background_tasks: BackgroundAgentTasks,
+    degradations: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     steering = chat_steering_state(background_tasks, record)
@@ -214,6 +218,9 @@ def _agent_task_response(
         steer_action_label=chat_steer_action_label(record),
         steer_unavailable_reason=steering.reason,
         steer_turn_id=steering.turn_id,
+        # The provider ran without part of what the launch asked for. Exported
+        # here so no surface has to read exit receipts to learn it.
+        degradation=(degradations or {}).get(record.operation_id),
     )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -372,6 +379,7 @@ def start_agent_task(
             chat_admission_lock.__exit__(None, None, None)
         if admission_lock is not None:
             admission_lock.release()
+    # A task admitted a moment ago has not run, so it can carry no note yet.
     return _agent_task_response(store, record, background_tasks)
 
 
@@ -390,9 +398,10 @@ def agent_tasks(
         if branch_id is not None
         else None
     )
+    records = store.agent_tasks(project_id, graph_target=target)
+    degradations = store.agent_task_degradations([record.operation_id for record in records])
     return [
-        _agent_task_response(store, record, background_tasks)
-        for record in store.agent_tasks(project_id, graph_target=target)
+        _agent_task_response(store, record, background_tasks, degradations) for record in records
     ]
 
 
@@ -409,7 +418,9 @@ def agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    detail = _agent_task_response(store, record, background_tasks)
+    detail = _agent_task_response(
+        store, record, background_tasks, store.agent_task_degradations([operation_id])
+    )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
     ]

@@ -65,6 +65,9 @@ export function ProjectHistoryDrawer({
                   <span className="run-history-meta">
                     {taskStatusLabel(task)} · {formatTimestamp(task.created_at)}
                   </span>
+                  {task.degradation && (
+                    <span className="run-history-degraded">{task.degradation}</span>
+                  )}
                 </span>
               </button>
             ))}

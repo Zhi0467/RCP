@@ -508,6 +508,79 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
     assert exit_evidence["return_code"] == 0
 
 
+SILENTLY_DOWNGRADED = (
+    "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
+)
+
+
+@pytest.mark.parametrize(
+    ("warned", "finishes", "expected"),
+    [
+        (True, True, SILENTLY_DOWNGRADED),
+        (False, True, None),
+        (True, False, None),
+    ],
+    ids=["ignored-on-a-turn-that-finished", "clean-turn", "ignored-on-a-turn-that-failed"],
+)
+@pytest.mark.asyncio
+async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    warned: bool,
+    finishes: bool,
+    expected: str | None,
+) -> None:
+    # Claude does not fail on an effort it does not know. It warns on stderr,
+    # runs at its own default, and exits 0, so a successful turn is the only
+    # place this can be caught. The warning is written before the result so the
+    # test cannot race the stop that the result triggers. A turn that warns and
+    # then fails for its own reasons says why on the error path; the note would
+    # only argue with that, so it is withheld.
+    provider_script = "\n".join(
+        (
+            *(
+                (
+                    "import sys",
+                    "sys.stderr.write('Warning: Unknown --effort value ultra, ignoring it.')",
+                    "sys.stderr.flush()",
+                )
+                if warned
+                else ()
+            ),
+            "import json",
+            *(
+                ('print(json.dumps({"type": "result", "result": "Finished."}), flush=True)',)
+                if finishes
+                else ("import sys", "sys.stdin.readline()", "sys.exit(1)")
+            ),
+        )
+    )
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness", (), {"installed": True, "authenticated": True}
+    )()
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
+    )
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            reasoning="ultra",
+            capability="scratch_patch",
+        )
+    ]
+
+    evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    assert evidence.get("degradation") == expected
+    assert (events[-1].event == "done") is finishes
+
+
 @pytest.mark.asyncio
 async def test_stream_records_explicit_terminal_provider_event(
     monkeypatch: pytest.MonkeyPatch,

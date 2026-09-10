@@ -164,6 +164,17 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /12345|12,345/);
 });
 
+test("an episode turn that lost part of its launch says so on its row", () => {
+  // The turn succeeded, so its status pill reads as untroubled and nothing else
+  // on the row contradicts it. The backend authors the sentence; the row shows
+  // it verbatim rather than deciding anything about it.
+  const note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default.";
+  const degraded = { ...episode, tasks: [{ ...rootTask, degradation: note }] };
+
+  assert.match(renderEpisodes([degraded]), /ignored the requested reasoning effort/);
+  assert.doesNotMatch(renderEpisodes([episode]), /run-history-degraded/);
+});
+
 test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
   const backendStoppable = {
     ...episode,

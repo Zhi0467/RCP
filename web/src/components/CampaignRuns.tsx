@@ -423,6 +423,9 @@ export function AutoResearchEpisodeCard({
                           <span className="campaign-task-copy">
                             <strong>{target || roleLabel}</strong>
                             <span>{task.status_message}</span>
+                            {task.degradation && (
+                              <span className="run-history-degraded">{task.degradation}</span>
+                            )}
                           </span>
                           <span className={`status-pill ${task.status}`}>
                             {taskStatusLabel(task)}

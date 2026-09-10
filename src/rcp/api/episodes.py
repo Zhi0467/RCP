@@ -155,6 +155,7 @@ class EpisodeTaskResponse(BaseModel):
     finished_at: str | None = None
     status_message: str
     error: str | None = None
+    degradation: str | None = None
     applied_revision: int | None = None
     result: dict[str, object] | None = None
     attempt: int
@@ -340,12 +341,16 @@ def serialize_episode(
         else _operational_tasks(store, episode)
     )
     task_metadata = _episode_task_metadata(store, episode, task_records)
+    # An episode turn is a provider call like any other, so the note about a
+    # setting the provider ignored belongs on its row too.
+    degradations = store.agent_task_degradations([task.operation_id for task in task_records])
     tasks = [
         _serialize_task(
             task,
             episode=episode,
             role=task_metadata[task.operation_id][0],
             depth=task_metadata[task.operation_id][1],
+            degradation=degradations.get(task.operation_id),
         )
         for task in task_records
     ]
@@ -612,10 +617,11 @@ def _serialize_task(
     episode: _EpisodeProjectionParent,
     role: Literal["orchestrator", "worker", "wake"],
     depth: int,
+    degradation: str | None,
 ) -> EpisodeTaskResponse:
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
-    values.update(role=role, depth=depth)
+    values.update(role=role, depth=depth, degradation=degradation)
     values.update(_episode_task_controls(episode, task))
     return EpisodeTaskResponse.model_validate(values)
 

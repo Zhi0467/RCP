@@ -106,6 +106,9 @@ export function AgentTaskInspector({
                   <span className="run-history-meta">
                     {taskStatusLabel(item)} · {formatTimestamp(item.created_at)}
                   </span>
+                  {item.degradation && (
+                    <span className="run-history-degraded">{item.degradation}</span>
+                  )}
                 </span>
               </button>
             ))}
@@ -137,6 +140,14 @@ export function AgentTaskInspector({
                     </span>
                     <h3>{taskStatusLabel(task)}</h3>
                     <p>{task.error || task.status_message}</p>
+                    {task.degradation && (
+                      /* The turn succeeded, so nothing else on this screen says
+                         it did not run the way it was asked to. */
+                      <p className="run-degradation">
+                        <AlertTriangle size={13} />
+                        <span>{task.degradation}</span>
+                      </p>
+                    )}
                   </div>
                 </section>
 
