@@ -576,6 +576,9 @@ pub async fn desktop_remove_team_connection_metadata(
         .remove_saved_connection(&state, &connection_id)
         .await?;
     sessions.forget(&connection_id)?;
+    // Forgetting the connection discards its saved session locally too; the
+    // server row idles out or is revoked from another device.
+    state.remove_session_cookie(&connection_id)?;
     Ok(result)
 }
 

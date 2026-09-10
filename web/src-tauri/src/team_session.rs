@@ -164,6 +164,9 @@ pub struct TeamSessionState {
     certificate_der: Vec<u8>,
     established: Mutex<HashMap<String, EstablishedTeamSession>>,
     cookies: Mutex<HashMap<String, Zeroizing<String>>>,
+    // Serializes verify/exchange/store so two concurrent native requests that
+    // both find a dead session cannot each mint a replacement.
+    renewal: tokio::sync::Mutex<()>,
 }
 
 impl TeamSessionState {
@@ -172,6 +175,7 @@ impl TeamSessionState {
             certificate_der: identity.certificate_der().to_vec(),
             established: Mutex::new(HashMap::new()),
             cookies: Mutex::new(HashMap::new()),
+            renewal: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -732,6 +736,7 @@ impl TeamSessionState {
         health: &TeamHealth,
         protocol: u32,
     ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
+        let _renewal = self.renewal.lock().await;
         let connection_id = connection.connection_id.as_str();
         if let Some(saved) = connections.load_session_cookie(connection_id)? {
             if let Ok(set_cookie) = validate_set_cookie(&saved) {
@@ -1934,6 +1939,7 @@ mod tests {
             certificate_der: Vec::new(),
             established: Mutex::new(HashMap::new()),
             cookies: Mutex::new(HashMap::new()),
+            renewal: tokio::sync::Mutex::new(()),
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1962,6 +1968,7 @@ mod tests {
             certificate_der: Vec::new(),
             established: Mutex::new(HashMap::new()),
             cookies: Mutex::new(HashMap::new()),
+            renewal: tokio::sync::Mutex::new(()),
         };
         for connection_id in ["team-a", "team-b"] {
             state.acquire_cookies().unwrap().insert(
