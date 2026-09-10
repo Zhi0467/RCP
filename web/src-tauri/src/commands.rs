@@ -572,14 +572,14 @@ pub async fn desktop_remove_team_connection_metadata(
         &connection_id,
         cfg!(debug_assertions),
     )?;
-    let result = tunnels
-        .remove_saved_connection(&state, &connection_id)
-        .await?;
-    sessions.forget(&connection_id)?;
     // Forgetting the connection discards its saved session locally too; the
-    // server row idles out or is revoked from another device.
+    // server row idles out or is revoked from another device. The secret goes
+    // first, so a Keychain failure leaves the connection listed and retryable.
     state.remove_session_cookie(&connection_id)?;
-    Ok(result)
+    sessions.forget(&connection_id)?;
+    tunnels
+        .remove_saved_connection(&state, &connection_id)
+        .await
 }
 
 #[tauri::command]
