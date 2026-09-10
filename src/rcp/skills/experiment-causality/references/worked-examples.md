@@ -163,3 +163,42 @@ option. Neither profile may approve a Proposal about an existing ResearchQuestio
 
 This clears this one Decision gate. The task must still admit the main Experiment's execution;
 the Patch does not grant a new run, remove other gates, or change its status to completed.
+
+## 4. Let a smoke test carry its own setup
+
+A smoke Experiment exists to show that infrastructure works end to end. Here the model service
+endpoint, its credential variable, the seed prompt, and the per-cycle budget are still unpinned,
+the image lacks the new lock additions, and no recovery check has run. Those are steps the smoke
+performs, so they belong in its design and interpretation rules. Blocking it on them would be
+self-blocking: an open Blocker reached through `blocked_by` keeps the episode from starting, and
+the Blocker's condition could only be met by running the very Experiment it blocks.
+
+```json
+{
+  "summary": "Plan the recovery smoke with its setup folded into the design.",
+  "ops": [
+    {
+      "op": "create_nodes",
+      "nodes": [
+        {
+          "id": "exp/recovery-smoke",
+          "type": "experiment",
+          "title": "Recovery smoke against the real model service",
+          "objective": "Show that one reduced-budget cycle runs against the real model service and resumes across a domain boundary.",
+          "design": "First pin the service endpoint, credential variable, seed prompt, and per-cycle budget and record them in the run manifest; rebuild the image with the lock additions; then run one cycle and force one resume across a domain boundary.",
+          "expected_outcomes": ["One cycle completes against the real service and the resume replays the same domain state."],
+          "interpretation_rules": [
+            "A failure while pinning or building is a setup fault to repair inside this Experiment, not a new Blocker.",
+            "A credential the run cannot obtain becomes a Blocker whose resolution condition does not name this smoke."
+          ],
+          "completion_criteria": ["Run manifest, cycle log, and resume log are recorded."],
+          "status": "proposed"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The Patch creates no Blocker and no `blocked_by` edge. Only a constraint the run cannot remove
+itself becomes a Blocker, and its `resolution_condition` must not require this smoke to run.

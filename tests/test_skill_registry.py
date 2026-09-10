@@ -20,12 +20,12 @@ def test_official_registry_exposes_workflows_and_skills_with_declared_dependenci
     workflow = registry.package("workflow", "research-graph-audit")
     assert [(item.id, item.version) for item in workflow.dependencies] == [
         ("graph-audit", "3.1.0"),
-        ("experiment-causality", "1.1.0"),
+        ("experiment-causality", "1.2.0"),
         ("evidence-triage", "3.1.0"),
     ]
-    assert workflow.version == "3.1.0"
+    assert workflow.version == "3.2.0"
     assert registry.package("skill", "graph-audit").version == "3.1.0"
-    assert registry.package("skill", "experiment-causality").version == "1.1.0"
+    assert registry.package("skill", "experiment-causality").version == "1.2.0"
     assert registry.package("skill", "evidence-triage").version == "3.1.0"
     assert {item["kind"] for item in registry.catalog()} == {"skill", "workflow"}
 

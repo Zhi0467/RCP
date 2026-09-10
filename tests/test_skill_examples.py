@@ -19,12 +19,12 @@ def _causality_examples() -> list[str]:
     package = registry.package("skill", "experiment-causality")
     path = registry.package_path(package.reference()) / "references" / "worked-examples.md"
     examples = re.findall(r"```json\n(.*?)\n```", path.read_text(encoding="utf-8"), re.DOTALL)
-    assert len(examples) == 3
+    assert len(examples) == 4
     return examples
 
 
 def test_causality_examples_plan_then_observe_without_choosing_the_gate() -> None:
-    planning, results, _choice = _causality_examples()
+    planning, results, _choice, _smoke = _causality_examples()
     state = GraphState(project_truth_scope=["repo"])
 
     for example in (planning, results):
@@ -54,7 +54,7 @@ def test_causality_examples_plan_then_observe_without_choosing_the_gate() -> Non
 
 
 def test_causality_example_choice_requires_orchestrator_authority() -> None:
-    planning, results, choice = _causality_examples()
+    planning, results, choice, _smoke = _causality_examples()
     state = GraphState(project_truth_scope=["repo"])
     for example in (planning, results):
         patch = prepare_agent_patch(
@@ -93,3 +93,21 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
         parse_agent_patch_json(json.dumps(ordinary)), kind="work", run_truth_scope=["repo"]
     )
     assert validate_patch(state, ordinary_patch, ["repo"]).rejected
+
+
+def test_causality_smoke_example_folds_setup_into_the_experiment_without_a_blocker() -> None:
+    *_rest, smoke = _causality_examples()
+    state = GraphState(project_truth_scope=["repo"])
+    patch = prepare_agent_patch(
+        parse_agent_patch_json(smoke), kind="work", run_truth_scope=["repo"]
+    ).model_copy(update={"revision": state.revision + 1})
+    report = validate_patch(state, patch, ["repo"])
+    assert not report.rejected, [message.model_dump() for message in report.messages]
+    state = apply_valid_patch(state, patch)
+
+    assert not any(node.type == "blocker" for node in state.nodes.values())
+    assert not any(edge.relation == "blocked_by" for edge in state.edges.values())
+    experiment = state.nodes["exp/recovery-smoke"]
+    assert experiment.status == "proposed"
+    assert "pin" in experiment.design.lower()
+    assert experiment.interpretation_rules

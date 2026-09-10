@@ -57,6 +57,13 @@ _LOCAL_CAUSAL_CHECK = """Local causal check for this Patch:
 - Once an observation exists, connect Experiment `produces` Evidence, then Evidence `informs`
   Decision or `addresses` Blocker as appropriate. Check edge direction against the actual causal
   story. These edges do not themselves choose the Decision or change the Blocker's status.
+- An Experiment whose objective is to validate infrastructure, integration, or recovery — a smoke
+  test — is itself how that uncertainty gets resolved. Never block it on the state it exists to
+  show: unpinned launch parameters, an unbuilt image, or an unrun check are steps of its own
+  `design`, `expected_outcomes`, and `interpretation_rules`, not a Blocker. An open Blocker reached
+  through `blocked_by` keeps RCP from starting the Experiment, so reserve it for a constraint the
+  run cannot remove itself, such as a missing credential or hardware allocation, with a
+  `resolution_condition` that does not require running the Experiment.
 Example: before a calibration, record the planned comparison and unresolved parameter choice.
 After measurements exist, record their bounded Evidence and its `informs` edge to that choice.
 Apply only changes this task authorizes; in a correction, preserve unaffected operations.
@@ -84,6 +91,13 @@ _BASE_AUTHORING_RULES = """These are methods for authorized graph changes, not a
   this task permits; inspect operational state when that state determines the choice. A downstream
   Experiment governed by the Decision need not finish before that Decision becomes ready. State
   what the choice turns on. Use `revisit` only when new evidence undermines a settled choice.
+- Decision options are the alternatives a human will choose among. Before writing them, enumerate
+  every distinct choice and investigate each with the same care. Specify every option at the same
+  level of detail, as a complete choice a reader could act on alone; never detail one option and
+  pad the list with an underspecified or "leave it open" alternative. Do not encode a preference
+  through option order, length, or wording. Put your leaning and what the choice turns on in
+  `rationale`; if investigation leaves only one viable option, say so there instead of inventing
+  straw alternatives.
 - Base relation endpoints and derived layers:
   epistemic — `has_subquestion` ResearchQuestion->ResearchQuestion; `has_hypothesis`
   ResearchQuestion->Hypothesis; `supports`, `weakens`, `refutes`, and `inconclusive`

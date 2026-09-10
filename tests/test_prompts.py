@@ -127,6 +127,11 @@ def _assert_base_authoring_guidance(contract: str) -> None:
         "A downstream Experiment governed by the Decision need not finish before that Decision "
         "becomes ready" in compact
     )
+    assert "enumerate every distinct choice and investigate each with the same care" in compact
+    assert "Specify every option at the same level of detail" in compact
+    assert "never detail one option and pad the list" in compact
+    assert "Do not encode a preference through option order, length, or wording" in compact
+    assert "say so there instead of inventing straw alternatives" in compact
     assert "amb/" not in contract
     assert "`has_subquestion` ResearchQuestion->ResearchQuestion" in contract
     assert "`tests` Experiment->Hypothesis" in contract
@@ -147,6 +152,9 @@ def _assert_local_causal_check(contract: str) -> None:
     assert "Once an observation exists, connect Experiment `produces` Evidence" in compact
     assert "Evidence `informs` Decision or `addresses` Blocker" in compact
     assert "do not themselves choose the Decision or change the Blocker's status" in compact
+    assert "Never block it on the state it exists to show" in compact
+    assert "keeps RCP from starting the Experiment" in compact
+    assert "`resolution_condition` that does not require running the Experiment" in compact
     assert "Example: before a calibration" in compact
     assert "precursor Experiment, its produced Evidence, and the downstream handoff" not in compact
 
