@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_shell::{
     process::{CommandEvent, TerminatedPayload},
@@ -16,6 +16,13 @@ use tokio::{sync::Notify, time};
 use crate::lifecycle::{DesktopStatus, Health, LaunchOutcome};
 
 const BACKEND_HOST: &str = "127.0.0.1";
+// A failed launch is reported in a modal dialog. The launcher's output can run
+// to hundreds of lines (the dev app rebuilds the frontend first), and a dialog
+// that tall pushes its own button off screen, so the dialog carries only the
+// tail and the full capture goes to a file.
+const LAUNCH_ERROR_MAX_LINES: usize = 12;
+const LAUNCH_ERROR_MAX_BYTES: usize = 1_500;
+const LAUNCH_OUTPUT_FILENAME: &str = "backend-launch-failure.log";
 const BACKEND_PORT: &str = "8421";
 const HEALTH_READY_TIMEOUT: Duration = Duration::from_secs(12);
 // The dev app runs the checkout backend with `--web-assets source`, and that mode
@@ -646,7 +653,12 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
         Err(failure) => {
             let error = match failure {
                 LaunchWaitFailure::Ended => {
-                    launch_error(&stderr, "backend ended before reporting launch status")
+                    let mut error =
+                        launch_error(&stderr, "backend ended before reporting launch status");
+                    if let Some(path) = save_launch_output(app, &stderr) {
+                        error.push_str(&format!("\n\nFull launcher output: {}", path.display()));
+                    }
+                    error
                 }
                 LaunchWaitFailure::TimedOut => {
                     "timed out waiting for the backend launch result".to_string()
@@ -1382,18 +1394,110 @@ fn valid_signal_pid(pid: u32) -> Result<libc::pid_t, String> {
     Ok(pid)
 }
 
+/// Bound a failed launch's captured output to what a dialog can show.
+///
+/// Frontend build progress is relayed as `[stdout]` lines and is noise once a
+/// real diagnostic exists, so it is dropped unless it is all there is. The
+/// result keeps at most the last `LAUNCH_ERROR_MAX_LINES` lines within
+/// `LAUNCH_ERROR_MAX_BYTES`, and says how many earlier lines were left out.
 fn launch_error(stderr: &[u8], fallback: &str) -> String {
-    let detail = String::from_utf8_lossy(stderr).trim().to_string();
-    if detail.is_empty() {
-        fallback.to_string()
+    let detail = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = detail
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let diagnostics: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("[stdout] "))
+        .collect();
+    let chosen = if diagnostics.is_empty() {
+        lines
     } else {
-        format!("{fallback}: {detail}")
+        diagnostics
+    };
+    if chosen.is_empty() {
+        return fallback.to_string();
     }
+    let mut start = chosen.len().saturating_sub(LAUNCH_ERROR_MAX_LINES);
+    while start + 1 < chosen.len()
+        && chosen[start..]
+            .iter()
+            .map(|line| line.len() + 1)
+            .sum::<usize>()
+            > LAUNCH_ERROR_MAX_BYTES
+    {
+        start += 1;
+    }
+    let mut text = chosen[start..].join("\n");
+    if text.len() > LAUNCH_ERROR_MAX_BYTES {
+        let mut cut = LAUNCH_ERROR_MAX_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push('…');
+    }
+    if start > 0 {
+        format!("{fallback}:\n[{start} earlier lines omitted]\n{text}")
+    } else {
+        format!("{fallback}: {text}")
+    }
+}
+
+/// Keep the whole launcher capture where the person can read it; the dialog
+/// names the file. Failing to write it is not a second error worth surfacing.
+fn save_launch_output(app: &AppHandle, output: &[u8]) -> Option<PathBuf> {
+    let directory = app.path().app_log_dir().ok()?;
+    std::fs::create_dir_all(&directory).ok()?;
+    let path = directory.join(LAUNCH_OUTPUT_FILENAME);
+    std::fs::write(&path, output).ok()?;
+    Some(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_error_drops_build_noise_and_keeps_the_diagnostic_tail() {
+        let mut output = String::new();
+        for index in 0..300 {
+            output.push_str(&format!("[stdout] dist/assets/chunk-{index}.js 1.0 kB\n"));
+        }
+        output.push_str("Building the RCP frontend...\nTraceback (most recent call last):\n");
+        output.push_str("RuntimeError: RCP storage schema validation failed\n");
+        let message = launch_error(output.as_bytes(), "backend ended");
+        assert!(!message.contains("[stdout]"));
+        assert!(message.ends_with("RuntimeError: RCP storage schema validation failed"));
+        assert!(message.starts_with("backend ended: Building the RCP frontend..."));
+    }
+
+    #[test]
+    fn launch_error_is_bounded_and_counts_what_it_left_out() {
+        let output = (0..100)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let message = launch_error(output.as_bytes(), "backend ended");
+        assert!(message.contains("[88 earlier lines omitted]"));
+        assert!(message.ends_with("line 99"));
+        assert_eq!(message.lines().count(), LAUNCH_ERROR_MAX_LINES + 2);
+        assert!(message.len() <= LAUNCH_ERROR_MAX_BYTES + 128);
+
+        let long = "x".repeat(10 * LAUNCH_ERROR_MAX_BYTES);
+        let message = launch_error(long.as_bytes(), "backend ended");
+        assert!(message.len() <= LAUNCH_ERROR_MAX_BYTES + 64);
+        assert!(message.ends_with('…'));
+    }
+
+    #[test]
+    fn launch_error_keeps_stdout_when_it_is_all_there_is_and_falls_back_when_empty() {
+        let message = launch_error(b"[stdout] only progress\n", "backend ended");
+        assert_eq!(message, "backend ended: [stdout] only progress");
+        assert_eq!(launch_error(b"  \n", "backend ended"), "backend ended");
+    }
 
     fn launch_outcome(outcome: &str, owned: bool) -> LaunchOutcome {
         LaunchOutcome {
