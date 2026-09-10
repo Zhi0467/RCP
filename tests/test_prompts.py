@@ -155,6 +155,10 @@ def _assert_local_causal_check(contract: str) -> None:
     assert "Never block it on the state it exists to show" in compact
     assert "keeps RCP from starting the Experiment" in compact
     assert "`resolution_condition` that does not require running the Experiment" in compact
+    assert (
+        "put `blocked_by` on the main Experiment, and let the smoke's Evidence `addresses` it"
+        in (compact)
+    )
     assert "Example: before a calibration" in compact
     assert "precursor Experiment, its produced Evidence, and the downstream handoff" not in compact
 

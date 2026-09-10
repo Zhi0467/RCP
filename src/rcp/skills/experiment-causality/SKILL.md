@@ -53,11 +53,16 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
 
 An Experiment whose objective is to validate infrastructure, integration, or recovery is itself
 the resolution path for that uncertainty. Its unpinned parameters, unbuilt images, and unrun checks
-are steps of its own work, not gates. Write them into `design`, `expected_outcomes`, and
+are steps of its own work. Write them into `design`, `expected_outcomes`, and
 `interpretation_rules` so the episode can start and perform them. An open Blocker reached through
-`blocked_by` keeps RCP from starting the Experiment, so reserve `blocked_by` for a constraint the
-run cannot remove itself, such as a credential nobody has granted or a hardware allocation, and
-give that Blocker a `resolution_condition` that does not require running the Experiment.
+`blocked_by` keeps RCP from starting the Experiment, so the smoke itself carries `blocked_by` only
+for a constraint the run cannot remove, such as a credential nobody has granted or a hardware
+allocation, with a `resolution_condition` that does not require running the smoke.
+
+The unverified infrastructure remains a genuine gate for any downstream main Experiment that
+depends on it. Keep that Blocker, connect the main Experiment to it with `blocked_by`, name the
+smoke as the precursor in the Blocker's `resolution_condition`, and connect the smoke's Evidence to
+it with `addresses` once the smoke has run. The gate moves off the precursor, not out of the graph.
 
 ## Check the complete action program
 

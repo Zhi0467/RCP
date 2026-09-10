@@ -95,7 +95,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
     assert validate_patch(state, ordinary_patch, ["repo"]).rejected
 
 
-def test_causality_smoke_example_folds_setup_into_the_experiment_without_a_blocker() -> None:
+def test_causality_smoke_example_gates_only_the_main_experiment() -> None:
     *_rest, smoke = _causality_examples()
     state = GraphState(project_truth_scope=["repo"])
     patch = prepare_agent_patch(
@@ -105,9 +105,13 @@ def test_causality_smoke_example_folds_setup_into_the_experiment_without_a_block
     assert not report.rejected, [message.model_dump() for message in report.messages]
     state = apply_valid_patch(state, patch)
 
-    assert not any(node.type == "blocker" for node in state.nodes.values())
-    assert not any(edge.relation == "blocked_by" for edge in state.edges.values())
-    experiment = state.nodes["exp/recovery-smoke"]
-    assert experiment.status == "proposed"
-    assert "pin" in experiment.design.lower()
-    assert experiment.interpretation_rules
+    blocked = {
+        (edge.source, edge.target) for edge in state.edges.values() if edge.relation == "blocked_by"
+    }
+    assert blocked == {("exp/main-route-matrix", "blk/real-service-unverified")}
+    assert state.nodes["blk/real-service-unverified"].status == "open"
+    assert "exp/recovery-smoke" in state.nodes["blk/real-service-unverified"].resolution_condition
+    smoke_experiment = state.nodes["exp/recovery-smoke"]
+    assert smoke_experiment.status == "proposed"
+    assert "pin" in smoke_experiment.design.lower()
+    assert smoke_experiment.interpretation_rules

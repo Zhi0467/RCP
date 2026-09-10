@@ -60,10 +60,12 @@ _LOCAL_CAUSAL_CHECK = """Local causal check for this Patch:
 - An Experiment whose objective is to validate infrastructure, integration, or recovery — a smoke
   test — is itself how that uncertainty gets resolved. Never block it on the state it exists to
   show: unpinned launch parameters, an unbuilt image, or an unrun check are steps of its own
-  `design`, `expected_outcomes`, and `interpretation_rules`, not a Blocker. An open Blocker reached
-  through `blocked_by` keeps RCP from starting the Experiment, so reserve it for a constraint the
-  run cannot remove itself, such as a missing credential or hardware allocation, with a
-  `resolution_condition` that does not require running the Experiment.
+  `design`, `expected_outcomes`, and `interpretation_rules`. An open Blocker reached through
+  `blocked_by` keeps RCP from starting the Experiment, so the smoke carries that edge only for a
+  constraint the run cannot remove itself, such as a missing credential or hardware allocation,
+  with a `resolution_condition` that does not require running the Experiment. The unverified
+  infrastructure may still gate a downstream main Experiment: keep that Blocker, put `blocked_by`
+  on the main Experiment, and let the smoke's Evidence `addresses` it.
 Example: before a calibration, record the planned comparison and unresolved parameter choice.
 After measurements exist, record their bounded Evidence and its `informs` edge to that choice.
 Apply only changes this task authorizes; in a correction, preserve unaffected operations.
