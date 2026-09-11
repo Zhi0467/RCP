@@ -580,9 +580,32 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         # complete workflow deliberately uses an unprivileged test-owned tree.
         report._read_root_document = lambda path: json.loads(path.read_text())
         report = report.inspect()
+
+        # An unreadable or invalid team address file is a configuration
+        # problem on an otherwise healthy server, never a report that fails
+        # to build; the address is loaded before the overall state is derived.
+        def _invalid_team(path: Path) -> ServerTeamConfig | None:
+            raise ValueError("team.toml is not valid")
+
+        broken = LinuxServerDoctorMachine(
+            layout,
+            config_loader=config_loader,
+            team_loader=_invalid_team,
+            metadata_reader=metadata_reader,
+            control_probe=control_probe,
+            runner=runner,
+            service_identity=(uid, gid),
+            root_identity=(uid, gid),
+        )
+        broken._read_root_document = lambda path: json.loads(path.read_text())
+        broken_report = broken.inspect()
     finally:
         listener.close()
 
+    assert broken_report.overall_state == "problems"
+    assert broken_report.problems == ("team address file is unreadable or invalid",)
+    assert broken_report.team_access_url is None
+    assert report.team_access_url == "https://wth-gpu-01.tail1234.ts.net"
     assert report.overall_state == "healthy", report.problems
     assert report.problems == ()
     assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT

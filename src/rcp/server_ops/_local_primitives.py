@@ -231,6 +231,9 @@ def fsync_file_tree(root: Path) -> None:
             metadata = entry.lstat()
             if stat.S_ISREG(metadata.st_mode):
                 fsync_file(entry)
+            elif stat.S_ISLNK(metadata.st_mode):
+                # A link is durable through its directory entry; it is never followed.
+                continue
             elif not stat.S_ISDIR(metadata.st_mode):
                 raise ValueError("fsync tree contains a non-regular entry")
     for directory in reversed(directories):
@@ -251,7 +254,7 @@ def _tree_directories(root: Path) -> list[Path]:
             metadata = entry.lstat()
             if stat.S_ISDIR(metadata.st_mode):
                 children.append(entry)
-            elif not stat.S_ISREG(metadata.st_mode):
+            elif not stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
                 raise ValueError("fsync tree contains a non-regular entry")
         pending.extend(sorted(children, reverse=True))
     return directories

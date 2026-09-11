@@ -319,9 +319,11 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         )
         files.extend(copied)
         for stage in stages:
+            # An agent's scratch legitimately holds links; a rollback restores the
+            # stage exactly as the run left it, links included (never followed).
             prefix = PurePosixPath("run-stage") / stage.root.name
             _, copied = _snapshot_tree(
-                stage.root, app.joinpath(*prefix.parts), relative_prefix=prefix
+                stage.root, app.joinpath(*prefix.parts), relative_prefix=prefix, keep_links=True
             )
             files.extend(copied)
         with checkpoint_attachment_sets(data_dir / "chat-attachments") as attachments:

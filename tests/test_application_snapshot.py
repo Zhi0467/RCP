@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops.application_snapshot import (
     ApplicationSnapshotPolicy,
     ApplicationSnapshotRefused,
+    _snapshot_tree,
 )
 from rcp.storage.models import (
     ProjectTransferUploadCompleteReceipt,
@@ -257,3 +259,81 @@ def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
 
     with pytest.raises(ApplicationSnapshotRefused, match="unknown, partial, or untyped"):
         coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
+
+
+def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "run-stage" / "chat-1"
+    workspace = stage / "workspace" / "pytest-0"
+    workspace.mkdir(parents=True)
+    (stage / "patch.json").write_text("{}")
+    (workspace / "test_a0").mkdir()
+    (workspace / "test_a0" / "log.txt").write_text("ran")
+    (workspace / "test_acurrent").symlink_to("test_a0")
+    (workspace / "python").symlink_to("/usr/bin/python3")
+    (workspace / "gone").symlink_to("missing")
+    # Leading whitespace is a legal name the supervisor accepts; it is kept.
+    (workspace / " results").mkdir()
+    (workspace / " results" / "latest").symlink_to("../test_a0")
+
+    # Trees RCP writes itself never contain links: a link still refuses them.
+    with pytest.raises(ApplicationSnapshotRefused, match="contains a link"):
+        _snapshot_tree(
+            stage, tmp_path / "refused", relative_prefix=PurePosixPath("run-stage/chat-1")
+        )
+
+    directories, files = _snapshot_tree(
+        stage,
+        tmp_path / "copied",
+        relative_prefix=PurePosixPath("run-stage/chat-1"),
+        keep_links=True,
+    )
+    assert sorted(item.relative_path for item in files) == [
+        "run-stage/chat-1/patch.json",
+        "run-stage/chat-1/workspace/pytest-0/test_a0/log.txt",
+    ]
+    assert "run-stage/chat-1/workspace/pytest-0/test_a0" in directories
+    assert "run-stage/chat-1/workspace/pytest-0/ results" in directories
+    copied = tmp_path / "copied"
+    assert {
+        path.relative_to(copied).as_posix(): os.readlink(path)
+        for path in copied.rglob("*")
+        if path.is_symlink()
+    } == {
+        "workspace/pytest-0/test_acurrent": "test_a0",
+        "workspace/pytest-0/python": "/usr/bin/python3",
+        "workspace/pytest-0/gone": "missing",
+        "workspace/pytest-0/ results/latest": "../test_a0",
+    }
+    # The link text was copied, not what it points at.
+    assert not (copied / "workspace" / "pytest-0" / "gone").exists()
+    assert (copied / "workspace" / "pytest-0" / "gone").is_symlink()
+
+    # A name the supervisor's manifest would reject refuses here, before the
+    # payload is prepared, so a failed checkpoint never blocks the update.
+    odd = tmp_path / "run-stage" / "chat-odd"
+    odd.mkdir(parents=True)
+    (odd / "dir\\name").symlink_to("target")
+    with pytest.raises(ApplicationSnapshotRefused, match="unusable name"):
+        _snapshot_tree(
+            odd,
+            tmp_path / "odd-copied",
+            relative_prefix=PurePosixPath("run-stage/chat-odd"),
+            keep_links=True,
+        )
+
+    # Links count toward the inventory bound like everything else.
+    monkeypatch.setattr("rcp.server_ops.application_snapshot.BACKUP_INVENTORY_MAX_ENTRIES", 40)
+    flood = tmp_path / "run-stage" / "chat-2"
+    flood.mkdir(parents=True)
+    (flood / "target").write_text("x")
+    for index in range(40):
+        (flood / f"link-{index}").symlink_to("target")
+    with pytest.raises(ApplicationSnapshotRefused, match="inventory bound"):
+        _snapshot_tree(
+            flood,
+            tmp_path / "flooded",
+            relative_prefix=PurePosixPath("run-stage/chat-2"),
+            keep_links=True,
+        )

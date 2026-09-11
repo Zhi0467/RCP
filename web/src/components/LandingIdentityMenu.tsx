@@ -802,7 +802,8 @@ export function QrCodeImage({ value, label }: { value: string; label: string }) 
   qr.addData(value);
   qr.make();
   const count = qr.getModuleCount();
-  const margin = 2;
+  // Four modules of quiet zone on every side; scanners expect no less.
+  const margin = 4;
   const size = count + margin * 2;
   let path = "";
   for (let row = 0; row < count; row += 1) {
