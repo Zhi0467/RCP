@@ -77,8 +77,6 @@ class _CodexAppServerTurn(ProviderTurn):
             "--disable",
             "apps",
             "--disable",
-            "multi_agent",
-            "--disable",
             "plugins",
             "--config",
             'web_search="live"',
@@ -335,6 +333,18 @@ class _CodexAppServerTurn(ProviderTurn):
         method: str,
         params: dict[str, object],
     ) -> ProviderRuntimeStep:
+        # App-server multiplexes native subagents on the same connection. Only
+        # the addressed root thread may answer or terminate this RCP turn.
+        thread_id = params.get("threadId")
+        expected_thread = self._thread_id or self._request.session_id
+        if isinstance(thread_id, str) and thread_id != expected_thread:
+            return ProviderRuntimeStep()
+        if (
+            self._turn_id is not None
+            and isinstance(params.get("turnId"), str)
+            and params["turnId"] != self._turn_id
+        ):
+            return ProviderRuntimeStep()
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")
@@ -414,6 +424,7 @@ class _CodexAppServerTurn(ProviderTurn):
             events=(
                 ProviderStreamEvent(
                     event="error",
+                    usage=self._usage,
                     text=(
                         "Codex app-server requested interactive input "
                         f"({method}); RCP stopped the unattended turn."
@@ -449,7 +460,7 @@ def _containment_config(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Codex app-server could not inspect its effective configuration.")
     override: dict[str, object] = {
-        "agents": {"enabled": False},
+        "agents": _native_agents(value.get("agents")),
         "apps": {"_default": {"enabled": False}},
         # Instruction channels. RCP's staged task contract, not ambient AGENTS.md
         # files or user config prose, supplies this turn's instructions.
@@ -482,6 +493,18 @@ def _containment_config(value: object) -> dict[str, object]:
     if value.get("model_instructions_file") is not None:
         override["model_instructions_file"] = None
     return override
+
+
+def _native_agents(configured: object) -> dict[str, object]:
+    """Allow native delegation without loading ambient custom-role instructions."""
+    agents: dict[str, object] = {"enabled": True}
+    if configured is not None and not isinstance(configured, dict):
+        raise ValueError("Codex app-server reported an unsupported agents configuration shape.")
+    if isinstance(configured, dict):
+        for name, role in configured.items():
+            if isinstance(role, dict):
+                agents[name] = {"config_file": None, "description": ""}
+    return agents
 
 
 def _disabled_hooks(configured: object) -> dict[str, object]:

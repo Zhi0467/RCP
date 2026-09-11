@@ -562,3 +562,78 @@ def test_app_server_resume_failure_does_not_bill_previous_turn(tmp_path: Path):
     result = turn.receive_line(json.dumps({"id": 4, "error": {"message": "start failed"}}))
     assert result.complete
     assert all(event.usage is None for event in result.events)
+
+
+def test_native_subagent_events_cannot_answer_or_finish_parent(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    turn.receive_line(_usage_notification({"inputTokens": 300, "outputTokens": 30}))
+    for method, extra in (
+        ("item/completed", {"item": {"type": "agentMessage", "text": "CHILD_ANSWER"}}),
+        ("error", {"willRetry": False, "error": {"message": "child failed"}}),
+        ("turn/completed", {"turn": {"id": "child-turn", "status": "completed"}}),
+        ("thread/tokenUsage/updated", {"tokenUsage": {"total": {"inputTokens": 900}}}),
+    ):
+        step = turn.receive_line(
+            json.dumps(
+                {
+                    "method": method,
+                    "params": {"threadId": "child-thread", "turnId": "child-turn", **extra},
+                }
+            )
+        )
+        assert not step.complete
+        assert not step.events
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {"id": "active-turn", "status": "completed"},
+                },
+            }
+        )
+    )
+    assert step.complete
+    assert step.events[0].usage.processed_input_tokens == 300
+
+
+def test_interactive_request_retains_observed_usage(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    turn.receive_line(_usage_notification({"inputTokens": 300, "outputTokens": 30}))
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "id": 99,
+                "method": "item/tool/requestUserInput",
+                "params": {"threadId": "accounting-thread", "turnId": "active-turn"},
+            }
+        )
+    )
+    assert step.complete
+    assert step.events[0].event == "error"
+    assert step.events[0].usage.processed_input_tokens == 300
+    assert json.loads(step.outgoing[0])["error"]["code"] == -32601
+
+
+def test_native_agents_enabled_without_ambient_role_files(tmp_path: Path):
+    from rcp.agents.codex_app_server import _containment_config
+
+    turn = _accounting_turn(tmp_path, resumed=False)
+    assert "multi_agent" not in turn.command
+    assert _containment_config(
+        {
+            "agents": {
+                "enabled": False,
+                "custom": {
+                    "config_file": "/ambient/role.toml",
+                    "description": "Ambient instructions",
+                },
+            }
+        }
+    )["agents"] == {
+        "enabled": True,
+        "custom": {"config_file": None, "description": ""},
+    }

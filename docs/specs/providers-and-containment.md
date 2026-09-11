@@ -63,6 +63,13 @@ other active turn ids cannot contribute usage. A failed terminal turn retains
 its last observed usage. New reports use `codex.app-server.turn.v2`; existing v1
 records remain historical observations and are not guessed or rewritten.
 
+Native Codex subagents are available in both runtimes. App-server clears ambient
+custom-role files and instructions while retaining native delegation and the
+parent's provider-enforced permissions. Child notifications cannot supply the
+parent's answer or end its turn. Codex usage totals cover the parent agent only;
+neither runtime's parent summary includes descendant usage. RCP does not crawl
+Codex's private transcript/database formats to reconstruct that missing total.
+
 The preferred runtime is chosen anew from the current project profile for every
 RCP task invocation, including a continuation of an existing native session. A
 native session is not permanently bound to the runtime that created it. RCP
