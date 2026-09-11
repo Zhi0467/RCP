@@ -25,7 +25,7 @@ from rcp.core.models import Patch
 from rcp.projects import ProjectCatalog
 from rcp.runs.shared import _stage_context_paths
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, StateUnavailable, prepare_state_workspace
 from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 from tests.helpers import append_fixture_patch
 
@@ -277,6 +277,65 @@ def test_unopened_remote_inventory_requires_readable_canonical_mirror(
     monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
     with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
         ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
+
+
+def test_remote_manifest_validation_preserves_literal_trailing_slash(
+    manifest: Manifest, tmp_path: Path, monkeypatch
+) -> None:
+    bootstrap_path = tmp_path / "remote-bootstrap.toml"
+    state_path = manifest.repository_map["repo-a"].path
+    bootstrap_path.write_text(
+        manifest.path.read_text()
+        .replace('host = ""', 'host = "compute.example"')
+        .replace(f'path = "{state_path}"', f'path = "{state_path}/"')
+    )
+    bootstrap = load_manifest(bootstrap_path)
+    data_dir = tmp_path / "data"
+    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    workspace.root.mkdir(parents=True)
+    (workspace.root / "manifest.toml").write_text(bootstrap_path.read_text())
+    monkeypatch.setattr(SSHStateWorkspace, "refresh", lambda _self: True)
+
+    canonical, _workspace = prepare_state_workspace(bootstrap, data_dir)
+    assert canonical.repository_map["repo-a"].path == f"{state_path}/"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    _register_catalog_project(store, bootstrap, project_id="remote-project")
+    inventory = ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
+    assert next(root.path for root in inventory if root.alias == "repo-a") == f"{state_path}/"
+
+
+@pytest.mark.parametrize("opened", [False, True])
+@pytest.mark.parametrize("mismatch", ["name", "host", "path"])
+def test_remote_inventory_rejects_valid_manifest_for_different_canonical_home(
+    manifest: Manifest, tmp_path: Path, monkeypatch, opened: bool, mismatch: str
+) -> None:
+    bootstrap = tmp_path / "remote-bootstrap.toml"
+    bootstrap.write_text(manifest.path.read_text().replace('host = ""', 'host = "compute.example"'))
+    remote = load_manifest(bootstrap)
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    _register_catalog_project(store, remote, project_id="remote-project")
+    workspace = state_workspace_for_probe(remote, data_dir)
+    workspace.root.mkdir(parents=True)
+    mirror = workspace.root / "manifest.toml"
+    mirror.write_text(bootstrap.read_text())
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    if opened:
+        catalog._services["remote-project"] = SimpleNamespace(manifest=load_manifest(mirror))
+    original, replacement = {
+        "name": ('name = "test-paper"', 'name = "different-project"'),
+        "host": ('host = "compute.example"', 'host = "other.example"'),
+        "path": (str(remote.repository_map["repo-a"].path), str(tmp_path / "other-root")),
+    }[mismatch]
+    mirror.write_text(mirror.read_text().replace(original, replacement))
+    load_manifest(mirror)  # Valid TOML and schema are insufficient ownership proof.
+
+    def no_network(_self):
+        raise AssertionError("Repository inventory must not refresh remote projects")
+
+    monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
+    with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
+        catalog.repository_ownership_inventory()
 
 
 def test_catalog_repository_inventory_fails_closed_for_unavailable_open_manifest(

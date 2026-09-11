@@ -130,7 +130,8 @@ Only RCP derives the scope from the manifest, project catalog, repository
 pointers, task/episode lineage, and run scope. A browser, prompt, request body,
 provider, or staged file cannot add a root. Scope construction requires a
 complete inventory of every registered project manifest. Remote projects supply
-their canonical workspace mirror, including before they are opened. Local
+their canonical workspace mirror, validated against the registered project and
+state location, including before they are opened. Local
 projects use their opened canonical manifest or their unopened registration
 manifest. If a required file is unavailable or invalid, the
 Work-like scope and launch fail closed. The existing project workspace lifecycle

@@ -88,7 +88,11 @@ from rcp.transport import (
     StateWorkspace,
     prepare_state_workspace,
 )
-from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
+from rcp.transport.state import (
+    SSHStateWorkspace,
+    load_remote_workspace_manifest,
+    state_workspace_for_probe,
+)
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, AgentTaskRequest
@@ -1726,13 +1730,14 @@ class ProjectCatalog:
             with self._services_lock:
                 service = self._services.get(record.project_id)
             try:
-                manifest = load_manifest(
-                    service.manifest.path if service is not None else record.locator
-                )
-                if service is None:
-                    workspace = state_workspace_for_probe(manifest, self.data_dir)
-                    if workspace.remote:
-                        manifest = load_manifest(workspace.root / "manifest.toml")
+                bootstrap = load_manifest(record.locator)
+                workspace = state_workspace_for_probe(bootstrap, self.data_dir)
+                if isinstance(workspace, SSHStateWorkspace):
+                    manifest = load_remote_workspace_manifest(bootstrap, workspace)
+                else:
+                    manifest = (
+                        load_manifest(service.manifest.path) if service is not None else bootstrap
+                    )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "
