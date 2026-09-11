@@ -201,8 +201,11 @@ def _set_private_directory_modes(root: Path) -> None:
         current_path.chmod(_DIRECTORY_MODE)
         for name in directory_names:
             path = current_path / name
+            if path.is_symlink():
+                # A preserved stage link to a directory; nothing is rebuilt through it.
+                continue
             metadata = path.lstat()
-            if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+            if not stat.S_ISDIR(metadata.st_mode):
                 raise ApplicationSnapshotRefused("A rebuilt checkpoint directory is unsafe.")
 
 
@@ -211,8 +214,9 @@ def _snapshot_tree(
     destination: Path,
     *,
     relative_prefix: PurePosixPath,
+    keep_links: bool = False,
 ) -> tuple[tuple[str, ...], list[ApplicationSnapshotFile]]:
-    initial = _tree_inventory(source)
+    initial = _tree_inventory(source, keep_links=keep_links)
     destination.mkdir(mode=_DIRECTORY_MODE, parents=True)
     for relative in initial[0]:
         destination.joinpath(*PurePosixPath(relative).parts).mkdir(
@@ -229,7 +233,10 @@ def _snapshot_tree(
             restore_mode=signature[-1],
         )
         files.append(copied)
-    if _tree_inventory(source) != initial:
+    for relative, target in initial[2]:
+        # Recreated by its text alone: the checkpoint never reads through a link.
+        os.symlink(target, destination.joinpath(*PurePosixPath(relative).parts))
+    if _tree_inventory(source, keep_links=keep_links) != initial:
         raise ApplicationSnapshotRefused("A recovery-critical tree changed during checkpointing.")
     directories: set[str] = set()
     for path in (relative_prefix, *(relative_prefix / path for path in initial[0])):
@@ -242,23 +249,47 @@ def _snapshot_tree(
 
 def _tree_inventory(
     root: Path,
-) -> tuple[tuple[str, ...], tuple[tuple[str, tuple[int, ...]], ...]]:
+    *,
+    keep_links: bool = False,
+) -> tuple[
+    tuple[str, ...],
+    tuple[tuple[str, tuple[int, ...]], ...],
+    tuple[tuple[str, str], ...],
+]:
+    """Inventory one tree's directories, regular files, and (optionally) links.
+
+    Trees RCP writes itself never contain links, so a link refuses them. A
+    retained run stage is written by an agent, whose scratch legitimately holds
+    links (pytest ``*current``, a virtual environment's ``bin/python``); with
+    ``keep_links`` each is recorded by its text and recreated verbatim, never
+    followed, so a rollback restores the stage exactly as the run left it.
+    """
+
     if not root.is_dir() or root.is_symlink():
         raise ApplicationSnapshotRefused("A recovery-critical root is not an ordinary directory.")
     directories: list[str] = []
     files: list[tuple[str, tuple[int, ...]]] = []
+    links: list[tuple[str, str]] = []
     for current, directory_names, file_names in os.walk(root, followlinks=False):
         current_path = Path(current)
         directory_names.sort()
         file_names.sort()
         for name in directory_names:
             path = current_path / name
+            relative = _stage_relative_path(path, root)
+            if path.is_symlink() and keep_links:
+                links.append((relative, _link_text(path, root)))
+                continue
             metadata = path.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused("A recovery-critical tree contains a link.")
-            directories.append(path.relative_to(root).as_posix())
+            directories.append(relative)
         for name in file_names:
             path = current_path / name
+            relative = _stage_relative_path(path, root)
+            if path.is_symlink() and keep_links:
+                links.append((relative, _link_text(path, root)))
+                continue
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused(
@@ -266,7 +297,7 @@ def _tree_inventory(
                 )
             files.append(
                 (
-                    path.relative_to(root).as_posix(),
+                    relative,
                     (
                         metadata.st_dev,
                         metadata.st_ino,
@@ -277,11 +308,49 @@ def _tree_inventory(
                     ),
                 )
             )
-        if len(directories) + len(files) > BACKUP_INVENTORY_MAX_ENTRIES:
+        if len(directories) + len(files) + len(links) > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ApplicationSnapshotRefused(
                 "A recovery-critical tree exceeds its inventory bound."
             )
-    return tuple(directories), tuple(files)
+    return tuple(directories), tuple(files), tuple(links)
+
+
+_LINK_TEXT_MAX_BYTES = 4096
+
+
+def _stage_relative_path(path: Path, root: Path) -> str:
+    """Name one stage entry the way the supervisor's checkpoint manifest requires.
+
+    Exactly the supervisor's constraints and no more: an agent may legally name
+    a directory with leading whitespace, but a backslash or a control character
+    would make checkpoint creation fail after the payload was prepared, so such
+    an entry refuses here instead.
+    """
+    relative = path.relative_to(root).as_posix()
+    if (
+        not relative
+        or len(relative.encode()) > 4096
+        or any(ord(character) < 32 for character in relative)
+        or "\\" in relative
+        or str(PurePosixPath(relative)) != relative
+    ):
+        raise ApplicationSnapshotRefused(
+            f"A recovery stage entry has an unusable name: {relative!r}"
+        )
+    return relative
+
+
+def _link_text(path: Path, root: Path) -> str:
+    target = os.readlink(path)
+    if (
+        not target
+        or len(target.encode()) > _LINK_TEXT_MAX_BYTES
+        or any(ord(c) < 32 for c in target)
+    ):
+        raise ApplicationSnapshotRefused(
+            f"A recovery stage link has an unusable target: {path.relative_to(root).as_posix()}"
+        )
+    return target
 
 
 def _copy_declared_file(
