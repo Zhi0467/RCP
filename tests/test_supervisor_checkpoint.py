@@ -38,13 +38,14 @@ def _case(tmp_path: Path):
         connection.execute("INSERT INTO observations VALUES ('before migration')")
     database.chmod(0o600)
     _write(live_data / "run-stage" / "retained" / "runner", b"retained stage\n", 0o700)
+    (live_data / "run-stage" / "retained" / "current").symlink_to("runner")
     _write(live_research / "patches" / "000001.json", b'{"revision":1}\n')
     _directory(live_research / "facts")
     payload_data = tmp_path / "prepared" / "data"
     payload_research = tmp_path / "prepared" / "research"
     _directory(payload_data.parent)
-    shutil.copytree(live_data, payload_data)
-    shutil.copytree(live_research, payload_research)
+    shutil.copytree(live_data, payload_data, symlinks=True)
+    shutil.copytree(live_research, payload_research, symlinks=True)
     _directory(tmp_path / "checkpoints")
     roots = (
         checkpoint.SnapshotRoot(live=live_data, payload=payload_data),
@@ -77,7 +78,9 @@ def _assert_restored(roots) -> None:
             actual = root.live / relative
             expected = root.payload / relative
             assert actual.stat().st_uid == os.geteuid()
-            if expected.is_dir():
+            if expected.is_symlink():
+                assert actual.is_symlink() and os.readlink(actual) == os.readlink(expected)
+            elif expected.is_dir():
                 assert actual.is_dir() and not actual.is_symlink()
                 assert stat.S_IMODE(actual.stat().st_mode) == 0o700
             else:
@@ -197,7 +200,9 @@ def test_checkpoint_detects_changed_payload_and_wrong_manifest_hash(tmp_path: Pa
         checkpoint.restore_checkpoint(saved)
 
 
-@pytest.mark.parametrize("invalid", ["unknown-field", "list-kind", "zero-mode"])
+@pytest.mark.parametrize(
+    "invalid", ["unknown-field", "list-kind", "zero-mode", "link-size", "link-target"]
+)
 def test_checkpoint_refuses_invalid_manifest_even_with_matching_hash(
     tmp_path: Path, invalid: str
 ) -> None:
@@ -206,6 +211,12 @@ def test_checkpoint_refuses_invalid_manifest_even_with_matching_hash(
     document = json.loads(manifest.read_bytes())
     if invalid == "unknown-field":
         document["unknown-contract-field"] = True
+    elif invalid.startswith("link-"):
+        entry = next(item for item in document["roots"][0]["entries"] if item["kind"] == "symlink")
+        if invalid == "link-size":
+            entry["size"] = 0
+        else:
+            entry["target"] = "bad\x00target"
     else:
         entry = next(item for item in document["roots"][0]["entries"] if item["kind"] == "file")
         entry["kind" if invalid == "list-kind" else "mode"] = [] if invalid == "list-kind" else 0
@@ -253,7 +264,53 @@ def test_restore_refuses_unknown_or_malformed_journal(
     assert (roots[1].live / "candidate-only").read_bytes() == b"candidate graph side effect\n"
 
 
-@pytest.mark.parametrize("unsafe", ["symlink", "dangling-link", "fifo", "socket", "hardlink"])
+def test_checkpoint_keeps_payload_links_by_text_and_never_follows_them(tmp_path: Path) -> None:
+    live = _directory(tmp_path / "live")
+    payload = _directory(tmp_path / "payload")
+    outside = tmp_path / "outside"
+    _write(outside, b"outside authority")
+    _write(payload / "stage" / "log.txt", b"ran\n")
+    links = {
+        "stage/current": "log.txt",  # relative, inside the stage
+        "stage/python": "/usr/bin/python3",  # absolute, an environment pointer
+        "stage/gone": "missing-target",  # dangling
+        "stage/escape": str(outside),  # points outside every root
+    }
+    for relative, target in links.items():
+        (payload / relative).symlink_to(target)
+
+    saved = checkpoint.create_checkpoint(
+        tmp_path / "checkpoint",
+        (checkpoint.SnapshotRoot(live, payload),),
+        boundary_sha256="b" * 64,
+    )
+    (manifest,) = saved.directory.glob("*.json")
+    entries = json.loads(manifest.read_bytes())["roots"][0]["entries"]
+    assert {entry["path"]: entry["target"] for entry in entries if entry["kind"] == "symlink"} == (
+        links
+    )
+    stored = saved.directory / "payload" / "0"
+    assert {
+        p.relative_to(stored).as_posix(): os.readlink(p)
+        for p in stored.rglob("*")
+        if p.is_symlink()
+    } == links
+    assert outside.read_bytes() == b"outside authority"
+
+    _write(live / "stage" / "candidate.txt", b"candidate side effect\n")
+    (live / "stage").mkdir(exist_ok=True)
+    (live / "stage" / "current").symlink_to("candidate.txt")
+    checkpoint.restore_checkpoint(saved)
+    restored = {
+        p.relative_to(live).as_posix(): os.readlink(p) for p in live.rglob("*") if p.is_symlink()
+    }
+    assert restored == links
+    assert not (live / "stage" / "candidate.txt").exists()
+    assert (live / "stage" / "log.txt").read_bytes() == b"ran\n"
+    assert outside.read_bytes() == b"outside authority"
+
+
+@pytest.mark.parametrize("unsafe", ["fifo", "socket", "hardlink"])
 def test_checkpoint_refuses_unsafe_prepared_payload_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
 ) -> None:
@@ -261,12 +318,7 @@ def test_checkpoint_refuses_unsafe_prepared_payload_entries(
     payload = _directory(tmp_path / "payload")
     target = payload / "unsafe"
     listener = None
-    if unsafe in {"symlink", "dangling-link"}:
-        outside = tmp_path / "outside"
-        if unsafe == "symlink":
-            _write(outside, b"outside authority")
-        target.symlink_to(outside)
-    elif unsafe == "fifo":
+    if unsafe == "fifo":
         os.mkfifo(target)
     elif unsafe == "socket":
         listener = socket.socket(socket.AF_UNIX)

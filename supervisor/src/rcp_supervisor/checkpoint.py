@@ -173,6 +173,12 @@ def _inventory(
                     _directory(child)
                     result.append({"path": relative, "kind": "directory"})
                     pending.append(child)
+                elif stat.S_ISLNK(info.st_mode):
+                    # A link is inventory by its text alone; nothing here follows it.
+                    target = os.readlink(child)
+                    if not _valid_link_target(target):
+                        _fail("A checkpoint link target is invalid.")
+                    result.append({"path": relative, "kind": "symlink", "target": target})
                 else:
                     digest, length, mode = _file_hash(child, max_bytes=max_bytes - size)
                     size += length
@@ -248,6 +254,15 @@ def _read_json(path: Path) -> tuple[dict, str]:
     return value, hashlib.sha256(payload).hexdigest()
 
 
+def _valid_link_target(target: object) -> bool:
+    return (
+        isinstance(target, str)
+        and 0 < len(target.encode()) <= 4096
+        and not any(ord(c) < 32 for c in target)
+        and "\\" not in target
+    )
+
+
 def _validate_entries(entries: object) -> None:
     if not isinstance(entries, list) or len(entries) > MAX_CHECKPOINT_ENTRIES:
         _fail("Checkpoint entries are missing or exceed the limit.")
@@ -255,11 +270,17 @@ def _validate_entries(entries: object) -> None:
     directories = {"."}
     total = 0
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("kind") not in ("file", "directory"):
+        if not isinstance(entry, dict) or entry.get("kind") not in (
+            "file",
+            "directory",
+            "symlink",
+        ):
             _fail("Checkpoint entry type is unsupported.")
         names = {"path", "kind"}
         if entry["kind"] == "file":
             names |= {"sha256", "size", "mode"}
+        elif entry["kind"] == "symlink":
+            names |= {"target"}
         if not _keys(entry, names):
             _fail("Checkpoint entry fields are unsupported.")
         relative = entry["path"]
@@ -284,6 +305,9 @@ def _validate_entries(entries: object) -> None:
         previous = relative
         if entry["kind"] == "directory":
             directories.add(relative)
+        elif entry["kind"] == "symlink":
+            if not _valid_link_target(entry["target"]):
+                _fail("Checkpoint link target is invalid.")
         else:
             if (
                 not _digest(entry["sha256"])
@@ -322,6 +346,11 @@ def _copy_tree(source: Path, destination: Path, entries: list[dict], *, stored: 
             target.mkdir(mode=0o700)
             continue
         origin = source / entry["path"]
+        if entry["kind"] == "symlink":
+            if not os.path.islink(origin) or os.readlink(origin) != entry["target"]:
+                _fail("A checkpoint copy source differs from its verified inventory.")
+            os.symlink(entry["target"], target)
+            continue
         source_fd = os.open(origin, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(source_fd, "rb") as reader, target.open("xb") as writer:
             info = os.fstat(reader.fileno())

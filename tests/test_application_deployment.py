@@ -73,6 +73,10 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     captured, tmp_path: Path
 ) -> None:
     request, state, _metadata = captured
+    # An agent run left links in its stage: one inside the stage, one to the host.
+    stage = Path(state["stage"])
+    (stage / "current").symlink_to("retained.txt")
+    (stage / "python").symlink_to("/usr/bin/python3")
     # The canonical graph file names remain owned by the app; compare its whole
     # prepared .research tree and the retained payload after exact replacement.
     prepared = prepare(request)
@@ -95,9 +99,14 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
         connection.execute("CREATE TABLE candidate_only (value TEXT)")
     (Path(state["research"]) / "candidate-only").write_text("discarded candidate state")
     (Path(state["stage"]) / "retained.txt").write_text("candidate altered")
+    (stage / "current").unlink()
+    (stage / "python").unlink()
+    (stage / "python").symlink_to("/usr/bin/python3.99")
     restore_checkpoint(checkpoint)
     assert not (Path(state["research"]) / "candidate-only").exists()
     assert (Path(state["stage"]) / "retained.txt").read_text() != "candidate altered"
+    assert os.readlink(stage / "current") == "retained.txt"
+    assert os.readlink(stage / "python") == "/usr/bin/python3"
     restored = AppStore(data / "rcp.sqlite3")
     assert restored.authenticate_team_member_token(state["token"]).user_id == state["member_id"]
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
