@@ -55,6 +55,21 @@ Codex, so a local app-server-created conversation can appear in Codex Desktop.
 That visibility is provider-owned inspection; RCP does not order, take over, or
 coordinate Desktop tasks.
 
+App-server usage counts the change in `tokenUsage.total` from the same thread's
+pre-turn resume snapshot (zero for a fresh thread) to the active turn's final
+snapshot. `last` covers only one model response, not a whole agent turn. Repeated
+snapshots replace the current total; they are never summed. Other threads and
+other active turn ids cannot contribute usage. A failed terminal turn retains
+its last observed usage. New reports use `codex.app-server.turn.v2`; existing v1
+records remain historical observations and are not guessed or rewritten.
+
+Native Codex subagents are available in both runtimes. App-server clears ambient
+custom-role files and instructions while retaining native delegation and the
+parent's provider-enforced permissions. Child notifications cannot supply the
+parent's answer or end its turn. Codex usage totals cover the parent agent only;
+neither runtime's parent summary includes descendant usage. RCP does not crawl
+Codex's private transcript/database formats to reconstruct that missing total.
+
 The preferred runtime is chosen anew from the current project profile for every
 RCP task invocation, including a continuation of an existing native session. A
 native session is not permanently bound to the runtime that created it. RCP

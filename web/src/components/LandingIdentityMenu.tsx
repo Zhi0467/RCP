@@ -341,7 +341,12 @@ export function TeamDevicePairingCard({
       {pairing.connect_url ? (
         <>
           <p>
-            Scan this with the phone's camera, or open{" "}
+            The other device must be on the team's Tailscale network first: install Tailscale, sign
+            in, and accept the share of this server from the operator. Until then this address does
+            not resolve.
+          </p>
+          <p>
+            Then scan this with the phone's camera, or open{" "}
             <strong>{pairing.connect_url.split("/#")[0]}</strong> on the other device, choose{" "}
             <strong>Connect this device</strong>, and enter the code with a name for the device.
           </p>
