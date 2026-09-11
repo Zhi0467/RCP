@@ -38,6 +38,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/team/invitations/{invitation_id}/revoke"),
     (("POST",), "/api/team/credential/rotate"),
     (("POST",), "/api/team/credential/revoke"),
+    (("GET",), "/api/team/space"),
     (("PATCH",), "/api/team/space"),
     (("GET",), "/api/projects"),
     (("GET",), "/api/episodes"),
@@ -302,6 +303,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "revoke_team_session": "src/rcp/api/team.py",
     "update_identity": "src/rcp/api/team.py",
     "update_project_settings": "src/rcp/api/project_state.py",
+    "team_space": "src/rcp/api/team.py",
     "update_team_space": "src/rcp/api/team.py",
     "upload_chat_attachment": "src/rcp/api/chats.py",
     "cancel_project_provisioning_request": "src/rcp/api/project_provisioning.py",
@@ -334,15 +336,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 140
-    assert len(_FROZEN_ROUTE_INVENTORY) == 140
+    assert len(entries) == 141
+    assert len(_FROZEN_ROUTE_INVENTORY) == 141
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 136
+    assert sum(isinstance(route, APIRoute) for route in routes) == 137
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -357,5 +359,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 128
+    assert len(observed) == 129
     assert observed == _HANDLER_MODULE_MAP

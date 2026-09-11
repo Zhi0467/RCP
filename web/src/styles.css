@@ -805,6 +805,14 @@ button:disabled {
   font-size: 10px;
   font-weight: 700;
 }
+.landing-team-qr {
+  display: block;
+  width: 168px;
+  height: 168px;
+  margin: 0.25rem auto 0.5rem;
+  border-radius: 6px;
+}
+
 .landing-team-pairing {
   display: grid;
   gap: 8px;

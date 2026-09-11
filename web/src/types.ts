@@ -650,6 +650,7 @@ export interface TeamDevicePairing {
   pairing_id: string;
   code: string;
   expires_at: string;
+  connect_url: string | null;
 }
 
 export type TeamDevicePairingState = "waiting" | "consumed" | "expired" | "revoked" | "locked";

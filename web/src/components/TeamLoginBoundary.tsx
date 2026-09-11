@@ -1,6 +1,7 @@
 import { LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { ApiError } from "../api";
+import { initialPairingCode } from "../pairingLink";
 
 type SignInMode = "pair" | "token";
 
@@ -9,6 +10,7 @@ interface Props {
   onAuthenticate: (token: string) => Promise<void>;
   onPair: (code: string, label: string) => Promise<void>;
   initialMode?: SignInMode;
+  initialCode?: string | null;
 }
 
 export function TeamLoginBoundary({
@@ -16,10 +18,11 @@ export function TeamLoginBoundary({
   onAuthenticate,
   onPair,
   initialMode = "pair",
+  initialCode = initialPairingCode,
 }: Props) {
-  const [mode, setMode] = useState<SignInMode>(initialMode);
+  const [mode, setMode] = useState<SignInMode>(initialCode ? "pair" : initialMode);
   const [token, setToken] = useState("");
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(initialCode ?? "");
   const [label, setLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -338,7 +338,13 @@ and all non-deployment machine operations retain their concrete application
 owners.
 
 Installed config schema 3 has `[release] followed = "stable"` and an optional
-explicit `pin = "vX.Y.Z"`. Stable is the newest non-prerelease GitHub Release;
+explicit `pin = "vX.Y.Z"`. The optional team address is a separate document,
+`/etc/rcp/team.toml` (`access_url = "https://…"`, same root:rcp 0640 rules),
+so the strict schema-3 file never grows a field a pinned older release would
+reject; it names the one https origin members' own devices open, is
+operator-set and read-only to members through the team API, and doctor reports
+it as `team_access_url`, naming the file as a problem when it is unreadable or
+invalid. Stable is the newest non-prerelease GitHub Release;
 prereleases, missing assets, unsupported selectors, altered hashes, and
 inconsistent wheel/manifest identities refuse without choosing another source.
 The release metadata binds the full commit to the wheel's short commit suffix.

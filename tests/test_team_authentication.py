@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -21,12 +22,14 @@ from rcp.limits import (
     TEAM_SESSION_IDLE_DAYS,
     TEAM_SESSION_LABEL_MAX_LENGTH,
 )
+from rcp.server_ops.config import ServerTeamConfig, render_team_access_config
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     ProjectRecord,
     TeamAuthenticationError,
+    normalize_space_access_url,
 )
 
 
@@ -828,7 +831,7 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
 
     issued = desktop.post("/api/team/devices/pairings", json={})
     assert issued.status_code == 200
-    assert set(issued.json()) == {"pairing_id", "code", "expires_at"}
+    assert set(issued.json()) == {"pairing_id", "code", "expires_at", "connect_url"}
     code = issued.json()["code"]
     pairing_id = issued.json()["pairing_id"]
     assert alice_token not in issued.text
@@ -1237,7 +1240,7 @@ def test_team_members_see_only_their_invitations_and_cannot_target_credentials(
         bob_invitation["invitation"]["invitation_id"]
     }
     renamed = bob_client.patch("/api/team/space", json={"name": "Renamed by Bob"})
-    assert renamed.json() == {"space_name": "Renamed by Bob"}
+    assert renamed.json() == {"space_name": "Renamed by Bob", "access_url": None}
     assert alice_client.get("/api/identity").json()["space_name"] == "Renamed by Bob"
 
     rotated = alice_client.post("/api/team/credential/rotate", json={})
@@ -1311,3 +1314,95 @@ def test_personal_space_keeps_its_local_owner_without_team_authentication(tmp_pa
         assert client.post(path, json=body).status_code == 404
     assert client.get("/api/team/sessions").status_code == 404
     assert app.state.background_tasks.store.local_owner == owner
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://Lab-Server.tail1234.ts.net", "https://lab-server.tail1234.ts.net"),
+        (" https://lab.example.org/ ", "https://lab.example.org"),
+        ("https://lab.example.org:8443", "https://lab.example.org:8443"),
+        ("https://[2001:DB8::1]:8443/", "https://[2001:db8::1]:8443"),
+        ("https://[fd7a:115c:a1e0::c201:27cb]", "https://[fd7a:115c:a1e0::c201:27cb]"),
+    ],
+)
+def test_access_addresses_normalize_to_one_https_origin(raw, expected) -> None:
+    assert normalize_space_access_url(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "http://lab.example.org",
+        "https://user:secret@lab.example.org",
+        "https://lab.example.org/team",
+        "https://lab.example.org/?x=1",
+        "https://lab.example.org/#pair",
+        "lab.example.org",
+        "https://" + "a" * 200 + ".org",
+        "https://lab example.org",
+        "https://lab.example.org\\extra",
+        "https://lab_server.example.org",
+        "https://-lab.example.org",
+        "https://999.1.1.1",
+        "https://[2001:db8::zz]",
+        "https://lab.example.org:99999",
+    ],
+)
+def test_access_addresses_reject_anything_but_an_https_origin(raw) -> None:
+    with pytest.raises(ValueError):
+        normalize_space_access_url(raw)
+
+
+def test_the_access_address_is_operator_set_read_only_and_links_codes(
+    tmp_path, monkeypatch
+) -> None:
+    store, _, _alice, alice_token = _claimed_team(tmp_path)
+    app = create_app(data_dir=tmp_path)
+    desktop = TestClient(app, base_url="https://testserver")
+    assert (
+        desktop.post("/api/team/session/exchange", json={"token": alice_token}).status_code == 200
+    )
+
+    monkeypatch.delenv("RCP_TEAM_ACCESS_URL", raising=False)
+    monkeypatch.setattr("rcp.team_access.INSTALLED_TEAM_CONFIG_PATH", tmp_path / "team.toml")
+    assert desktop.get("/api/team/space").json() == {"space_name": "Team Lab", "access_url": None}
+    assert desktop.post("/api/team/devices/pairings", json={}).json()["connect_url"] is None
+    # Members cannot set it; the operator does, in the server configuration.
+    refused = desktop.patch("/api/team/space", json={"access_url": "https://lab.ts.net"})
+    assert refused.status_code == 422
+
+    monkeypatch.setenv("RCP_TEAM_ACCESS_URL", "https://Lab.tail1234.ts.net/")
+    assert desktop.get("/api/team/space").json() == {
+        "space_name": "Team Lab",
+        "access_url": "https://lab.tail1234.ts.net",
+    }
+    issued = desktop.post("/api/team/devices/pairings", json={}).json()
+    assert issued["connect_url"] == f"https://lab.tail1234.ts.net/#pair={issued['code']}"
+    renamed = desktop.patch("/api/team/space", json={"name": "Renamed Lab"})
+    assert renamed.json() == {
+        "space_name": "Renamed Lab",
+        "access_url": "https://lab.tail1234.ts.net",
+    }
+
+    monkeypatch.setenv("RCP_TEAM_ACCESS_URL", "http://not-https.example")
+    assert desktop.get("/api/team/space").json()["access_url"] is None
+    assert store.space_name == "Renamed Lab"
+
+    # An installed server reads the operator's team.toml; a broken file is no address.
+    monkeypatch.delenv("RCP_TEAM_ACCESS_URL")
+    monkeypatch.setattr(
+        "rcp.server_ops.config._expected_config_ownership", lambda: (os.getuid(), os.getgid())
+    )
+    (tmp_path / "team.toml").write_text(
+        render_team_access_config(
+            ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")
+        )
+    )
+    (tmp_path / "team.toml").chmod(0o640)
+    assert desktop.get("/api/team/space").json()["access_url"] == (
+        "https://wth-gpu-01.tail1234.ts.net"
+    )
+    (tmp_path / "team.toml").write_text("access_url = 'ftp://nope'\n")
+    assert desktop.get("/api/team/space").json()["access_url"] is None
