@@ -18,6 +18,7 @@ import {
   FileText,
   FlaskConical,
   FolderLock,
+  Files,
   GitBranch,
   History,
   Inbox,
@@ -413,11 +414,16 @@ const NodeChat = lazy(() =>
   import("./components/NodeChat").then((module) => ({ default: module.NodeChat })),
 );
 
+const Artifacts = lazy(() =>
+  import("./views/Artifacts").then((module) => ({ default: module.Artifacts })),
+);
+
 const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> = [
   { view: "overview", label: "Overview", icon: <LayoutList size={14} /> },
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
+  { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
   { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
   { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
@@ -4463,6 +4469,7 @@ export default function App() {
               onSelectNode={openNode}
             />
           )}
+          {view === "artifacts" && <Artifacts key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
               <ExecutionView

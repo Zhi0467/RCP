@@ -13113,3 +13113,57 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-top: 1px solid var(--line);
   padding: 12px 0;
 }
+
+.artifacts-view {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 27px clamp(18px, 4vw, 30px) 60px;
+}
+
+.artifacts-heading,
+.artifact-entry {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.artifacts-heading {
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.artifact-entry h3 {
+  margin: 0;
+}
+
+.artifacts-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.artifact-entry {
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--rule);
+}
+
+.artifact-entry > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.artifact-entry .button {
+  flex-shrink: 0;
+}
+
+.artifact-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+
+.artifact-entry-path {
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}

@@ -199,7 +199,8 @@ export function ExperimentRunDetail({
               episodeId={control.report_episode_id}
               onOpenError={setReportOpenError}
             >
-              <ExternalLink size={12} aria-hidden="true" /> Open report
+              <ExternalLink size={12} aria-hidden="true" />
+              {control.report_is_current ? "Open report" : "Previous episode report"}
             </EpisodeReportLink>
           )}
           {allowStart && !control.node_closed && (

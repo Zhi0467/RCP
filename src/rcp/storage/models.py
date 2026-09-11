@@ -2435,6 +2435,17 @@ class EpisodeReportAttemptRecord(BaseModel):
     finished_at: str | None = None
 
 
+class EpisodeReportSummary(BaseModel):
+    """Report identity and provenance without loading its stored HTML."""
+
+    report_id: str
+    episode_id: str
+    mode: EpisodeMode
+    created_at: str
+    control_node_id: str | None = None
+    instruction: str | None = None
+
+
 class EpisodeReportRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

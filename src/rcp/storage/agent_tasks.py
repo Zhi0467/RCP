@@ -1393,6 +1393,24 @@ class AgentTaskStoreMixin:
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
+    def project_tasks_with_kept_artifacts(self, project_id: str) -> list[AgentTaskRecord]:
+        """Retained chat outputs across complete history, without decoding unrelated tasks."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.* FROM graph_runs
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                  AND EXISTS (
+                      SELECT 1 FROM json_each(graph_runs.result_json, '$.artifacts') AS artifact
+                      WHERE artifact.type = 'object'
+                        AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                  )
+                ORDER BY created_at DESC, operation_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
     def all_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
         """Return the complete typed task set for durable project capture."""
 

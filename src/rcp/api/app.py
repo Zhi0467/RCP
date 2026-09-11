@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
     ApiServices,
@@ -1825,6 +1826,7 @@ def create_app(
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(result_views_router)
+    app.include_router(artifacts_router)
     app.include_router(sync_router)
     app.include_router(tasks_router)
     app.include_router(watchers_router)

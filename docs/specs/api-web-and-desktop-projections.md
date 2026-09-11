@@ -633,7 +633,10 @@ the node is edited back to a nonterminal status. A control is absent unless
 currently valid, and no recommendation names an unavailable action. Report
 availability is separately backend-decided from the newest report-bearing
 episode for that Experiment and exact graph target; a newer no-report episode
-does not hide the durable report or change which episode owns it.
+does not hide the durable report or change which episode owns it. The backend
+publishes `report_is_current` alongside its owning episode id. Runs renders
+**Previous episode report** when false and **Open report** when true, so an older
+retrospective is not presented as the current episode's report.
 
 Episode cards lead with the owning Experiment name or Auto-research identity;
 their start time is secondary metadata and is never prefixed with a redundant

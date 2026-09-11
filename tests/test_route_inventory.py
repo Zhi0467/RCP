@@ -147,6 +147,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/report/preview"),
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/report/viewer"),
     (("GET",), "/api/projects/{project_id}/result-views"),
+    (("GET",), "/api/projects/{project_id}/artifacts"),
     (("HEAD",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("GET",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("POST",), "/api/projects/{project_id}/result-views/{view_id}/keep"),
@@ -288,6 +289,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "send_episode_message": "src/rcp/api/episode_routes.py",
     "sources": "src/rcp/api/project_state.py",
     "space_users": "src/rcp/api/index.py",
+    "saved_artifacts": "src/rcp/api/artifacts.py",
     "start_agent_task": "src/rcp/api/tasks.py",
     "steer_agent_task": "src/rcp/api/tasks.py",
     "start_episode": "src/rcp/api/episode_routes.py",
@@ -334,15 +336,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 140
-    assert len(_FROZEN_ROUTE_INVENTORY) == 140
+    assert len(entries) == 141
+    assert len(_FROZEN_ROUTE_INVENTORY) == 141
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 136
+    assert sum(isinstance(route, APIRoute) for route in routes) == 137
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -357,5 +359,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 128
+    assert len(observed) == 129
     assert observed == _HANDLER_MODULE_MAP
