@@ -206,7 +206,7 @@ successful revoke, and offers an explicit Refresh action.
 member dismisses it or the code ends. A team may carry an **access address**, the
 https origin members open on their own devices (typically the tailnet front in
 front of the server). It is operator-set in the installed server configuration
-(`[team] access_url` in `/etc/rcp/server.toml`, or `RCP_TEAM_ACCESS_URL` for a
+(`access_url` in `/etc/rcp/team.toml`, or `RCP_TEAM_ACCESS_URL` for a
 source-run server) and read-only to members: `GET /api/team/space` returns it
 with the team name, `PATCH /api/team/space` changes only `name`, and doctor
 reports it as `team_access_url`. When the address is set, the issued code carries

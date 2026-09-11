@@ -22,11 +22,7 @@ from rcp.limits import (
     TEAM_SESSION_IDLE_DAYS,
     TEAM_SESSION_LABEL_MAX_LENGTH,
 )
-from rcp.server_ops.config import (
-    ServerTeamConfig,
-    create_installed_server_config,
-    render_installed_server_config,
-)
+from rcp.server_ops.config import ServerTeamConfig, render_team_access_config
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import (
     AgentTaskRecord,
@@ -1370,7 +1366,7 @@ def test_the_access_address_is_operator_set_read_only_and_links_codes(
     )
 
     monkeypatch.delenv("RCP_TEAM_ACCESS_URL", raising=False)
-    monkeypatch.setattr("rcp.team_access.INSTALLED_CONFIG_PATH", tmp_path / "server.toml")
+    monkeypatch.setattr("rcp.team_access.INSTALLED_TEAM_CONFIG_PATH", tmp_path / "team.toml")
     assert desktop.get("/api/team/space").json() == {"space_name": "Team Lab", "access_url": None}
     assert desktop.post("/api/team/devices/pairings", json={}).json()["connect_url"] is None
     # Members cannot set it; the operator does, in the server configuration.
@@ -1394,18 +1390,19 @@ def test_the_access_address_is_operator_set_read_only_and_links_codes(
     assert desktop.get("/api/team/space").json()["access_url"] is None
     assert store.space_name == "Renamed Lab"
 
-    # An installed server reads the operator's `[team]` table; a broken file is no address.
+    # An installed server reads the operator's team.toml; a broken file is no address.
     monkeypatch.delenv("RCP_TEAM_ACCESS_URL")
     monkeypatch.setattr(
         "rcp.server_ops.config._expected_config_ownership", lambda: (os.getuid(), os.getgid())
     )
-    installed = create_installed_server_config().model_copy(
-        update={"team": ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")}
+    (tmp_path / "team.toml").write_text(
+        render_team_access_config(
+            ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")
+        )
     )
-    (tmp_path / "server.toml").write_text(render_installed_server_config(installed))
-    (tmp_path / "server.toml").chmod(0o640)
+    (tmp_path / "team.toml").chmod(0o640)
     assert desktop.get("/api/team/space").json()["access_url"] == (
         "https://wth-gpu-01.tail1234.ts.net"
     )
-    (tmp_path / "server.toml").write_text("[team]\naccess_url = 'ftp://nope'\n")
+    (tmp_path / "team.toml").write_text("access_url = 'ftp://nope'\n")
     assert desktop.get("/api/team/space").json()["access_url"] is None

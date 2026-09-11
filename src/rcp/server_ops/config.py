@@ -173,7 +173,6 @@ class InstalledServerConfig(_StrictModel):
     release: ServerReleaseConfig = ServerReleaseConfig()
     paths: ServerPathsConfig
     backup: ServerBackupConfig | None = None
-    team: ServerTeamConfig | None = None
 
     @field_validator("installation_id")
     @classmethod
@@ -234,10 +233,6 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
         backup.add("retention", config.backup.retention)
         backup.add("age_recipient", config.backup.age_recipient)
         document.add("backup", backup)
-    if config.team is not None:
-        team = tomlkit.table()
-        team.add("access_url", config.team.access_url)
-        document.add("team", team)
     content = tomlkit.dumps(document)
     if parse_installed_server_config(content) != config:
         raise RuntimeError("rendered installed-server configuration changed meaning")
@@ -339,6 +334,43 @@ def load_installed_server_config(
     return _load_installed_server_config(path, ownership=_expected_config_ownership())
 
 
+def load_team_access_config(
+    path: Path = DEFAULT_SERVER_LAYOUT.team_config_path,
+) -> ServerTeamConfig | None:
+    """Read the operator's team address file; None when the operator has not written one.
+
+    The file lives beside server.toml with the same ownership and mode but is a
+    separate document on purpose: a pinned older release keeps reading the strict
+    schema-3 server.toml it knows, and simply never looks here.
+    """
+
+    if not os.path.lexists(path):
+        return None
+    _reject_symlink_ancestry(path.parent)
+    _validate_config_file(path, ownership=_expected_config_ownership())
+    return parse_team_access_config(path.read_text(encoding="utf-8"))
+
+
+def parse_team_access_config(text: str) -> ServerTeamConfig:
+    try:
+        data = tomlkit.parse(text).unwrap()
+    except Exception as exc:  # tomlkit raises its own parse error hierarchy
+        raise ValueError(f"team address file is not valid TOML: {exc}") from exc
+    try:
+        return ServerTeamConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError(f"team address file is invalid: {exc}") from exc
+
+
+def render_team_access_config(config: ServerTeamConfig) -> str:
+    document = tomlkit.document()
+    document.add(
+        tomlkit.comment("The https origin members' own devices open; see docs/device-pairing.md.")
+    )
+    document.add("access_url", config.access_url)
+    return tomlkit.dumps(document)
+
+
 def write_installed_server_config(
     config: InstalledServerConfig,
     path: Path = DEFAULT_SERVER_LAYOUT.config_path,
@@ -424,6 +456,9 @@ __all__ = [
     "ServerPathsConfig",
     "ServerSourceConfig",
     "ServerTeamConfig",
+    "load_team_access_config",
+    "parse_team_access_config",
+    "render_team_access_config",
     "create_installed_server_config",
     "load_installed_server_config",
     "parse_installed_server_config",

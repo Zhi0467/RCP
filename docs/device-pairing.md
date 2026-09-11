@@ -64,16 +64,18 @@ You need sudo on the host and a Tailscale account with **MagicDNS** and
    `tailscale serve status` then prints the address members will use, of the
    form `https://<host>.<tailnet>.ts.net`.
 
-3. Tell RCP that address. Add a `[team]` table to `/etc/rcp/server.toml`, the
-   same operator-owned file that holds the release pin:
+3. Tell RCP that address. Write `/etc/rcp/team.toml`, a one-line file beside
+   `server.toml` with the same owner and mode:
 
-   ```toml
-   [team]
-   access_url = "https://wth-gpu-01.tail1234.ts.net"
+   ```bash
+   printf 'access_url = "https://wth-gpu-01.tail1234.ts.net"\n' | sudo tee /etc/rcp/team.toml >/dev/null
+   sudo chown root:rcp /etc/rcp/team.toml && sudo chmod 0640 /etc/rcp/team.toml
    ```
 
    The value must be an `https://` origin with no path, query, or credentials.
-   No restart is needed; RCP reads it when a member opens **Devices**.
+   No restart is needed; RCP reads it when a member opens **Devices**. It is a
+   separate file so a pinned older release, which knows only `server.toml`,
+   still starts.
 
 4. Confirm with doctor, which reports the address as `team_access_url`:
 
@@ -129,8 +131,9 @@ yet.
 
 ## Troubleshooting
 
-- **The QR code is missing.** The server has no `[team] access_url`; see Part 1
-  step 3. Doctor shows `team_access_url: none`.
+- **The QR code is missing.** The server has no `/etc/rcp/team.toml`; see Part 1
+  step 3. Doctor shows `team_access_url: none`, and names the file as a problem
+  when it exists but is unreadable or invalid.
 - **The phone cannot open the address.** Confirm the phone is signed in to
   Tailscale and has accepted the share; `tailscale status` on the phone lists
   the server. Confirm `tailscale serve status` on the server still shows the

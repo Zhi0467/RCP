@@ -22,7 +22,12 @@ from rcp.server_ops import backup as backup_owner
 from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
 from rcp.server_ops.cli import CallerIdentity, run_server_command
-from rcp.server_ops.config import ServerBackupConfig, ServerReleaseConfig, ServerSourceConfig
+from rcp.server_ops.config import (
+    ServerBackupConfig,
+    ServerReleaseConfig,
+    ServerSourceConfig,
+    ServerTeamConfig,
+)
 from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS, ServerControlMemberSnapshot
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
@@ -536,7 +541,6 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         paths=SimpleNamespace(model_dump=lambda: layout.recorded_paths()),
         backup=None,
         release=ServerReleaseConfig(),
-        team=None,
     )
 
     def config_loader(_path: Path):
@@ -561,6 +565,11 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         report = LinuxServerDoctorMachine(
             layout,
             config_loader=config_loader,
+            team_loader=lambda path: (
+                ServerTeamConfig(access_url="https://wth-gpu-01.tail1234.ts.net")
+                if path == layout.team_config_path
+                else None
+            ),
             metadata_reader=metadata_reader,
             control_probe=control_probe,
             runner=runner,

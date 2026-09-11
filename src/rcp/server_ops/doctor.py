@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
-from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
+from rcp.server_ops.config import (
+    InstalledServerConfig,
+    ServerTeamConfig,
+    load_installed_server_config,
+    load_team_access_config,
+)
 from rcp.server_ops.control import (
     ServerControlClient,
     ServerControlError,
@@ -321,6 +326,7 @@ class ReadOnlyRunner(Protocol):
 
 
 ConfigLoader = Callable[[Path], InstalledServerConfig]
+TeamLoader = Callable[[Path], "ServerTeamConfig | None"]
 MetadataReader = Callable[[Path], ServerMetadata]
 ControlProbe = Callable[[ServerMetadata, int], ServerControlProbeResult]
 
@@ -392,6 +398,7 @@ class LinuxServerDoctorMachine:
         layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
         *,
         config_loader: ConfigLoader | None = None,
+        team_loader: TeamLoader | None = None,
         metadata_reader: MetadataReader | None = None,
         control_probe: ControlProbe | None = None,
         runner: ReadOnlyRunner | None = None,
@@ -400,6 +407,7 @@ class LinuxServerDoctorMachine:
     ) -> None:
         self.layout = layout
         self._config_loader = config_loader or load_installed_server_config
+        self._team_loader = team_loader or load_team_access_config
         self._metadata_reader = metadata_reader or read_server_metadata
         self._control_probe = control_probe or _probe_control
         self._runner = runner or _run_read_only
@@ -526,7 +534,7 @@ class LinuxServerDoctorMachine:
         return ServerDoctorReport(
             followed_release=config.release.followed if config else "stable",
             release_pin=config.release.pin if config else None,
-            team_access_url=config.team.access_url if config and config.team else None,
+            team_access_url=self._load_team_access_url(add_problem),
             selected_release_tag=self._selected["release_tag"] if self._selected else None,
             supervisor_version=self._selected["supervisor_version"] if self._selected else None,
             overall_state=overall_state,
@@ -677,6 +685,14 @@ class LinuxServerDoctorMachine:
             add_problem("the rcp service account is unavailable")
             return -1, -1
         return account.pw_uid, account.pw_gid
+
+    def _load_team_access_url(self, add_problem: Callable[[str], None]) -> str | None:
+        try:
+            team = self._team_loader(self.layout.team_config_path)
+        except (OSError, ValueError):
+            add_problem("team address file is unreadable or invalid")
+            return None
+        return team.access_url if team is not None else None
 
     def _load_config(
         self,

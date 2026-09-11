@@ -501,8 +501,8 @@ tailnet and sign in with a device code, never with a member token. The full
 walkthrough for the operator, the desktop app, and each member's phone is
 [`device-pairing.md`](device-pairing.md). In short: install Tailscale on the
 host, `sudo tailscale up`, `sudo tailscale serve --bg 8421`, add
-`[team] access_url = "https://<host>.<tailnet>.ts.net"` to
-`/etc/rcp/server.toml`, and share the machine with each member from the
+`access_url = "https://<host>.<tailnet>.ts.net"` to `/etc/rcp/team.toml`
+(root:rcp, 0640), and share the machine with each member from the
 Tailscale admin console. Doctor reports the address as `team_access_url`.
 
 ## Inspect and stop the service
