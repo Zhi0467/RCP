@@ -469,6 +469,8 @@ test("a pairing card with an access address shows a scannable QR code and the ad
     /aria-label="QR code for https:\/\/lab\.tail1234\.ts\.net\/#pair=ABCD-EFGHJK"/,
   );
   assert.match(html, /<strong>https:\/\/lab\.tail1234\.ts\.net<\/strong>/);
+  assert.match(html, /on the team&#x27;s Tailscale network first/);
+  assert.match(html, /accept the share of this server/);
   assert.match(html, />ABCD-EFGHJK</);
 });
 

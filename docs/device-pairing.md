@@ -101,7 +101,9 @@ check of any other terminator.
    **Devices** you see every device signed in as you, with **Current device**
    marking this one.
 2. Choose **Connect a device**. A code such as `ABCD-EFGHJK` appears with its
-   expiry. When the operator has set the address, a QR code appears with it.
+   expiry. When the operator has set the address, a QR code appears with it,
+   and the card says what the phone needs first: Tailscale installed, signed
+   in, and the operator's share accepted.
 3. Leave the card open; it watches the code and updates **Devices** the moment
    the phone connects. If the code expires or is withdrawn, the card says so.
 
