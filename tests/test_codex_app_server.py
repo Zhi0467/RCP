@@ -371,7 +371,7 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
         remote_commands.append((host, command))
         # macOS has no `setsid`; retain the exact remote command for assertions
         # and remove only that Linux process-group wrapper in this local drive.
-        return ["bash", "-c", command.replace("setsid sh -c", "sh -c")]
+        return ["bash", "-c", command.replace("setsid --wait sh -c", "sh -c")]
 
     monkeypatch.setattr("rcp.agents.launcher.ssh_arguments", local_ssh)
     pid_file = tmp_path / "agent.pid"

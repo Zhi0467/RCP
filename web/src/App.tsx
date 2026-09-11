@@ -544,7 +544,7 @@ export function shouldShowCoverageBoundaryWarning(
   );
 }
 
-export function failedTaskActionNeedsAuthoritativeProjectReload(
+export function taskActionNeedsAuthoritativeProjectReload(
   task: AgentTask,
   action: "pause" | "resume" | "retry",
 ): boolean {
@@ -3342,16 +3342,26 @@ export default function App() {
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     const finishTaskAction = beginTaskAction(task.operation_id);
     if (!finishTaskAction) return;
+    let recoveryStarted = false;
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
         method: "POST",
       });
+      recoveryStarted = true;
       upsertTask(next);
       if (presentTask) presentAgentTask(next);
       setNotice(null);
+      if (taskActionNeedsAuthoritativeProjectReload(task, action)) await reload();
     } catch (caught) {
       const taskError = caught instanceof Error ? caught.message : String(caught);
-      if (failedTaskActionNeedsAuthoritativeProjectReload(task, action)) {
+      if (recoveryStarted) {
+        setNotice({
+          kind: "error",
+          text: `Recovery started, but Runs could not refresh: ${taskError}`,
+        });
+        return;
+      }
+      if (taskActionNeedsAuthoritativeProjectReload(task, action)) {
         try {
           await reload();
         } catch (reloadError) {
@@ -3400,17 +3410,26 @@ export default function App() {
     if (taskActionId || mutationsDisabled) return;
     const finishTaskAction = beginTaskAction(task.operation_id);
     if (!finishTaskAction) return;
+    let recoveryStarted = false;
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
         method: "POST",
         body: JSON.stringify(taskRetryRequestBody(task, config)),
       });
+      recoveryStarted = true;
       upsertTask(next);
       if (!isExperimentLoopRecovery(task)) presentAgentTask(next);
       closeRetryTask();
       setNotice(null);
+      if (isExperimentLoopRecovery(task)) await reload();
     } catch (caught) {
-      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
+      const taskError = caught instanceof Error ? caught.message : String(caught);
+      setNotice({
+        kind: "error",
+        text: recoveryStarted
+          ? `Recovery started, but Runs could not refresh: ${taskError}`
+          : taskError,
+      });
     } finally {
       finishTaskAction();
     }

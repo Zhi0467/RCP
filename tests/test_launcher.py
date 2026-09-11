@@ -218,6 +218,7 @@ async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
         f"result=subprocess.run({client!r},capture_output=True,text=True,check=False)\n"
         "print(json.dumps({'type':'item','item':{'text':"
         "json.dumps({'prompt':prompt,'code':result.returncode,'output':result.stdout})}}),flush=True)\n"
+        "print(json.dumps({'type':'turn.completed'}),flush=True)\n"
     )
     launcher = AgentLauncher()
     launcher.readiness = lambda provider, host="": type(
@@ -390,13 +391,19 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
         def close(self) -> None:
             return None
 
+        def is_closing(self) -> bool:
+            return True
+
         async def wait_closed(self) -> None:
             return None
 
     class FakeStdout:
         def __init__(self) -> None:
             self.data = (
-                json.dumps({"type": "item", "item": {"text": "x" * 100_000}}) + "\n"
+                json.dumps({"type": "item", "item": {"text": "x" * 100_000}})
+                + "\n"
+                + json.dumps({"type": "turn.completed"})
+                + "\n"
             ).encode()
             self.offset = 0
 
@@ -451,8 +458,8 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
         next(event.text for event in events if event.event == "provider_exit")
     )
     assert exit_evidence == {
-        "event_counts": {"raw": 1},
-        "explicit_terminal_event": False,
+        "event_counts": {"raw": 2},
+        "explicit_terminal_event": True,
         "return_code": 0,
     }
 
@@ -471,6 +478,7 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
         "prompt = sys.stdin.buffer.read()\n"
         'print(json.dumps({"type": "item", "item": '
         '{"text": f"received={len(prompt)}"}}), flush=True)\n'
+        "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
     )
     launcher = AgentLauncher()
     launcher.readiness = lambda provider, host="": type(
@@ -503,8 +511,8 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
     exit_evidence = json.loads(
         next(event.text for event in events if event.event == "provider_exit")
     )
-    assert exit_evidence["event_counts"] == {"message": 2}
-    assert exit_evidence["explicit_terminal_event"] is False
+    assert exit_evidence["event_counts"] == {"message": 2, "raw": 1}
+    assert exit_evidence["explicit_terminal_event"] is True
     assert exit_evidence["return_code"] == 0
 
 
@@ -1612,7 +1620,7 @@ def test_remote_provider_command_records_a_killable_process_group() -> None:
     outer = shlex.split(command)
 
     assert outer[:2] == ["bash", "-lic"]
-    assert "setsid sh -c" in outer[2]
+    assert shlex.split(outer[2])[:4] == ["setsid", "--wait", "sh", "-c"]
     assert "agent.pid" in outer[2]
     assert "exec codex exec prompt" in outer[2]
 

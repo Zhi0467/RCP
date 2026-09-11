@@ -155,3 +155,92 @@ def test_launcher_ships_helper_and_passes_runtime_limits_to_owned_local_group(
     assert remote_terminate_provider.terminate_provider(
         str(pid_file), pid_file_timeout=0, term_timeout=0, kill_timeout=0, poll_interval=0.01
     )
+
+
+def test_shipped_probe_observes_live_then_absent_group_without_stopping_it(owned_group):
+    process, pid_file = owned_group(ignore_term=False)
+    source = Path(remote_terminate_provider.__file__).read_text()
+
+    def probe():
+        return subprocess.run(
+            [sys.executable, "-c", source, "--probe", str(pid_file)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    assert probe().returncode == 1
+    assert process.poll() is None
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is False
+    process.terminate()
+    process.wait(timeout=5)
+    assert probe().returncode == 0
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is True
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-pid", "0", "1", "9" * 100])
+def test_probe_invalid_or_missing_receipt_is_unknown_without_waiting(tmp_path, monkeypatch, value):
+    pid_file = tmp_path / "agent.pid"
+    if value is not None:
+        pid_file.write_text(value)
+
+    def unexpected_sleep(_seconds):
+        raise AssertionError("A read-only probe must not wait for a receipt")
+
+    monkeypatch.setattr(remote_terminate_provider.time, "sleep", unexpected_sleep)
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is None
+    assert remote_terminate_provider.main(["helper", "--probe", str(pid_file)]) == 2
+
+
+def test_probe_refuses_symlink_receipt(owned_group, tmp_path):
+    process, pid_file = owned_group(ignore_term=False)
+    symlink = tmp_path / "link.pid"
+    symlink.symlink_to(pid_file)
+    assert remote_terminate_provider.provider_stopped(str(symlink)) is None
+    assert process.poll() is None
+
+
+def test_probe_checks_descendants_even_when_group_leader_has_exited(tmp_path, monkeypatch):
+    pid_file = tmp_path / "agent.pid"
+    pid = os.getpid() + 10000
+    pid_file.write_text(str(pid))
+    calls = []
+
+    def leader_gone(_pid):
+        raise ProcessLookupError
+
+    def existing_group(group, requested_signal):
+        calls.append((group, requested_signal))
+
+    monkeypatch.setattr(remote_terminate_provider.os, "getpgid", leader_gone)
+    monkeypatch.setattr(remote_terminate_provider.os, "killpg", existing_group)
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is False
+    assert calls == [(pid, 0)]
+
+
+def test_probe_permission_failure_is_unknown(tmp_path, monkeypatch):
+    pid_file = tmp_path / "agent.pid"
+    pid = os.getpid() + 10000
+    pid_file.write_text(str(pid))
+    monkeypatch.setattr(remote_terminate_provider.os, "getpgid", lambda _pid: pid)
+
+    def denied(_pid, requested_signal):
+        assert requested_signal == 0
+        raise PermissionError
+
+    monkeypatch.setattr(remote_terminate_provider.os, "killpg", denied)
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is None
+
+
+def test_probe_reused_nonleader_pid_is_unknown(tmp_path, monkeypatch):
+    pid_file = tmp_path / "agent.pid"
+    pid = os.getpid() + 10000
+    pid_file.write_text(str(pid))
+    monkeypatch.setattr(remote_terminate_provider.os, "getpgid", lambda _pid: pid + 1)
+
+    def unexpected_signal(*_args):
+        raise AssertionError("An unrelated process must not be signalled")
+
+    monkeypatch.setattr(remote_terminate_provider.os, "killpg", unexpected_signal)
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is None

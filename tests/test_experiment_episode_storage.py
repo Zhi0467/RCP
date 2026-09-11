@@ -17,6 +17,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.models import AgentTaskAdmissionConflict
 from rcp.watchers import WatcherBinding
 
 
@@ -297,6 +298,68 @@ def test_recovery_reuses_paid_allocation_and_can_be_exact_ending_task(tmp_path: 
     assert episode is not None and episode.invocations_used == 1
     assert [item.operation_id for item in store.episode_invocations(episode_id)] == ["loop-root"]
     assert store.experiment_episode_ending_signal(episode_id) == ("loop-retry", signal)
+
+
+@pytest.mark.parametrize("chat_id", [None, "other-chat"])
+@pytest.mark.parametrize("status", ["queued", "running", "pausing"])
+def test_recovery_cannot_overlap_live_episode_task(tmp_path: Path, chat_id, status) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, _ = _admit_root(store)
+    store.fail_agent_task("loop-root", "session limit")
+    live = _task(store, "live-retry", episode_id, parent_operation_id="loop-root", attempt=2)
+    store.create_experiment_recovery_task(live)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status = ? WHERE operation_id = ?", (status, "live-retry")
+        )
+    duplicate = _task(store, "duplicate", episode_id, parent_operation_id="loop-root", attempt=2)
+    duplicate.request["chat_id"] = chat_id
+
+    with pytest.raises(AgentTaskAdmissionConflict, match="already active in this episode"):
+        store.create_experiment_recovery_task(duplicate, continuation_cause="handoff")
+
+    assert store.agent_task("duplicate") is None
+    assert store.episode(episode_id).invocations_used == 1
+
+
+@pytest.mark.parametrize("continuation", ["retry", "handoff"])
+def test_recovery_rejects_superseded_parent_and_keeps_latest_allocation(
+    tmp_path: Path, continuation: str
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, _ = _admit_root(store)
+    store.fail_agent_task("loop-root", "session limit")
+    replacement = _task(
+        store, "replacement", episode_id, parent_operation_id="loop-root", attempt=2
+    )
+    replacement.request.update(provider="claude", model="sonnet")
+    replacement.runtime_id = ""
+    store.create_experiment_recovery_task(replacement, continuation_cause="handoff")
+    store.fail_agent_task("replacement", "temporary provider failure")
+    stale = _task(store, "stale", episode_id, parent_operation_id="loop-root", attempt=2)
+
+    with pytest.raises(AgentTaskAdmissionConflict, match="Only the latest"):
+        store.create_experiment_recovery_task(stale, continuation_cause=continuation)
+
+    latest = _task(
+        store,
+        "latest",
+        episode_id,
+        parent_operation_id="replacement",
+        attempt=3,
+        session_id="replacement-session" if continuation == "retry" else None,
+        stage_root="/tmp/replacement-stage" if continuation == "retry" else None,
+    )
+    latest.request.update(provider="claude", model="sonnet")
+    latest.runtime_id = ""
+    stored = store.create_experiment_recovery_task(latest, continuation_cause=continuation)
+
+    assert store.agent_task("stale") is None
+    assert stored.native_session_id == latest.native_session_id
+    assert stored.stage_root == latest.stage_root
+    assert stored.request == latest.request
+    assert store.episode(episode_id).invocations_used == 1
+    assert [item.operation_id for item in store.episode_invocations(episode_id)] == ["loop-root"]
 
 
 def test_binding_and_ending_receipt_commit_or_roll_back_together(tmp_path: Path) -> None:

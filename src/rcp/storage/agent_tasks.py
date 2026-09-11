@@ -86,6 +86,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "chat_stage_layout",
     "compute_command_started",
     "compute_command_result",
+    "remote_provider_started",
+    "remote_provider_stopped",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
@@ -2341,6 +2343,119 @@ class AgentTaskStoreMixin:
             raise ValueError("The agent task admission intent is malformed.")
         return payload
 
+    @staticmethod
+    def _unresolved_remote_provider_passes(
+        connection: sqlite3.Connection, stage_host: str, stage_root: str
+    ) -> list[tuple[str, str]]:
+        rows = connection.execute(
+            """
+            SELECT started.operation_id,
+                   json_extract(started.payload_json, '$.pid_file') AS pid_file
+            FROM graph_run_receipts AS started
+            WHERE started.category = 'remote_provider_started'
+              AND json_extract(started.payload_json, '$.stage_host') = ?
+              AND json_extract(started.payload_json, '$.stage_root') = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_run_receipts AS stopped
+                  WHERE stopped.category = 'remote_provider_stopped'
+                    AND stopped.operation_id = started.operation_id
+                    AND json_extract(stopped.payload_json, '$.pid_file') =
+                        json_extract(started.payload_json, '$.pid_file')
+              )
+            ORDER BY started.receipt_id
+            """,
+            (stage_host, stage_root),
+        ).fetchall()
+        return [(str(row["operation_id"]), str(row["pid_file"])) for row in rows]
+
+    def unresolved_remote_provider_passes(
+        self, stage_host: str, stage_root: str
+    ) -> list[tuple[str, str]]:
+        """Return passes whose remote process group has not been confirmed absent."""
+        with self.connection() as connection:
+            return self._unresolved_remote_provider_passes(connection, stage_host, stage_root)
+
+    def begin_remote_provider_pass(
+        self, operation_id: str, stage_host: str, stage_root: str, pid_file: str
+    ) -> None:
+        """Atomically reserve an exact remote stage before launching one provider pass."""
+        root = PurePosixPath(stage_root)
+        pid = PurePosixPath(pid_file)
+        if (
+            not stage_host.strip()
+            or not root.is_absolute()
+            or not pid.is_relative_to(root)
+            or pid == root
+            or ".." in pid.parts
+        ):
+            raise ValueError("A remote provider pass requires its exact host, stage and pidfile.")
+        payload = self._bounded_receipt_payload(
+            {"stage_host": stage_host, "stage_root": stage_root, "pid_file": pid_file}
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._unresolved_remote_provider_passes(connection, stage_host, stage_root):
+                raise AgentTaskAdmissionConflict(
+                    "A provider call in this remote stage is live or its exit is unconfirmed."
+                )
+            if (
+                connection.execute(
+                    """
+                SELECT 1 FROM graph_run_receipts
+                WHERE category = 'remote_provider_started'
+                  AND (json_extract(payload_json, '$.stage_host') = ? OR operation_id = ?)
+                  AND json_extract(payload_json, '$.pid_file') = ?
+                LIMIT 1
+                """,
+                    (stage_host, operation_id, pid_file),
+                ).fetchone()
+                is not None
+            ):
+                raise ValueError("A remote provider pass must use a new pidfile identity.")
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "remote_provider_started",
+                payload,
+                tier="summary",
+                created_at=self.now(),
+            )
+
+    def finish_remote_provider_pass(self, operation_id: str, pid_file: str) -> None:
+        """Record confirmed absence for exactly one previously reserved process group."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            started = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'remote_provider_started'
+                  AND json_extract(payload_json, '$.pid_file') = ?
+                """,
+                (operation_id, pid_file),
+            ).fetchone()
+            if started is None:
+                raise ValueError("The remote provider pass has no matching start receipt.")
+            if (
+                connection.execute(
+                    """
+                SELECT 1 FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'remote_provider_stopped'
+                  AND json_extract(payload_json, '$.pid_file') = ?
+                """,
+                    (operation_id, pid_file),
+                ).fetchone()
+                is not None
+            ):
+                return
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "remote_provider_stopped",
+                started["payload_json"],
+                tier="summary",
+                created_at=self.now(),
+            )
+
     def record_agent_task_receipt(
         self,
         operation_id: str,
@@ -2352,7 +2467,12 @@ class AgentTaskStoreMixin:
         safe_category = " ".join(category.split())[:100]
         if not safe_category:
             return
-        if safe_category in {"operation_admitted", "operation_dispatch_reset"}:
+        if safe_category in {
+            "operation_admitted",
+            "operation_dispatch_reset",
+            "remote_provider_started",
+            "remote_provider_stopped",
+        }:
             raise ValueError(f"{safe_category} is reserved for an atomic task transition")
         if tier not in AGENT_TASK_RECEIPT_RETENTION_COUNTS:
             raise ValueError(f"Unknown agent-task receipt tier: {tier}")
@@ -3120,6 +3240,22 @@ class AgentTaskStoreMixin:
             aggregate.protect_from_cleanup = aggregate.protect_from_cleanup or protect_from_cleanup
 
         with self.connection() as connection:
+            remote_pass_rows = connection.execute(
+                """
+                SELECT started.operation_id,
+                       json_extract(started.payload_json, '$.stage_host') AS stage_host,
+                       json_extract(started.payload_json, '$.stage_root') AS stage_root
+                FROM graph_run_receipts AS started
+                WHERE started.category = 'remote_provider_started'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS stopped
+                      WHERE stopped.category = 'remote_provider_stopped'
+                        AND stopped.operation_id = started.operation_id
+                        AND json_extract(stopped.payload_json, '$.pid_file') =
+                            json_extract(started.payload_json, '$.pid_file')
+                  )
+                """
+            ).fetchall()
             task_rows = connection.execute(
                 """
                 SELECT run.operation_id, COALESCE(run.stage_host, '') AS stage_host,
@@ -3189,6 +3325,14 @@ class AgentTaskStoreMixin:
                 """
             ).fetchall()
 
+        for row in remote_pass_rows:
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"remote_provider:{row['operation_id']}",
+                must_exist=True,
+                protect_from_cleanup=True,
+            )
         for row in task_rows:
             live = bool(row["live"])
             add(

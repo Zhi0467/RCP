@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import classify_terminal_error
+from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import AgentTaskRequest, skill_update
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillSelection
@@ -339,6 +340,8 @@ def preflight_experiment_episode_recovery(
         return
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)
     if problem is None:
+        if record.stage_host and record.stage_root:
+            require_remote_provider_quiescence(tasks.store, record.stage_host, record.stage_root)
         return
     assert original.control_episode_id is not None
     assert original.control_node_id is not None

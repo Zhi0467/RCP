@@ -1788,7 +1788,7 @@ def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path) ->
     store.fail_agent_task("child", "failed again")
 
     sibling = child.model_copy(update={"operation_id": "sibling", "parent_operation_id": "root"})
-    with pytest.raises(ValueError, match="already has a recovery child"):
+    with pytest.raises(ValueError, match="latest Experiment task"):
         store.create_experiment_recovery_task(sibling)
 
     successful_store = AppStore(tmp_path / "successful.sqlite3")

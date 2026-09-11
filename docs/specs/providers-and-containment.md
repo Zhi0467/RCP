@@ -293,6 +293,16 @@ labelled answer is withheld from the wire, so its usage is forwarded on its own
 frame. A turn that succeeds is counted exactly like one that fails, and a queued
 follow-up's second result is counted once more.
 
+Remote launch waits for the provider process group, including when its session
+wrapper forks. A successful SSH exit or partial assistant message cannot complete
+a Codex turn: its protocol must report completion, and the remote process group
+must be confirmed stopped before a correction or recovery can reuse the stage.
+Each remote pass has a unique pidfile and a durable start/stop receipt. An
+unresolved pass fences stage reuse across task failure and server restart; a
+read-only check may release that fence only after confirming process absence.
+Unreachable or unprovable process state keeps recovery blocked and preserves the
+stage and receipts for reconciliation.
+
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, host, stage, and external-effect
 diagnostics. A failed run retains its scratch and Patch text for bounded
