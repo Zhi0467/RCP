@@ -973,9 +973,6 @@ class BranchHistoryManager:
             self.root / "proposals.json",
             {key: value.model_dump(mode="json") for key, value in result.state.proposals.items()},
         )
-        self.parent._atomic_json(
-            self.root / "coverage.json", result.state.coverage.model_dump(mode="json")
-        )
         self.parent._atomic_text(self.root / "research.md", render_research_md(result.state))
 
     def _write_committed_materializations(self, result: MaterializationResult) -> None:
@@ -1008,7 +1005,6 @@ class BranchHistoryManager:
             "proposals.json": {
                 key: value.model_dump(mode="json") for key, value in result.state.proposals.items()
             },
-            "coverage.json": result.state.coverage.model_dump(mode="json"),
         }
         try:
             for name in [*expected, "research.md"]:
@@ -1025,7 +1021,7 @@ class BranchHistoryManager:
             return False
 
     def _published_paths(self, *, include_metadata: bool) -> list[Path]:
-        names = ["graph.json", "glossary.json", "proposals.json", "coverage.json", "research.md"]
+        names = ["graph.json", "glossary.json", "proposals.json", "research.md"]
         if include_metadata:
             names.append("branch.json")
         return [(self.root / name).relative_to(self.parent.root) for name in names]

@@ -574,8 +574,6 @@ def permits(patch: Patch, action: GraphAction) -> bool:
         return action in HUMAN_GRAPH_ACTIONS
     if patch.author != "agent" or patch.profile not in {None, "ordinary", "orchestrator"}:
         return False
-    if action == SET_COVERAGE:
-        return patch.kind in {"seed", "refresh"}
     if patch.profile == "orchestrator":
         return action in ORCHESTRATOR_AGENT_GRAPH_ACTIONS
     return action in ORDINARY_AGENT_GRAPH_ACTIONS

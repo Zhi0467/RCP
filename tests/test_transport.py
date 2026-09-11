@@ -171,7 +171,6 @@ def test_remote_initialization_repairs_and_publishes_mismatched_outputs(manifest
             "graph.json",
             "glossary.json",
             "proposals.json",
-            "coverage.json",
             "cursors.json",
             "scope-base.json",
             "research.md",

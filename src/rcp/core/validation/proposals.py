@@ -50,7 +50,7 @@ from rcp.core.operations import (
     graph_operations_from_proposal,
 )
 from rcp.core.validation.constants import IDENTIFIER_RE
-from rcp.core.validation.nodes import oldest_source_ref
+from rcp.core.validation.nodes import validate_source_refs
 from rcp.core.validation.report import ValidationReport
 
 
@@ -635,7 +635,7 @@ def _validate_proposal_ops(
                 continue
             for update in operation.nodes:
                 if update.changes.get("source_refs"):
-                    oldest_source_ref(
+                    validate_source_refs(
                         {"source_refs": update.changes["source_refs"]}, context_patch, report
                     )
 

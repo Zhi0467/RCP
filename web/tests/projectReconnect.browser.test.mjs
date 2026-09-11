@@ -23,7 +23,7 @@ after(async () => {
 
 for (const initialFreshness of ["stale", "fresh"]) {
   test(
-    `same-revision reconnect clears the App offline banner from ${initialFreshness} cache`,
+    `Overview ignores legacy coverage and reconnect clears the offline banner from ${initialFreshness} cache`,
     { timeout: 15000 },
     async (t) => {
       const context = await browser.newContext();
@@ -76,12 +76,13 @@ for (const initialFreshness of ["stale", "fresh"]) {
           proposal_actions: {},
         },
         counts: {},
+        // Old cached responses must not revive the retired agent-authored warning.
         coverage: {
           repositories_seen: [],
-          repositories_never_seen: [],
+          repositories_never_seen: ["legacy-repository"],
           sessions_read: [],
-          sessions_skipped: [],
-          note: "",
+          sessions_skipped: ["legacy-session"],
+          note: "Legacy agent-authored coverage claim.",
         },
         graph: {
           revision: 1,
@@ -134,11 +135,13 @@ for (const initialFreshness of ["stale", "fresh"]) {
       const readinessLoaded = page.waitForResponse((response) =>
         new URL(response.url()).pathname.endsWith("/readiness"),
       );
-      await page.goto(`${origin}/#/projects/demo?view=runs`);
+      await page.goto(`${origin}/#/projects/demo?view=overview`);
       const banner = page.getByText("Canonical state is offline.", { exact: true });
       await banner.waitFor();
       await (await readinessLoaded).finished();
       await page.evaluate(() => new Promise(requestAnimationFrame));
+      assert.equal(await page.getByText("Coverage boundary:").count(), 0);
+      assert.equal(await page.getByText("Legacy agent-authored coverage claim.").count(), 0);
       connected = true;
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
       await reconnectRequested.promise;
@@ -148,6 +151,10 @@ for (const initialFreshness of ["stale", "fresh"]) {
         reconnectLoads > 0,
         "heartbeat must fetch a project snapshot at the unchanged revision",
       );
+      await page.getByRole("button", { name: "Runs", exact: true }).click();
+      await page.getByRole("button", { name: "Overview", exact: true }).click();
+      assert.equal(await page.getByText("Coverage boundary:").count(), 0);
+      assert.equal(await page.getByText("Legacy agent-authored coverage claim.").count(), 0);
       assert.deepEqual(errors, []);
     },
   );

@@ -215,13 +215,6 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           proposal_actions: {},
         },
         counts: {},
-        coverage: {
-          repositories_seen: [],
-          repositories_never_seen: [],
-          sessions_read: [],
-          sessions_skipped: [],
-          note: "",
-        },
         graph: {
           revision: 1,
           nodes: { [node.id]: node },

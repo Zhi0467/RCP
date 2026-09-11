@@ -15,12 +15,8 @@ const server = await createServer({
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
   "/src/views/GraphViews.tsx",
 );
-const {
-  decisionsAwaitingChoice,
-  humanAttentionBlockers,
-  shouldShowCoverageBoundaryWarning,
-  taskRetryRequestBody,
-} = await server.ssrLoadModule("/src/App.tsx");
+const { decisionsAwaitingChoice, humanAttentionBlockers, taskRetryRequestBody } =
+  await server.ssrLoadModule("/src/App.tsx");
 const { AttentionRail } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/types.ts");
@@ -361,33 +357,6 @@ test("Decision attention rows show only title and state and open the existing no
   assert.ok(readyRow);
   readyRow.props.onClick();
   assert.deepEqual(selected, ["READY ROW"]);
-});
-
-test("a successful Seed or Refresh suppresses the unseeded coverage warning", () => {
-  const coverage = {
-    repositories_never_seen: ["repo-a"],
-    sessions_skipped: [],
-  };
-
-  assert.equal(shouldShowCoverageBoundaryWarning({ coverage, last_refresh_at: null }), true);
-  assert.equal(
-    shouldShowCoverageBoundaryWarning({
-      coverage: { ...coverage, note: "No seed has completed." },
-      last_refresh_at: "2026-08-06T10:00:00Z",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldShowCoverageBoundaryWarning({
-      coverage: {
-        ...coverage,
-        note: "One source thread was skipped.",
-        sessions_skipped: ["repo-a/session-1"],
-      },
-      last_refresh_at: "2026-08-06T10:00:00Z",
-    }),
-    true,
-  );
 });
 
 test("Blocker rows render exactly the supplied backend preview membership", () => {

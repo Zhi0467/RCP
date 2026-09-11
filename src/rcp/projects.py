@@ -126,7 +126,6 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "attention",
     "counts",
     "graph_mutation",
-    "coverage",
     "graph",
     "paper",
     "paper_coach",
@@ -2154,6 +2153,7 @@ class ProjectCatalog:
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict):
             return "invalid", None
+        snapshot.pop("coverage", None)
         if not migrate_display_snapshot_settings(snapshot):
             return "invalid", None
         # Pre-identity display caches did not carry the catalog's home-space field.
@@ -2168,6 +2168,7 @@ class ProjectCatalog:
         graph_payload = snapshot.get("graph")
         if not isinstance(graph_payload, dict):
             return "invalid", None
+        graph_payload.pop("coverage", None)
         try:
             graph = GraphState.model_validate(graph_payload)
             if schema_version < 5:
@@ -3025,7 +3026,6 @@ def _valid_display_snapshot(
             "attention",
             "counts",
             "graph_mutation",
-            "coverage",
             "graph",
             "paper",
             "paper_coach",

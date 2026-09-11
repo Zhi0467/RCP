@@ -535,16 +535,6 @@ export function activeBranchMergeTask(episode: Episode): AgentTask | null {
   );
 }
 
-export function shouldShowCoverageBoundaryWarning(
-  project: Pick<ProjectSnapshot, "coverage" | "last_refresh_at">,
-): boolean {
-  return (
-    (project.coverage.sessions_skipped.length > 0 ||
-      project.coverage.repositories_never_seen.length > 0) &&
-    (!project.last_refresh_at || project.coverage.note !== "No seed has completed.")
-  );
-}
-
 export function taskActionNeedsAuthoritativeProjectReload(
   task: AgentTask,
   action: "pause" | "resume" | "retry",
@@ -4365,14 +4355,6 @@ export default function App() {
             <AlertTriangle size={15} />
             <span>
               <strong>Replay degraded.</strong> {replayWarning}
-            </span>
-          </div>
-        )}
-        {shouldShowCoverageBoundaryWarning(project) && view === "overview" && (
-          <div className="coverage-banner">
-            <AlertTriangle size={15} />
-            <span>
-              <strong>Coverage boundary:</strong> {project.coverage.note}
             </span>
           </div>
         )}

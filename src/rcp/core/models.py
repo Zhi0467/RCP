@@ -545,15 +545,6 @@ class GlossaryTerm(BaseModel):
     updated_rev: int = 0
 
 
-class CoverageBoundary(BaseModel):
-    repositories_seen: list[str] = Field(default_factory=list)
-    repositories_never_seen: list[str] = Field(default_factory=list)
-    sessions_read: list[str] = Field(default_factory=list)
-    sessions_skipped: list[str] = Field(default_factory=list)
-    earliest_timestamp: datetime | None = None
-    note: str = "No seed has completed."
-
-
 class ValidationMessage(BaseModel):
     level: Literal["flag", "reject"]
     code: str
@@ -592,7 +583,6 @@ class GraphState(BaseModel):
     ambiguities: dict[str, Ambiguity] = Field(default_factory=dict)
     glossary: dict[str, GlossaryTerm] = Field(default_factory=dict)
     ontology: OntologyState = Field(default_factory=OntologyState)
-    coverage: CoverageBoundary = Field(default_factory=CoverageBoundary)
     validation_messages: list[ValidationMessage] = Field(default_factory=list)
     belief_transitions: list[BeliefTransition] = Field(default_factory=list)
     replay_status: Literal["complete", "degraded"] = "complete"

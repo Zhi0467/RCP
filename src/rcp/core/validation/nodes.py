@@ -223,8 +223,7 @@ def created_node_id(patch: Patch, node_id: Any) -> bool:
     )
 
 
-def oldest_source_ref(raw: dict[str, Any], patch: Patch, report: ValidationReport):
-    oldest = None
+def validate_source_refs(raw: dict[str, Any], patch: Patch, report: ValidationReport) -> None:
     run_scope = set(patch.run_truth_scope)
     for item in raw.get("source_refs", []):
         try:
@@ -242,13 +241,3 @@ def oldest_source_ref(raw: dict[str, Any], patch: Patch, report: ValidationRepor
                 f"Source reference uses {ref.truth_repository!r} outside this run scope.",
                 patch.revision or None,
             )
-        oldest = older(oldest, ref.timestamp)
-    return oldest
-
-
-def older(left, right):
-    if left is None:
-        return right
-    if right is None:
-        return left
-    return min(left, right)

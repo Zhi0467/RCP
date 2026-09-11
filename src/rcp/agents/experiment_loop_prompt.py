@@ -343,7 +343,7 @@ Graph reflection and authority:
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record
-  `repositories_read` honestly; do not set coverage or cursors.
+  `repositories_read` honestly; do not advance the ingestion watermark.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
   independent: report operational truth without claiming RCP accepted the Patch.
