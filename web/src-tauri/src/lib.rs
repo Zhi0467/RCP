@@ -11,6 +11,8 @@ mod server_commands;
 mod team_connections;
 mod team_session;
 mod team_tunnel;
+#[cfg(test)]
+mod test_support;
 mod updates;
 mod windows;
 

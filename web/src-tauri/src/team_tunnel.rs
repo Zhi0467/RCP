@@ -855,20 +855,17 @@ mod tests {
             assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
             // The grandchild's exit is reaped by the kernel a moment after the
             // supervisor returns; until then the group probe answers EPERM on a
-            // loaded CI runner. Poll briefly for the group to be gone.
-            let group_gone = Instant::now() + Duration::from_secs(2);
-            loop {
+            // loaded CI runner.
+            crate::test_support::wait_until("process group still present", || {
                 let result = unsafe { libc::kill(-(pid as i32), 0) };
                 let error = io::Error::last_os_error().raw_os_error();
                 if result == -1 && error == Some(libc::ESRCH) {
-                    break;
+                    Ok(())
+                } else {
+                    Err(format!("result {result}, errno {error:?}"))
                 }
-                assert!(
-                    Instant::now() < group_gone,
-                    "process group still present: result {result}, errno {error:?}"
-                );
-                time::sleep(Duration::from_millis(20)).await;
-            }
+            })
+            .await;
         });
     }
 
