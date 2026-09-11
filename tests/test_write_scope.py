@@ -226,6 +226,23 @@ def test_catalog_inventory_uses_open_canonical_scope_after_bootstrap_diverges(
         assert str(added_root / ".research") in scope.protected_write_paths
 
 
+def test_catalog_repository_inventory_fails_closed_for_unavailable_open_manifest(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    service = catalog.open(record.project_id)
+    bootstrap = tmp_path / "bootstrap.toml"
+    bootstrap.write_text(manifest.path.read_text())
+    store.upsert_project(record.model_copy(update={"locator": str(bootstrap)}))
+    service.manifest.path.unlink()
+
+    with pytest.raises(ValueError, match="repository ownership inventory"):
+        catalog.repository_ownership_inventory()
+
+
 def test_catalog_repository_inventory_fails_closed_for_unavailable_registration(
     manifest: Manifest,
     tmp_path: Path,

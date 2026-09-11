@@ -1726,8 +1726,8 @@ class ProjectCatalog:
             with self._services_lock:
                 service = self._services.get(record.project_id)
             try:
-                manifest = (
-                    service.manifest if service is not None else load_manifest(record.locator)
+                manifest = load_manifest(
+                    service.manifest.path if service is not None else record.locator
                 )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
