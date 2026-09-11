@@ -7,7 +7,14 @@ const PAIRING_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{6}$/;
 export function pairingCodeFromHash(hash: string): string | null {
   const match = /^#pair=([^&]+)$/.exec(hash.trim());
   if (!match) return null;
-  const code = decodeURIComponent(match[1]).trim().toUpperCase();
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(match[1]);
+  } catch {
+    // A malformed escape is an invalid code, not a reason to abort startup.
+    return null;
+  }
+  const code = decoded.trim().toUpperCase();
   return PAIRING_CODE_PATTERN.test(code) ? code : null;
 }
 

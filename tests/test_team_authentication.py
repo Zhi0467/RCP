@@ -1326,6 +1326,8 @@ def test_personal_space_keeps_its_local_owner_without_team_authentication(tmp_pa
         ("https://Lab-Server.tail1234.ts.net", "https://lab-server.tail1234.ts.net"),
         (" https://lab.example.org/ ", "https://lab.example.org"),
         ("https://lab.example.org:8443", "https://lab.example.org:8443"),
+        ("https://[2001:DB8::1]:8443/", "https://[2001:db8::1]:8443"),
+        ("https://[fd7a:115c:a1e0::c201:27cb]", "https://[fd7a:115c:a1e0::c201:27cb]"),
     ],
 )
 def test_access_addresses_normalize_to_one_https_origin(raw, expected) -> None:

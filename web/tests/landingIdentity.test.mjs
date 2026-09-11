@@ -480,4 +480,8 @@ test("a scanned pairing link prefills the code and only accepts the code shape",
   assert.equal(pairingCodeFromHash("#/projects/abc"), null);
   assert.equal(pairingCodeFromHash("#pair=<script>"), null);
   assert.equal(pairingCodeFromHash(""), null);
+  // A malformed escape must not throw: the parser runs at module load.
+  assert.equal(pairingCodeFromHash("#pair=%"), null);
+  assert.equal(pairingCodeFromHash("#pair=%E0%A4"), null);
+  assert.equal(pairingCodeFromHash("#pair=ABCD%2DEFGHJK"), "ABCD-EFGHJK");
 });

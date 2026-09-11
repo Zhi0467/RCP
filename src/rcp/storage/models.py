@@ -3374,8 +3374,11 @@ def normalize_space_access_url(value: str) -> str:
         raise ValueError(
             "the access address must be an https origin such as https://host.tailnet.ts.net"
         )
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"  # urlsplit strips the brackets from an IPv6 literal
     port = f":{parsed.port}" if parsed.port else ""
-    return f"https://{parsed.hostname.lower()}{port}"
+    return f"https://{host}{port}"
 
 
 def normalize_space_name(value: str) -> str:

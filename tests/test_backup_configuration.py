@@ -906,6 +906,10 @@ def test_team_access_address_round_trips_as_one_https_origin() -> None:
     assert 'access_url = "https://wth-gpu-01.tail1234.ts.net"' in rendered
     assert set(tomllib.loads(rendered)["team"]) == {"access_url"}
     assert parse_installed_server_config(render_installed_server_config(_installed())).team is None
+    bracketed = configured.model_copy(
+        update={"team": ServerTeamConfig(access_url="https://[2001:db8::1]:8443")}
+    )
+    assert parse_installed_server_config(render_installed_server_config(bracketed)) == bracketed
     with pytest.raises(ValueError):
         ServerTeamConfig(access_url="http://wth-gpu-01.tail1234.ts.net")
     with pytest.raises(ValueError):
