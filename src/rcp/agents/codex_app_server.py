@@ -419,6 +419,12 @@ class _CodexAppServerTurn(ProviderTurn):
                 },
             }
         )
+        params = value.get("params")
+        thread_id = params.get("threadId") if isinstance(params, dict) else None
+        if isinstance(thread_id, str) and thread_id != (
+            self._thread_id or self._request.session_id
+        ):
+            return ProviderRuntimeStep(outgoing=(response,))
         return ProviderRuntimeStep(
             outgoing=(response,),
             events=(

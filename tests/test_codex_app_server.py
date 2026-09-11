@@ -637,3 +637,38 @@ def test_native_agents_enabled_without_ambient_role_files(tmp_path: Path):
         "enabled": True,
         "custom": {"config_file": None, "description": ""},
     }
+
+
+@pytest.mark.parametrize(
+    "method", ["item/tool/requestUserInput", "item/commandExecution/requestApproval"]
+)
+def test_child_interactive_request_is_rejected_without_stopping_parent(tmp_path: Path, method: str):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    turn.receive_line(_usage_notification({"inputTokens": 300, "outputTokens": 30}))
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "id": 99,
+                "method": method,
+                "params": {"threadId": "child-thread", "turnId": "child-turn"},
+            }
+        )
+    )
+    assert not step.complete
+    assert not step.events
+    assert json.loads(step.outgoing[0])["error"]["code"] == -32601
+    assert turn.steering_state().can_steer
+    ending = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {"id": "active-turn", "status": "completed"},
+                },
+            }
+        )
+    )
+    assert ending.complete
+    assert ending.events[0].usage.processed_input_tokens == 300
