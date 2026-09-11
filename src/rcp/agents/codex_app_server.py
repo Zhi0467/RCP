@@ -63,6 +63,7 @@ class _CodexAppServerTurn(ProviderTurn):
         self._thread_id: str | None = None
         self._turn_id: str | None = None
         self._usage: ProviderUsage | None = None
+        self._usage_baseline: dict[str, object] = {}
         self._steers: dict[str, tuple[str, str]] = {}
         self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
@@ -75,8 +76,6 @@ class _CodexAppServerTurn(ProviderTurn):
             "--stdio",
             "--disable",
             "apps",
-            "--disable",
-            "multi_agent",
             "--disable",
             "plugins",
             "--config",
@@ -334,20 +333,36 @@ class _CodexAppServerTurn(ProviderTurn):
         method: str,
         params: dict[str, object],
     ) -> ProviderRuntimeStep:
+        # App-server multiplexes native subagents on the same connection. Only
+        # the addressed root thread may answer or terminate this RCP turn.
+        thread_id = params.get("threadId")
+        expected_thread = self._thread_id or self._request.session_id
+        if isinstance(thread_id, str) and thread_id != expected_thread:
+            return ProviderRuntimeStep()
+        if (
+            self._turn_id is not None
+            and isinstance(params.get("turnId"), str)
+            and params["turnId"] != self._turn_id
+        ):
+            return ProviderRuntimeStep()
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")
-            # Usage notifications are thread-scoped, so a resumed thread can
-            # report another turn. Keep only this turn's, and never let a later
-            # payload without a `last` breakdown erase one RCP already has.
+            # Resume reports the previous turn's total before turn/start replies.
+            # That snapshot is a baseline, never usage of the new RCP turn.
+            thread_id = self._thread_id or self._request.session_id
             if (
-                isinstance(usage, dict)
-                and isinstance(turn_id, str)
-                and (self._turn_id is None or turn_id == self._turn_id)
+                not isinstance(thread_id, str)
+                or not isinstance(usage, dict)
+                or not isinstance(usage.get("total"), dict)
+                or params.get("threadId") != thread_id
+                or not isinstance(turn_id, str)
             ):
-                reported = _usage_event(usage, turn_id)
-                if reported is not None:
-                    self._usage = reported
+                return ProviderRuntimeStep()
+            if self._turn_id is None and self._phase in {"thread", "turn"}:
+                self._usage_baseline = dict(usage["total"])
+            elif self._phase == "running" and turn_id == self._turn_id:
+                self._usage = _usage_event(usage, turn_id, self._usage_baseline)
             return ProviderRuntimeStep()
         if method == "item/completed":
             item = params.get("item")
@@ -404,11 +419,18 @@ class _CodexAppServerTurn(ProviderTurn):
                 },
             }
         )
+        params = value.get("params")
+        thread_id = params.get("threadId") if isinstance(params, dict) else None
+        if isinstance(thread_id, str) and thread_id != (
+            self._thread_id or self._request.session_id
+        ):
+            return ProviderRuntimeStep(outgoing=(response,))
         return ProviderRuntimeStep(
             outgoing=(response,),
             events=(
                 ProviderStreamEvent(
                     event="error",
+                    usage=self._usage,
                     text=(
                         "Codex app-server requested interactive input "
                         f"({method}); RCP stopped the unattended turn."
@@ -419,10 +441,9 @@ class _CodexAppServerTurn(ProviderTurn):
             explicit_terminal=True,
         )
 
-    @staticmethod
-    def _protocol_error(message: str) -> ProviderRuntimeStep:
+    def _protocol_error(self, message: str) -> ProviderRuntimeStep:
         return ProviderRuntimeStep(
-            events=(ProviderStreamEvent(event="error", text=message),),
+            events=(ProviderStreamEvent(event="error", text=message, usage=self._usage),),
             complete=True,
             explicit_terminal=True,
         )
@@ -445,7 +466,7 @@ def _containment_config(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Codex app-server could not inspect its effective configuration.")
     override: dict[str, object] = {
-        "agents": {"enabled": False},
+        "agents": _native_agents(value.get("agents")),
         "apps": {"_default": {"enabled": False}},
         # Instruction channels. RCP's staged task contract, not ambient AGENTS.md
         # files or user config prose, supplies this turn's instructions.
@@ -480,6 +501,18 @@ def _containment_config(value: object) -> dict[str, object]:
     return override
 
 
+def _native_agents(configured: object) -> dict[str, object]:
+    """Allow native delegation without loading ambient custom-role instructions."""
+    agents: dict[str, object] = {"enabled": True}
+    if configured is not None and not isinstance(configured, dict):
+        raise ValueError("Codex app-server reported an unsupported agents configuration shape.")
+    if isinstance(configured, dict):
+        for name, role in configured.items():
+            if isinstance(role, dict):
+                agents[name] = {"config_file": None, "description": ""}
+    return agents
+
+
 def _disabled_hooks(configured: object) -> dict[str, object]:
     """Empty every hook list, including an event name this RCP does not know."""
 
@@ -502,28 +535,28 @@ def _sandbox_policy(cwd: Path, *, read_only: bool) -> dict[str, object]:
     }
 
 
-def _usage_event(value: dict[str, object], turn_id: str) -> ProviderUsage | None:
-    last = value.get("last")
-    if not isinstance(last, dict):
-        return None
-    input_tokens = _usage_int(last.get("inputTokens"))
-    output_tokens = _usage_int(last.get("outputTokens"))
-    cached_input_tokens = _usage_int(last.get("cachedInputTokens"))
-    cache_write_input_tokens = _usage_int(last.get("cacheWriteInputTokens"))
-    reasoning_output_tokens = _usage_int(last.get("reasoningOutputTokens"))
+def _usage_event(
+    value: dict[str, object], turn_id: str, baseline: dict[str, object]
+) -> ProviderUsage:
+    total = value["total"]
+    assert isinstance(total, dict)
+
+    def delta(key: str) -> int:
+        return max(0, _usage_int(total.get(key)) - _usage_int(baseline.get(key)))
+
     return ProviderUsage(
-        provider_profile="codex.app-server.turn.v1",
+        provider_profile="codex.app-server.turn.v2",
         provider_event_type="thread/tokenUsage/updated",
         dedupe_key=turn_id,
-        processed_input_tokens=input_tokens,
-        generated_tokens=output_tokens,
-        cached_input_tokens=cached_input_tokens,
-        cache_write_input_tokens=cache_write_input_tokens,
-        reasoning_output_tokens=reasoning_output_tokens,
-        reported_input_tokens=input_tokens,
-        reported_output_tokens=output_tokens,
-        reported_total_tokens=_usage_int(last.get("totalTokens")),
-        provider_fields={str(key): item for key, item in last.items()},
+        processed_input_tokens=delta("inputTokens"),
+        generated_tokens=delta("outputTokens"),
+        cached_input_tokens=delta("cachedInputTokens"),
+        cache_write_input_tokens=delta("cacheWriteInputTokens"),
+        reasoning_output_tokens=delta("reasoningOutputTokens"),
+        reported_input_tokens=_usage_int(total.get("inputTokens")),
+        reported_output_tokens=_usage_int(total.get("outputTokens")),
+        reported_total_tokens=_usage_int(total.get("totalTokens")),
+        provider_fields={**value, "baseline": baseline},
     )
 
 
