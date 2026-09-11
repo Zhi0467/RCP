@@ -223,8 +223,9 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_provider_error_is_not_yielded_before_remote_cleanup(
-    tmp_path, monkeypatch, transported_launcher
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_provider_error_settles_confirmed_remote_pass_before_early_consumer_close(
+    tmp_path, monkeypatch, transported_launcher, confirmed
 ):
     from rcp.agents import AgentProcessControl
 
@@ -241,7 +242,7 @@ async def test_provider_error_is_not_yielded_before_remote_cleanup(
     monkeypatch.setattr(
         AgentProcessControl,
         "_confirm_remote_stopped",
-        lambda *args: confirmations.append(True) or True,
+        lambda *args: confirmations.append(confirmed) or confirmed,
     )
     stream = transported_launcher.stream(
         "codex",
@@ -251,10 +252,15 @@ async def test_provider_error_is_not_yielded_before_remote_cleanup(
         host="test-host",
         remote_pid_file=str(tmp_path / "agent.pid"),
     )
+    received = []
     try:
         async for event in stream:
+            received.append(event)
             if event.event == "error":
                 assert confirmations
+                stopped = [item.text for item in received if item.event == "remote_process_stop"]
+                assert stopped == ([str(tmp_path / "agent.pid")] if confirmed else [])
+                assert not any(item.event == "provider_exit" for item in received)
                 break
         else:
             pytest.fail("Expected the provider error")

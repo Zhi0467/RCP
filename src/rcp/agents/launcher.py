@@ -1039,6 +1039,10 @@ class AgentLauncher:
                                 AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
                             )
                             completion_stop_failed = not remote_stopped
+                            if prompt_delivered and remote_stopped:
+                                # Consumers may close on the first error, before
+                                # provider_exit can settle the durable pass.
+                                yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
                         provider_failed = True
                         if not prompt_delivered and not pre_prompt_error:
                             pre_prompt_error = event.text
