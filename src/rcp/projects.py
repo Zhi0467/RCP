@@ -1719,7 +1719,7 @@ class ProjectCatalog:
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
     def repository_ownership_inventory(self) -> list[RegisteredRepositoryRoot]:
-        """Use opened canonical manifests and unopened registration manifests."""
+        """Read registered ownership from canonical manifests, including retained mirrors."""
 
         roots: list[RegisteredRepositoryRoot] = []
         for record in self.store.projects():
@@ -1729,6 +1729,10 @@ class ProjectCatalog:
                 manifest = load_manifest(
                     service.manifest.path if service is not None else record.locator
                 )
+                if service is None:
+                    workspace = state_workspace_for_probe(manifest, self.data_dir)
+                    if workspace.remote:
+                        manifest = load_manifest(workspace.root / "manifest.toml")
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "

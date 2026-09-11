@@ -26,6 +26,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.shared import _stage_context_paths
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 from tests.helpers import append_fixture_patch
 
 
@@ -171,8 +172,9 @@ def test_catalog_repository_inventory_loads_registered_project_roots(
 
 
 @pytest.mark.parametrize("other_project_owns_root", [False, True])
-def test_catalog_inventory_uses_open_canonical_scope_after_bootstrap_diverges(
-    manifest: Manifest, tmp_path: Path, other_project_owns_root: bool
+@pytest.mark.parametrize("restart", [False, True])
+def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
+    manifest: Manifest, tmp_path: Path, monkeypatch, other_project_owns_root: bool, restart: bool
 ) -> None:
     data_dir = tmp_path / "data"
     store = AppStore(data_dir / "rcp.sqlite3")
@@ -202,19 +204,47 @@ def test_catalog_inventory_uses_open_canonical_scope_after_bootstrap_diverges(
     service.history.state()
     assert "repo-c" in service.manifest.repository_map
     assert "repo-c" not in load_manifest(bootstrap).repository_map
+    canonical = service.manifest
+    if restart:
+        # Keep the execution repositories local while modelling the registered
+        # remote canonical home and the mirror a successful open leaves behind.
+        def remote_home(text):
+            return (
+                text.replace(
+                    'alias = "repo-a"\nmachine = "laptop"',
+                    'alias = "repo-a"\nmachine = "state-host"',
+                ).replace('run_on = "laptop"', 'run_on = "state-host"')
+                + '\n[[machines]]\nalias = "state-host"\nhost = "compute.example"\n'
+            )
+
+        bootstrap.write_text(remote_home(bootstrap.read_text()))
+        workspace = state_workspace_for_probe(load_manifest(bootstrap), data_dir)
+        workspace.root.mkdir(parents=True)
+        mirror = workspace.root / "manifest.toml"
+        mirror.write_text(remote_home(canonical.path.read_text()))
+        canonical = load_manifest(mirror)
+        store = AppStore(data_dir / "rcp.sqlite3")
+        store.upsert_project(
+            record.model_copy(update={"locator": str(bootstrap), "state_remote": True})
+        )
+        catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+        assert catalog.loaded_service(record.project_id) is None
+
+        def no_network(_self):
+            raise AssertionError("Restarted inventory must use the retained mirror")
+
+        monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
     if other_project_owns_root:
-        _register_catalog_project(store, service.manifest, project_id="other-project")
+        _register_catalog_project(store, canonical, project_id="other-project")
 
     def resolve():
         return _resolve_local(
-            service.manifest,
+            canonical,
             tmp_path,
             project_id=record.project_id,
             aliases=["repo-c"],
             app_data_dir=data_dir,
-            repository_inventory=service.repository_ownership_inventory(
-                project_id=record.project_id
-            ),
+            repository_inventory=catalog.repository_ownership_inventory(),
         )
 
     if other_project_owns_root:
@@ -224,6 +254,29 @@ def test_catalog_inventory_uses_open_canonical_scope_after_bootstrap_diverges(
         scope = resolve()
         assert scope.repository_roots == [str(added_root.resolve())]
         assert str(added_root / ".research") in scope.protected_write_paths
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_unopened_remote_inventory_requires_readable_canonical_mirror(
+    manifest: Manifest, tmp_path: Path, monkeypatch, malformed: bool
+) -> None:
+    bootstrap = tmp_path / "remote-bootstrap.toml"
+    bootstrap.write_text(manifest.path.read_text().replace('host = ""', 'host = "compute.example"'))
+    remote = load_manifest(bootstrap)
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    _register_catalog_project(store, remote, project_id="remote-project")
+    if malformed:
+        workspace = state_workspace_for_probe(remote, data_dir)
+        workspace.root.mkdir(parents=True)
+        (workspace.root / "manifest.toml").write_text("not a manifest")
+
+    def no_network(_self):
+        raise AssertionError("Repository inventory must not refresh remote projects")
+
+    monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
+    with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
+        ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
 
 
 def test_catalog_repository_inventory_fails_closed_for_unavailable_open_manifest(
