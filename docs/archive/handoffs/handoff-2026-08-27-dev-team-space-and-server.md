@@ -2,14 +2,15 @@
 
 Date: 2026-08-27
 Last revised: 2026-09-05
-Status: completed and archived on 2026-09-05. The real CoT project is transferred
-to WTH UCSD, visibly open in the desktop, with both transfer requests completed,
+Status: completed and archived on 2026-09-05. The real research project is transferred
+to the lab team space, visibly open in the desktop, with both transfer requests completed,
 canonical history and provider originals verified, and independent backups kept.
 The human accepted the existing two production members as the two-user proof
 and skipped separate disposable-host SSH qualification. The final transfer
 defects are fixed and tested; their PR still requires CI and human merge.
 
 This is historical closure evidence, not an active implementation contract.
+Operational identities and locations below use placeholders.
 
 ## Authority at closure
 
@@ -28,7 +29,7 @@ gaps; it no longer blocks this one-lab handoff.
 - Installation, doctor, source update, forced rollback, protected backup, member
   removal, and fresh-host restore passed hosted Ubuntu 22.04/24.04 qualification.
   The final recorded run is 33919068513 at merged revision 276a2bb.
-- Production WTH UCSD updated normally to 276a2bb on 2026-09-04; the desktop
+- The production team server updated normally to 276a2bb on 2026-09-04; the desktop
   built from that revision reconnected. Doctor was healthy/aligned with
   protected backup. Record preservation was verified. Do not redeploy merely
   to match a later documentation-only commit.
@@ -59,21 +60,21 @@ and no project deletion was tested. The source checkout and backups remain.
 Restoring the whole personal database could rewind unrelated projects; any
 future recovery requires an explicitly scoped plan.
 
-## CoT transfer preflight receipt — 2026-09-05
+## Project transfer preflight receipt — 2026-09-05
 
-The identified project is **Loop steer**, id
-`1b584ca8-0049-4e5b-9b53-c1b6d913a252`, in personal space
-`8498e05a-c93a-4423-ba82-be7902d65e00`. Canonical state is at
-`tianhaowang-gpu0.ucsd.edu:/home/zhiwang/cot-loop/.research`, revision 2.
-The source Git origin is `git@github.com:Zhi0467/cot-loop.git`; its clean branch
-`codex/greedy-multirun-cleanup` is at `d55aa8009e801ea535b6a88818812e9e277d1c31`,
+The transferred research project has id
+`<project-id>`, in personal space
+`<personal-space-id>`. Canonical state is at
+`team-host.example.org:/home/operator/research-project/.research`, revision 2.
+The source Git origin is `git@github.com:example/research-project.git`; its clean branch
+`<source-branch>` is at `<source-commit>`,
 ten commits ahead of its recorded upstream. Those commits must remain preserved;
 the ordinary team wizard creates its new checkout from GitHub.
 
 Before creating any transfer request, retained mode-0600 backups were verified:
 
 - Mac directory:
-  `/Users/zhiwang/Library/Application Support/RCP Backups/cot-loop-before-team-20260905-1b584ca8/`.
+  `/Users/operator/Library/Application Support/RCP Backups/<project-backup>/`.
   `personal.sqlite3` is a consistent online SQLite backup: integrity `ok`,
   zero foreign-key violations, project row present, one succeeded Seed task
   and one old paused Seed task, no project episodes.
@@ -82,8 +83,8 @@ Before creating any transfer request, retained mode-0600 backups were verified:
   caches, and existing transfer-export directory.
   SHA-256 `22fe567a7fc83f1f2a0348ff4dc88aef3adebbea56de1a48c7a0c84bbbc50f9f`.
 - Server directory:
-  `/home/zhiwang/rcp-project-backups/cot-loop-before-team-20260905-1b584ca8/`.
-  `cot-loop.tar` is a 4.1 GB archive of the checkout, including `.git`,
+  `/home/operator/rcp-project-backups/<project-backup>/`.
+  `research-project.tar` is a 4.1 GB archive of the checkout, including `.git`,
   `.research`, ignored reports, and logs; only `.venv` and `.ruff_cache` are
   excluded. GNU tar comparison against every archived source member passed.
   SHA-256 `50412458d07eb29142a79c6916c1b456eecd077dc1ae180e017324663c9c26b8`.
@@ -92,7 +93,7 @@ Before creating any transfer request, retained mode-0600 backups were verified:
   `5e4e4535277c386454074c9cda7c19db10cb28fedffc21e13218a7a4ed8fb70f`.
   Its listing includes both accepted Patches, manifest, scope-base, and existing
   materialized files. The source `outputs` symlink is preserved as a symlink;
-  external `/data/users/zhiwang/cot-loop-spill/outputs` bytes are not duplicated
+  external `/data/users/operator/research-project-spill/outputs` bytes are not duplicated
   or changed by this RCP transfer.
 
 Do not remove these backups after completion. No source release has occurred
@@ -101,17 +102,17 @@ at this preflight boundary.
 ### Live continuation — 2026-09-05
 
 The human approved both target machine aliases (`laptop`, `remote-1`) as local
-to WTH UCSD's `rcp` account, not the Mac. They also explicitly approved the
+to the team server's `rcp` account, not the Mac. They also explicitly approved the
 repository-only write deploy key with fingerprint
-`SHA256:j05vot7/iIGju1SA2Zuyb6eXWMmbHbVra/0CSdIKp3g`; GitHub key 162388809
-was added to `Zhi0467/cot-loop`. Do not revoke it while the prepared project
+`<deploy-key-fingerprint>`; GitHub key `<deploy-key-id>`
+was added to `example/research-project`. Do not revoke it while the prepared project
 depends on it. No source-repository commits were pushed.
 
-- Source request: `fa7bc2ae-f959-4038-be60-a1a03dc97e37`.
-- Target/provisioning request: `2e57d889-438a-4394-ba1d-b1d3bb6d30df`.
-- Target space: `d54275e0-3786-434b-8db7-0a55e6549aa5`.
+- Source request: `<source-request-id>`.
+- Target/provisioning request: `<target-request-id>`.
+- Target space: `<team-space-id>`.
 - Prepared central checkout:
-  `/home/rcp/rcp-server/projects/1b584ca8-0049-4e5b-9b53-c1b6d913a252/repositories/loop-steer`.
+  `/home/rcp/rcp-server/projects/<project-id>/repositories/research-project`.
 - The desktop operator bridge correctly refused noninteractive sudo. The exact
   installed `server project provision` command completed through the human's
   sudo-authorized `rcp-update` tmux; Git write/readback/deletion and all six
@@ -131,7 +132,7 @@ depends on it. No source-repository commits were pushed.
 - Target admission passed. Source release was recorded at 16:34:39.868914 UTC,
   request revision 3, phase `source_released`, then returned HTTP 409. The exact
   read-only storage settlement check reports `project transfer requires every
-  agent task to be settled`: Seed `6a06feff-3c28-4ac5-9f21-47fd611716ce` is still
+  agent task to be settled`: Seed `<paused-task-id>` is still
   `paused`; the other Seed is `succeeded`. The wizard had reported zero active
   tasks. No canonical home-transfer Patch or sealed export has been produced
   at this boundary, and the target project is not activated. Source new-work
@@ -170,7 +171,7 @@ not a claim of GitHub CI or human merge.
   release again while capture is still running. This is a remaining progress/
   timeout usability gap, not lost history.
 - The native Save dialog saved the exact mode-0600 archive to
-  `/private/tmp/rcp-cot-relay.IBQ2bu/fa7bc2ae-f959-4038-be60-a1a03dc97e37.rcp-transfer`.
+  `/private/tmp/rcp-transfer-relay.example/<source-request-id>.rcp-transfer`.
   The saved-archive picker subsequently verified and resumed that same file;
   keyboard row selection and Return worked. Its earlier apparently disabled
   accessibility controls were not proof that the picker itself was broken.
@@ -179,7 +180,7 @@ not a claim of GitHub CI or human merge.
   and Open command again completed without the earlier team-health error.
 - SSH copying repeatedly disconnected. Bounded resumable copying eventually
   produced the exact complete mode-0600 archive at
-  `/tmp/rcp-cot-transfer-20260905-2e57d889/fa7bc2ae-f959-4038-be60-a1a03dc97e37.rcp-transfer`.
+  `/tmp/rcp-transfer.example/<source-request-id>.rcp-transfer`.
   Size and SHA-256 matched the local archive before import.
 - After the human refreshed sudo, the installed CLI imported those verified
   bytes through `rcp-update`. Upload and activation both succeeded, exit 0,
@@ -187,7 +188,7 @@ not a claim of GitHub CI or human merge.
 - Desktop **Check target and finish** verified the activation proof and completed
   source retirement. It displayed **Transfer complete**. Source request:
   `completed`, revision 10; target request: `completed`, revision 6.
-- The personal index no longer lists Loop steer. Its WTH UCSD card opens the
+- The personal index no longer lists the research project. Its team card opens the
   same project id, graph revision 3, 40 nodes, eight hypotheses, and the expected
   home-change explanation. The target registration has the correct team home,
   no retirement marker, and the reviewed central manifest path.
@@ -209,14 +210,14 @@ not a claim of GitHub CI or human merge.
   or retained artifact payloads to exercise; these empty categories do not prove
   the richer acceptance fixtures.
 - Original checkout HEAD remains
-  `d55aa8009e801ea535b6a88818812e9e277d1c31`, clean. Its ten unpublished commits
+  `<source-commit>`, clean. Its ten unpublished commits
   remain there and in the independent Git-inclusive backup. The new central
   checkout is the GitHub revision
-  `ab8fb2e55e050060d1ec612ce29425d565dd7a5c`; only RCP's `.research/` is untracked.
+  `<upstream-commit>`; only RCP's `.research/` is untracked.
   This transfer did **not** publish those local Git commits or copy external
   outputs. Any later synchronization of that research code needs its own review.
   The difference includes live-steering implementation and experiment setup,
-  not only documentation. Do not resume the latest CoT experiment from the
+  not only documentation. Do not resume the latest research experiment from the
   older central checkout until that separately authorized Git synchronization
   is complete; successful RCP ownership transfer is not code-version parity.
 - All independent backup files remain private and present. The shared tmux's
@@ -246,9 +247,9 @@ Unattended/partial-stream relay, every interruption boundary, populated
 backup/restore permutations, and independent cookie/Keychain isolation checks
 remain unqualified where acceptance records lack evidence. Preserve those gaps
 without claiming success or changing supported behavior. The existing desktop
-SSH transport to WTH UCSD is still needed for this transfer.
+SSH transport to the lab team space is still needed for this transfer.
 
-The Dark Matter attribution failure belongs to
+The research-project attribution failure belongs to
 [S41](../../acceptance/S41-bounded-experiment-control.md#open-live-failure--2026-09-04);
 it is separate from this transfer and the revised server closure.
 

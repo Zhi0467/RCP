@@ -13,9 +13,9 @@ covered_by:
   - tests/test_identity_api.py::test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper
   - web/tests/projectHistory.test.mjs
   - browser 2026-08-11 — isolated adopted project, identity-only Overview, Project revisions
-  - live SSH 2026-08-11 — exact pre-adoption chat stage reused on tianhaowang-gpu0.ucsd.edu
+  - live SSH 2026-08-11 — exact pre-adoption chat stage reused on the team host
 last_passed: 2026-08-11 — the served legacy-project flow passed with clean
-  browser and server logs; a live SSH probe on tianhaowang-gpu0.ucsd.edu then
+  browser and server logs; a live SSH probe on the team host then
   rekeyed its local task ledger, attached the exact pre-adoption remote chat
   stage, recovered its marker, and removed the isolated probe stage cleanly
 invariants: [1, 2, 6]
