@@ -526,6 +526,7 @@ class LinuxServerDoctorMachine:
             for pending in getattr(probe, "pending_member_removals", ()):
                 for problem in _member_removal_problems(pending):
                     add_problem(problem)
+        team_access_url = self._load_team_access_url(add_problem)
         overall_state = _overall_state(
             problems,
             release_state=release_state,
@@ -534,7 +535,7 @@ class LinuxServerDoctorMachine:
         return ServerDoctorReport(
             followed_release=config.release.followed if config else "stable",
             release_pin=config.release.pin if config else None,
-            team_access_url=self._load_team_access_url(add_problem),
+            team_access_url=team_access_url,
             selected_release_tag=self._selected["release_tag"] if self._selected else None,
             supervisor_version=self._selected["supervisor_version"] if self._selected else None,
             overall_state=overall_state,
