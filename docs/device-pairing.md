@@ -140,6 +140,21 @@ yet.
   proxy to port 8421.
 - **Certificate warning on the phone.** HTTPS certificates are not enabled for
   the tailnet, or MagicDNS is off; enable both in the admin console.
+- **The address never loads, or the browser reports a TLS "internal error".**
+  Tailscale requests the certificate from Let's Encrypt the first time the
+  address is opened, and that can take longer than a browser waits. Issue it
+  once, explicitly, and wait for the command to finish:
+
+  ```bash
+  sudo tailscale cert <host>.<tailnet>.ts.net
+  ```
+
+  Do not keep reloading the address while it runs. Every abandoned attempt
+  leaves a failed authorization behind, and Let's Encrypt allows five per hour
+  before it answers `rateLimited`; an attempt that ends with `order … status:
+  invalid` means the DNS challenge was not seen. Wait an hour and run the
+  command again. `sudo journalctl -u tailscaled | grep cert` shows the exact
+  ACME error.
 - **Reads work but every action fails with 403.** The HTTPS front is not
   preserving `Host` or setting `X-Forwarded-Proto: https`.
 - **The code is refused.** Codes expire after ten minutes, are single use, lock
