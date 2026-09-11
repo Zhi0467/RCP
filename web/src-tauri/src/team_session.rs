@@ -751,17 +751,15 @@ impl TeamSessionState {
         protocol: u32,
     ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
         let connection_id = connection.connection_id.as_str();
-        if let Some(saved) = connections.load_session_cookie(connection_id)? {
-            if let Ok(set_cookie) = validate_set_cookie(&saved) {
-                let cookie = request_cookie(&set_cookie)?;
-                if let Some(identity) =
-                    verify_session(client, &connection.local_origin, &cookie, protocol, health)
-                        .await?
-                {
-                    return Ok((identity, set_cookie));
-                }
+        if let Some(secret) = connections.load_session_secret(connection_id)? {
+            let set_cookie = saved_session_set_cookie(&secret);
+            let cookie = request_cookie(&set_cookie)?;
+            if let Some(identity) =
+                verify_session(client, &connection.local_origin, &cookie, protocol, health).await?
+            {
+                return Ok((identity, set_cookie));
             }
-            connections.remove_session_cookie(connection_id)?;
+            connections.remove_session_secret(connection_id)?;
         }
         let token = connections.load_member_token(connection_id)?;
         let (identity, set_cookie) = exchange_session(
@@ -773,7 +771,7 @@ impl TeamSessionState {
         )
         .await?;
         validate_identity(&identity, health)?;
-        connections.store_session_cookie(connection_id, &set_cookie)?;
+        connections.store_session_secret(connection_id, &session_secret(&set_cookie)?)?;
         Ok((identity, set_cookie))
     }
 
@@ -899,7 +897,7 @@ impl TeamSessionState {
         )
         .await?;
         validate_identity(&identity, &health)?;
-        connections.store_session_cookie(&connection.connection_id, &cookie)?;
+        connections.store_session_secret(&connection.connection_id, &session_secret(&cookie)?)?;
         connection.last_known_cards = read_project_cards(
             &client,
             &connection.local_origin,
@@ -1563,6 +1561,28 @@ fn validate_set_cookie(value: &str) -> Result<Zeroizing<String>, String> {
     Ok(Zeroizing::new(value.to_string()))
 }
 
+// The attributes the server sets on every session cookie. A saved session is
+// installed into the WebView with these, and the server re-sets the real
+// header, Max-Age included, on the first authenticated response.
+const SAVED_SESSION_COOKIE_ATTRIBUTES: &str = "; Path=/; Secure; HttpOnly; SameSite=Lax";
+
+/// The cookie value alone, which is what the desktop persists.
+fn session_secret(set_cookie: &str) -> Result<Zeroizing<String>, String> {
+    let cookie = request_cookie(set_cookie)?;
+    let secret = cookie[SESSION_COOKIE_PREFIX.len()..].to_string();
+    if !crate::team_connections::is_session_secret(secret.as_bytes()) {
+        return Err("team session exchange returned an unexpected session secret".into());
+    }
+    Ok(Zeroizing::new(secret))
+}
+
+/// Rebuild the Set-Cookie line for a saved session secret.
+fn saved_session_set_cookie(secret: &str) -> Zeroizing<String> {
+    Zeroizing::new(format!(
+        "{SESSION_COOKIE_PREFIX}{secret}{SAVED_SESSION_COOKIE_ATTRIBUTES}"
+    ))
+}
+
 fn request_cookie(set_cookie: &str) -> Result<Zeroizing<String>, String> {
     let value = set_cookie
         .split(';')
@@ -1976,6 +1996,25 @@ mod tests {
             "__Host-rcp_session=test-session"
         );
         assert!(!cookies.contains_key("team-b"));
+    }
+
+    #[test]
+    fn a_saved_session_secret_round_trips_through_the_rebuilt_cookie() {
+        let secret = format!("rcp_session_{}", "a".repeat(43));
+        let set_cookie = format!(
+            "__Host-rcp_session={secret}; HttpOnly; Max-Age=1209600; Path=/; SameSite=lax; Secure"
+        );
+        assert_eq!(session_secret(&set_cookie).unwrap().as_str(), secret);
+        let rebuilt = saved_session_set_cookie(&secret);
+        assert_eq!(
+            request_cookie(&rebuilt).unwrap().as_str(),
+            format!("__Host-rcp_session={secret}")
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(SET_COOKIE, HeaderValue::from_str(&rebuilt).unwrap());
+        assert_eq!(session_cookie(&headers).unwrap().as_str(), rebuilt.as_str());
+        assert!(session_secret("__Host-rcp_session=rcp_session_short; Path=/").is_err());
+        assert!(session_secret("__Host-rcp_session=rcp_not_a_session; Path=/").is_err());
     }
 
     #[test]

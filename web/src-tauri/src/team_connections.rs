@@ -28,6 +28,8 @@ const MEMBER_TOKEN_PREFIX: &[u8] = b"rcp_";
 const MEMBER_TOKEN_RANDOM_BYTES: usize = 43;
 const MEMBER_TOKEN_BYTES: usize = MEMBER_TOKEN_PREFIX.len() + MEMBER_TOKEN_RANDOM_BYTES;
 const SESSION_TOKEN_PREFIX: &[u8] = b"rcp_session_";
+pub(crate) const SESSION_SECRET_BYTES: usize =
+    SESSION_TOKEN_PREFIX.len() + MEMBER_TOKEN_RANDOM_BYTES;
 const ENROLLMENT_CODE_ID_BYTES: usize = 16;
 const BOOTSTRAP_CODE_PREFIX: &[u8] = b"rcp_bootstrap_";
 const INVITATION_CODE_PREFIX: &[u8] = b"rcp_invite_";
@@ -279,11 +281,17 @@ impl TeamConnectionState {
     /// Keep the browser session the desktop exchanged beside the token that
     /// minted it, so a relaunch resumes that session instead of adding one more
     /// row to the member's device list. The value is the server's Set-Cookie.
-    pub(crate) fn store_session_cookie(
+    /// Save the session secret (the cookie's value) for one connection. Only the
+    /// secret is kept: a Set-Cookie line is longer than the Keychain tool's
+    /// prompt accepts, and its attributes are fixed by the server anyway.
+    pub(crate) fn store_session_secret(
         &self,
         connection_id: &str,
-        set_cookie: &str,
+        secret: &str,
     ) -> Result<(), String> {
+        if !is_session_secret(secret.as_bytes()) {
+            return Err("the team session secret has an unexpected shape".into());
+        }
         let reference = session_reference(connection_id)?;
         let _guard = self.acquire()?;
         if !self
@@ -294,10 +302,13 @@ impl TeamConnectionState {
         {
             return Err("team connection metadata must be saved before its session".into());
         }
-        store_keychain_password(&reference, set_cookie.as_bytes())
+        store_keychain_password(&reference, secret.as_bytes())
     }
 
-    pub(crate) fn load_session_cookie(
+    /// Read the saved session secret. A stored value that is not a session
+    /// secret (an earlier desktop saved the whole Set-Cookie line, which the
+    /// Keychain tool truncated) reads as absent, so the next exchange replaces it.
+    pub(crate) fn load_session_secret(
         &self,
         connection_id: &str,
     ) -> Result<Option<Zeroizing<String>>, String> {
@@ -306,12 +317,15 @@ impl TeamConnectionState {
         let Some(bytes) = load_keychain_password(&reference)? else {
             return Ok(None);
         };
+        if !is_session_secret(&bytes) {
+            return Ok(None);
+        }
         let value = String::from_utf8(bytes.to_vec())
             .map_err(|_| "the saved team session is invalid".to_string())?;
         Ok(Some(Zeroizing::new(value)))
     }
 
-    pub(crate) fn remove_session_cookie(&self, connection_id: &str) -> Result<bool, String> {
+    pub(crate) fn remove_session_secret(&self, connection_id: &str) -> Result<bool, String> {
         let reference = session_reference(connection_id)?;
         let _guard = self.acquire()?;
         remove_keychain_password(&reference)
@@ -683,6 +697,14 @@ fn validate_member_token(token: &str) -> Result<(), String> {
         return Err("team member credential is not a permanent RCP member token".into());
     }
     Ok(())
+}
+
+pub(crate) fn is_session_secret(value: &[u8]) -> bool {
+    value.len() == SESSION_SECRET_BYTES
+        && value.starts_with(SESSION_TOKEN_PREFIX)
+        && value[SESSION_TOKEN_PREFIX.len()..]
+            .iter()
+            .all(is_urlsafe_byte)
 }
 
 fn contains_rcp_credential(value: &[u8]) -> bool {
