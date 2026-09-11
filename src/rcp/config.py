@@ -532,12 +532,13 @@ def load_manifest(
     value: str | os.PathLike[str],
     *,
     local_home: Path | None = None,
+    project_root: Path | None = None,
 ) -> Manifest:
     path = resolve_manifest_path(value, local_home=local_home)
     data = tomlkit.parse(path.read_text(encoding="utf-8"))
     manifest = Manifest.model_validate(data.unwrap())
     manifest._path = path
-    project_root = path.parent.parent
+    project_root = path.parent.parent if project_root is None else project_root
     for repository in manifest.repositories:
         repository_path = _expand_local_user_path(repository.path, local_home=local_home)
         if not repository_path.is_absolute() and not manifest.machine_map[repository.machine].host:

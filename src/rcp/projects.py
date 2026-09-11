@@ -1733,7 +1733,9 @@ class ProjectCatalog:
                 bootstrap = load_manifest(record.locator)
                 workspace = state_workspace_for_probe(bootstrap, self.data_dir)
                 if isinstance(workspace, SSHStateWorkspace):
-                    manifest = load_remote_workspace_manifest(bootstrap, workspace)
+                    manifest = load_remote_workspace_manifest(
+                        bootstrap, workspace, project_root=bootstrap.path.parent.parent
+                    )
                 else:
                     if service is not None:
                         workspace = service.history.workspace
