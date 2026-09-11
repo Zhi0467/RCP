@@ -20,11 +20,13 @@ from rcp.agents.write_scope import (
     resolve_project_write_scope,
 )
 from rcp.background import AgentTaskExecution
-from rcp.config import Manifest
+from rcp.config import Manifest, load_manifest
+from rcp.core.models import Patch
 from rcp.projects import ProjectCatalog
 from rcp.runs.shared import _stage_context_paths
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
+from tests.helpers import append_fixture_patch
 
 
 def _local_pointers(manifest: Manifest, aliases: list[str]) -> list[RepositoryPointer]:
@@ -166,6 +168,62 @@ def test_catalog_repository_inventory_loads_registered_project_roots(
         ("registered-project", "repo-a"),
         ("registered-project", "repo-b"),
     }
+
+
+@pytest.mark.parametrize("other_project_owns_root", [False, True])
+def test_catalog_inventory_uses_open_canonical_scope_after_bootstrap_diverges(
+    manifest: Manifest, tmp_path: Path, other_project_owns_root: bool
+) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    service = catalog.open(record.project_id)
+    bootstrap = tmp_path / "bootstrap.toml"
+    bootstrap.write_text(manifest.path.read_text())
+    store.upsert_project(record.model_copy(update={"locator": str(bootstrap)}))
+    added_root = tmp_path / "repo-c"
+    added_root.mkdir()
+    append_fixture_patch(
+        service,
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Admit the additional experiment repository.",
+            ops=[
+                {
+                    "op": "set_project_truth_scope",
+                    "truth_scope": ["repo-a", "repo-b", "repo-c"],
+                    "repository": {"alias": "repo-c", "machine": "laptop", "path": str(added_root)},
+                }
+            ],
+        ),
+    )
+    service.history.state()
+    assert "repo-c" in service.manifest.repository_map
+    assert "repo-c" not in load_manifest(bootstrap).repository_map
+    if other_project_owns_root:
+        _register_catalog_project(store, service.manifest, project_id="other-project")
+
+    def resolve():
+        return _resolve_local(
+            service.manifest,
+            tmp_path,
+            project_id=record.project_id,
+            aliases=["repo-c"],
+            app_data_dir=data_dir,
+            repository_inventory=service.repository_ownership_inventory(
+                project_id=record.project_id
+            ),
+        )
+
+    if other_project_owns_root:
+        with pytest.raises(ValueError, match="another project"):
+            resolve()
+    else:
+        scope = resolve()
+        assert scope.repository_roots == [str(added_root.resolve())]
+        assert str(added_root / ".research") in scope.protected_write_paths
 
 
 def test_catalog_repository_inventory_fails_closed_for_unavailable_registration(

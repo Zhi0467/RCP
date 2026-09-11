@@ -1719,12 +1719,16 @@ class ProjectCatalog:
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
     def repository_ownership_inventory(self) -> list[RegisteredRepositoryRoot]:
-        """Load every registered repository ownership boundary from its manifest."""
+        """Use opened canonical manifests and unopened registration manifests."""
 
         roots: list[RegisteredRepositoryRoot] = []
         for record in self.store.projects():
+            with self._services_lock:
+                service = self._services.get(record.project_id)
             try:
-                manifest = load_manifest(record.locator)
+                manifest = (
+                    service.manifest if service is not None else load_manifest(record.locator)
+                )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "
