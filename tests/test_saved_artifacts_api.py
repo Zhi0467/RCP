@@ -133,3 +133,34 @@ def test_inventory_enforces_membership_and_never_lists_other_project_outputs(tmp
     assert client.get(f"/api/projects/{second}/artifacts").json() == []
     acting[0] = people[1].user_id
     assert client.get(f"/api/projects/{first}/artifacts").status_code == 404
+
+
+def test_legacy_project_url_lists_saved_outputs_with_canonical_viewer_urls(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    create_saved_artifact(app, project_id)
+    create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="aliased-report",
+        report_html="<!doctype html><h1>Retained report</h1>",
+    )
+    alias = "legacy-project-url"
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
+            (alias, project_id),
+        )
+    # Reopen to load the durable alias into the catalog's request-path snapshot.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with TestClient(app) as client:
+        canonical = client.get(f"/api/projects/{project_id}/artifacts")
+        legacy = client.get(f"/api/projects/{alias}/artifacts")
+        assert canonical.status_code == legacy.status_code == 200
+        assert legacy.json() == canonical.json()
+        assert {entry["kind"] for entry in legacy.json()} == {"artifact", "report"}
+        for entry in legacy.json():
+            assert entry["viewer_url"].startswith(f"/api/projects/{project_id}/")
+            assert client.get(entry["viewer_url"]).status_code == 200

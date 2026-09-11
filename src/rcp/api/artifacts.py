@@ -41,6 +41,7 @@ def saved_artifacts(
     store: Annotated[AppStore, Depends(get_store)],
 ) -> list[SavedArtifactResponse]:
     """Project saved output inventory, independent of recent task/episode windows."""
+    # require_current_instance canonicalizes legacy project URLs before routing.
     require_registered_project(catalog, project_id)
     base = f"/api/projects/{quote(project_id, safe='')}"
     entries: list[SavedArtifactResponse] = []
@@ -70,6 +71,9 @@ def saved_artifacts(
                     ),
                 )
             )
+    # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
+    # retains that wrap-up and forbids stopped endings. Captured reports therefore
+    # satisfy _episode_report_viewer_response's availability prerequisites.
     for report in store.project_episode_report_summaries(project_id):
         label = "Experiment" if report.mode == "experiment_loop" else "Auto-research"
         subject = report.control_node_id or report.instruction or report.episode_id[:8]
