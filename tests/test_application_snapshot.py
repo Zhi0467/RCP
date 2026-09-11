@@ -273,6 +273,9 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
     (workspace / "test_acurrent").symlink_to("test_a0")
     (workspace / "python").symlink_to("/usr/bin/python3")
     (workspace / "gone").symlink_to("missing")
+    # Leading whitespace is a legal name the supervisor accepts; it is kept.
+    (workspace / " results").mkdir()
+    (workspace / " results" / "latest").symlink_to("../test_a0")
 
     # Trees RCP writes itself never contain links: a link still refuses them.
     with pytest.raises(ApplicationSnapshotRefused, match="contains a link"):
@@ -291,6 +294,7 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
         "run-stage/chat-1/workspace/pytest-0/test_a0/log.txt",
     ]
     assert "run-stage/chat-1/workspace/pytest-0/test_a0" in directories
+    assert "run-stage/chat-1/workspace/pytest-0/ results" in directories
     copied = tmp_path / "copied"
     assert {
         path.relative_to(copied).as_posix(): os.readlink(path)
@@ -300,6 +304,7 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
         "workspace/pytest-0/test_acurrent": "test_a0",
         "workspace/pytest-0/python": "/usr/bin/python3",
         "workspace/pytest-0/gone": "missing",
+        "workspace/pytest-0/ results/latest": "../test_a0",
     }
     # The link text was copied, not what it points at.
     assert not (copied / "workspace" / "pytest-0" / "gone").exists()

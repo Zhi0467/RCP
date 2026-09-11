@@ -321,17 +321,23 @@ _LINK_TEXT_MAX_BYTES = 4096
 def _stage_relative_path(path: Path, root: Path) -> str:
     """Name one stage entry the way the supervisor's checkpoint manifest requires.
 
-    The supervisor rejects backslashes and control characters in entry paths, so
-    a stage entry with such a name refuses here, before the payload is prepared,
-    instead of failing checkpoint creation afterwards.
+    Exactly the supervisor's constraints and no more: an agent may legally name
+    a directory with leading whitespace, but a backslash or a control character
+    would make checkpoint creation fail after the payload was prepared, so such
+    an entry refuses here instead.
     """
     relative = path.relative_to(root).as_posix()
-    try:
-        return _relative_path(relative, label="recovery stage entry")
-    except ValueError as error:
+    if (
+        not relative
+        or len(relative.encode()) > 4096
+        or any(ord(character) < 32 for character in relative)
+        or "\\" in relative
+        or str(PurePosixPath(relative)) != relative
+    ):
         raise ApplicationSnapshotRefused(
             f"A recovery stage entry has an unusable name: {relative!r}"
-        ) from error
+        )
+    return relative
 
 
 def _link_text(path: Path, root: Path) -> str:
