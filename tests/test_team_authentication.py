@@ -1345,6 +1345,13 @@ def test_access_addresses_normalize_to_one_https_origin(raw, expected) -> None:
         "https://lab.example.org/#pair",
         "lab.example.org",
         "https://" + "a" * 200 + ".org",
+        "https://lab example.org",
+        "https://lab.example.org\\extra",
+        "https://lab_server.example.org",
+        "https://-lab.example.org",
+        "https://999.1.1.1",
+        "https://[2001:db8::zz]",
+        "https://lab.example.org:99999",
     ],
 )
 def test_access_addresses_reject_anything_but_an_https_origin(raw) -> None:

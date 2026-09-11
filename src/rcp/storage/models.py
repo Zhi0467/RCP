@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import secrets
@@ -3370,6 +3371,7 @@ def normalize_space_access_url(value: str) -> str:
         or parsed.query
         or parsed.fragment
         or parsed.path not in ("", "/")
+        or not _browser_valid_host(parsed.hostname)
     ):
         raise ValueError(
             "the access address must be an https origin such as https://host.tailnet.ts.net"
@@ -3379,6 +3381,30 @@ def normalize_space_access_url(value: str) -> str:
         host = f"[{host}]"  # urlsplit strips the brackets from an IPv6 literal
     port = f":{parsed.port}" if parsed.port else ""
     return f"https://{host}{port}"
+
+
+_DNS_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+def _browser_valid_host(host: str) -> bool:
+    """A DNS name or IP literal a browser will open; urlsplit accepts far more."""
+
+    if ":" in host:
+        try:
+            return isinstance(ipaddress.ip_address(host), ipaddress.IPv6Address)
+        except ValueError:
+            return False
+    lowered = host.lower()
+    if len(lowered) > 253:
+        return False
+    labels = lowered.split(".")
+    if all(label.isdigit() for label in labels):
+        try:
+            ipaddress.IPv4Address(lowered)
+        except ValueError:
+            return False
+        return True
+    return all(_DNS_LABEL.fullmatch(label) for label in labels)
 
 
 def normalize_space_name(value: str) -> str:
