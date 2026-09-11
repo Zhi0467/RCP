@@ -92,7 +92,8 @@ for line in sys.stdin:
                     "threadId": \"app-thread-1\",
                     "turnId": \"turn-1\",
                     "tokenUsage": {{
-                        "last": {{"inputTokens": 7, "outputTokens": 3, "totalTokens": 10}}
+                        "total": {{"inputTokens": 7, "outputTokens": 3, "totalTokens": 10}},
+                        "last": {{"inputTokens": 2, "outputTokens": 1, "totalTokens": 3}}
                     }},
                 }},
             }})
@@ -202,7 +203,7 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
     assert [event.session_id for event in events if event.event == "session"] == ["app-thread-1"]
     assert [event.text for event in events if event.event == "answer"] == ["APP_SERVER_OK"]
     usage = next(event.usage for event in events if event.usage is not None)
-    assert usage.provider_profile == "codex.app-server.turn.v1"
+    assert usage.provider_profile == "codex.app-server.turn.v2"
     assert usage.processed_input_tokens == 7
     assert events[-1].event == "done", [(event.event, event.text) for event in events]
     transcript = json.loads(capture.read_text(encoding="utf-8"))
@@ -447,3 +448,117 @@ async def test_app_server_does_not_fallback_after_prompt_delivery(tmp_path: Path
     ]
     assert any(event.event == "error" for event in events)
     assert attempts.read_text(encoding="utf-8").splitlines() == ["app-server"]
+
+
+def _accounting_turn(tmp_path: Path, *, resumed: bool):
+    turn = CodexAppServerRuntime().turn(
+        ProviderTurnRequest(
+            prompt="Count the whole turn",
+            binary="codex",
+            cwd=tmp_path,
+            model=None,
+            reasoning=None,
+            session_id="accounting-thread" if resumed else None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="paper_readonly",
+            provider_version="0.153.4",
+        )
+    )
+    for message in (
+        {"id": 1, "result": {}},
+        {"id": 2, "result": {"config": {}}},
+        {
+            "id": 3,
+            "result": {
+                "thread": {"id": "accounting-thread"},
+                "approvalPolicy": "never",
+                "sandbox": {"type": "readOnly"},
+            },
+        },
+    ):
+        turn.receive_line(json.dumps(message))
+    return turn
+
+
+def _usage_notification(total, *, thread_id="accounting-thread", turn_id="active-turn"):
+    return json.dumps(
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "tokenUsage": {
+                    "total": total,
+                    "last": {"inputTokens": 200, "outputTokens": 20},
+                },
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize("status", ["completed", "failed", "interrupted"])
+def test_app_server_counts_complete_turn_once(tmp_path: Path, resumed: bool, status: str):
+    turn = _accounting_turn(tmp_path, resumed=resumed)
+    increment = {
+        "inputTokens": 300,
+        "outputTokens": 30,
+        "cachedInputTokens": 200,
+        "cacheWriteInputTokens": 10,
+        "reasoningOutputTokens": 5,
+        "totalTokens": 330,
+    }
+    baseline = {key: value * 2 for key, value in increment.items()} if resumed else {}
+    if resumed:
+        turn.receive_line(_usage_notification(baseline, turn_id="previous-turn"))
+    turn.receive_line(_usage_notification(increment, thread_id="unrelated-thread"))
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    events = []
+    for snapshot in (
+        {key: baseline.get(key, 0) + value // 3 for key, value in increment.items()},
+        {key: baseline.get(key, 0) + value for key, value in increment.items()},
+        {key: baseline.get(key, 0) + value for key, value in increment.items()},
+    ):
+        events.extend(turn.receive_line(_usage_notification(snapshot)).events)
+    # Neither unrelated usage nor an incomplete payload can overwrite the total.
+    for notification in (
+        _usage_notification(increment, thread_id="unrelated-thread"),
+        _usage_notification(increment, turn_id="previous-turn"),
+        _usage_notification(None),
+    ):
+        events.extend(turn.receive_line(notification).events)
+    ending = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {"id": "active-turn", "status": status},
+                },
+            }
+        )
+    )
+    events.extend(ending.events)
+    assert ending.complete
+    usages = [event.usage for event in events if event.usage is not None]
+    assert len(usages) == 1
+    usage = usages[0]
+    assert usage.provider_profile == "codex.app-server.turn.v2"
+    assert usage.processed_input_tokens == 300
+    assert usage.generated_tokens == 30
+    assert usage.cached_input_tokens == 200
+    assert usage.cache_write_input_tokens == 10
+    assert usage.reasoning_output_tokens == 5
+    assert usage.reported_input_tokens == baseline.get("inputTokens", 0) + 300
+    assert usage.provider_fields["baseline"] == baseline
+    assert usage.dedupe_key == "active-turn"
+
+
+def test_app_server_resume_failure_does_not_bill_previous_turn(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=True)
+    turn.receive_line(_usage_notification({"inputTokens": 600}, turn_id="previous-turn"))
+    result = turn.receive_line(json.dumps({"id": 4, "error": {"message": "start failed"}}))
+    assert result.complete
+    assert all(event.usage is None for event in result.events)

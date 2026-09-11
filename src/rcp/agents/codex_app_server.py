@@ -63,6 +63,7 @@ class _CodexAppServerTurn(ProviderTurn):
         self._thread_id: str | None = None
         self._turn_id: str | None = None
         self._usage: ProviderUsage | None = None
+        self._usage_baseline: dict[str, object] = {}
         self._steers: dict[str, tuple[str, str]] = {}
         self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
@@ -337,17 +338,21 @@ class _CodexAppServerTurn(ProviderTurn):
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")
-            # Usage notifications are thread-scoped, so a resumed thread can
-            # report another turn. Keep only this turn's, and never let a later
-            # payload without a `last` breakdown erase one RCP already has.
+            # Resume reports the previous turn's total before turn/start replies.
+            # That snapshot is a baseline, never usage of the new RCP turn.
+            thread_id = self._thread_id or self._request.session_id
             if (
-                isinstance(usage, dict)
-                and isinstance(turn_id, str)
-                and (self._turn_id is None or turn_id == self._turn_id)
+                not isinstance(thread_id, str)
+                or not isinstance(usage, dict)
+                or not isinstance(usage.get("total"), dict)
+                or params.get("threadId") != thread_id
+                or not isinstance(turn_id, str)
             ):
-                reported = _usage_event(usage, turn_id)
-                if reported is not None:
-                    self._usage = reported
+                return ProviderRuntimeStep()
+            if self._turn_id is None and self._phase in {"thread", "turn"}:
+                self._usage_baseline = dict(usage["total"])
+            elif self._phase == "running" and turn_id == self._turn_id:
+                self._usage = _usage_event(usage, turn_id, self._usage_baseline)
             return ProviderRuntimeStep()
         if method == "item/completed":
             item = params.get("item")
@@ -419,10 +424,9 @@ class _CodexAppServerTurn(ProviderTurn):
             explicit_terminal=True,
         )
 
-    @staticmethod
-    def _protocol_error(message: str) -> ProviderRuntimeStep:
+    def _protocol_error(self, message: str) -> ProviderRuntimeStep:
         return ProviderRuntimeStep(
-            events=(ProviderStreamEvent(event="error", text=message),),
+            events=(ProviderStreamEvent(event="error", text=message, usage=self._usage),),
             complete=True,
             explicit_terminal=True,
         )
@@ -502,28 +506,28 @@ def _sandbox_policy(cwd: Path, *, read_only: bool) -> dict[str, object]:
     }
 
 
-def _usage_event(value: dict[str, object], turn_id: str) -> ProviderUsage | None:
-    last = value.get("last")
-    if not isinstance(last, dict):
-        return None
-    input_tokens = _usage_int(last.get("inputTokens"))
-    output_tokens = _usage_int(last.get("outputTokens"))
-    cached_input_tokens = _usage_int(last.get("cachedInputTokens"))
-    cache_write_input_tokens = _usage_int(last.get("cacheWriteInputTokens"))
-    reasoning_output_tokens = _usage_int(last.get("reasoningOutputTokens"))
+def _usage_event(
+    value: dict[str, object], turn_id: str, baseline: dict[str, object]
+) -> ProviderUsage:
+    total = value["total"]
+    assert isinstance(total, dict)
+
+    def delta(key: str) -> int:
+        return max(0, _usage_int(total.get(key)) - _usage_int(baseline.get(key)))
+
     return ProviderUsage(
-        provider_profile="codex.app-server.turn.v1",
+        provider_profile="codex.app-server.turn.v2",
         provider_event_type="thread/tokenUsage/updated",
         dedupe_key=turn_id,
-        processed_input_tokens=input_tokens,
-        generated_tokens=output_tokens,
-        cached_input_tokens=cached_input_tokens,
-        cache_write_input_tokens=cache_write_input_tokens,
-        reasoning_output_tokens=reasoning_output_tokens,
-        reported_input_tokens=input_tokens,
-        reported_output_tokens=output_tokens,
-        reported_total_tokens=_usage_int(last.get("totalTokens")),
-        provider_fields={str(key): item for key, item in last.items()},
+        processed_input_tokens=delta("inputTokens"),
+        generated_tokens=delta("outputTokens"),
+        cached_input_tokens=delta("cachedInputTokens"),
+        cache_write_input_tokens=delta("cacheWriteInputTokens"),
+        reasoning_output_tokens=delta("reasoningOutputTokens"),
+        reported_input_tokens=_usage_int(total.get("inputTokens")),
+        reported_output_tokens=_usage_int(total.get("outputTokens")),
+        reported_total_tokens=_usage_int(total.get("totalTokens")),
+        provider_fields={**value, "baseline": baseline},
     )
 
 
