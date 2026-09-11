@@ -147,8 +147,17 @@ def _file_hash(path: Path, *, max_bytes: int | None = None) -> tuple[str, int, i
 
 
 def _inventory(
-    root: Path, *, max_entries: int | None = None, max_bytes: int | None = None
+    root: Path,
+    *,
+    max_entries: int | None = None,
+    max_bytes: int | None = None,
+    links: bool = True,
 ) -> list[dict]:
+    """Inventory a tree; ``links`` records symbolic links by text, else refuses them.
+
+    Application-prepared payloads may carry links inside retained recovery stages;
+    an offline snapshot of an opaque live root keeps the old fail-closed rule.
+    """
     max_entries = MAX_CHECKPOINT_ENTRIES if max_entries is None else max_entries
     max_bytes = MAX_CHECKPOINT_BYTES if max_bytes is None else max_bytes
     _directory(root)
@@ -173,7 +182,7 @@ def _inventory(
                     _directory(child)
                     result.append({"path": relative, "kind": "directory"})
                     pending.append(child)
-                elif stat.S_ISLNK(info.st_mode):
+                elif stat.S_ISLNK(info.st_mode) and links:
                     # A link is inventory by its text alone; nothing here follows it.
                     target = os.readlink(child)
                     if not _valid_link_target(target):
@@ -259,7 +268,6 @@ def _valid_link_target(target: object) -> bool:
         isinstance(target, str)
         and 0 < len(target.encode()) <= 4096
         and not any(ord(c) < 32 for c in target)
-        and "\\" not in target
     )
 
 
@@ -478,6 +486,7 @@ def _create_checkpoint(
             root.payload,
             max_entries=MAX_CHECKPOINT_ENTRIES - total_entries,
             max_bytes=MAX_CHECKPOINT_BYTES - total_bytes,
+            links=not offline_snapshot,
         )
         inventories.append(entries)
         total_entries += len(entries)
@@ -501,7 +510,7 @@ def _create_checkpoint(
         _validate_entries(entries)
         relative = f"payload/{index}"
         _copy_tree(root.payload, destination / relative, entries, stored=True)
-        if _inventory(root.payload) != entries:
+        if _inventory(root.payload, links=not offline_snapshot) != entries:
             _fail("An application checkpoint payload changed during capture.")
         records.append({"live": str(root.live), "payload": relative, "entries": entries})
     document = {

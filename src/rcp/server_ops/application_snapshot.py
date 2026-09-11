@@ -201,8 +201,11 @@ def _set_private_directory_modes(root: Path) -> None:
         current_path.chmod(_DIRECTORY_MODE)
         for name in directory_names:
             path = current_path / name
+            if path.is_symlink():
+                # A preserved stage link to a directory; nothing is rebuilt through it.
+                continue
             metadata = path.lstat()
-            if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+            if not stat.S_ISDIR(metadata.st_mode):
                 raise ApplicationSnapshotRefused("A rebuilt checkpoint directory is unsafe.")
 
 
@@ -273,17 +276,19 @@ def _tree_inventory(
         file_names.sort()
         for name in directory_names:
             path = current_path / name
+            relative = _stage_relative_path(path, root)
             if path.is_symlink() and keep_links:
-                links.append((path.relative_to(root).as_posix(), _link_text(path, root)))
+                links.append((relative, _link_text(path, root)))
                 continue
             metadata = path.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
                 raise ApplicationSnapshotRefused("A recovery-critical tree contains a link.")
-            directories.append(path.relative_to(root).as_posix())
+            directories.append(relative)
         for name in file_names:
             path = current_path / name
+            relative = _stage_relative_path(path, root)
             if path.is_symlink() and keep_links:
-                links.append((path.relative_to(root).as_posix(), _link_text(path, root)))
+                links.append((relative, _link_text(path, root)))
                 continue
             metadata = path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
@@ -292,7 +297,7 @@ def _tree_inventory(
                 )
             files.append(
                 (
-                    path.relative_to(root).as_posix(),
+                    relative,
                     (
                         metadata.st_dev,
                         metadata.st_ino,
@@ -311,6 +316,22 @@ def _tree_inventory(
 
 
 _LINK_TEXT_MAX_BYTES = 4096
+
+
+def _stage_relative_path(path: Path, root: Path) -> str:
+    """Name one stage entry the way the supervisor's checkpoint manifest requires.
+
+    The supervisor rejects backslashes and control characters in entry paths, so
+    a stage entry with such a name refuses here, before the payload is prepared,
+    instead of failing checkpoint creation afterwards.
+    """
+    relative = path.relative_to(root).as_posix()
+    try:
+        return _relative_path(relative, label="recovery stage entry")
+    except ValueError as error:
+        raise ApplicationSnapshotRefused(
+            f"A recovery stage entry has an unusable name: {relative!r}"
+        ) from error
 
 
 def _link_text(path: Path, root: Path) -> str:

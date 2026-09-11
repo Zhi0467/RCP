@@ -275,7 +275,10 @@ def test_checkpoint_keeps_payload_links_by_text_and_never_follows_them(tmp_path:
         "stage/python": "/usr/bin/python3",  # absolute, an environment pointer
         "stage/gone": "missing-target",  # dangling
         "stage/escape": str(outside),  # points outside every root
+        "stage/odd": "dir\\name",  # a backslash is an ordinary character on Linux
+        "stage/pytest-current": "pytest-0",  # a link to a directory
     }
+    (payload / "stage" / "pytest-0").mkdir(mode=0o700)
     for relative, target in links.items():
         (payload / relative).symlink_to(target)
 
@@ -496,3 +499,8 @@ def test_offline_adoption_snapshot_retains_original_sqlite_before_new_code(tmp_p
         assert connection.execute("SELECT * FROM old_records").fetchall() == [
             ("retained original",)
         ]
+
+    # An opaque legacy root keeps the fail-closed rule: a link anywhere refuses.
+    (live / "stray").symlink_to("rcp.sqlite3")
+    with pytest.raises(SupervisorError):
+        create_offline_snapshot(tmp_path / "legacy-checkpoint-2", live, boundary_sha256="b" * 64)

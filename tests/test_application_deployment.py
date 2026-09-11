@@ -77,6 +77,8 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     stage = Path(state["stage"])
     (stage / "current").symlink_to("retained.txt")
     (stage / "python").symlink_to("/usr/bin/python3")
+    (stage / "pytest-0").mkdir(mode=0o700)
+    (stage / "pytest-current").symlink_to("pytest-0")  # pytest's directory link
     # The canonical graph file names remain owned by the app; compare its whole
     # prepared .research tree and the retained payload after exact replacement.
     prepared = prepare(request)
@@ -107,6 +109,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     assert (Path(state["stage"]) / "retained.txt").read_text() != "candidate altered"
     assert os.readlink(stage / "current") == "retained.txt"
     assert os.readlink(stage / "python") == "/usr/bin/python3"
+    assert os.readlink(stage / "pytest-current") == "pytest-0"
     restored = AppStore(data / "rcp.sqlite3")
     assert restored.authenticate_team_member_token(state["token"]).user_id == state["member_id"]
     with sqlite3.connect(data / "rcp.sqlite3") as connection:

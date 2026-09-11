@@ -305,6 +305,19 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
     assert not (copied / "workspace" / "pytest-0" / "gone").exists()
     assert (copied / "workspace" / "pytest-0" / "gone").is_symlink()
 
+    # A name the supervisor's manifest would reject refuses here, before the
+    # payload is prepared, so a failed checkpoint never blocks the update.
+    odd = tmp_path / "run-stage" / "chat-odd"
+    odd.mkdir(parents=True)
+    (odd / "dir\\name").symlink_to("target")
+    with pytest.raises(ApplicationSnapshotRefused, match="unusable name"):
+        _snapshot_tree(
+            odd,
+            tmp_path / "odd-copied",
+            relative_prefix=PurePosixPath("run-stage/chat-odd"),
+            keep_links=True,
+        )
+
     # Links count toward the inventory bound like everything else.
     monkeypatch.setattr("rcp.server_ops.application_snapshot.BACKUP_INVENTORY_MAX_ENTRIES", 40)
     flood = tmp_path / "run-stage" / "chat-2"
