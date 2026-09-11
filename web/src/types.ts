@@ -1,7 +1,15 @@
 export type Standing = "asserted" | "accepted" | "contested";
 export type TrustView = "working" | "accepted" | "review";
 export type AppView =
-  "overview" | "attention" | "scientific" | "dag" | "execution" | "paper" | "settings" | "chats";
+  | "overview"
+  | "attention"
+  | "scientific"
+  | "dag"
+  | "execution"
+  | "artifacts"
+  | "paper"
+  | "settings"
+  | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
 export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
@@ -839,6 +847,7 @@ export interface ExperimentControlState {
   can_switch_provider: boolean;
   can_open_report: boolean;
   report_episode_id: string | null;
+  report_is_current: boolean;
   node_closed: boolean;
 }
 
@@ -2681,4 +2690,18 @@ export interface WritingSession {
   introduction_hash_examined: string;
   graph_revision_examined: number;
   research_md_hash_examined: string;
+}
+
+export interface ProjectArtifact {
+  id: string;
+  name: string;
+  kind: "artifact" | "report";
+  created_at: string;
+  path: string | null;
+  operation_id: string | null;
+  artifact_id: string | null;
+  episode_id: string | null;
+  viewer_url: string;
+  can_open: boolean;
+  unavailable_reason: string | null;
 }

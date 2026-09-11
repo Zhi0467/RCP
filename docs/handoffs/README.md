@@ -26,7 +26,7 @@ device sessions, the Devices panel, pairing, and single-session desktops shipped
 the tailnet is an operator procedure in `docs/server.md`.
 
 The [team-space/server handoff is closed](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md):
-the backed-up CoT project was transferred and verified through the desktop on
+the backed-up research project was transferred and verified through the desktop on
 2026-09-05. Existing two-member production use was accepted by the human;
 separate disposable-host SSH qualification was deliberately skipped. Unrun
 coverage remains explicit, rather than being relabeled as passed.

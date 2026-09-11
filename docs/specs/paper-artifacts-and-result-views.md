@@ -92,13 +92,27 @@ visible and retryable. The stored report, its preview, and the episode lifecycle
 remain unchanged; saving does not create a graph Patch. The viewer labels these
 durably stored reports as **report**, rather than **temporary**.
 
+## Artifacts panel
+
+**Artifacts** is a project panel beside Research, Runs, and Inbox. It lists kept
+chat artifacts and durable episode reports across project history, including
+archived episodes, without depending on the recent task or episode window.
+Temporary outputs remain in their originating chats until kept.
+
+Reports appear as soon as their immutable bytes are captured; **Save copy** is
+not required to make them discoverable. Saving a repository copy does not add a
+duplicate report entry. Each report retains its owning episode identity and
+creation time, and each kept artifact exposes its saved repository path.
+Opening an entry uses the existing bounded artifact viewer in both browser and
+desktop. Listing grants no new filesystem or graph authority.
+
 ## Unified artifact viewer
 
 There is no separate result-view kind. A task that draws a custom HTML result
 produces an ordinary task artifact, through the same artifact directory,
 descriptor, chat card, viewer route, and lifecycle as any other HTML artifact.
-The artifact is available in its originating Node or Project chat; it is not
-limited to Experiment Runs and is never shown across chats.
+The artifact is available in its originating Node or Project chat, and after
+Keep in the project's Artifacts panel. It is not shown in unrelated chats.
 
 Previously stored result-view rows remain readable through their legacy backend
 routes only for compatibility. The current web client exposes no result-view

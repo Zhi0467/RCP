@@ -362,6 +362,7 @@ test("a ready Experiment report opens from the singular episode URL", () => {
         recommendation: "open_report",
         can_open_report: true,
         report_episode_id: readyEpisode.episode_id,
+        report_is_current: true,
       }),
       [],
       [],
@@ -372,6 +373,29 @@ test("a ready Experiment report opens from the singular episode URL", () => {
   assert.match(html, /Open report/);
   assert.doesNotMatch(html, /report-hidden-from-url|Retry codex|Resume codex/);
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+});
+
+test("a waiting Experiment labels its earlier episode report explicitly", () => {
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control({
+        episode: episode(),
+        health: "waiting_on_watchers",
+        recommendation: "wait",
+        can_open_report: true,
+        report_episode_id: "previous-completed-episode",
+        report_is_current: false,
+      }),
+      [],
+      [],
+    ),
+  );
+
+  assert.match(html, /Waiting on watchers/);
+  assert.match(html, /href="\/reports\/previous-completed-episode"/);
+  assert.match(html, /Previous episode report/);
+  assert.doesNotMatch(html, /Open report/);
 });
 
 test("an Experiment the human closed stays completed whatever its last episode did", () => {
@@ -405,7 +429,8 @@ test("an Experiment the human closed stays completed whatever its last episode d
 
   assertDetailProjection(html, "Completed", "Experiment is completed");
   assert.match(html, /href="\/reports\/previous-completed-episode"/);
-  assert.match(html, /Open report/);
+  assert.match(html, /Previous episode report/);
+  assert.doesNotMatch(html, /Open report/);
   assert.doesNotMatch(html, /Start (?:new )?episode/);
   assert.doesNotMatch(html, /Run requirements|Edit its status before starting a new episode/);
 });
