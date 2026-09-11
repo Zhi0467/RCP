@@ -164,9 +164,11 @@ heartbeat on the bounded visible cadence; the active tab observes completed
 cached revision updates more frequently, and visibility resume sweeps all tabs.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
-per project. An unchanged or temporarily unavailable head does not replay or
-copy the graph. Movement starts background reconciliation; an older result may
-not replace a newer cache.
+per project. A temporarily unavailable head does not replay or copy the graph.
+An unchanged head also skips that work unless the cached canonical state is
+offline: a successful probe then triggers authoritative reconciliation before
+clearing the offline state. Movement starts the same background reconciliation;
+an older result may not replace a newer cache.
 
 Reconciliation preserves human drafts. A staged node whose canonical revision
 did not move stays committable. One that moved becomes behind and is excluded

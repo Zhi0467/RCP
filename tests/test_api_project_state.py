@@ -273,6 +273,57 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
     assert probes == 1
 
 
+@pytest.mark.parametrize("refresh_fails", [False, True])
+def test_unchanged_head_reconciles_cached_offline_state(
+    manifest, tmp_path, monkeypatch, refresh_fails
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    offline = {
+        **initial,
+        "canonical_state": {
+            **initial["canonical_state"],
+            "remote": True,
+            "reachable": False,
+            "error": "Connection lost",
+        },
+        "snapshot_freshness": "stale",
+    }
+    app.state.catalog.write_cached_snapshot(project_id, offline)
+    monkeypatch.setattr(
+        app.state.catalog, "probe_remote_patch_log_head", lambda _project_id: "unchanged"
+    )
+    reconcile_snapshot = app.state.catalog.reconcile_snapshot
+    refresh_calls = []
+
+    def refresh(requested_project_id):
+        refresh_calls.append(requested_project_id)
+        if refresh_fails:
+            raise OSError("Canonical lock remains unavailable")
+        return reconcile_snapshot(requested_project_id)
+
+    monkeypatch.setattr(app.state.catalog, "reconcile_snapshot", refresh)
+
+    async def drive():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get(f"/api/projects/{project_id}/cached/revision")
+            await async_wait_until(
+                lambda: project_id not in app.state.project_reconciliation_tasks,
+                detail="offline project reconciliation did not finish",
+            )
+            return (await client.get(f"/api/projects/{project_id}")).json()
+
+    refreshed = asyncio.run(drive())
+    assert refresh_calls == [project_id]
+    assert refreshed["revision"] == initial["revision"]
+    assert refreshed["snapshot_freshness"] == ("stale" if refresh_fails else "fresh")
+    assert refreshed["canonical_state"] == (
+        offline["canonical_state"] if refresh_fails else initial["canonical_state"]
+    )
+
+
 def test_cached_revision_file_read_does_not_block_the_event_loop(
     manifest, tmp_path, monkeypatch
 ) -> None:

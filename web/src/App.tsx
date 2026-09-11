@@ -142,6 +142,7 @@ import {
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
+  projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   reconcileInactiveProjectSession,
   RETAIN_ALL_PROJECT_READINESS,
@@ -1527,7 +1528,13 @@ export default function App() {
               getProjectSessionState().renderedRevision,
               observation.graph_mutation,
               getProjectSessionState().project?.graph_mutation,
-            )
+            ) ||
+            (observedRevision === getProjectSessionState().renderedRevision &&
+              projectHeartbeatMetadataChanged(
+                observation,
+                getProjectSessionState().project,
+                requestedTarget,
+              ))
           ) {
             await reloadAuthoritativeProject(requestedProjectId);
           }
@@ -1535,7 +1542,13 @@ export default function App() {
         }
 
         const retained = inactiveCachedProjectState(requestedProjectId);
-        if (!retained || observedRevision <= retained.project.graph.revision) return;
+        if (
+          !retained ||
+          observedRevision < retained.project.graph.revision ||
+          (observedRevision === retained.project.graph.revision &&
+            !projectHeartbeatMetadataChanged(observation, retained.project))
+        )
+          return;
         const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
         const current = inactiveCachedProjectState(requestedProjectId);
         const disposition = projectHeartbeatSnapshotDisposition({
@@ -1545,6 +1558,11 @@ export default function App() {
           inactiveState: current,
           snapshotRevision: snapshot.graph.revision,
           renderedRevision: getProjectSessionState().renderedRevision,
+          metadataChanged: projectHeartbeatMetadataChanged(
+            snapshot,
+            getProjectSessionState().project,
+            activeGraphTargetRef.current,
+          ),
         });
         if (disposition.kind === "reload_active") {
           await reloadAuthoritativeProject(requestedProjectId);

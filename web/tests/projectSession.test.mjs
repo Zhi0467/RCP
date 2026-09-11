@@ -13,6 +13,7 @@ const {
   emptyProjectSessionState,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
+  projectHeartbeatMetadataChanged,
   projectSessionReducer,
   projectSettingsSavedProject,
   reconcileInactiveProjectSession,
@@ -715,5 +716,106 @@ test("an unreadable inactive heartbeat snapshot fails instead of becoming a sile
       ...snapshot(2),
       graph: null,
     }),
+  );
+});
+
+test("heartbeat metadata detects same-revision reconnection without requiring a graph change", () => {
+  const stale = { snapshot_freshness: "stale", last_remote_sync_at: "2026-09-01T12:00:00Z" };
+  const fresh = { snapshot_freshness: "fresh", last_remote_sync_at: "2026-09-01T12:01:00Z" };
+  assert.equal(projectHeartbeatMetadataChanged(fresh, stale), true);
+  assert.equal(
+    projectHeartbeatMetadataChanged(fresh, {
+      ...fresh,
+      last_remote_sync_at: stale.last_remote_sync_at,
+    }),
+    true,
+  );
+  assert.equal(projectHeartbeatMetadataChanged(fresh, fresh), false);
+  assert.equal(projectHeartbeatMetadataChanged({}, fresh), false);
+  for (const renderedRevision of [7, 8]) {
+    assert.deepEqual(
+      projectHeartbeatSnapshotDisposition({
+        requestedProjectId: "alpha",
+        activeProjectId: "alpha",
+        tabOpen: true,
+        inactiveState: null,
+        snapshotRevision: 7,
+        renderedRevision,
+        metadataChanged: true,
+      }),
+      { kind: renderedRevision === 7 ? "reload_active" : "ignore" },
+    );
+  }
+});
+
+test("inactive same-revision reconnection applies metadata and preserves the human draft", () => {
+  const node = {
+    id: "hyp/example",
+    type: "hypothesis",
+    title: "Canonical title",
+    updated_rev: 7,
+    created_rev: 7,
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+  };
+  const offline = snapshot(7, {
+    graph: graph(7, node),
+    canonical_state: { remote: true, reachable: false },
+    last_remote_sync_at: "2026-09-01T12:00:00Z",
+  });
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: offline,
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, { kind: "human_draft_loaded", draft: humanDraft(7) });
+  const retained = serializeProjectSessionTabState(state);
+  const fresh = {
+    ...offline,
+    canonical_state: { remote: true, reachable: true },
+    last_remote_sync_at: "2026-09-01T12:01:00Z",
+  };
+  const disposition = projectHeartbeatSnapshotDisposition({
+    requestedProjectId: "alpha",
+    activeProjectId: "beta",
+    tabOpen: true,
+    inactiveState: retained,
+    snapshotRevision: 7,
+    renderedRevision: 7,
+    metadataChanged: true,
+  });
+  assert.equal(disposition.kind, "reconcile_inactive");
+  const next = reconcileInactiveProjectSession(disposition.state, fresh);
+  assert.equal(next.project.canonical_state.reachable, true);
+  assert.equal(next.project.last_remote_sync_at, fresh.last_remote_sync_at);
+  assert.equal(next.renderedRevision, 7);
+  assert.equal(next.humanDraft.base_revision, retained.humanDraft.base_revision);
+  assert.deepEqual(
+    next.humanDraft.nodes[node.id].changes,
+    retained.humanDraft.nodes[node.id].changes,
+  );
+  assert.equal(next.humanDraft.nodes[node.id].base_updated_rev, 7);
+});
+
+test("unchanged branch heartbeat ignores main-cache freshness metadata", () => {
+  const branch = { kind: "branch", branch_id: "branch-one" };
+  const metadataChanged = projectHeartbeatMetadataChanged(
+    { snapshot_freshness: "fresh", last_remote_sync_at: null },
+    { snapshot_freshness: "fresh", last_remote_sync_at: "2026-09-01T12:01:00Z" },
+    branch,
+  );
+  assert.equal(metadataChanged, false);
+  assert.deepEqual(
+    projectHeartbeatSnapshotDisposition({
+      requestedProjectId: "alpha",
+      activeProjectId: "alpha",
+      tabOpen: true,
+      inactiveState: null,
+      snapshotRevision: 7,
+      renderedRevision: 7,
+      metadataChanged,
+    }),
+    { kind: "ignore" },
   );
 });
