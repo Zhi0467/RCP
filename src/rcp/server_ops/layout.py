@@ -97,6 +97,11 @@ class ServerLayout:
         return self.config_path.parent / "supervisor"
 
     @property
+    def team_config_path(self) -> Path:
+        """The operator's team address file, kept out of the strict server.toml schema."""
+        return self.config_path.parent / "team.toml"
+
+    @property
     def supervisor_versions_root(self) -> Path:
         return self.supervisor_root / "versions"
 

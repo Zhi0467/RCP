@@ -485,7 +485,9 @@ action. Report availability is independent of current-episode selection: the
 backend publishes the newest available report for the same Experiment and exact
 graph target, so a later stopped episode cannot hide an earlier durable report.
 The stopped episode remains current history; the report link retains its actual
-owning episode id.
+owning episode id. The backend also publishes `report_is_current`; a report from
+an earlier episode is labelled **Previous episode report**, while the selected
+episode's own report is labelled **Open report**.
 
 The runtime, parent episode, visible task rows, usage meter, and latest available
 report used for one Experiment-control answer come from one SQLite read snapshot.

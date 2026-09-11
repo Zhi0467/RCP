@@ -9,6 +9,7 @@ import {
   UserPlus,
   UserRound,
 } from "lucide-react";
+import qrcode from "qrcode-generator";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   createTeamDevicePairing,
@@ -337,10 +338,22 @@ export function TeamDevicePairingCard({
 }) {
   return (
     <div className="landing-team-pairing" aria-live="polite">
-      <p>
-        On the other device, open this team space in its browser, choose{" "}
-        <strong>Connect this device</strong>, and enter this code with a name for the device.
-      </p>
+      {pairing.connect_url ? (
+        <>
+          <p>
+            Scan this with the phone's camera, or open{" "}
+            <strong>{pairing.connect_url.split("/#")[0]}</strong> on the other device, choose{" "}
+            <strong>Connect this device</strong>, and enter the code with a name for the device.
+          </p>
+          <QrCodeImage value={pairing.connect_url} label={`QR code for ${pairing.connect_url}`} />
+        </>
+      ) : (
+        <p>
+          On the other device, open this team space in its browser, choose{" "}
+          <strong>Connect this device</strong>, and enter this code with a name for the device. Once
+          the server operator sets the team's access address, a QR code appears here instead.
+        </p>
+      )}
       <code tabIndex={0} aria-label={`Device code ${pairing.code}`}>
         {pairing.code}
       </code>
@@ -781,4 +794,34 @@ export function LandingIdentityMenu({
 
 function identityInitial(displayName: string): string {
   return Array.from(displayName.trim())[0]?.toLocaleUpperCase() ?? "?";
+}
+
+// A QR code drawn as one SVG path, so no third-party markup is injected.
+export function QrCodeImage({ value, label }: { value: string; label: string }) {
+  const qr = qrcode(0, "M");
+  qr.addData(value);
+  qr.make();
+  const count = qr.getModuleCount();
+  const margin = 2;
+  const size = count + margin * 2;
+  let path = "";
+  for (let row = 0; row < count; row += 1) {
+    for (let column = 0; column < count; column += 1) {
+      if (qr.isDark(row, column)) {
+        path += `M${column + margin} ${row + margin}h1v1h-1z`;
+      }
+    }
+  }
+  return (
+    <svg
+      className="landing-team-qr"
+      viewBox={`0 0 ${size} ${size}`}
+      role="img"
+      aria-label={label}
+      shapeRendering="crispEdges"
+    >
+      <rect width={size} height={size} fill="#fff" />
+      <path d={path} fill="#000" />
+    </svg>
+  );
 }

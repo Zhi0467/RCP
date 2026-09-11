@@ -203,7 +203,17 @@ successful revoke, and offers an explicit Refresh action.
 
 **Connect a device** in that panel issues a pairing code through
 `POST /api/team/devices/pairings` and shows it once, with its expiry, until the
-member dismisses it or the code ends; while the code is visible the panel polls
+member dismisses it or the code ends. A team may carry an **access address**, the
+https origin members open on their own devices (typically the tailnet front in
+front of the server). It is operator-set in the installed server configuration
+(`access_url` in `/etc/rcp/team.toml`, or `RCP_TEAM_ACCESS_URL` for a
+source-run server) and read-only to members: `GET /api/team/space` returns it
+with the team name, `PATCH /api/team/space` changes only `name`, and doctor
+reports it as `team_access_url`. When the address is set, the issued code carries
+`connect_url = <access_url>/#pair=<code>` and the card draws it as a QR code
+beside the code; a phone that scans it lands on the login screen with the code
+filled in. Without an address the card says how to set one. While the code is
+visible the panel polls
 `GET /api/team/devices/pairings/{pairing_id}`, whose `status` is `waiting`,
 `consumed`, `expired`, `revoked`, or `locked`, and refreshes Devices on
 `consumed`. A code is bound to the session that issued it: when that session is
@@ -237,7 +247,9 @@ the current authenticated session as not revocable. Public identifiers are
 independent random UUIDs, never session tokens, hashes, or derivatives of either.
 Listing does not refresh other sessions' idle expiry.
 The source-built desktop holds one session per saved connection. It keeps the
-exchanged session cookie in the Keychain beside the member token, verifies it
+exchanged session's secret (the cookie value alone; Apple's Keychain tool keeps
+only 128 prompt characters, so the whole Set-Cookie line does not survive) in
+the Keychain beside the member token, rebuilds the cookie from it, verifies it
 against `/api/identity` at launch, at Reconnect, and before each native request,
 and exchanges a new session only when the server answers 401. One desktop is
 therefore one row in Devices across launches. Forgetting the connection on the
@@ -633,7 +645,10 @@ the node is edited back to a nonterminal status. A control is absent unless
 currently valid, and no recommendation names an unavailable action. Report
 availability is separately backend-decided from the newest report-bearing
 episode for that Experiment and exact graph target; a newer no-report episode
-does not hide the durable report or change which episode owns it.
+does not hide the durable report or change which episode owns it. The backend
+publishes `report_is_current` alongside its owning episode id. Runs renders
+**Previous episode report** when false and **Open report** when true, so an older
+retrospective is not presented as the current episode's report.
 
 Episode cards lead with the owning Experiment name or Auto-research identity;
 their start time is secondary metadata and is never prefixed with a redundant

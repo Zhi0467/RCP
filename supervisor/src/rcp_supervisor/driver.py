@@ -333,7 +333,10 @@ def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
         runtime.start_service()
     emitter.emit(
         "succeeded",
-        "The selected application is enabled and serving under supervisor startup recovery.",
+        "The selected application is enabled and serving under supervisor startup recovery. "
+        "Optional: to let members connect phones and other devices, put the server on a "
+        "tailnet and write its https address to /etc/rcp/team.toml; docs/device-pairing.md "
+        "walks through it.",
     )
     return 0
 

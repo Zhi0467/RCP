@@ -446,6 +446,8 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
         "can_open_report": False,
     }
 
+    assert wrapping["report_is_current"] is False
+
     events = await _events(
         stream_episode_report_run(
             service,
@@ -467,6 +469,7 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
         "can_open_report": True,
     }
     assert ready["report_episode_id"] == "episode"
+    assert ready["report_is_current"] is True
 
 
 @pytest.mark.asyncio
@@ -570,6 +573,7 @@ async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_i
     assert response.recommendation == "none"
     assert response.can_open_report is True
     assert response.report_episode_id == "episode"
+    assert response.report_is_current is False
 
 
 @pytest.mark.asyncio

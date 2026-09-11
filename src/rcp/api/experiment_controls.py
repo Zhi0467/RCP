@@ -70,6 +70,7 @@ class ExperimentControlResponse(ExperimentControlState):
     can_switch_provider: bool
     can_open_report: bool
     report_episode_id: str | None
+    report_is_current: bool
     node_closed: bool
 
 
@@ -258,6 +259,9 @@ def _experiment_control_response(
             "can_switch_provider": can_switch_provider,
             "can_open_report": can_open_report,
             "report_episode_id": report_episode_id,
+            "report_is_current": bool(
+                report_episode_id is not None and report_episode_id == control.episode_id
+            ),
             "node_closed": node.status in CLOSED_EXPERIMENT_STATUSES,
         }
     )

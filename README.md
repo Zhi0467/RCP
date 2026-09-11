@@ -127,7 +127,8 @@ logging, and verification details.
 RCP can run a shared team space from source on a lab-owned Ubuntu server.
 Installation, member invitations and joining, shared-project setup, provider
 maintenance, updates, backup, restore, member removal, verification, and
-recovery are all documented in the [team server guide](docs/server.md).
+recovery are all documented in the [team server guide](docs/server.md); connecting
+phones and other devices is in [docs/device-pairing.md](docs/device-pairing.md).
 Maintainers release through the build, tag, and promote process in
 [docs/release.md](docs/release.md).
 

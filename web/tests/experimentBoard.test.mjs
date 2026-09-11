@@ -1197,3 +1197,10 @@ test("the rendered board keeps finished work folded and unavailable work explici
   assert.doesNotMatch(html, /An older summary\./);
   assert.doesNotMatch(html, />Run<|>Retry<|>Stop</);
 });
+
+test("Artifacts panel has a restorable project route", () => {
+  const hash = projectHashAfterViewChange("#/projects/project-one", "artifacts");
+  assert.equal(hash, "#/projects/project-one?view=artifacts");
+  assert.equal(parseProjectHash(hash).view, "artifacts");
+  assert.equal(projectHashAfterViewChange(hash, "overview"), "#/projects/project-one");
+});

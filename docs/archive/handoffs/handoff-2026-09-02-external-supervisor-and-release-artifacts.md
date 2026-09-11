@@ -1,5 +1,7 @@
 # External supervisor and release artifacts handoff
 
+Operational identities and locations below use placeholders.
+
 Date: 2026-09-02
 Status: closed on 2026-09-06. The supervisor implementation, paired release
 promotion, and normal production adoption/update are complete. Production runs
@@ -337,7 +339,7 @@ and proven with one `rcp server update` from the public origin. Only then are th
 revoked. Until Phase 4, servers keep building from source; they simply fetch it
 from the public origin.
 
-Lab receipts, 2026-09-03 (UTC), host `wth-gpu-01`, installation
+Lab receipts, 2026-09-03 (UTC), host `team-host.example.org`, installation
 `624ec8e1-3e29-4024-9ddf-06176671aa2e`:
 
 1. 05:20 `rcp server update` over the still-valid deploy key moved the server

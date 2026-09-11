@@ -853,8 +853,19 @@ mod tests {
             assert!(stop_started.elapsed() >= CHILD_STOP_TIMEOUT);
             assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
             assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
-            assert_eq!(unsafe { libc::kill(-(pid as i32), 0) }, -1);
-            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+            // The grandchild's exit is reaped by the kernel a moment after the
+            // supervisor returns; until then the group probe answers EPERM on a
+            // loaded CI runner.
+            crate::test_support::wait_until("process group still present", || {
+                let result = unsafe { libc::kill(-(pid as i32), 0) };
+                let error = io::Error::last_os_error().raw_os_error();
+                if result == -1 && error == Some(libc::ESRCH) {
+                    Ok(())
+                } else {
+                    Err(format!("result {result}, errno {error:?}"))
+                }
+            })
+            .await;
         });
     }
 

@@ -139,7 +139,7 @@ project setup.
 
 ## Remote — verified 2026-07-30
 
-Driven against a real host (`tianhaowang-gpu0.ucsd.edu`). Both CLIs were found
+Driven against a real remote host (hostname omitted). Both CLIs were found
 on the login-shell PATH by the existing `bash -lic` wrapper, Codex's catalog was
 probed over SSH and returned the same seven models with per-model efforts, and
 Claude's declared list was served. An unreachable host (`murphybox`) returned no

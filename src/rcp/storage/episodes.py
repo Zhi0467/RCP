@@ -23,6 +23,7 @@ from rcp.storage.models import (
     EpisodeReportAttemptRecord,
     EpisodeReportConflict,
     EpisodeReportRecord,
+    EpisodeReportSummary,
     EpisodeWrapupRecord,
     _required_timestamp,
 )
@@ -1854,6 +1855,24 @@ class EpisodeStoreMixin:
         stored_report = self.episode_report(report.episode_id)
         assert stored_episode is not None and stored_report is not None
         return stored_episode, stored_report
+
+    def project_episode_report_summaries(self, project_id: str) -> list[EpisodeReportSummary]:
+        """List every durable report, including archived episodes, without HTML bytes."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT report.report_id, report.episode_id, report.created_at, episode.mode,
+                       episode.control_node_id,
+                       json_extract(root.request_json, '$.instruction') AS instruction
+                FROM episode_reports AS report
+                JOIN episodes AS episode ON episode.episode_id = report.episode_id
+                LEFT JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
+                WHERE episode.project_id = ?
+                ORDER BY report.created_at DESC, report.report_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [EpisodeReportSummary.model_validate(dict(row)) for row in rows]
 
     def episode_report(self, episode_id: str) -> EpisodeReportRecord | None:
         with self.connection() as connection:

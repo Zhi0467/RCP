@@ -33,9 +33,13 @@ from rcp.server_ops.config import (
     InstalledServerConfig,
     ServerBackupConfig,
     ServerSourceConfig,
+    ServerTeamConfig,
     create_installed_server_config,
+    load_team_access_config,
     parse_installed_server_config,
+    parse_team_access_config,
     render_installed_server_config,
+    render_team_access_config,
 )
 
 AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
@@ -889,3 +893,40 @@ def test_install_reactivation_runs_backup_before_enabling_a_disabled_timer(
         "enable",
         "readback_enabled",
     ]
+
+
+def test_team_address_file_is_its_own_document_beside_server_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # server.toml stays schema 3 and never carries the address, so a pinned older
+    # release keeps starting; the address lives in team.toml with the same ownership.
+    rendered = render_installed_server_config(_installed())
+    assert "team" not in tomllib.loads(rendered)
+    with pytest.raises(ValueError):
+        parse_installed_server_config(rendered + '\n[team]\naccess_url = "https://x.example"\n')
+
+    ownership = (os.getuid(), os.getgid())
+    monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
+    team_path = tmp_path / "team.toml"
+    assert load_team_access_config(team_path) is None
+
+    text = render_team_access_config(
+        ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")
+    )
+    assert tomllib.loads(text) == {"access_url": "https://wth-gpu-01.tail1234.ts.net"}
+    team_path.write_text(text)
+    team_path.chmod(0o640)
+    assert load_team_access_config(team_path) == ServerTeamConfig(
+        access_url="https://wth-gpu-01.tail1234.ts.net"
+    )
+    bracketed = ServerTeamConfig(access_url="https://[2001:db8::1]:8443")
+    assert parse_team_access_config(render_team_access_config(bracketed)) == bracketed
+
+    team_path.chmod(0o644)
+    with pytest.raises(ValueError, match="mode 0640"):
+        load_team_access_config(team_path)
+    team_path.chmod(0o640)
+    for broken in ("access_url = 'ftp://nope'\n", "access_url = 1\n", "other = 1\n", "= not toml"):
+        team_path.write_text(broken)
+        with pytest.raises(ValueError):
+            load_team_access_config(team_path)

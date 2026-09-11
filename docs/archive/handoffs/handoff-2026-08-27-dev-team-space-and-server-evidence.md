@@ -1,5 +1,7 @@
 # Evidence: dev team space and source server handoff
 
+Operational identities and locations below use placeholders.
+
 Archived 2026-09-01. This file is the dated implementation evidence and the
 completed packet specifications for
 [the archived closure receipt](handoff-2026-08-27-dev-team-space-and-server.md),
@@ -399,7 +401,7 @@ implementation log.
   meaning rather than accepting shape alone. No replacement or second audit
   round was run.
 - Live drive not done: read-only SSH preflight reached
-  `tianhaowang-gpu0.ucsd.edu` as `zhiwang`, but the exact named-operator probe
+  `team-host.example.org` as `operator`, but the exact named-operator probe
   stopped at `sudo: unknown user rcp`. The shared host therefore cannot prove
   either D6 route without installing the team-server account and CLI. D6 remains
   in **Implemented, drive still open**; the implementation did not mutate that
@@ -1503,9 +1505,9 @@ implementation log.
 - Focused provider, launcher, CLI, control, doctor, storage, API, config, and
   app-socket regressions pass. The real read-only live gate also passes both
   branches without changing authentication: local Claude at
-  `/Users/zhiwang/.local/bin/claude` was naturally unauthenticated, while the
-  existing SSH route to `tianhaowang-gpu0.ucsd.edu` reached OS account
-  `zhiwang` and proved authenticated Codex readiness at the discovered remote
+  `/Users/operator/.local/bin/claude` was naturally unauthenticated, while the
+  existing SSH route to `team-host.example.org` reached OS account
+  `operator` and proved authenticated Codex readiness at the discovered remote
   executable. Local account probing, remote account mismatch, native login
   guidance, model/runtime/version refusal, stale boundaries, exact-path reuse,
   and CLI-to-socket-to-storage publication all have focused regressions.
@@ -1984,7 +1986,7 @@ implementation log.
   TLS termination, and bidirectional byte forwarding. The ignored live test
   passed through the production manager using the existing authenticated system
   SSH route to
-  `tianhaowang-gpu0.ucsd.edu`, reused the tunnel, read the remote loopback SSH
+  `team-host.example.org`, reused the tunnel, read the remote loopback SSH
   banner through local TLS, and cleaned up without starting or stopping anything
   remotely.
 - Surprise closed: the first live argv used `ClearAllForwardings=yes`, which

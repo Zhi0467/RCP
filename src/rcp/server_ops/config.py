@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, mo
 from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import SERVER_CLI_MAX_FIELD_CHARS
+from rcp.storage.models import normalize_space_access_url
 
 SERVER_CONFIG_SCHEMA_VERSION = 3
 LEGACY_SERVER_CONFIG_SCHEMA_VERSION = 1
@@ -146,6 +147,21 @@ class ServerBackupConfig(_StrictModel):
     @classmethod
     def validate_age_recipient(cls, value: str) -> str:
         return validate_age_recipient(value)
+
+
+class ServerTeamConfig(_StrictModel):
+    """How members' own devices reach this server: one https origin.
+
+    Typically the tailnet front in front of the loopback listener, of the form
+    `https://<host>.<tailnet>.ts.net`. Members read it; only the operator sets it.
+    """
+
+    access_url: str
+
+    @field_validator("access_url")
+    @classmethod
+    def validate_access_url(cls, value: str) -> str:
+        return normalize_space_access_url(value)
 
 
 class InstalledServerConfig(_StrictModel):
@@ -318,6 +334,43 @@ def load_installed_server_config(
     return _load_installed_server_config(path, ownership=_expected_config_ownership())
 
 
+def load_team_access_config(
+    path: Path = DEFAULT_SERVER_LAYOUT.team_config_path,
+) -> ServerTeamConfig | None:
+    """Read the operator's team address file; None when the operator has not written one.
+
+    The file lives beside server.toml with the same ownership and mode but is a
+    separate document on purpose: a pinned older release keeps reading the strict
+    schema-3 server.toml it knows, and simply never looks here.
+    """
+
+    if not os.path.lexists(path):
+        return None
+    _reject_symlink_ancestry(path.parent)
+    _validate_config_file(path, ownership=_expected_config_ownership())
+    return parse_team_access_config(path.read_text(encoding="utf-8"))
+
+
+def parse_team_access_config(text: str) -> ServerTeamConfig:
+    try:
+        data = tomlkit.parse(text).unwrap()
+    except Exception as exc:  # tomlkit raises its own parse error hierarchy
+        raise ValueError(f"team address file is not valid TOML: {exc}") from exc
+    try:
+        return ServerTeamConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError(f"team address file is invalid: {exc}") from exc
+
+
+def render_team_access_config(config: ServerTeamConfig) -> str:
+    document = tomlkit.document()
+    document.add(
+        tomlkit.comment("The https origin members' own devices open; see docs/device-pairing.md.")
+    )
+    document.add("access_url", config.access_url)
+    return tomlkit.dumps(document)
+
+
 def write_installed_server_config(
     config: InstalledServerConfig,
     path: Path = DEFAULT_SERVER_LAYOUT.config_path,
@@ -402,6 +455,10 @@ __all__ = [
     "ServerBackupConfig",
     "ServerPathsConfig",
     "ServerSourceConfig",
+    "ServerTeamConfig",
+    "load_team_access_config",
+    "parse_team_access_config",
+    "render_team_access_config",
     "create_installed_server_config",
     "load_installed_server_config",
     "parse_installed_server_config",

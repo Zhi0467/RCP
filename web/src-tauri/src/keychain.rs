@@ -9,10 +9,14 @@ use zeroize::Zeroizing;
 
 const SECURITY_TOOL: &str = "/usr/bin/security";
 const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
-// A member token is under 64 bytes. A saved team session is the server's whole
-// Set-Cookie line, attributes included; the desktop accepts such a line up to
-// 4 KiB (`team_session::MAX_SESSION_COOKIE_BYTES`), so this bound matches it.
-const MAX_VALUE_BYTES: usize = 4 * 1024;
+// `security add-generic-password -w` reads the secret through its password
+// prompt, and that prompt keeps only the first 128 characters; the rest is
+// silently dropped (measured 2026-09-10: 148 or more hex characters came back
+// as 128). Values are hex-encoded, so 64 bytes is the most that survives a
+// round trip. A member token is 47 bytes and a session secret 55; a Set-Cookie
+// line does not fit, which is why the desktop persists the secret alone.
+const SECURITY_PROMPT_MAX_CHARS: usize = 128;
+const MAX_VALUE_BYTES: usize = SECURITY_PROMPT_MAX_CHARS / 2;
 const MAX_ENCODED_OUTPUT_BYTES: usize = MAX_VALUE_BYTES * 2 + 2;
 
 fn security_command() -> Command {
@@ -246,7 +250,16 @@ mod tests {
         assert!(set("unused", "unused", &[0; MAX_VALUE_BYTES + 1]).is_err());
     }
 
-    // Every Set-Cookie the desktop accepts must also be storable, or a valid
-    // exchange would be followed by a failed save.
-    const _: () = assert!(crate::team_session::MAX_SESSION_COOKIE_BYTES <= MAX_VALUE_BYTES);
+    #[test]
+    fn the_largest_value_encodes_to_exactly_the_prompt_limit() {
+        assert_eq!(
+            hex_encode(&[0; MAX_VALUE_BYTES]).len(),
+            SECURITY_PROMPT_MAX_CHARS
+        );
+    }
+
+    // Every session secret the desktop saves must survive the prompt, or a
+    // valid exchange would be followed by a truncated save and a fresh session
+    // on every launch.
+    const _: () = assert!(crate::team_connections::SESSION_SECRET_BYTES <= MAX_VALUE_BYTES);
 }

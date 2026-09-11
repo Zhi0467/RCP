@@ -668,7 +668,8 @@ def rename_space(name: str) -> dict:
     with urllib.request.urlopen(request, timeout=10) as response:
         assert response.status == 200
         value = json.load(response)
-    assert value == {"space_name": name}
+    # The operator-set access address is absent in a disposable guest.
+    assert value == {"space_name": name, "access_url": None}
     return value
 
 
