@@ -527,6 +527,21 @@ export function reconcileInactiveProjectSession(
   return next === session ? state : serializeProjectSessionTabState(next);
 }
 
+export function projectHeartbeatMetadataChanged(
+  observed: Partial<Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at">>,
+  rendered: Partial<Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at">> | null,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
+): boolean {
+  return Boolean(
+    graphTarget.kind === "main" &&
+    rendered &&
+    ((observed.snapshot_freshness !== undefined &&
+      observed.snapshot_freshness !== rendered.snapshot_freshness) ||
+      (observed.last_remote_sync_at !== undefined &&
+        observed.last_remote_sync_at !== rendered.last_remote_sync_at)),
+  );
+}
+
 export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =
   { kind: "ignore" } | { kind: "reload_active" } | { kind: "reconcile_inactive"; state: T };
 
@@ -537,6 +552,7 @@ export function projectHeartbeatSnapshotDisposition<T extends ProjectSessionTabS
   inactiveState,
   snapshotRevision,
   renderedRevision,
+  metadataChanged = false,
 }: {
   requestedProjectId: string;
   activeProjectId: string | null;
@@ -544,10 +560,14 @@ export function projectHeartbeatSnapshotDisposition<T extends ProjectSessionTabS
   inactiveState: T | null;
   snapshotRevision: number;
   renderedRevision: number;
+  metadataChanged?: boolean;
 }): ProjectHeartbeatSnapshotDisposition<T> {
   if (!tabOpen) return { kind: "ignore" };
   if (activeProjectId === requestedProjectId) {
-    return snapshotRevision > renderedRevision ? { kind: "reload_active" } : { kind: "ignore" };
+    return snapshotRevision > renderedRevision ||
+      (snapshotRevision === renderedRevision && metadataChanged)
+      ? { kind: "reload_active" }
+      : { kind: "ignore" };
   }
   return inactiveState ? { kind: "reconcile_inactive", state: inactiveState } : { kind: "ignore" };
 }

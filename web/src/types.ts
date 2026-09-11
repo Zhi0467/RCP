@@ -1658,6 +1658,8 @@ export type GraphMutationAvailability =
 
 export interface GraphRevisionSnapshot {
   revision: number;
+  snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
+  last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
   graph_mutation?: GraphMutationAvailability;
 }
 

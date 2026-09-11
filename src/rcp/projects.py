@@ -2728,12 +2728,19 @@ class ProjectDisplayCache:
                 )
                 return
             if head_status == "unchanged":
-                await asyncio.to_thread(
-                    self._catalog.update_cached_snapshot_freshness,
-                    project_id,
-                    "fresh",
-                )
-                return
+                cached = await asyncio.to_thread(self._catalog.cached_snapshot, project_id)
+                canonical = cached.get("canonical_state") if cached is not None else None
+                if not (
+                    isinstance(canonical, dict)
+                    and canonical.get("remote") is True
+                    and canonical.get("reachable") is False
+                ):
+                    await asyncio.to_thread(
+                        self._catalog.update_cached_snapshot_freshness,
+                        project_id,
+                        "fresh",
+                    )
+                    return
 
             await asyncio.to_thread(
                 self._catalog.update_cached_snapshot_freshness,
