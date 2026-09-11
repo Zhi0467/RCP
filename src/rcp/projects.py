@@ -1735,9 +1735,12 @@ class ProjectCatalog:
                 if isinstance(workspace, SSHStateWorkspace):
                     manifest = load_remote_workspace_manifest(bootstrap, workspace)
                 else:
-                    manifest = (
-                        load_manifest(service.manifest.path) if service is not None else bootstrap
-                    )
+                    if service is not None:
+                        workspace = service.history.workspace
+                    with workspace.snapshot_lock:
+                        manifest = load_manifest(
+                            service.manifest.path if service is not None else record.locator
+                        )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "

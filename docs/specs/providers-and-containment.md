@@ -136,7 +136,8 @@ projects use their opened canonical manifest or their unopened registration
 manifest. If a required file is unavailable or invalid, the
 Work-like scope and launch fail closed. The existing project workspace lifecycle
 owns remote refresh; inventory construction adds no catalog-wide connectivity
-probe.
+probe. Canonical manifest reads hold the workspace snapshot lock so an in-flight
+publication or rollback cannot expose a provisional scope to a launch.
 
 The workspace must be within the exact task stage. Repository roots must be
 registered to the same project, alias, execution machine, and host, must exist

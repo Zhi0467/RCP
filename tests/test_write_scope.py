@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 from typing import Any
 
@@ -277,6 +277,57 @@ def test_unopened_remote_inventory_requires_readable_canonical_mirror(
     monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
     with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
         ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("opened", [False, True])
+def test_inventory_waits_for_speculative_manifest_rollback(
+    manifest: Manifest, tmp_path: Path, monkeypatch, remote: bool, opened: bool
+) -> None:
+    data_dir = tmp_path / "data"
+    bootstrap_path = manifest.path
+    if remote:
+        bootstrap_path = tmp_path / "remote-bootstrap.toml"
+        bootstrap_path.write_text(
+            manifest.path.read_text().replace('host = ""', 'host = "compute.example"')
+        )
+    bootstrap = load_manifest(bootstrap_path)
+    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    canonical_path = workspace.root / "manifest.toml"
+    if remote:
+        workspace.root.mkdir(parents=True)
+        canonical_path.write_text(bootstrap_path.read_text())
+    committed = canonical_path.read_text()
+    store = AppStore(data_dir / "rcp.sqlite3")
+    _register_catalog_project(store, bootstrap, project_id="project")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    if opened:
+        catalog._services["project"] = SimpleNamespace(
+            manifest=load_manifest(canonical_path), history=SimpleNamespace(workspace=workspace)
+        )
+    resolved_workspace = Event()
+
+    def resolve_workspace(bootstrap, data_dir):
+        result = state_workspace_for_probe(bootstrap, data_dir)
+        resolved_workspace.set()
+        return result
+
+    monkeypatch.setattr("rcp.projects.state_workspace_for_probe", resolve_workspace)
+    original_root = bootstrap.repository_map["repo-b"].path
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with workspace.snapshot_lock:
+            canonical_path.write_text(
+                committed.replace(original_root, str(tmp_path / "speculative"))
+            )
+            pending = pool.submit(catalog.repository_ownership_inventory)
+            try:
+                assert resolved_workspace.wait(timeout=2)
+                with pytest.raises(TimeoutError):
+                    pending.result(timeout=0.1)
+            finally:
+                canonical_path.write_text(committed)
+        inventory = pending.result(timeout=2)
+    assert next(item.path for item in inventory if item.alias == "repo-b") == original_root
 
 
 def test_remote_manifest_validation_preserves_literal_trailing_slash(

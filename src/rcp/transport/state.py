@@ -3045,11 +3045,12 @@ def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manife
 
 def load_remote_workspace_manifest(bootstrap: Manifest, workspace: SSHStateWorkspace) -> Manifest:
     """Read the retained canonical manifest and prove its registered remote home."""
-    manifest = load_manifest(workspace.root / "manifest.toml")
-    state_repository = bootstrap.repository_map[bootstrap.state.repository]
-    machine = bootstrap.machine_map[state_repository.machine]
-    _validate_remote_identity(bootstrap, manifest, machine.host, state_repository.path)
-    return manifest
+    with workspace.snapshot_lock:
+        manifest = load_manifest(workspace.root / "manifest.toml")
+        state_repository = bootstrap.repository_map[bootstrap.state.repository]
+        machine = bootstrap.machine_map[state_repository.machine]
+        _validate_remote_identity(bootstrap, manifest, machine.host, state_repository.path)
+        return manifest
 
 
 def _discard_absent_remote_snapshot(cache_root: Path) -> None:
