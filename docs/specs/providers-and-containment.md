@@ -129,8 +129,16 @@ protected paths. Repository pointers do not supply a separate write allowlist.
 Only RCP derives the scope from the manifest, project catalog, repository
 pointers, task/episode lineage, and run scope. A browser, prompt, request body,
 provider, or staged file cannot add a root. Scope construction requires a
-complete inventory of every registered project manifest; if any registered
-manifest is unavailable, the Work-like scope and launch fail closed.
+complete inventory of every registered project manifest. Remote projects supply
+their canonical workspace mirror, validated against the registered project and
+state location, including before they are opened. Inventory resolves relative
+local checkout paths against the registered manifest's project root. Local
+projects use their opened canonical manifest or their unopened registration
+manifest. If a required file is unavailable or invalid, the
+Work-like scope and launch fail closed. The existing project workspace lifecycle
+owns remote refresh; inventory construction adds no catalog-wide connectivity
+probe. Canonical manifest reads hold the workspace snapshot lock so an in-flight
+publication or rollback cannot expose a provisional scope to a launch.
 
 The workspace must be within the exact task stage. Repository roots must be
 registered to the same project, alias, execution machine, and host, must exist

@@ -88,7 +88,11 @@ from rcp.transport import (
     StateWorkspace,
     prepare_state_workspace,
 )
-from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
+from rcp.transport.state import (
+    SSHStateWorkspace,
+    load_remote_workspace_manifest,
+    state_workspace_for_probe,
+)
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, AgentTaskRequest
@@ -1719,12 +1723,26 @@ class ProjectCatalog:
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
     def repository_ownership_inventory(self) -> list[RegisteredRepositoryRoot]:
-        """Load every registered repository ownership boundary from its manifest."""
+        """Read registered ownership from canonical manifests, including retained mirrors."""
 
         roots: list[RegisteredRepositoryRoot] = []
         for record in self.store.projects():
+            with self._services_lock:
+                service = self._services.get(record.project_id)
             try:
-                manifest = load_manifest(record.locator)
+                bootstrap = load_manifest(record.locator)
+                workspace = state_workspace_for_probe(bootstrap, self.data_dir)
+                if isinstance(workspace, SSHStateWorkspace):
+                    manifest = load_remote_workspace_manifest(
+                        bootstrap, workspace, project_root=bootstrap.path.parent.parent
+                    )
+                else:
+                    if service is not None:
+                        workspace = service.history.workspace
+                    with workspace.snapshot_lock:
+                        manifest = load_manifest(
+                            service.manifest.path if service is not None else record.locator
+                        )
             except (FileNotFoundError, OSError, ValueError) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "
