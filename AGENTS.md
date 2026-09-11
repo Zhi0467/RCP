@@ -162,10 +162,11 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 ## Documentation lifecycle
 
-- Current behavior and durable user journeys belong in specs. Rationale for an
-  active easy-to-regress tradeoff belongs in decisions.
-- A handoff is active work, not a diary. Its opening status must name what is
-  implemented, what remains, and which decisions are settled.
+- Keep docs and PR titles, descriptions, and comments free of real hostnames,
+  account names, personal/backup paths, and private project/repository identities.
+  Use neutral descriptions or placeholders; check the full text before publishing.
+- Specs own current behavior and durable journeys; decisions explain active tradeoffs.
+- A handoff is active work, not a diary; its opening names implemented and remaining work and settled decisions.
 - When a handoff decision changes, update its plan and status in the same commit.
   Rejected work is closed, not “not done.” Never leave mutually contradictory
   old and new plans active in one file.
@@ -173,8 +174,7 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   immediately. If later work materially changes scope, archive the predecessor
   and create a new handoff rather than appending a second plan.
 - Archived material is evidence only and must never be cited as current authority.
-- Delete stale instructions instead of adding caveats. A rule duplicated across
-  AGENTS, specs, and handoffs will drift.
+- Delete stale instructions; avoid caveats and rules duplicated across AGENTS, specs, and handoffs.
 
 ## Conventions and local facts
 

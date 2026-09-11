@@ -171,10 +171,10 @@ requests that tool once and asks for any subsequent human instruction afterward.
   sandbox. The pending dynamic-tool drive passed; shell-interruption behavior
   is not claimed as verified.
 
-**(b) Claude.** Exact process command:
+**(b) Claude.** Process command (account path replaced with a placeholder):
 
 ```sh
-/Users/zhiwang/.local/bin/claude --print --input-format stream-json \
+/Users/operator/.local/bin/claude --print --input-format stream-json \
   --output-format stream-json --verbose --replay-user-messages --safe-mode \
   --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
   --no-session-persistence --permission-mode dontAsk \

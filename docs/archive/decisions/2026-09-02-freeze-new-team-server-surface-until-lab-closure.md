@@ -1,7 +1,7 @@
 # Freeze new team/server surface until lab closure
 
 **Status:** fulfilled and archived on 2026-09-05. Accepted on 2026-09-02;
-the human-confirmed first-lab closure is now met. The backed-up CoT project
+the human-confirmed first-lab closure is now met. The backed-up research project
 completed its verified desktop transfer, existing two-member use was accepted,
 and the separate disposable-host SSH drill was skipped by the human.
 **Historical closure receipt:**

@@ -1,9 +1,11 @@
-# Team-server qualification history before the final CoT transfer
+# Team-server qualification history before the final project transfer
+
+Operational identities and locations below use placeholders.
 
 Status: archived evidence, superseded on 2026-09-05. This preserves the prior
 plan and dated receipts, including obsolete instructions, for audit only. The
 human revised closure to accept the existing two production members, skip the
-separate SSH qualification, and finish after a backed-up CoT project transfer.
+separate SSH qualification, and finish after a backed-up research project transfer.
 The final outcome is recorded in the [archived closure receipt](handoff-2026-08-27-dev-team-space-and-server.md).
 
 
@@ -64,7 +66,7 @@ What each open drive is waiting on:
 - **Revision alignment complete:** the explicitly authorized second production
   update committed merged `276a2bb3bb44d4a23f6865e6f14f3c202b4040ce` at
   21:26:02.672622 UTC through the normal guarded CLI, exit 0. The source desktop
-  was built from that exact revision and reconnected to WTH UCSD successfully.
+  was built from that exact revision and reconnected to the lab team space successfully.
   Hosted qualification run `33919068513` passed install, forced
   rollback, backup, member removal, and fresh-host restore on both Ubuntu
   22.04 and 24.04 at the target revision. PR #45 corrected the public-install
@@ -103,7 +105,7 @@ What each open drive is waiting on:
   [S41](../../acceptance/S41-bounded-experiment-control.md#open-live-failure--2026-09-04).
   The server qualification proves record preservation and normal reopening,
   not successful scientific work; no real research state was manually edited.
-- Production `wth-gpu-01` and the source-built desktop were qualified at
+- Production `team-host.example.org` and the source-built desktop were qualified at
   `519f80bed8a7fc78aa596036859e0a7a0f8ceeea`. The separately authorized manual
   release bridge retained the checkpoint
   `/home/rcp/rcp-server/retained-update-evidence/manual-bridge-519f80b-20260904T182649Z`
@@ -165,7 +167,7 @@ What each open drive is waiting on:
   source revision or a second server update.
 - **T5a/T5b manual/recovery subset passed:** exported bytes were mode 0600,
   20,480 bytes, and matched the digest above locally and remotely. The saved
-  `zhiwang` SSH route correctly failed without noninteractive sudo. The human's
+  `operator` SSH route correctly failed without noninteractive sudo. The human's
   existing `rcp-update` tmux session ran the fixed stdin-only
   `rcp server project transfer-import 7b003fb4-6c4e-42a8-8dd2-ef9885da244d --machine-readable`
   command. Upload succeeded at 20:15:48.696401 UTC and target activation at
@@ -233,9 +235,9 @@ branch, ordinary PR CI, and human merge even while this handoff remains active.
 
 #### 2026-09-01 — persistent lab install and update qualified
 
-- The first manual install on Ubuntu 22.04 x86-64 at `wth-gpu-01` completed from
+- The first manual install on Ubuntu 22.04 x86-64 at `team-host.example.org` completed from
   the private source repository. It created the dedicated `rcp` account, managed
-  checkout and immutable release, initialized team space `WTH UCSD`, enabled the
+  checkout and immutable release, initialized the lab team space, enabled the
   loopback service, and passed HTTP health plus `server doctor` with zero
   projects and no active work.
 - Updating that fresh server from `e1ffb9a` to `fba88c4` failed safely during
@@ -267,13 +269,13 @@ branch, ordinary PR CI, and human merge even while this handoff remains active.
   shipped and live-updated before the replacement bootstrap member enrolled.
 - The old empty installation was stopped, captured in the operator-owned mode
   `0600` archive
-  `/home/zhiwang/rcp-server-pre-clean-reinstall-20260901T0430EDT.tar.gz` with
+  `/home/operator/<server-backup>.tar.gz` with
   SHA-256
   `af8848541ec7ff1b2df7bf49f6ea88ae6e2d1bcfd315acfcceca4ca5171f4190`,
   and removed. A clean real-TTY install at `792f14f` then completed on
-  `wth-gpu-01`: the continuous wizard paused for the read-only private-source
+  `team-host.example.org`: the continuous wizard paused for the read-only private-source
   grant, verified GitHub host trust, resumed in place, built the immutable
-  release, initialized the new zero-member `WTH UCSD` team space, enabled the
+  release, initialized the new zero-member lab team space, enabled the
   service, and read back HTTP health with zero projects and zero active tasks.
 - That drive also exposed a documentation seam rather than a server-runtime
   defect: a newly opened operator tmux shell restored NVM Node 18 ahead of the
@@ -294,23 +296,23 @@ branch, ordinary PR CI, and human merge even while this handoff remains active.
 
 #### 2026-09-01 — persistent lab server and first project qualified
 
-- The clean source installation on `wth-gpu-01` is a healthy enabled team
-  service named `WTH UCSD`. The persistent source, immutable release, running
+- The clean source installation on `team-host.example.org` is a healthy enabled team
+  service for the lab team space. The persistent source, immutable release, running
   process, Web build, private control socket, and upstream `main` identities
   read back aligned through `server doctor`.
-- One local desktop member named `Zhi` is enrolled through saved connection
-  `7032a85b-b1bb-4014-b820-6704fa6d219a`. Its permanent member token is in the
+- One local desktop member named `member` is enrolled through saved connection
+  `<connection-id>`. Its permanent member token is in the
   versioned Keychain service, not the connection registry, URL, logs, or server
   source tree. The one-time bootstrap inputs were removed after exchange.
 - The server-local `rcp` account has provider-native Codex authentication and
   all six configured provider profiles pass readiness. RCP neither created nor
   retained a provider credential in its database; the operator used the
   provider's native headless-account mechanism.
-- The real request `acfb2ef4-b8de-4022-842e-91ab428abdb5` completed as project
-  `dark matter denoising` (`1c2e93b5-7639-4206-afee-8d582e7f993c`) from
-  `git@github.com:Zhi0467/TIDMAD-denoising.git`. The repository was genuinely
+- The real request `<provisioning-request-id>` completed as project
+  `research project` (`<project-id>`) from
+  `git@github.com:example/research-project.git`. The repository was genuinely
   empty, so the authorized human workflow created and pushed its visible root
-  commit `45fbc8056c30b1ab4e3995babbded0098e073e0a` before RCP resumed. GitHub
+  commit `<source-commit>` before RCP resumed. GitHub
   then passed the request-scoped write, readback, and cleanup proof through a
   distinct write-enabled deploy key; RCP cloned the exact commit into its
   `rcp`-owned central checkout and completed final member review.
@@ -371,8 +373,7 @@ branch, ordinary PR CI, and human merge even while this handoff remains active.
 - The current source-built desktop connected to that server. One normal
   **Resolve** changed the existing project's stored Claude and Codex paths from
   versioned/global targets to the stable account-local symlinks, both rows
-  displayed **Ready**, and a server-side readiness run for `dark matter
-  denoising` used `/home/rcp/.local/bin/codex` at `0.152.1`. This closes the live
+  displayed **Ready**, and a server-side readiness run for the research project used `/home/rcp/.local/bin/codex` at `0.152.1`. This closes the live
   provider-maintenance qualification; the broader first real task and two-user
   collaboration drives remain open as listed above.
 

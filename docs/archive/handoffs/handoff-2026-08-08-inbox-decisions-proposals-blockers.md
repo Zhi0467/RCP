@@ -141,7 +141,7 @@ Full status set: `open | ready | decided | revisit | superseded`.
 ## 4. Prerequisite — drain by hand (R2)
 
 **Do this before any code lands.** As of 2026-08-08 the four registered projects
-(all remote on `tianhaowang-gpu0.ucsd.edu`) held:
+(all on the remote team host) held:
 
 | project | open ambiguities | pending Proposals |
 |---|---|---|
