@@ -58,6 +58,32 @@ def _group_stopped(pid: int, timeout: float, poll_interval: float) -> bool:
         time.sleep(min(poll_interval, remaining))
 
 
+def provider_stopped(pid_file: str) -> bool | None:
+    """Inspect the owned group without waiting or delivering a signal.
+
+    True proves absence; False means the group exists. None means ownership or
+    process state could not be established and must not authorize another run.
+    """
+    pid = _read_pid(pid_file, timeout=0, poll_interval=1)
+    if pid is None:
+        return None
+    try:
+        if os.getpgid(pid) != pid:
+            return None
+    except ProcessLookupError:
+        # The leader can exit while its descendants retain the group.
+        pass
+    except OSError:
+        return None
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return None
+    return False
+
+
 def terminate_provider(
     pid_file: str,
     *,
@@ -102,6 +128,9 @@ def terminate_provider(
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--probe":
+        stopped = provider_stopped(argv[2])
+        return 2 if stopped is None else (0 if stopped else 1)
     if len(argv) != 6:
         return 2
     try:

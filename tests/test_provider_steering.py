@@ -490,6 +490,9 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
         return stop_confirmed
 
     monkeypatch.setattr(AgentProcessControl, "_terminate_remote", staticmethod(stop))
+    monkeypatch.setattr(
+        AgentProcessControl, "remote_stopped", staticmethod(lambda *args: stop_confirmed)
+    )
     control = AgentProcessControl()
 
     async def collect():
@@ -514,7 +517,9 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
         )
         assert receipt.status == "delivered"
         events = await asyncio.wait_for(task, 10)
-        assert stops == [("fixture-only", "fixture.pid")]
+        assert stops and all(value == ("fixture-only", "fixture.pid") for value in stops)
+        if stop_confirmed:
+            assert len(stops) == 1
         assert not unwanted.exists()
         assert events[-1].event == ("done" if stop_confirmed else "error")
         if not stop_confirmed:

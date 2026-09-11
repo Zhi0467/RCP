@@ -28,6 +28,7 @@ from rcp.core.models import GraphState, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
+from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -694,8 +695,21 @@ async def _stream_agent_events(
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
     """
+    remote_pid_file = (
+        str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
+        if execution is not None and remote_stage is not None and remote_stage.root
+        else None
+    )
+    remote_pass_recorded = False
     if remote_stage is not None:
         try:
+            if execution is not None and remote_stage.root is not None:
+                await asyncio.to_thread(
+                    require_remote_provider_quiescence,
+                    execution.store,
+                    execution_host,
+                    str(remote_stage.root),
+                )
             await asyncio.to_thread(remote_stage.finalize_inputs)
         except (OSError, StateUnavailable, ValueError) as exc:
             outcome.failed = True
@@ -714,11 +728,7 @@ async def _stream_agent_events(
             write_scope=write_scope,
             host=execution_host,
             control=execution.control if execution is not None else None,
-            remote_pid_file=(
-                str(remote_stage.root / "agent.pid")
-                if execution is not None and remote_stage is not None and remote_stage.root
-                else None
-            ),
+            remote_pid_file=remote_pid_file,
             invocation_gate=invocation_gate,
             capability=capability,
             binary=binary,
@@ -740,6 +750,31 @@ async def _stream_agent_events(
                     workspace=workspace,
                     remote_stage=remote_stage,
                 )
+                if (
+                    remote_pass_recorded
+                    and execution is not None
+                    and remote_pid_file is not None
+                    and outcome.exit_evidence.get("remote_process_stopped") is True
+                ):
+                    execution.store.finish_remote_provider_pass(
+                        execution.operation_id, remote_pid_file
+                    )
+                continue
+            if event.event == "remote_process_start":
+                assert execution is not None and remote_stage is not None
+                remote_pid_file = event.text
+                execution.store.begin_remote_provider_pass(
+                    execution.operation_id,
+                    execution_host,
+                    str(remote_stage.root),
+                    remote_pid_file,
+                )
+                remote_pass_recorded = True
+                continue
+            if event.event == "remote_process_stop":
+                assert execution is not None
+                execution.store.finish_remote_provider_pass(execution.operation_id, event.text)
+                remote_pass_recorded = False
                 continue
             if event.event in {"runtime", "runtime_fallback"}:
                 # Background consumes these. It durably checkpoints the runtime

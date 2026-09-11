@@ -214,6 +214,8 @@ class ProviderRuntime:
 
 
 class _JsonlProviderTurn(ProviderTurn):
+    requires_protocol_completion = True
+
     def __init__(
         self,
         profile: ProviderProfile,
@@ -255,7 +257,7 @@ class _JsonlProviderTurn(ProviderTurn):
             isinstance(value, dict)
             and value.get("type") in {"turn.completed", "turn.failed", "result"}
         )
-        return ProviderRuntimeStep(events=(event,), explicit_terminal=terminal)
+        return ProviderRuntimeStep(events=(event,), complete=terminal, explicit_terminal=terminal)
 
 
 class _ClaudeStreamTurn(_JsonlProviderTurn):

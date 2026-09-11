@@ -14,7 +14,7 @@ const server = await createServer({
 const {
   activeBranchMergeTask,
   experimentControlsNeedWrapupPolling,
-  failedTaskActionNeedsAuthoritativeProjectReload,
+  taskActionNeedsAuthoritativeProjectReload,
   loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
 } = await server.ssrLoadModule("/src/App.tsx");
@@ -116,7 +116,7 @@ test("a fast merge completion remains observable while another task keeps pollin
   assert.equal(terminal.some(terminalTaskNeedsAuthoritativeProjectReload), true);
 });
 
-test("failed Experiment Resume and Retry refetch authoritative stop state", () => {
+test("Experiment Resume and Retry refetch authoritative control state", () => {
   const experimentLoop = {
     request: { patch_kind: "experiment_loop" },
   };
@@ -124,10 +124,10 @@ test("failed Experiment Resume and Retry refetch authoritative stop state", () =
     request: { patch_kind: "work" },
   };
 
-  assert.equal(failedTaskActionNeedsAuthoritativeProjectReload(experimentLoop, "resume"), true);
-  assert.equal(failedTaskActionNeedsAuthoritativeProjectReload(experimentLoop, "retry"), true);
-  assert.equal(failedTaskActionNeedsAuthoritativeProjectReload(experimentLoop, "pause"), false);
-  assert.equal(failedTaskActionNeedsAuthoritativeProjectReload(ordinaryWork, "retry"), false);
+  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "resume"), true);
+  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "retry"), true);
+  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "pause"), false);
+  assert.equal(taskActionNeedsAuthoritativeProjectReload(ordinaryWork, "retry"), false);
 });
 
 test("pending Experiment watcher polling always refreshes control state", async () => {

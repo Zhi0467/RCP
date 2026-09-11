@@ -402,6 +402,38 @@ class ExperimentStoreMixin:
             record.parent_operation_id,
         ):
             raise ValueError("The Experiment recovery has no paid invocation ancestor.")
+        if (
+            connection.execute(
+                """
+            SELECT 1 FROM graph_runs
+            WHERE episode_id = ? AND status IN ('queued', 'running', 'pausing')
+            LIMIT 1
+            """,
+                (episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise AgentTaskAdmissionConflict("Another task is already active in this episode.")
+        latest = connection.execute(
+            """
+            SELECT operation_id,
+                   json_extract(request_json, '$.control_invocation') AS invocation
+            FROM graph_runs
+            WHERE episode_id = ? AND visible = 1
+              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (episode_id,),
+        ).fetchone()
+        if (
+            latest is None
+            or latest["operation_id"] != record.parent_operation_id
+            or latest["invocation"] != record.request.get("control_invocation")
+        ):
+            raise AgentTaskAdmissionConflict(
+                "Only the latest Experiment task can be recovered. Refresh and use its recovery."
+            )
         if self._has_active_chat_overlap(connection, record):
             raise AgentTaskAdmissionConflict("Another task is already active in this conversation.")
         self._insert_agent_task(

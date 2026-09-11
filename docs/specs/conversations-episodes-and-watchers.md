@@ -492,7 +492,11 @@ episode's own report is labelled **Open report**.
 The runtime, parent episode, visible task rows, usage meter, and latest available
 report used for one Experiment-control answer come from one SQLite read snapshot.
 Resume, Retry, and provider switch target only the exact current operation named
-in that answer; a missing task row yields no client control.
+in that answer; a missing task row yields no client control. Recovery admission
+atomically rejects an older attempt or any episode with an already active task.
+After an accepted recovery, the browser refreshes the authoritative project
+projection before releasing the busy controls, including after a provider switch.
+A refresh failure is reported separately from failure to start recovery.
 
 The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and

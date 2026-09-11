@@ -51,6 +51,7 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
+from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
     AgentTaskRequest,
@@ -215,6 +216,8 @@ class AgentTaskExecution:
         return self.continuation in _NATIVE_CHECKPOINT_CONTINUATIONS
 
     def checkpoint_stage(self, host: str, root: str) -> None:
+        if host:
+            require_remote_provider_quiescence(self.store, host, root)
         self.stage_host = host or None
         self.stage_root = root
         self.store.checkpoint_agent_task(

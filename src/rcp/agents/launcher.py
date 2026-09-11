@@ -13,7 +13,7 @@ import subprocess
 import threading
 from collections.abc import AsyncIterator
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -169,6 +169,9 @@ class AgentEvent(BaseModel):
         # Internal durable evidence emitted immediately before the selected
         # runtime can deliver this invocation's provider prompt.
         "runtime",
+        # Internal process ownership receipts; these convey no prompt authority.
+        "remote_process_start",
+        "remote_process_stop",
         # Internal diagnostic emitted when a runtime failed before it could have
         # delivered the prompt and another candidate is about to be tried. API
         # pumps record it instead of forwarding it as UI text.
@@ -272,6 +275,35 @@ class AgentProcessControl:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
+
+    @staticmethod
+    def remote_stopped(host: str, pid_file: str) -> bool | None:
+        """Observe the exact remote process group; unavailable is not stopped."""
+        command = [
+            "python3",
+            "-c",
+            _remote_script("remote_terminate_provider.py"),
+            "--probe",
+            pid_file,
+        ]
+        try:
+            result = subprocess.run(
+                ssh_arguments(host, shlex.join(command)),
+                capture_output=True,
+                text=True,
+                timeout=REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return {0: True, 1: False}.get(result.returncode)
+
+    @staticmethod
+    def _confirm_remote_stopped(host: str, pid_file: str) -> bool:
+        """Settle this newly spawned pass before allowing another runtime or turn."""
+        return AgentProcessControl.remote_stopped(host, pid_file) is True or (
+            AgentProcessControl._terminate_remote(host, pid_file)
+        )
 
     @staticmethod
     def _terminate_remote(host: str, pid_file: str) -> bool:
@@ -643,25 +675,32 @@ class AgentLauncher:
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
             try:
-                async for event in self._stream_runtime(
-                    provider,
-                    prompt,
-                    cwd=cwd,
-                    model=model,
-                    reasoning=reasoning,
-                    session_id=session_id,
-                    read_dirs=read_dirs,
-                    write_dirs=write_dirs,
-                    write_scope=write_scope,
-                    host=host,
-                    control=control,
-                    remote_pid_file=remote_pid_file,
-                    invocation_gate=invocation_gate,
-                    capability=capability,
-                    binary=binary,
-                    runtime_id=runtime.id,
-                ):
-                    yield event
+                async with aclosing(
+                    self._stream_runtime(
+                        provider,
+                        prompt,
+                        cwd=cwd,
+                        model=model,
+                        reasoning=reasoning,
+                        session_id=session_id,
+                        read_dirs=read_dirs,
+                        write_dirs=write_dirs,
+                        write_scope=write_scope,
+                        host=host,
+                        control=control,
+                        remote_pid_file=(
+                            f"{remote_pid_file}.{index}"
+                            if remote_pid_file and index
+                            else remote_pid_file
+                        ),
+                        invocation_gate=invocation_gate,
+                        capability=capability,
+                        binary=binary,
+                        runtime_id=runtime.id,
+                    )
+                ) as stream:
+                    async for event in stream:
+                        yield event
                 return
             except _PrePromptRuntimeFailure as exc:
                 last_failure = exc
@@ -804,6 +843,8 @@ class AgentLauncher:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
+        if host and remote_pid_file:
+            yield AgentEvent(event="remote_process_start", text=remote_pid_file)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -815,6 +856,8 @@ class AgentLauncher:
                 start_new_session=True,
             )
         except OSError as exc:
+            if host and remote_pid_file:
+                yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
                 self.invalidate_readiness(provider, host=host, binary=binary)
             raise _PrePromptRuntimeFailure(str(exc)) from exc
@@ -829,6 +872,8 @@ class AgentLauncher:
         stderr_task: asyncio.Task[str] | None = None
         stdout_task: asyncio.Task[tuple[bytes | None, int]] | None = None
         stdout_lines = None
+        remote_stopped: bool | None = None
+        prompt_delivered = False
         try:
             assert process.stdin is not None
             assert process.stdout is not None
@@ -989,6 +1034,11 @@ class AgentLauncher:
                         detail = _meaningful_stderr(stderr)
                         if detail and detail not in event.text:
                             event.text = "\n".join(part for part in (event.text, detail) if part)
+                        if host and remote_pid_file:
+                            remote_stopped = await asyncio.to_thread(
+                                AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                            )
+                            completion_stop_failed = not remote_stopped
                         provider_failed = True
                         if not prompt_delivered and not pre_prompt_error:
                             pre_prompt_error = event.text
@@ -1007,9 +1057,22 @@ class AgentLauncher:
                 assert stderr_task is not None
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
+            if host and remote_pid_file:
+                remote_stopped = await asyncio.to_thread(
+                    AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                )
+                completion_stop_failed = not remote_stopped
+                if not prompt_delivered and remote_stopped:
+                    yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if not prompt_delivered and not (
                 control is not None and control.pause_requested.is_set()
             ):
+                if completion_stop_failed:
+                    yield AgentEvent(
+                        event="error",
+                        text="RCP could not confirm that the remote provider process stopped. Runtime fallback is blocked.",
+                    )
+                    return
                 detail = (
                     pre_prompt_error
                     or stderr
@@ -1045,6 +1108,11 @@ class AgentLauncher:
                         "return_code": return_code,
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
+                        **(
+                            {"remote_process_stopped": remote_stopped}
+                            if host and remote_pid_file
+                            else {}
+                        ),
                         **({"stopped_at_result": True} if stopped_at_result else {}),
                         **({"degradation": degradation} if degradation else {}),
                     },
@@ -1057,7 +1125,7 @@ class AgentLauncher:
             elif completion_stop_failed:
                 yield AgentEvent(
                     event="error",
-                    text="The remote provider returned a result, but RCP could not confirm that its process stopped.",
+                    text="RCP could not confirm that the remote provider process stopped. Recovery is blocked until its process state can be verified.",
                 )
             elif provider_failed:
                 # The first error already includes stderr. A forced stop must
@@ -1077,15 +1145,23 @@ class AgentLauncher:
                 yield AgentEvent(event="done")
         finally:
             steering.close()
-            cleanup_task = asyncio.create_task(
-                _cleanup_provider_process(
-                    process,
-                    stdin_task=stdin_task,
-                    stdout_task=stdout_task,
-                    stdout_lines=stdout_lines,
-                    stderr_task=stderr_task,
-                )
-            )
+
+            async def cleanup() -> None:
+                try:
+                    if host and remote_pid_file and remote_stopped is not True:
+                        await asyncio.to_thread(
+                            AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                        )
+                finally:
+                    await _cleanup_provider_process(
+                        process,
+                        stdin_task=stdin_task,
+                        stdout_task=stdout_task,
+                        stdout_lines=stdout_lines,
+                        stderr_task=stderr_task,
+                    )
+
+            cleanup_task = asyncio.create_task(cleanup())
             try:
                 await asyncio.shield(cleanup_task)
             except asyncio.CancelledError:
@@ -1169,7 +1245,10 @@ class AgentLauncher:
             if cwd is not None:
                 provider = f"cd {shlex.quote(str(cwd))} && {provider}"
             child = f"echo $$ > {shlex.quote(pid_file)}; {provider}"
-            payload = shlex.join(["setsid", "sh", "-c", child])
+            # Interactive bash can make setsid a process-group leader, forcing
+            # setsid to fork. Wait for that child so SSH owns the provider's
+            # lifetime and exit status rather than the short-lived wrapper.
+            payload = shlex.join(["setsid", "--wait", "sh", "-c", child])
         elif cwd is not None:
             # asyncio's cwd= only reaches the local ssh client, so a remote run
             # would otherwise start in $HOME. Codex is additionally pinned by
