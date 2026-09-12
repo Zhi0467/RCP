@@ -19,6 +19,14 @@ from rcp.agents.prompts import (
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
+
+# The contract names the fields enforcement actually admits, so the two cannot
+# drift apart into a human-written allowlist beside the real one.
+_PINNED_DECISION_BALLOT_PROSE = "{}, and {}".format(
+    ", ".join(f"`{name}`" for name in PINNED_DECISION_BALLOT_FIELDS[:-1]),
+    f"`{PINNED_DECISION_BALLOT_FIELDS[-1]}`",
+)
 
 _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
 - Treat an unexpected process exit (including SIGTERM), timeout, command failure, or similar
@@ -47,14 +55,14 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
   transient failure is uncertainty, not a Blocker."""
 
 
-_EXPERIMENT_GRAPH_AUTHORITY = """Current Experiment-loop graph authority:
+_EXPERIMENT_GRAPH_AUTHORITY = f"""Current Experiment-loop graph authority:
 This replaces earlier graph-permission instructions for this loop, including broader ordinary
 Work permissions. Only these graph changes are available:
 - Update the focused Experiment's complete `attempts` list, status, `current_summary`, and
   `next_action`. Preserve attempt identity and immutable fields; never rewrite a terminal attempt.
 - Queue a pinned Decision as `open` while unresolved, `ready` when its choice is makeable, or
   `revisit` when new evidence undermines a settled choice. The same update may restate that
-  Decision's `title`, `question`, `options`, `rationale`, and `consequences` so the queued ballot
+  Decision's {_PINNED_DECISION_BALLOT_PROSE} so the queued ballot
   describes the choice the human now faces, including any option this episode's evidence newly
   raises. Leave the prior `selected_option` untouched and never write it or `decided`; state what
   the choice now turns on. Do not choose an option.
