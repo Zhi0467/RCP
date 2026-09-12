@@ -690,4 +690,8 @@ test("an authorized invocation count is the whole number the human typed", () =>
   assert.equal(authorizedInvocationCount(""), null);
   assert.equal(authorizedInvocationCount("  "), null);
   assert.equal(authorizedInvocationCount("ten"), null);
+  // Number() rounds 2^53 + 1 down, so isInteger alone would authorize a count
+  // the human never typed.
+  assert.equal(authorizedInvocationCount("9007199254740993"), null);
+  assert.equal(authorizedInvocationCount("9007199254740991"), Number.MAX_SAFE_INTEGER);
 });

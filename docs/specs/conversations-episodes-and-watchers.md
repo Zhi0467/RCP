@@ -256,10 +256,12 @@ complete and offers no episode-start action until a human or already-authorized
 graph-writing task edits the node back to a nonterminal status. This fresh-start
 gate does not revoke an invocation already authorized inside the current episode.
 Before any episode the action says **Start episode**; after history exists it says
-**Start new episode**, and at a spent ceiling it says **Reauthorize**. The node's
-current `invocation_ceiling` is the default pinned operational ceiling; a human
-Run may authorize an explicit count instead, which pins that episode without a
-graph revision and leaves the node's own limit unchanged. Historical episodes
+**Start new episode**. The node's current `invocation_ceiling` is the default
+pinned operational ceiling; a human Run may authorize an explicit count instead,
+which pins that episode without a graph revision and leaves the node's own limit
+unchanged. Runs is where that count is chosen: at a spent ceiling its control
+says **Reauthorize** and carries the count. The node inspector keeps the plain
+start against the node's own limit, which it shows beside it. Historical episodes
 retain their pinned used/ceiling values while the current node value remains
 separately visible as **Next episode limit**.
 

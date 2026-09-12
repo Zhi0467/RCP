@@ -725,6 +725,9 @@ function WatcherDetail({
   onHideWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
+  // Retiring an observer writes no graph, so the graph-mutation lock folded into
+  // actionsDisabled must not reach it: that would leave destructive Cancel as the
+  // only enabled control, which is the dead end this whole control exists to remove.
   const canCheckNow = watcher.can_check_now;
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
@@ -755,7 +758,6 @@ function WatcherDetail({
           <button
             type="button"
             className="button compact watcher-action"
-            disabled={actionsDisabled}
             onClick={() => onStopWatcher(watcher.watcher_id)}
             aria-label={`Stop watching ${watcher.watcher_id}`}
             title="Stop observing this job. The job itself keeps running."
