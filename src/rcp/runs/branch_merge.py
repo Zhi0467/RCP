@@ -235,7 +235,7 @@ class GlossarySemanticDelta(_StrictMergeModel):
 
 
 class GlobalSemanticDelta(_StrictMergeModel):
-    field: Literal["project_truth_scope", "ontology", "coverage"]
+    field: Literal["project_truth_scope", "ontology"]
     before: JsonValue
     after: JsonValue
 
@@ -278,7 +278,6 @@ class BranchMergeConflict(_StrictMergeModel):
         "glossary",
         "project_truth_scope",
         "ontology",
-        "coverage",
     ]
     entity_id: str | None = None
     field_path: str
@@ -560,14 +559,6 @@ def build_semantic_delta(
                 after=branch.ontology.model_dump(mode="json"),
             )
         )
-    if base.coverage != branch.coverage:
-        globals_.append(
-            GlobalSemanticDelta(
-                field="coverage",
-                before=base.coverage.model_dump(mode="json"),
-                after=branch.coverage.model_dump(mode="json"),
-            )
-        )
     return GraphSemanticDelta(
         base_head=base_head,
         branch_head=branch_head,
@@ -807,7 +798,6 @@ def detect_branch_merge_conflicts(
             main.project_truth_scope,
         ),
         ("ontology", base.ontology, branch.ontology, main.ontology),
-        ("coverage", base.coverage, branch.coverage, main.coverage),
     ):
         base_json = _semantic_document(base_value, frozenset())
         branch_json = _semantic_document(branch_value, frozenset())
@@ -871,7 +861,6 @@ def semantic_delta_is_subsumed(delta: GraphSemanticDelta, main: GraphState) -> b
     main_globals: dict[str, object] = {
         "project_truth_scope": main.project_truth_scope,
         "ontology": main.ontology,
-        "coverage": main.coverage,
     }
     return all(
         _branch_changes_are_present(
@@ -1137,9 +1126,7 @@ def _require_possible_merge_plan(
 ) -> None:
     """Do not ask a provider to repair fixed operations or mandatory source scope."""
 
-    unsupported = sorted(
-        path for path in residue if path[0] in {"ontology", "project_truth_scope", "coverage"}
-    )
+    unsupported = sorted(path for path in residue if path[0] in {"ontology", "project_truth_scope"})
     if unsupported:
         raise BranchMergeCandidateProblem(
             "Branch merge cannot carry project configuration changes: "
@@ -2353,7 +2340,6 @@ def _graph_semantic_document(state: GraphState) -> dict[str, JsonValue]:
         },
         "project_truth_scope": _semantic_document(state.project_truth_scope, frozenset()),
         "ontology": _semantic_document(state.ontology, frozenset()),
-        "coverage": _semantic_document(state.coverage, frozenset()),
     }
 
 
@@ -2379,7 +2365,7 @@ def _graph_semantic_write_paths(
                     prefix=(collection, identity),
                 )
             )
-    for field in ("project_truth_scope", "ontology", "coverage"):
+    for field in ("project_truth_scope", "ontology"):
         old_value = old[field]
         new_value = new[field]
         if isinstance(old_value, dict) and isinstance(new_value, dict):
@@ -2420,7 +2406,7 @@ def _branch_conflict_paths(
     conflicts: list[BranchMergeConflict],
 ) -> set[SemanticWritePath]:
     paths: set[SemanticWritePath] = set()
-    globals_ = {"project_truth_scope", "ontology", "coverage"}
+    globals_ = {"project_truth_scope", "ontology"}
     for conflict in conflicts:
         parts = tuple(part for part in conflict.field_path.split(".") if part)
         if conflict.collection in globals_:

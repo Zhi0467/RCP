@@ -667,7 +667,7 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
         "RCP assigns patch kind, agent authorship, revision, run scope, Proposal dependencies and "
         "base revision, object lifecycle, and admission bookkeeping"
     ) in compact
-    assert "Work may not set coverage or cursors" in compact
+    assert "Work may not advance the ingestion watermark" in compact
     assert "one `work`/`agent` Patch" not in contract
     assert "Use the repository list as `run_truth_scope`" not in contract
     assert "only project locations you may change" not in contract

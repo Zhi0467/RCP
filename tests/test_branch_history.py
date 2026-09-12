@@ -135,9 +135,9 @@ def test_branch_starts_at_exact_main_head_and_advances_without_mutating_main(man
         "graph.json",
         "glossary.json",
         "proposals.json",
-        "coverage.json",
         "research.md",
     }
+    assert not (root / "coverage.json").exists()
     assert not (root / "manifest.toml").exists()
     assert not (root / "scope-base.json").exists()
     assert not (root / "cursors.json").exists()

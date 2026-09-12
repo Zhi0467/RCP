@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel
 
@@ -73,6 +73,14 @@ from rcp.transport import (
 
 logger = logging.getLogger(__name__)
 _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
+
+# A stage retained across this upgrade still holds a version-2 context carrying
+# the retired `coverage_path`. `RunContext` forbids extras, so validating that
+# checkpoint as written fails a native continuation outright and quietly forces
+# an ordinary retry to rebuild the context it promised to reuse. Dropping this
+# one shipped-then-retired key preserves the context's meaning; the allowlist
+# stays closed so every other unknown field still rejects.
+_RETIRED_PREPARED_CONTEXT_FIELDS: Final[frozenset[str]] = frozenset({"coverage_path"})
 _IMPORTED_PROVIDER_SOURCES_LABEL = "imported-provider-history"
 
 
@@ -163,7 +171,12 @@ def _read_prepared_graph_context(parent: AgentTaskRecord) -> _PreparedGraphConte
         if path.parent != (root / "inputs").resolve() or not path.is_file():
             raise ValueError("the prior attempt has no prepared context metadata")
         raw = path.read_text(encoding="utf-8")
-    return _PreparedGraphContext.model_validate_json(raw)
+    document = json.loads(raw)
+    context = document.get("context") if isinstance(document, dict) else None
+    if isinstance(context, dict):
+        for field in _RETIRED_PREPARED_CONTEXT_FIELDS:
+            context.pop(field, None)
+    return _PreparedGraphContext.model_validate(document)
 
 
 def _retry_lineage(execution: AgentTaskExecution | None) -> list[AgentTaskRecord]:

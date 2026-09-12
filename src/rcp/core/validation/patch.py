@@ -28,7 +28,6 @@ from rcp.core.operations import (
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
-from rcp.core.validation.nodes import older
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
@@ -211,22 +210,9 @@ def _validate_patch(
     if patch.kind == "approval":
         validate_approval_shape(state, patch, report, mode=mode)
 
-    oldest_ref = _validate_operations(ctx)
+    _validate_operations(ctx)
     _validate_queued_decision_options(ctx)
     _validate_created_proposal_liveness(ctx)
-
-    if (
-        mode == "admission"
-        and oldest_ref is not None
-        and state.coverage.earliest_timestamp is not None
-        and oldest_ref < state.coverage.earliest_timestamp
-        and "set_coverage" not in op_names
-    ):
-        report.flag(
-            "coverage-mismatch",
-            "This patch cites history older than the graph's coverage boundary without updating coverage.",
-            ctx.revision,
-        )
 
     return report
 
@@ -680,9 +666,8 @@ def _validate_declared_scope(ctx: OpContext) -> None:
         )
 
 
-def _validate_operations(ctx: OpContext):
-    """Run each operation's rule, returning the oldest source reference cited."""
-    oldest_ref = None
+def _validate_operations(ctx: OpContext) -> None:
+    """Validate and stage each operation in order."""
     for op in ctx.patch.ops:
         name = op.op
         rule = OP_RULES.get(name)
@@ -699,9 +684,9 @@ def _validate_operations(ctx: OpContext):
         rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
         _validate_operation_authority(ctx, op)
         if rule.structural_validate is not None:
-            oldest_ref = older(oldest_ref, rule.structural_validate(op, ctx))
+            rule.structural_validate(op, ctx)
         if ctx.mode == "admission" and rule.authoring_validate is not None:
-            oldest_ref = older(oldest_ref, rule.authoring_validate(op, ctx))
+            rule.authoring_validate(op, ctx)
         rejects_after = sum(message.level == "reject" for message in ctx.report.messages)
         if rejects_after != rejects_before:
             continue
@@ -716,7 +701,6 @@ def _validate_operations(ctx: OpContext):
                 f"Operation {name!r} could not be staged: {exc}.",
                 ctx.revision,
             )
-    return oldest_ref
 
 
 def _validate_operation_authority(ctx: OpContext, operation: GraphOperation) -> None:

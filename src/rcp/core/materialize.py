@@ -9,7 +9,6 @@ from pydantic import TypeAdapter
 from rcp.core.models import (
     Ambiguity,
     BeliefTransition,
-    CoverageBoundary,
     Edge,
     GlossaryTerm,
     GraphState,
@@ -77,9 +76,6 @@ def materialize_patches(
 
     initial_scope = list(initial_truth_scope)
     state = GraphState(project_truth_scope=initial_scope)
-    state.coverage = state.coverage.model_copy(
-        update={"repositories_never_seen": sorted(initial_scope)}
-    )
     return materialize_patches_from_state(
         patches,
         initial_state=state,
@@ -311,7 +307,7 @@ def _fork_state(state: GraphState) -> GraphState:
     """Fork a state so a failed apply cannot touch the caller's copy.
 
     Only the mutable containers are copied; the nodes, edges, proposals,
-    ambiguities, glossary terms, and coverage inside them are shared. That is
+    ambiguities and glossary terms inside them are shared. That is
     safe because ``_apply_patch`` never mutates one of those objects in place —
     every change replaces a container slot or the whole attribute — so a patch
     that raises part-way leaves the caller's containers untouched.
@@ -541,14 +537,8 @@ def _apply_patch(
                 term = GlossaryTerm.model_validate(data)
                 state.glossary[term.term] = term
         elif isinstance(op, SetCoverageOperation):
-            previous = state.coverage
-            data = previous.model_dump(mode="python")
-            data.update(op.coverage.model_dump(mode="python", exclude_unset=True))
-            data["repositories_seen"] = sorted(set(data.get("repositories_seen", [])))
-            data["repositories_never_seen"] = sorted(set(data.get("repositories_never_seen", [])))
-            data["sessions_read"] = sorted(set(data.get("sessions_read", [])))
-            data["sessions_skipped"] = sorted(set(data.get("sessions_skipped", [])))
-            state.coverage = CoverageBoundary.model_validate(data)
+            # Historical reading reports have no current graph effect.
+            pass
         elif isinstance(op, SetStandingOperation):
             node = state.nodes[op.node_id]
             state.nodes[node.id] = node.model_copy(
@@ -558,13 +548,6 @@ def _apply_patch(
             new_scope = set(op.truth_scope)
             state.project_truth_scope = sorted(new_scope)
             state.config_revisions["project_truth_scope"] = revision
-            seen = set(state.coverage.repositories_seen)
-            never_seen = set(state.coverage.repositories_never_seen)
-            never_seen.update(new_scope - seen)
-            never_seen.intersection_update(new_scope)
-            state.coverage = state.coverage.model_copy(
-                update={"repositories_never_seen": sorted(never_seen)}
-            )
             if op.repository is not None:
                 repository_descriptors.append(
                     op.repository.model_dump(mode="python", exclude_unset=True)

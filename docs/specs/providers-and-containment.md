@@ -557,7 +557,8 @@ repository pointers, selected packages, and an optional human request.
 The agent reads logs in place. RCP performs only bounded existence/readability
 preflight and reports exact failures without blocking launch. RCP does not parse,
 index, normalize, slice, hash, cache, transfer, or project provider conversation
-content and maintains no per-log cursor or coverage truth.
+content and maintains no per-log cursor or coverage truth. There is no agent-written
+coverage report or coverage-warning banner.
 
 That is the implemented ordinary-run path, not a promise to abandon source
 history during a pending personal-to-team transfer. The confirmed transfer

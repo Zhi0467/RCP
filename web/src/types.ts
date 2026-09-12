@@ -2496,14 +2496,6 @@ export interface ProjectSnapshot {
   attention: GraphAttentionProjection;
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
-  coverage: {
-    repositories_seen: string[];
-    repositories_never_seen: string[];
-    sessions_read: string[];
-    sessions_skipped: string[];
-    earliest_timestamp?: string | null;
-    note: string;
-  };
   graph: GraphState;
   paper: PaperSnapshot;
   paper_coach: {

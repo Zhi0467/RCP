@@ -183,7 +183,7 @@ Agent semantic permission is represented by two constant code profiles:
 
 The manifest cannot edit these profiles. Surface contracts narrow them further:
 Discuss and Paper expose no Patch; Experiment-loop work is limited to its
-focused Experiment policy; Seed/Refresh owns coverage; merge is graph-only and
+focused Experiment policy; merge is graph-only and
 receives no repository write scope.
 
 ## Graph action vocabulary
@@ -194,7 +194,7 @@ operation's superficial shape.
 
 The base action families are create, update, remove, supersede, and merge node;
 create and remove edge; set standing; create, resolve, and withdraw Proposal;
-set coverage; set project truth scope; and set ontology. Current profiles apply
+set project truth scope; and set ontology. Current profiles apply
 these rules:
 
 - Humans may perform current product graph actions, subject to their explicit UI
@@ -210,7 +210,6 @@ these rules:
 - The orchestrator has direct current control of Evidence, Decisions,
   Experiments, and Blockers, including standing, subject to operation validation.
 - No agent may resolve a Proposal or change project truth scope or ontology.
-- Seed/Refresh alone may write coverage bookkeeping.
 - Graph-writing agents may add or revise project-wide glossary definitions through
   `upsert_glossary`, including bounded Experiment and Auto-research work. Entries
   are explanatory metadata, not protected belief nodes; Discuss remains without
