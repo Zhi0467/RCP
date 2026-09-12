@@ -99,6 +99,9 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
       };
     });
     await page.getByRole("link", { name: "Open Validation report" }).click();
+    // Each link's handler records its call after its own await, so clicking both
+    // before either lands leaves the recorded order to chance.
+    await page.waitForFunction(() => window.previewCalls.length === 1);
     await page.getByRole("link", { name: "Open Saved plot" }).click();
     await page.waitForFunction(() => window.previewCalls.length === 2);
     assert.deepEqual(await page.evaluate(() => window.previewCalls), [
