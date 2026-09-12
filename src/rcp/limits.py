@@ -205,6 +205,9 @@ SSH_SERVER_ALIVE_COUNT_MAX = 4
 # spares a follow-up call the cost of a fresh handshake; it never shortens a
 # call in progress, because the timer does not run while a client is attached.
 SSH_CONTROL_PERSIST_SECONDS = 60
+# Asking a leftover mux socket whether anyone is still listening is a local
+# connect, so anything slower than this is a socket that cannot answer.
+SSH_CONTROL_PROBE_TIMEOUT_SECONDS = 1.0
 
 # A run keeps its own SSH connection, so a dropped link ends that run and not
 # its neighbours. It still ends it for a reason that has nothing to do with the

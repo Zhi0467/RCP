@@ -283,7 +283,15 @@ class AgentProcessControl:
 
     @staticmethod
     def remote_stopped(host: str, pid_file: str) -> bool | None:
-        """Observe the exact remote process group; unavailable is not stopped."""
+        """Observe the exact remote process group; unavailable is not stopped.
+
+        Deliberately on the shared connection, not the run's. This has to reach
+        the host at the moment the run's own connection may be what died, and a
+        shared path is the only one OpenSSH reopens by itself. Giving it the
+        run's partition would leave the provider running with nothing able to
+        stop it. `test_provider_turn_rides_the_master_of_its_own_run` fails if
+        this or `_terminate_remote` ever takes one.
+        """
         command = [
             "python3",
             "-c",
@@ -312,6 +320,7 @@ class AgentProcessControl:
 
     @staticmethod
     def _terminate_remote(host: str, pid_file: str) -> bool:
+        # Shared connection on purpose; see `remote_stopped`.
         command = [
             "python3",
             "-c",

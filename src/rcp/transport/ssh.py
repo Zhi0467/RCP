@@ -11,6 +11,7 @@ from pathlib import Path
 
 from rcp.limits import (
     SSH_CONTROL_PERSIST_SECONDS,
+    SSH_CONTROL_PROBE_TIMEOUT_SECONDS,
     SSH_SERVER_ALIVE_COUNT_MAX,
     SSH_SERVER_ALIVE_INTERVAL_SECONDS,
 )
@@ -88,30 +89,45 @@ def control_partition_token(partition: str | None) -> str:
 
 
 def sweep_control_sockets() -> None:
-    """Unlink mux sockets whose master is gone.
+    """Unlink partitioned mux sockets whose master is gone.
 
-    OpenSSH only clears a dead socket when a later connection asks for the same
-    path, and a partitioned path names work that never happens twice, so nothing
-    would ever clear one. The check is whether the socket still answers, never
-    whose it looks like: the directory is keyed by user id alone, so a second
-    RCP with its own data directory keeps its live masters in here too, and
-    deleting one would cause exactly the lost link this partitioning prevents.
+    OpenSSH clears a dead socket only when a later connection asks for the same
+    path. A partitioned path names work that never happens twice, so nothing
+    ever asks again and the socket stays. The shared path is the opposite and is
+    skipped for that reason: OpenSSH already heals it on the next connection,
+    and sweeping a path in use is the one way to delete a socket a master bound
+    between the check and the unlink.
 
-    Best effort, like the remote stage sweep it runs beside: leftover sockets
-    are not worth failing a run over.
+    What is checked is whether a socket still answers, never whose it looks
+    like. The directory is keyed by user account alone, so a second RCP with its
+    own data directory keeps its live masters in here too, and deleting one
+    would cause exactly the lost link this partitioning prevents.
+
+    Best effort: leftover sockets are not worth failing a start over.
     """
 
     with suppress(OSError, RuntimeError):
         for entry in _require_control_directory().iterdir():
+            if entry.name.startswith(f"{SHARED_CONTROL_PARTITION}-"):
+                continue
             with suppress(OSError):
                 if stat.S_ISSOCK(entry.lstat().st_mode) and not _socket_answers(entry):
                     entry.unlink()
 
 
 def _socket_answers(path: Path) -> bool:
-    """Whether a master is still listening. A master listens before it is named."""
+    """Whether a master is still listening. A master listens before it is named.
+
+    A refusal is read as death, which is right except when a live master's
+    accept queue is full. That costs one extra master for one run rather than a
+    lost link, because unlinking a socket does not disturb the sessions already
+    attached to it.
+    """
 
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # A full accept queue refuses on macOS but blocks forever on Linux, and a
+    # sweep that hangs would hold up the start it runs in.
+    probe.settimeout(SSH_CONTROL_PROBE_TIMEOUT_SECONDS)
     try:
         probe.connect(os.fspath(path))
     except OSError as exc:

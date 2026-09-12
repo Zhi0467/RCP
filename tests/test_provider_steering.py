@@ -482,7 +482,7 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
     # Exercise the remote dispatch path with a local fixture pipe. No ssh binary
     # or host is contacted; the termination receipt is supplied by the fixture.
     monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
-    monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command: command)
+    monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
     stops = []
 
     def stop(host, pid_file):

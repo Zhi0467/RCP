@@ -209,18 +209,25 @@ def test_control_socket_sweep_keeps_every_master_that_still_answers(
     live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     abandoned = control_directory / "dead"
     dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # The shared path is reused, so OpenSSH heals it on the next connection and
+    # sweeping it could only delete a socket a master just bound.
+    reused = control_directory / f"{SHARED_CONTROL_PARTITION}-abc"
+    shared = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     unrelated = control_directory / "other"
     try:
         live.bind(os.fspath(listening))
         live.listen(1)
         dead.bind(os.fspath(abandoned))
         dead.close()
+        shared.bind(os.fspath(reused))
+        shared.close()
         unrelated.write_text("")
 
         sweep_control_sockets()
 
         assert listening.exists()
         assert unrelated.exists()
+        assert reused.exists()
         assert not abandoned.exists()
     finally:
         live.close()

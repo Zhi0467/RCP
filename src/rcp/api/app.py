@@ -189,6 +189,7 @@ from rcp.transfer.target import (
     TargetTransferUploadCoordinator,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable, fence_canonical_lock_waits
+from rcp.transport.ssh import sweep_control_sockets
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
     WatcherDelivery,
@@ -1315,6 +1316,10 @@ def create_app(
             logger.warning("Could not warm provider capabilities: %s", exc)
 
     async def sweep_remote_run_stages() -> None:
+        # The local half of the same debt: a master killed rather than idled out
+        # leaves a socket behind, and a socket named for one run is never asked
+        # for again, so OpenSSH's own stale-socket cleanup never runs on it.
+        await asyncio.to_thread(sweep_control_sockets)
         try:
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,

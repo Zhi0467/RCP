@@ -24,7 +24,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
-from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments, sweep_control_sockets
+from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
 
 _REMOTE_TREE_HELPERS = """\
@@ -60,6 +60,23 @@ class ImportedProviderSourceReadback:
     payload_size_bytes: int
 
 
+def run_stage_partition(host: str, root: str | PurePosixPath | None) -> str | None:
+    """The SSH master one stage keeps to itself, named by the stage root.
+
+    One stage root, one master. That is the stage the work runs in, not the run
+    itself: a conversation keeps one stage across its turns, so a later turn
+    reaching the same root reuses the same connection. Which is what is wanted,
+    because those turns are the same conversation and nobody else is on it. What
+    matters is that nothing outside the stage is, so a lost link ends the work
+    in that stage and nothing else. The provider turn of the same stage names
+    its master here too, so the turn and its file work share one fate. Before
+    the root exists there is nothing to isolate, and creation shares the
+    default.
+    """
+
+    return None if root is None else f"{host}:{root}"
+
+
 class RemoteRunStage:
     def __init__(self, host: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", host):
@@ -77,14 +94,7 @@ class RemoteRunStage:
 
     @property
     def transport_partition(self) -> str | None:
-        """The SSH master this stage keeps to itself, named by its own root.
-
-        A stage root belongs to exactly one run, so a lost link ends that run
-        and nothing else. Before the root exists there is no run to isolate,
-        and the sweep and creation calls share the default master.
-        """
-
-        return None if self.root is None else f"{self.host}:{self.root}"
+        return run_stage_partition(self.host, self.root)
 
     def sweep(
         self,
@@ -92,17 +102,12 @@ class RemoteRunStage:
         retain_days: int = RUN_STAGE_RETENTION_DAYS,
         protected_roots: Iterable[str] | None = (),
     ) -> None:
-        """Age out stages left behind by failed runs, and their dead local sockets.
+        """Age out stages left behind by failed runs.
 
         A failed run deliberately keeps its scratch folder so the work is not
         lost, which means nothing else ever deletes it. Best effort: a stage that
         cannot be swept is not worth failing a run over.
-
-        The local half runs first because it is the same debt on the near side:
-        a stage keeps its own SSH master, so a run that ended leaves a socket
-        that no later connection will ever ask for again.
         """
-        sweep_control_sockets()
         if protected_roots is None:
             return
         protected = tuple(dict.fromkeys(protected_roots))

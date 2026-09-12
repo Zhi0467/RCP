@@ -367,7 +367,7 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
     launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
     remote_commands: list[tuple[str, str]] = []
 
-    def local_ssh(host: str, command: str) -> list[str]:
+    def local_ssh(host: str, command: str, **_kwargs: object) -> list[str]:
         remote_commands.append((host, command))
         # macOS has no `setsid`; retain the exact remote command for assertions
         # and remove only that Linux process-group wrapper in this local drive.

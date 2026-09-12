@@ -169,6 +169,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        transport_partition: str | None = None,
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
@@ -189,6 +190,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     host=host,
                     control=control,
                     remote_pid_file=remote_pid_file,
+                    transport_partition=transport_partition,
                     invocation_gate=None,
                     capability=capability,
                     binary=binary,
@@ -203,6 +205,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             write_dirs,
             write_scope,
             remote_pid_file,
+            transport_partition,
             capability,
             binary,
         )

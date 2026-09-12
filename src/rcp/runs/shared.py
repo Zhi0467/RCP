@@ -31,6 +31,7 @@ from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.run_stage import run_stage_partition
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -729,7 +730,9 @@ async def _stream_agent_events(
             control=execution.control if execution is not None else None,
             remote_pid_file=remote_pid_file,
             transport_partition=(
-                remote_stage.transport_partition if remote_stage is not None else None
+                run_stage_partition(execution_host, remote_stage.root)
+                if remote_stage is not None
+                else None
             ),
             invocation_gate=invocation_gate,
             capability=capability,

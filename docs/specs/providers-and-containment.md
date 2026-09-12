@@ -429,15 +429,22 @@ host and stage. SSH or provider transport failure is reported as unavailable,
 not converted into semantic correction.
 
 RCP shares an SSH connection per unit of work, not per host. Work that owns
-something durable keeps its own connection, named by what it owns: a run by its
-stage, a lock holder by the lock it holds. A link that drops therefore ends that
-work and nothing else. Short control traffic owns nothing durable and shares one
-connection, which is what keeps it cheap. Stopping a remote process after a
-failure stays on the shared connection on purpose, because it has to reach the
-host exactly when the work's own connection is gone. Connections left behind by
-finished work are cleared by asking whether they still answer, never by whose
-they look like: the local socket directory is keyed by user account, so a second
-RCP instance keeps its live connections in the same place.
+something durable keeps its own connection, named by what it owns: the work in
+one run stage by that stage's root, a lock holder by the lock it holds. A link
+that drops therefore ends the work on that connection and nothing else. Short
+control traffic owns nothing durable and shares one connection, which is what
+keeps it cheap. Stopping a remote process after a failure stays on the shared
+connection on purpose: it must not ride the connection whose death it is
+cleaning up after, and the shared one is the only path OpenSSH reopens by
+itself. Connections left behind by finished work are cleared by asking whether
+they still answer, never by whose they look like, because the local socket
+directory is keyed by user account and a second RCP instance keeps its live
+connections in the same place.
+
+This separates work that would otherwise fail together for no reason of its
+own. It does not make a host's connections independent of the network between
+them: an outage still ends every connection to that host, now as separate
+failures rather than one.
 
 ### Compute connections are resources, not execution profiles
 
