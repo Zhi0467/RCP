@@ -17,7 +17,13 @@ from rcp.api.dependencies import (
 from rcp.api.identity import IdentityAccess
 from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
-from rcp.storage import AppStore, StoredWatcherRecord, WatcherClaimConflict, WatcherRecord
+from rcp.storage import (
+    AppStore,
+    GraphWatcherRecord,
+    StoredWatcherRecord,
+    WatcherClaimConflict,
+    WatcherRecord,
+)
 from rcp.watchers import WatcherPoller
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -179,15 +185,27 @@ def _can_stop_watching(
 ) -> bool:
     """Whether a human may retire this observer without touching the observed job.
 
-    Only a still-observing watcher qualifies. A completed observation is a
+    Only a still-observing external observation qualifies. A completed one is a
     retained result waiting to be claimed as the next episode's invocation one,
     and retiring it marks it notified, so offering this beside it would discard
     that result under a label that promises nothing is lost. Completed rows keep
     the non-destructive Hide.
+
+    An Experiment loop's canonical-graph condition is excluded. The permission
+    this predicate adds is for a job that outlives its episode and would
+    otherwise leave Cancel as the only move; a condition runs no job, has no
+    Cancel, and retiring it only discards a future graph delivery. Releasing an
+    episode held by a live condition is a separate question this control does not
+    answer. An ordinary conversation's condition keeps the retirement it already
+    had.
     """
 
     return bool(
-        record.status in {"active", "degraded"}
+        not (
+            isinstance(record, GraphWatcherRecord)
+            and record.continuation.patch_kind == "experiment_loop"
+        )
+        and record.status in {"active", "degraded"}
         and not record.notified
         and record.notification_operation_id is None
         # A group wakes once when every member has settled, and one human-stopped

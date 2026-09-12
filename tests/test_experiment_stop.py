@@ -27,10 +27,12 @@ from rcp.storage import (
     EpisodeRecord,
     EpisodeReportRecord,
     EpisodeWrapupRecord,
+    GraphWatcherRecord,
     WatcherContinuation,
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
@@ -2985,3 +2987,104 @@ def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> 
     assert set(rows) == {"main-observer", "branch-observer"}
     assert rows["main-observer"]["can_stop_watching"] is True
     assert rows["branch-observer"]["can_stop_watching"] is False
+
+
+def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
+    """The control answers an observed job, and a condition runs none.
+
+    A canonical-graph condition carries the episode's own experiment_loop
+    continuation, so after the ending fence it would otherwise qualify. Retiring
+    it runs no scheduler command and frees no machine; it only discards a future
+    graph delivery.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="graph-condition",
+                project_id=loop.project_id,
+                origin_operation_id="loop-root",
+                origin_task_kind="node_chat",
+                chat_id=loop.chat_id,
+                node_id=EXPERIMENT_ID,
+                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
+                armed_revision=0,
+                continuation=loop.continuation(),
+                status="active",
+                created_at=loop.store.now(),
+                last_evaluated_at=loop.store.now(),
+            )
+        ]
+    )
+    loop.settle_exhausted_ending()
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "graph-condition"
+    )
+    # It holds the episode shut, and this control is still not the answer.
+    assert row["can_stop_watching"] is False
+    assert row["can_cancel"] is False
+    assert loop.control()["reasons"] == ["Detached Experiment work is still running."]
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/graph-condition/stop")
+
+    assert response.status_code == 422, response.text
+    assert "not an observed job to retire" in response.json()["detail"]
+    assert loop.store.watcher("graph-condition").status == "active"
+
+
+def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) -> None:
+    """Only the Experiment path is narrowed; a chat's own condition is untouched.
+
+    An ordinary conversation could always retire the condition it armed. That
+    predates this control and is not this branch's to revoke.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="chat-condition",
+                project_id=loop.project_id,
+                origin_operation_id="loop-root",
+                origin_task_kind="node_chat",
+                chat_id=loop.chat_id,
+                node_id=EXPERIMENT_ID,
+                # The arming task is the loop root, so the row keeps its binding.
+                episode_id=loop.episode_id,
+                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
+                armed_revision=0,
+                continuation=loop.continuation(
+                    patch_kind="work",
+                    control_node_id=None,
+                    control_revision=None,
+                    control_episode_id=None,
+                    control_invocation=None,
+                    control_invocation_ceiling=None,
+                    control_completion_criteria=[],
+                ),
+                status="active",
+                created_at=loop.store.now(),
+                last_evaluated_at=loop.store.now(),
+            )
+        ]
+    )
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "chat-condition"
+    )
+    assert row["can_stop_watching"] is True
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/chat-condition/stop")
+
+    assert response.status_code == 200, response.text
+    assert loop.store.watcher("chat-condition").status == "stopped"

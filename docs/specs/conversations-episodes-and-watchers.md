@@ -399,10 +399,12 @@ loop** that control owns its watchers; after the ending fence Stop is refused, s
 the observer would otherwise keep the loop shut with no control but Cancel.
 Retiring is not cancelling: the observed job keeps running, and the retired
 observer can no longer deliver a retained completion. It is offered for one lone
-observer on the graph target being shown: a grouped member cannot be retired
-alone, because a human-stopped member makes its whole group undeliverable, and a
-completed observation is a retained result to claim rather than an observer to
-retire.
+external observation on the graph target being shown: a grouped member cannot be
+retired alone, because a human-stopped member makes its whole group
+undeliverable; a completed observation is a retained result to claim rather than
+an observer to retire; and an Experiment graph condition runs no job, so this
+control is not its answer. A live condition can therefore still hold an ended
+episode shut.
 
 An optional saved `cancel_command` runs only on a human Cancel request, after a
 fresh check confirms active work. It uses the recorded execution host and cwd,
