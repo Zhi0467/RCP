@@ -278,7 +278,8 @@ def derive_experiment_control_state(
         operational_reasons.append("A previous episode is still open on this Experiment.")
     if (
         operational is not None
-        and (operational.watcher_completion_pending or operational.detached_work_active)
+        and operational.watcher_completion_pending
+        and not operational.detached_work_active
         and operational.watcher_delivery_diagnostic
     ):
         operational_reasons.append(operational.watcher_delivery_diagnostic)

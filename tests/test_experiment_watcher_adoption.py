@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from rcp.core.models import GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.experiment_loop import preflight_episode_wake
+from rcp.skill_registry import SkillReference
 
 from .helpers import create_named_app as create_app
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
@@ -57,13 +59,40 @@ def _adopted_loop(manifest, tmp_path, *, branch: bool, old_status: str = "comple
 
 @pytest.mark.parametrize("branch", [False, True])
 @pytest.mark.parametrize("origin_authorizer", ["different", "missing"])
+@pytest.mark.parametrize("current_has_skills", [False, True])
 def test_adopted_completions_wake_current_episode_once_with_current_authority(
-    manifest, tmp_path, monkeypatch, branch, origin_authorizer
+    manifest, tmp_path, monkeypatch, branch, origin_authorizer, current_has_skills
 ):
     loop, target, old_episode = _adopted_loop(manifest, tmp_path, branch=branch)
+    current_policy = {
+        "workflow_ids": ["current-workflow"] if current_has_skills else [],
+        "skill_ids": ["current-skill"] if current_has_skills else [],
+        "resolved_skill_packages": (
+            [SkillReference(id="current-skill", kind="skill", version="2.0.0").model_dump()]
+            if current_has_skills
+            else []
+        ),
+    }
+    current_request = {**loop.store.agent_task("current-root").request, **current_policy}
+    old_continuation = loop.store.watcher("old-watcher").continuation.model_dump(mode="json")
+    old_continuation.update(
+        workflow_ids=["old-workflow"],
+        skill_ids=["old-skill"],
+        resolved_skill_packages=[
+            SkillReference(id="old-skill", kind="skill", version="1.0.0").model_dump()
+        ],
+    )
     # Model retained historical attribution from another human or a legacy
     # origin. The current episode still has its validated authorizer.
     with loop.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'current-root'",
+            (json.dumps(current_request),),
+        )
+        connection.execute(
+            "UPDATE watchers SET continuation_json = ? WHERE watcher_id = 'old-watcher'",
+            (json.dumps(old_continuation),),
+        )
         connection.execute(
             "UPDATE graph_runs SET authorized_user_id = ?, authorized_space_id = ?, "
             "authorized_display_name = ? WHERE operation_id = 'loop-root'",
@@ -93,6 +122,7 @@ def test_adopted_completions_wake_current_episode_once_with_current_authority(
     assert task.native_session_id == "native-session-abc"
     assert task.stage_root == str(tmp_path / "current-stage")
     assert task.request["control_invocation"] == 2
+    assert {key: task.request[key] for key in current_policy} == current_policy
     assert loop.store.episode(loop.episode_id).invocations_used == 2
     assert loop.store.episode(old_episode).invocations_used == 1
     retained = loop.store.watcher("old-watcher")

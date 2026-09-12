@@ -3000,6 +3000,9 @@ class ExperimentStoreMixin:
                 binding_request["model"] if isinstance(binding_request.get("model"), str) else None
             ),
             reasoning=_optional_str(binding_request.get("reasoning")),
+            workflow_ids=binding_request.get("workflow_ids") or [],
+            skill_ids=binding_request.get("skill_ids") or [],
+            resolved_skill_packages=binding_request.get("resolved_skill_packages") or [],
             run_on=(episode.execution_machine if episode is not None else None)
             or _optional_str(binding_request.get("run_on")),
             execution_host=episode.execution_host if episode else None,

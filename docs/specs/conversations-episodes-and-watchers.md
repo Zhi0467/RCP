@@ -352,8 +352,9 @@ An Experiment episode adopts unclaimed compatible observations from earlier
 episodes of that Experiment on the same exact graph target and execution host.
 Completions may coalesce across those origin episodes, including on a branch.
 The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment policy, and invocation budget; watcher origin is immutable
-provenance, including when another human created or maintained the observation.
+pinned Experiment policy (including workflow and skill packages), and invocation
+budget; watcher origin is immutable provenance, including when another human
+created or maintained the observation.
 This adoption does not change ordinary conversation, Auto-research root, or
 child Work routing. Existing group readiness and atomic, once-only claims still
 apply. A child Experiment also retains its receiving parent's admission and
@@ -523,12 +524,12 @@ an earlier episode is labelled **Previous episode report**, while the selected
 episode's own report is labelled **Open report**.
 
 Active observations read **Waiting on watchers**. When only completed results
-remain, Runs reads **Completion pending delivery**. A receiving Auto-research
-parent that cannot admit new work or has spent its shared Experiment allowance
-produces **Needs action** with the current reason, rather than recommending
-waiting for an already-completed observation. These parent facts are read from
-the same SQLite snapshot as the Experiment runtime, not persisted as stale
-delivery errors.
+remain, Runs reads **Completion pending delivery**. After all observations finish,
+a receiving Auto-research parent that cannot admit new work or has spent its
+shared Experiment allowance produces **Needs action** with the current reason,
+rather than recommending waiting for an already-completed observation. These
+parent facts are read from the same SQLite snapshot as the Experiment runtime,
+not persisted as stale delivery errors.
 
 The runtime, parent episode, visible task rows, usage meter, and latest available
 report used for one Experiment-control answer come from one SQLite read snapshot.

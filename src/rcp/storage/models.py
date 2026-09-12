@@ -2977,6 +2977,9 @@ class ExperimentLoopRuntime(BaseModel):
     run_on: str | None = None
     execution_host: str | None = None
     run_truth_scope: list[str] | None = None
+    workflow_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+    resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
     chat_id: str | None = None
     current_operation_id: str | None = None
     current_status: str | None = None

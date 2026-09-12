@@ -336,11 +336,12 @@ def _experiment_run_health(
         and control.invocations_remaining > 0
         and not operational.episode_exited
         and not operational.session.diagnostic
-        and not operational.watcher_delivery_diagnostic
         and not control.graph_reasons
     )
     if (completion_pending or detached_work_active) and control.invocations_remaining <= 0:
         return "paused_at_limit"
+    if completion_pending and not detached_work_active and operational.watcher_delivery_diagnostic:
+        return "needs_action"
     if completion_pending and not can_wake:
         return "needs_action"
     if detached_work_active and not can_wake:

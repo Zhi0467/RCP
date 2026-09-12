@@ -44,15 +44,12 @@ def test_completed_watchers_are_pending_delivery_instead_of_still_running(
     assert response.operational.watcher_delivery_diagnostic is None
 
 
-@pytest.mark.parametrize("pending", [True, False])
 def test_blocked_watcher_delivery_explains_why_human_action_is_needed(
-    graph: GraphState, runtime: ExperimentLoopRuntime, pending: bool
+    graph: GraphState, runtime: ExperimentLoopRuntime
 ) -> None:
     diagnostic = "The owning Auto-research episode has no invocations remaining."
     runtime = runtime.model_copy(
         update={
-            "watcher_completion_pending": pending,
-            "detached_work_active": not pending,
             "watcher_delivery_diagnostic": diagnostic,
         }
     )
@@ -94,9 +91,14 @@ def test_pending_delivery_preserves_stop_task_budget_and_session_precedence(
 
 
 @pytest.mark.parametrize("completion_pending", [False, True])
+@pytest.mark.parametrize("parent_blocked", [False, True])
 def test_active_observers_still_wait_for_completion(
-    graph: GraphState, runtime: ExperimentLoopRuntime, completion_pending: bool
+    graph: GraphState,
+    runtime: ExperimentLoopRuntime,
+    completion_pending: bool,
+    parent_blocked: bool,
 ) -> None:
+    diagnostic = "The Auto-research parent cannot admit a continuation."
     response = _experiment_control_response(
         graph,
         "experiment/projection",
@@ -104,6 +106,7 @@ def test_active_observers_still_wait_for_completion(
             update={
                 "watcher_completion_pending": completion_pending,
                 "detached_work_active": True,
+                "watcher_delivery_diagnostic": diagnostic if parent_blocked else None,
             }
         ),
         None,
@@ -111,3 +114,4 @@ def test_active_observers_still_wait_for_completion(
 
     assert response.health == "waiting_on_watchers"
     assert response.recommendation == "wait"
+    assert diagnostic not in response.reasons
