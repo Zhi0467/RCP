@@ -256,10 +256,14 @@ complete and offers no episode-start action until a human or already-authorized
 graph-writing task edits the node back to a nonterminal status. This fresh-start
 gate does not revoke an invocation already authorized inside the current episode.
 Before any episode the action says **Start episode**; after history exists it says
-**Start new episode**. The node's current `invocation_ceiling` becomes the new
-episode's pinned operational ceiling. Historical episodes retain their pinned
-used/ceiling values while the current node value remains separately visible as
-**Next episode limit**.
+**Start new episode**. The node's current `invocation_ceiling` is the default
+pinned operational ceiling; a human Run may authorize an explicit count instead,
+which pins that episode without a graph revision and leaves the node's own limit
+unchanged. Runs is where that count is chosen: at a spent ceiling its control
+says **Reauthorize** and carries the count. The node inspector keeps the plain
+start against the node's own limit, which it shows beside it. Historical episodes
+retain their pinned used/ceiling values while the current node value remains
+separately visible as **Next episode limit**.
 
 Human Experiment-loop episode starts, including a completed-watcher start, are
 not gated on compute readiness. The helper probes when invoked; Settings shows
@@ -388,6 +392,19 @@ Experiment watcher-state file and generic Work wake message, including child
 Work, retain the shell watcher's log-path evidence and ordinary coalescing and
 claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
 submission, generic helper launch, and human cancellation.
+
+A human may also retire one live Experiment observer directly once its episode
+carries a durable ending. While the episode can still take a graceful **Stop
+loop** that control owns its watchers; after the ending fence Stop is refused, so
+the observer would otherwise keep the loop shut with no control but Cancel.
+Retiring is not cancelling: the observed job keeps running, and the retired
+observer can no longer deliver a retained completion. It is offered for one lone
+external observation on the graph target being shown: a grouped member cannot be
+retired alone, because a human-stopped member makes its whole group
+undeliverable; a completed observation is a retained result to claim rather than
+an observer to retire; and an Experiment graph condition runs no job, so this
+control is not its answer. A live condition can therefore still hold an ended
+episode shut.
 
 An optional saved `cancel_command` runs only on a human Cancel request, after a
 fresh check confirms active work. It uses the recorded execution host and cwd,

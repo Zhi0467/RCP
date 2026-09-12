@@ -50,10 +50,6 @@ export interface ExperimentWatcherGroup {
 export type ExperimentWatcherItem =
   { kind: "group"; group: ExperimentWatcherGroup } | { kind: "watcher"; watcher: WatcherRecord };
 
-export function watcherIsActive(watcher: WatcherRecord): boolean {
-  return watcher.status === "active" || watcher.status === "degraded";
-}
-
 export function isExternalWatcherRecord(watcher: WatcherRecord): watcher is ExternalWatcherRecord {
   return "check_command" in watcher;
 }
@@ -103,6 +99,19 @@ export function isExperimentLoopTask(task: AgentTask): boolean {
   );
 }
 
+/** The whole positive integer a human typed to authorize a budget, or null.
+ *
+ * `parseInt` would accept a prefix, reading "1e2" as 1 and "2.5" as 2, and
+ * `Number` alone rounds past 2^53, so "9007199254740993" would authorize
+ * 9007199254740992. Either way the budget submitted is not the one on screen.
+ */
+export function authorizedInvocationCount(input: string): number | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  return Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
+
 /** Map the server's recommendation to presentation copy without re-deciding it. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const step = run.control.recommendation;
@@ -120,7 +129,12 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
       : "Resume this episode",
     retry: "Retry this episode, or switch provider",
     keep_loop: "Keep loop running; check now if needed",
-    start_episode: run.control.episode_id ? "Start a new episode" : "Start an episode",
+    start_episode:
+      run.health === "paused_at_limit"
+        ? "Reauthorize more invocations"
+        : run.control.episode_id
+          ? "Start a new episode"
+          : "Start an episode",
     stop_and_restart: "Stop loop, then start a new episode",
     resolve_requirements: "Resolve the run requirements",
     open_report: "Open report",
@@ -261,11 +275,6 @@ function currentExperimentTaskGroup(
 function taskEpisodeId(task: AgentTask): string | null {
   const value = task.request.control_episode_id;
   return typeof value === "string" && value ? value : null;
-}
-
-/** An Experiment-loop watcher is released by Stop loop, never one watcher at a time. */
-export function watcherIsIndividuallyStoppable(watcher: WatcherRecord): boolean {
-  return watcher.continuation?.patch_kind !== "experiment_loop";
 }
 
 function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {

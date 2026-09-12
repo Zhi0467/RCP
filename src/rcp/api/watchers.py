@@ -15,8 +15,15 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
-from rcp.storage import AppStore, StoredWatcherRecord, WatcherClaimConflict, WatcherRecord
+from rcp.storage import (
+    AppStore,
+    GraphWatcherRecord,
+    StoredWatcherRecord,
+    WatcherClaimConflict,
+    WatcherRecord,
+)
 from rcp.watchers import WatcherPoller
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -41,8 +48,21 @@ def project_watchers(
         if branch_id is not None
         else None
     )
+    # The main listing deliberately carries every target's watchers, and the run
+    # projection groups them by Experiment node, which main and its branches
+    # share. Resolving the displayed target keeps this action off a row that
+    # belongs to another one, where retiring it would fence a delivery this view
+    # never owned.
+    displayed = target or GraphTargetRef()
+    unended_episodes: dict[str, bool] = {}
     return [
-        _watcher_response(record)
+        _watcher_response(
+            record,
+            can_stop_watching=(
+                record.graph_target == displayed
+                and _can_stop_watching(store, record, unended_episodes=unended_episodes)
+            ),
+        )
         for record in store.watchers(catalog.resolve_project_id(project_id))
         if target is None or record.graph_target == target
     ]
@@ -54,6 +74,7 @@ def check_watcher_now(
     watcher_id: str,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     watcher_poller: WatcherPollerDependency,
 ) -> dict[str, object]:
     require_registered_project(catalog, project_id)
@@ -63,7 +84,7 @@ def check_watcher_now(
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _watcher_response(watcher)
+    return _watcher_response(watcher, can_stop_watching=_can_stop_watching(store, watcher))
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
@@ -78,20 +99,24 @@ def stop_watcher(
     watcher = store.watcher(watcher_id)
     if watcher is None or watcher.project_id != project_id:
         raise HTTPException(status_code=404, detail="Watcher not found")
-    if watcher.continuation.patch_kind == "experiment_loop":
+    if _stop_loop_owns_watcher(store, watcher):
         raise HTTPException(
             status_code=409,
             detail="Use Stop loop to stop an Experiment loop and its watchers gracefully.",
         )
     try:
-        stopped = store.stop_watchers(project_id, [watcher_id])
+        # This control is offered only against a live observation, and
+        # can_stop_watching is a projection, not a gate. The storage rule is the
+        # enforcement: an observation that completes between the offer and this
+        # request is a retained result to claim, not an observer to retire.
+        stopped = store.stop_watchers(project_id, [watcher_id], observing_only=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except WatcherClaimConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _watcher_response(stopped[0])
+    return _watcher_response(stopped[0], can_stop_watching=_can_stop_watching(store, stopped[0]))
 
 
 @router.post(
@@ -104,6 +129,7 @@ def cancel_watcher(
     request: Request,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     watcher_poller: WatcherPollerDependency,
     identity_access: IdentityDependency,
 ) -> dict[str, object]:
@@ -115,11 +141,88 @@ def cancel_watcher(
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _watcher_response(watcher)
+    return _watcher_response(watcher, can_stop_watching=_can_stop_watching(store, watcher))
 
 
-def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
+def _stop_loop_owns_watcher(
+    store: AppStore,
+    record: StoredWatcherRecord,
+    *,
+    unended_episodes: dict[str, bool] | None = None,
+) -> bool:
+    """Whether graceful Stop loop, not a human watcher stop, owns this watcher.
+
+    Stop loop is the right control only while its episode can still take one.
+    Once the episode carries a durable ending its wrap-up fence refuses Stop, so
+    a blanket refusal here would name an action the human cannot reach and leave
+    a live observer with no non-destructive control but Cancel, which kills the
+    observed job.
+
+    Every episode read opens its own connection, so a caller answering for a whole
+    list passes one ``unended_episodes`` memo and pays per distinct episode rather
+    than per watcher.
+    """
+
+    if record.continuation.patch_kind != "experiment_loop":
+        return False
+    episode_id = record.continuation.control_episode_id
+    if not isinstance(episode_id, str) or not episode_id:
+        return False
+    if unended_episodes is not None and episode_id in unended_episodes:
+        return unended_episodes[episode_id]
+    episode = store.episode(episode_id)
+    unended = episode is not None and episode.ending is None
+    if unended_episodes is not None:
+        unended_episodes[episode_id] = unended
+    return unended
+
+
+def _can_stop_watching(
+    store: AppStore,
+    record: StoredWatcherRecord,
+    *,
+    unended_episodes: dict[str, bool] | None = None,
+) -> bool:
+    """Whether a human may retire this observer without touching the observed job.
+
+    Only a still-observing external observation qualifies. A completed one is a
+    retained result waiting to be claimed as the next episode's invocation one,
+    and retiring it marks it notified, so offering this beside it would discard
+    that result under a label that promises nothing is lost. Completed rows keep
+    the non-destructive Hide.
+
+    An Experiment loop's canonical-graph condition is excluded. The permission
+    this predicate adds is for a job that outlives its episode and would
+    otherwise leave Cancel as the only move; a condition runs no job, has no
+    Cancel, and retiring it only discards a future graph delivery. Releasing an
+    episode held by a live condition is a separate question this control does not
+    answer. An ordinary conversation's condition keeps the retirement it already
+    had.
+    """
+
+    return bool(
+        not (
+            isinstance(record, GraphWatcherRecord)
+            and record.continuation.patch_kind == "experiment_loop"
+        )
+        and record.status in {"active", "degraded"}
+        and not record.notified
+        and record.notification_operation_id is None
+        # A group wakes once when every member has settled, and one human-stopped
+        # member makes the whole group undeliverable, stranding its siblings'
+        # results. Retirement is per observer, so it has no answer for a group.
+        and record.group_id is None
+        and not _stop_loop_owns_watcher(store, record, unended_episodes=unended_episodes)
+    )
+
+
+def _watcher_response(
+    record: StoredWatcherRecord,
+    *,
+    can_stop_watching: bool,
+) -> dict[str, object]:
     payload = record.model_dump(mode="json")
+    payload["can_stop_watching"] = can_stop_watching
     payload["can_cancel"] = isinstance(record, WatcherRecord) and record.can_cancel
     payload["can_check_now"] = bool(
         isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified

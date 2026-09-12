@@ -211,6 +211,7 @@ function render(run, props = {}) {
       onRecover() {},
       onSwitchProvider() {},
       onCheckWatcher() {},
+      onStopWatcher() {},
       episodeReportHref: (episodeId) => `/reports/${episodeId}`,
       ...props,
     }),
@@ -475,7 +476,7 @@ test("a final Experiment report error is a note beside the episode's own outcome
 
   // The episode exhausted its invocations; the missing report never restates that
   // as the episode's own health or as the human's next step.
-  assertDetailProjection(html, "Paused at invocation limit", "Start a new episode");
+  assertDetailProjection(html, "Paused at invocation limit", "Reauthorize more invocations");
   assert.match(html, /Report generation error: The visual report could not be generated\./);
   assert.doesNotMatch(
     html,
@@ -889,6 +890,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       onRunExperiment() {},
       onStopExperiment() {},
       onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
     }),
@@ -950,6 +952,84 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
   assert.match(html, /A previous episode is still open on this Experiment\./);
 });
 
+test("Reauthorize offers the node's limit as the count the human can override", () => {
+  const html = render({
+    node: node(),
+    control: control({
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+
+  assert.match(html, /Reauthorize/);
+  assert.match(html, /Invocations to authorize for the next episode/);
+  assert.match(html, /value="3"/);
+});
+
+test("the authorized count renders whatever the node's current limit is", () => {
+  // Untouched, the field derives from the node rather than initializing once, so
+  // raising Next episode limit while this card stays mounted cannot leave a stale
+  // default behind. SSR remounts per render, so this checks the derivation only;
+  // the mounted-update path has no coverage here.
+  const paused = (ceiling) => ({
+    node: node({ invocation_ceiling: ceiling }),
+    control: control({
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+
+  assert.match(render(paused(3)), /value="3"/);
+  assert.match(render(paused(10)), /value="10"/);
+});
+
+test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
+  // Cancel kills the observed job. Once the episode has ended, Stop loop is gone,
+  // so retiring the observer is the only non-destructive way out of the wait.
+  const live = watcher({
+    status: "active",
+    completed_at: null,
+    last_exit_code: 1,
+    delivery_label: "Not delivered",
+    can_cancel: true,
+    can_stop_watching: true,
+  });
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        ready: false,
+        reasons: ["Detached Experiment work is still running."],
+        health: "paused_at_limit",
+        recommendation: "open_report",
+        can_start: false,
+      },
+      { detached_work_active: true, episode_exited: true },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [live],
+    currentWatchers: [live],
+    health: "paused_at_limit",
+  });
+
+  assert.match(html, /Stop watching/);
+  assert.match(html, /The job itself keeps running/);
+  assert.match(html, />Cancel</);
+});
+
 test("completed watcher at the ceiling leaves Start new episode enabled", () => {
   const completed = watcher();
   const html = render({
@@ -970,9 +1050,12 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
     health: "paused_at_limit",
   });
 
-  assertDetailProjection(html, "Paused at invocation limit", "Start a new episode");
-  assert.match(html, /Start new episode/);
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
+  // At the ceiling the next Run is a reauthorization, and it carries the count.
+  assertDetailProjection(html, "Paused at invocation limit", "Reauthorize more invocations");
+  assert.match(html, /Reauthorize/);
+  assert.doesNotMatch(html, /Start new episode/);
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Reauthorize<\/button>/s);
+  assert.match(html, /Invocations to authorize for the next episode/);
   assert.match(html, /Stop loop/);
   assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
   assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
@@ -1224,6 +1307,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       onRunExperiment() {},
       onStopExperiment() {},
       onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
     }),

@@ -842,12 +842,25 @@ class WatcherStoreMixin:
                 )
             ]
 
-    def stop_watchers(self, project_id: str, watcher_ids: list[str]) -> list[StoredWatcherRecord]:
+    def stop_watchers(
+        self,
+        project_id: str,
+        watcher_ids: list[str],
+        *,
+        observing_only: bool = False,
+    ) -> list[StoredWatcherRecord]:
         """Release watchers the human has given up on.
 
         A stopped watcher leaves the polling set and can never wake a turn. RCP
         never decides this for itself — a check that cannot answer is reported,
         not interpreted.
+
+        ``observing_only`` refuses a watcher that already completed, one that
+        belongs to a group, and an Experiment loop's graph condition. A caller that offered this action against a lone live
+        observation evaluates both rules here, inside the write transaction, so an
+        observation that completes between the offer and the request fails instead
+        of retiring a delivery nobody claimed. Callers acknowledging a pending
+        completion or retiring a whole group on purpose leave it false.
         """
 
         ids = list(dict.fromkeys(watcher_ids))
@@ -858,7 +871,9 @@ class WatcherStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 f"""
-                SELECT watcher_id, project_id, status, notified, notification_operation_id
+                SELECT watcher_id, project_id, status, notified, notification_operation_id,
+                       group_id, graph_condition_json,
+                       json_extract(continuation_json, '$.patch_kind') AS patch_kind
                 FROM watchers
                 WHERE watcher_id IN ({placeholders})
                 """,
@@ -886,6 +901,44 @@ class WatcherStoreMixin:
             ]
             if invalid:
                 raise ValueError(f"Watchers cannot be stopped: {', '.join(sorted(invalid))}.")
+            if observing_only:
+                # Retiring an Experiment loop's observer answers an observed job
+                # that outlives its episode and would otherwise leave Cancel as the
+                # only move. A canonical-graph condition among them runs no job and
+                # has no Cancel, so retiring it only discards a future graph
+                # delivery. An ordinary conversation's condition is unaffected: its
+                # own Stop watching predates this rule.
+                conditions = [
+                    str(row["watcher_id"])
+                    for row in rows
+                    if row["graph_condition_json"] is not None
+                    and row["patch_kind"] == "experiment_loop"
+                ]
+                if conditions:
+                    raise ValueError(
+                        "An Experiment graph condition is not an observed job to retire: "
+                        f"{', '.join(sorted(conditions))}."
+                    )
+                # A group wakes once when every member settles, and a human-stopped
+                # member makes the whole group undeliverable, so retiring one member
+                # strands its siblings' results.
+                grouped = [str(row["watcher_id"]) for row in rows if row["group_id"] is not None]
+                if grouped:
+                    raise ValueError(
+                        "A grouped watcher is retired with its group, not on its own: "
+                        f"{', '.join(sorted(grouped))}."
+                    )
+                settled = [str(row["watcher_id"]) for row in rows if row["status"] == "completed"]
+                if settled:
+                    raise WatcherClaimConflict(
+                        "A watcher finished before it could be stopped: "
+                        f"{', '.join(sorted(settled))}."
+                    )
+            # The same restriction guards the write, so a status that changes
+            # under this transaction cannot slip past the check above.
+            stoppable = (
+                "'active', 'degraded'" if observing_only else "'active', 'degraded', 'completed'"
+            )
             connection.execute(
                 f"""
                 UPDATE watchers
@@ -893,7 +946,7 @@ class WatcherStoreMixin:
                     stopped_by = COALESCE(stopped_by, 'human'),
                     stopped_at = COALESCE(stopped_at, ?)
                 WHERE project_id = ? AND watcher_id IN ({placeholders})
-                  AND status IN ('active', 'degraded', 'completed')
+                  AND status IN ({stoppable})
                   AND notification_operation_id IS NULL
                 """,
                 (self.now(), project_id, *ids),

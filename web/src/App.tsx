@@ -3015,6 +3015,9 @@ export default function App() {
       });
       const nextWatchers = await api<WatcherRecord[]>(graphPath(`${apiBase}/watchers`));
       if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
+      // Retiring an observer can release an Experiment that was held shut by it,
+      // so the control projection is re-read here rather than waiting for a poll.
+      await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -3082,7 +3085,7 @@ export default function App() {
   };
 
   const startExperiment = useCallback(
-    async (node: GraphNode): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
       if (!project || node.type !== "experiment") {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3110,6 +3113,9 @@ export default function App() {
               run_on: profile.run_on,
               run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
               chat_id: chatId,
+              // Omitted unless the human reauthorized an explicit count; the
+              // backend then keeps the Experiment node's own limit.
+              ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
             }),
           },
         );
@@ -3153,9 +3159,9 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode) => {
+    async (node: GraphNode, invocationCeiling?: number) => {
       try {
-        await startExperiment(node);
+        await startExperiment(node, invocationCeiling);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -4535,11 +4541,14 @@ export default function App() {
                 }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
-                onRunExperiment={(node) => void runExperiment(node)}
+                onRunExperiment={(node, invocationCeiling) =>
+                  void runExperiment(node, invocationCeiling)
+                }
                 onStopExperiment={(nodeId, episodeId) =>
                   void stopExperimentLoop(nodeId, episodeId ?? null)
                 }
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
+                onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
                 onSwitchExperimentProvider={chooseRetryTask}
                 episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
