@@ -1164,6 +1164,27 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
     )
     assert "experiment-loop-decision-action" in _codes(validate_patch(state, unqueued, ["repo"]))
 
+    # Dropping the prior choice would leave `selected_option` naming an option
+    # the ballot no longer offers, and the card shows that choice only as a mark
+    # on a matching option, so the human would never see what is being revisited.
+    dropped = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {
+                            "status": "revisit",
+                            "options": ["8xA100", "4xA100 with earlier compaction"],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert "experiment-loop-ballot-baseline" in _codes(validate_patch(state, dropped, ["repo"]))
+
 
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
     # A finished attempt is a record. Reopening one is caught elsewhere; this is

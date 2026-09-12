@@ -158,7 +158,9 @@ def _validate_updates(
         node_id = update.id
         changes = update.changes
         if node_id in pinned_ids:
+            decision = state.nodes.get(node_id)
             forbidden = sorted(set(changes) - _PINNED_DECISION_FIELDS)
+            restated_options = changes.get("options")
             if forbidden or changes.get("status") not in {"open", "ready", "revisit"}:
                 report.reject(
                     "experiment-loop-decision-action",
@@ -168,11 +170,29 @@ def _validate_updates(
                     revision,
                     related_node_ids=[experiment.id, node_id],
                 )
-            elif not isinstance(state.nodes.get(node_id), Decision):
+            elif not isinstance(decision, Decision):
                 report.reject(
                     "experiment-loop-foreign-update",
                     f"Experiment loop {experiment.id} cannot queue missing or non-Decision "
                     f"node {node_id!r}.",
+                    revision,
+                    related_node_ids=[experiment.id, node_id],
+                )
+            elif (
+                decision.selected_option is not None
+                and isinstance(restated_options, list)
+                and decision.selected_option not in restated_options
+            ):
+                # Reopening keeps the prior choice, so dropping it from the
+                # options leaves `selected_option` naming an option the ballot
+                # no longer offers. The Decision card shows that choice only as a
+                # mark on a matching option, so the human would be asked to
+                # revisit a decision without being shown what was decided.
+                report.reject(
+                    "experiment-loop-ballot-baseline",
+                    f"Experiment loop {experiment.id} must keep pinned Decision {node_id!r}'s "
+                    "prior selection among its restated options; the reopened ballot has to show "
+                    "the choice it reopens.",
                     revision,
                     related_node_ids=[experiment.id, node_id],
                 )
