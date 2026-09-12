@@ -65,7 +65,8 @@ Work permissions. Only these graph changes are available:
   also restate that Decision's {_PINNED_DECISION_BALLOT_PROSE},
   so the ballot the human reads describes the choice this episode's evidence now presents,
   including an option it newly raises. Restating one already queued overwrites what the human is
-  reading: do that only on new evidence, and never to drop an option still live. Leave
+  reading: do that only on new evidence. Rewording is not removal: change an option's wording
+  freely, and keep every choice this episode's evidence has not closed on the ballot. Leave
   `selected_option` untouched and never write it or `decided`; the card shows the prior choice
   even when your wording replaces it. State what the choice now turns on.
   Do not choose an option.
