@@ -18,6 +18,15 @@ input below.
 - **Work** authorizes operational execution within its exact project write
   scope and one optional semantic `patch.json`.
 
+Work pursues the requested outcome through the investigation, execution,
+verification, and repair it needs. The agent inspects results and iterates while
+useful authorized work remains, rather than stopping at the first attempt or
+returning feasible next steps for the human to perform. It finishes when the
+outcome is achieved, hands off ongoing work through the watcher contract, or
+explains the concrete unavailable prerequisite or new authority needed for
+further useful progress. This does not widen the requested objective or grant
+another invocation.
+
 A Work turn may finish without a Patch; no net graph change spends no revision.
 The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a

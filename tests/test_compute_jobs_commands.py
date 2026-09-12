@@ -481,7 +481,7 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
     assert len(roots) == 1 and (roots[0] / "command.json").is_file()
 
 
-def test_slurm_instructions_authorize_direct_submission_without_helper(commands):
+def test_slurm_rejects_helper_submission_without_launching(commands):
     from rcp.config import MachineComputeConfig
 
     manifest = commands.handler.manifest.model_copy(deep=True)
@@ -489,7 +489,6 @@ def test_slurm_instructions_authorize_direct_submission_without_helper(commands)
     handler = replace(commands.handler, manifest=manifest)
     assert not handler.allowed_verbs
     prose = handler.execution_instructions("secret-helper-command")
-    assert "Submit directly" in prose and "10 minutes" in prose
     assert "secret-helper-command" not in prose
     response = handler(
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
@@ -501,6 +500,4 @@ def test_slurm_instructions_authorize_direct_submission_without_helper(commands)
 def test_inline_short_work_needs_no_watcher(commands):
     commands.handler.validate_handoff(set())
     prose = commands.handler.execution_instructions("helper launch")
-    assert "Short compute jobs can run normally without a watcher" in prose
-    assert "not an enforced time limit" in prose
-    assert "`helper launch`" in prose
+    assert "helper launch" in prose

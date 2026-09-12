@@ -34,6 +34,23 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Task-engine ownership
+
+`BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,
+Experiment recovery, watcher admission, and report owners intentionally share
+named calls with it. These are navigational module boundaries, not plugins.
+Add no `kind`, `patch_kind`, or request-subtype branch to the engine unless the
+change removes an existing exception or the rule belongs to universal task-row
+construction. A feature touching three or more engine entry points requires
+moving one complete policy decision to its concrete owner; do not manufacture
+a registry, facade, callback bus, or event bus to hide the coupling.
+
+An orchestrator-triggered chat is specialized child Work only when its durable
+child-route row exists. Missing route identity intentionally follows ordinary
+Work for compatibility; changing that to a failure requires a product decision.
+The [backend structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+records the accepted coupling and rejected extractions.
+
 ## Provider runtime selection
 
 Each project agent profile selects a provider-owned runtime. An omitted value is

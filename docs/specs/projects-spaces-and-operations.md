@@ -178,6 +178,9 @@ remote publication.
 
 ## Durable agent task lifecycle
 
+`AppStore` may keep one SQLite file. Add compound transactions for proven harmful
+partial-write windows; do not split the store for aesthetic breadth alone.
+
 Agent task status transitions are one durable contract: `running` may follow
 `queued`; `pausing` may follow `queued` or `running`; and `paused`, `succeeded`,
 `failed`, or `interrupted` may follow any active status (`queued`, `running`, or
@@ -203,13 +206,15 @@ reconstruct the lifecycle. The Web response type seals that vocabulary so a new
 string branch fails typechecking instead of silently creating another state
 machine.
 
-A persisted task request crosses one compatibility decoder when its SQLite row
+A persisted task request crosses `storage/request_compat.py` when its SQLite row
 becomes an `AgentTaskRecord`, before startup, watcher, mail, Retry, or recovery
 policy can choose a parser. The decoder removes only fields named in an explicit
 per-kind retirement allowlist; the current allowlist contains only legacy
 `auto_research.ending`. Unknown or unallowlisted fields remain and strict request
 validation refuses them. A stored mapping assembled outside row decoding uses
 the same migration helper. Live request models remain `extra="forbid"`.
+Extend the closed retirement allowlist only for a shipped, now-retired field
+whose removal preserves meaning; keep unknown fields for strict rejection.
 
 ## Add project and retained research
 

@@ -11,6 +11,11 @@ One FastAPI backend serves the JSON API and, when built, the React/Vite
 application. The optional Tauri shell starts or reuses that same backend. There
 is no second team protocol or frontend-owned background-worker runtime.
 
+`api/app.py` owns explicit composition, run dispatch, startup recovery, and
+watcher runtime. Extract another control layer only for measured owner
+collisions or a concrete testing problem, as recorded in the
+[backend structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md).
+
 Route handlers resolve identity and membership, validate request shape, stage
 intent, and call the owning service. They never write `.research` files,
 materialized output, branch metadata, or Patch history directly.
@@ -21,6 +26,14 @@ transition/ruleset identity, primary question, graph counts, and any causal or
 attention inputs from the same final state. Preview responses are explicitly
 noncanonical and name their base head and ruleset. The browser renders these
 published values instead of recalculating a second transition result.
+
+Any derivation whose inputs are all backend state belongs to the projection:
+for example, `EpisodeResponse.health`, `recommendation`, `live`, `can_*`, and
+`ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
+input, such as the trust-view lens, stay client-side. `web/src/types.ts` is the
+single response-shape restatement. Fully projected lifecycles use opaque types,
+including `EpisodeStatus` and `AgentTaskStatus`, so client branching on the raw
+status cannot compile.
 
 Project snapshots and transition projections publish exact graph-attention
 membership as pending Proposal ids, Decisions awaiting choice, and asserted

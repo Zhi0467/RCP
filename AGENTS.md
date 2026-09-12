@@ -17,20 +17,34 @@ Current authority, highest first:
 4. Active handoffs for human-confirmed work that is not yet complete.
 5. [`docs/archive/`](docs/archive/) for history only.
 
-Read the applicable current spec and active handoff before deciding an issue.
-Report contradictions instead of silently choosing a source.
+Read the sources relevant to the affected behavior. A typo or formatting fix
+does not require a design review. Report contradictions instead of silently
+choosing a source.
+
+## Find the relevant guidance
+
+- Product boundaries or authority: `docs/design.md` and `docs/specs/authority-and-proposals.md`.
+- Graph operations, persisted Patch changes, or replay: `docs/specs/graph-history-and-transitions.md`.
+- Provider launches, prompts, skills, or task-engine ownership: `docs/specs/providers-and-containment.md`.
+- Chat, Experiment control, or watcher behavior: `docs/specs/conversations-episodes-and-watchers.md`.
+- Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md` and `docs/decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
+- Task storage or persisted requests: `docs/specs/projects-spaces-and-operations.md`.
+- API, Web, or native contracts: `docs/specs/api-web-and-desktop-projections.md`; visual design: `docs/specs/interface-and-visual-design.md`.
+- Server, deployment, or release work: `docs/specs/server-and-machine-operations.md`, `docs/server.md`, and `docs/release.md`.
+- Use `docs/handoffs/README.md` to find an active handoff when continuing unfinished work.
 
 ## Working loop
 
-1. Read the relevant design, spec, source, and tests yourself.
-2. Cover the change with focused regression tests at the level that proves the
-   behavior.
-3. Plan file ownership, invariants, and checks before substantial edits.
-4. Make small edits directly. Fan out larger implementation by coherent module
+1. Inspect the affected source and existing tests; use the guidance above when
+   the change touches its contract.
+2. Before substantial edits, identify file ownership, invariants, and focused
+   checks. Make small edits directly; fan out larger implementation by module
    boundary, while the main agent retains integration, verification, and review.
-5. Run the focused checks, then the applicable baseline checks below.
-6. Read the complete diff. A subagent's claim that tests pass is not evidence.
-7. Update current behavior docs when semantics changed. Close or replace any
+3. Verify the affected behavior, fix failures caused by the change, and rerun
+   affected checks. Add regression coverage when behavior changes; review prose
+   edits directly. Test prompt data and enforcement, never exact instruction wording.
+4. Read the complete diff and inspect check results yourself.
+5. Update current behavior docs when semantics changed. Close or replace any
    handoff whose status changed in the same commit.
 
 When another session changes the tree during long work, integrate through a real
@@ -38,50 +52,28 @@ three-way Git merge; never pipe a whole diff into `git apply`. All work uses a
 short-lived branch, PR CI, and explicit human merge; servers consume only
 merged `main`.
 
-## Commands and verification
+## Verification
 
-Fresh-clone order matters because the Python wheel includes `web/dist`:
+Run focused checks locally; full suites run in PR CI. Broaden local checks when
+failures, shared-contract changes, or integration uncertainty warrant it.
 
-```bash
-npm --prefix web ci
-npm --prefix web exec playwright -- install chromium
-npm --prefix web run build
-uv sync
-```
+- Python behavior: `uv run pytest -n0 <affected test paths>` and `uv run ruff check <changed paths>`.
+- Web behavior: `node --experimental-strip-types --test web/tests/<affected>.test.mjs`;
+  run `npm --prefix web run build` when source or types change.
+- Formatting and file hygiene: `uv run pre-commit run --files <changed paths>`,
+  including new files. All-file hooks see tracked files only.
+- User-visible workflows, reported product failures, and substantial route,
+  background, or view changes need the affected served-app journey. Inspect
+  network, console, and server logs; report the exact gap if it cannot be driven.
+- Remote behavior needs a reachable host. Migration or recovery checks that
+  depend on existing records use a copy of real data. Never test against the
+  human's live data directory.
+- Native changes require rebuilding Tauri and the relevant `docs/desktop.md` checks.
 
-The Playwright command installs the managed Chromium binary required by the web
-interaction tests and is needed once after `npm ci`.
-
-Backend and documentation:
-
-```bash
-uv run pytest
-uv run ruff check src tests packaging web/src-tauri/scripts
-uv run pre-commit run --all-files
-```
-
-Web:
-
-```bash
-npm --prefix web exec playwright -- install chromium
-npm --prefix web run build
-npm --prefix web test
-```
-
-Run the app:
-
-```bash
-uv run rcp serve --host 127.0.0.1 --port 8421
-```
-
-Tests and builds are not enough for a user-visible feature, a reported product
-failure, or a substantial route/background/view change. Serve the app, exercise
-the affected path, inspect network and console errors, and check server logs. If
-that cannot be done, state the exact verification gap.
-
-Remote behavior requires a reachable host. Test against a copy of real app data
-when migration or recovery correctness depends on records that fresh fixtures do
-not contain. Never write to the human's real data directory from tests.
+Fresh-clone setup and full-suite commands live in `README.md`; build `web/dist`
+before `uv sync` because the Python wheel includes it. Browser tests require the
+Playwright-managed Chromium installation described there. Run the app with
+`uv run rcp serve --host 127.0.0.1 --port 8421` using disposable data for tests.
 
 ## Stable invariants
 
@@ -115,50 +107,21 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 11. **`answer` is the human reply; `message` is a trace.** Preserve the provider's
    final-assistant label.
 
-## Structural rules
+## Cross-cutting implementation rules
 
 - Policy stays with its concrete owner. Do not add `kind`, `surface`,
   `patch_kind`, or equivalent selectors to shared execution plumbing merely to
   collapse visible policy.
-- `BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,
-  Experiment recovery, watcher admission, and report owners intentionally share
-  named calls with it; this is navigational modularity, not a plugin boundary.
-  Add no new `kind`, `patch_kind`, or request-subtype branch to the engine unless
-  the change removes an existing exception or proves the rule belongs to universal
-  task-row construction.
-  A feature that must edit three or more engine entry points triggers structural
-  work; move one complete policy decision to its concrete owner rather than
-  manufacturing a registry, facade, callback bus, or event bus.
-- `api/app.py` is explicit composition plus run dispatch, startup recovery, and
-  watcher runtime. Do not extract another control layer without measured owner
-  collisions or a concrete testing problem.
-- An orchestrator-triggered chat is specialized child Work only when its durable
-  child-route row exists. Missing route identity intentionally follows ordinary
-  Work for compatibility; do not convert this to a new failure without a product
-  decision.
-- Persisted task requests cross the compatibility decoder in `storage/request_compat.py`
-  before callers see them. Its per-kind retirement allowlist is closed: add a field only
-  for a shipped, now-retired field whose removal preserves meaning; unknown fields must
-  remain for strict rejection. Canonical Patch history carries the same duty with a worse
-  failure: a retired field on a stored operation, or one the in-memory adapter adds while
-  retiring a value, halts replay and leaves the graph read-only. Handle both in
-  `adapt_persisted_patch_document` and in the replay branch of every field rule.
 - Permission contracts are code, not manifest configuration. Every launch names
   its capability explicitly.
 - Structured deliverables are file-backed. Conversational prose is the labelled
   provider answer; do not create a second answer file.
-- There is no server uninstall, by design: install converges, so a bad install is
-  corrected and rerun. Teardown is the sequence in the operations spec.
 - Limits and timeouts live in `limits.py`, except schema constants that belong
   beside the model they constrain.
 - Remote-executed code is shipped from its source module, never hand-copied into
   a command string.
 - Prompt prose describing enforcement must render the same resolved object used
   by enforcement. Do not maintain parallel human-written allowlists.
-- Graph branches version the research graph, never Git branches or repository
-  rollback. Scope is reopened; read `decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
-- One SQLite file is acceptable. Add compound transactions for proven harmful
-  partial-write windows; do not split `AppStore` for aesthetic breadth alone.
 
 ## Documentation lifecycle
 
@@ -180,33 +143,15 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 - Python uses `uv`, `pyproject.toml`, Pydantic, and `from __future__ import annotations`.
 - Ruff settings live in `pyproject.toml`; do not assume them.
-- The web layer consumes backend state; it never derives it. A derivation whose
-  inputs are all backend state belongs to the projection, which exports the
-  decision — `EpisodeResponse.health`, `recommendation`, `live`, `can_*`,
-  `ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
-  input, such as the trust-view lens, stay client-side. `web/src/types.ts` is the
-  one place a response shape is restated, and a lifecycle it fully exports is
-  sealed there with an opaque type, as `EpisodeStatus` and `AgentTaskStatus` are,
-  so branching on one cannot compile.
 - `.research/`, `.recovery/`, and `web/dist/` remain outside formatting hooks.
-- `pre-commit --all-files` sees tracked files only; account for every new path.
 - Never trust a piped test command's exit status unless `pipefail` is set.
 - Use shared test wait helpers rather than copied short polling loops.
 - Literal expiry dates are test time bombs; derive them from the test clock.
-- Going public is one bundled transition, not a visibility flip: it turns on
-  branch protection and retires the private-source deploy key together. Read
-  `decisions/2026-08-27-main-is-the-server-update-channel.md` and
-  `decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md` first.
-- Two entrances are managed: the browser from `rcp serve`, and the source-built
-  desktop app. Native team changes preserve every advertised contract or add a
-  version; highest range overlap fails closed. Rebuild Tauri for native changes.
 
 ## Maintaining this file
 
-Keep this file near 200 lines: target 180–220 lines, with a hard ceiling of 230
-lines enforced by tests. Add only cross-cutting rules a coding agent must see on
-every task. Move behavior, rationale, long failure histories, UI details, and
-module-specific procedures to their owning documents.
-Do not grow this file by append-only notes: each added line must remove or consolidate
-equal-value text. A new global invariant must replace or consolidate a global rule,
-name its concrete code owner, and cite an executable test.
+Keep only cross-cutting rules and pointers needed to find task-specific guidance.
+There is no minimum length; the test enforces a ceiling of 230 lines. Move
+module-specific behavior, rationale, and procedures to their owning documents.
+Consolidate existing rules before adding another. A new global invariant must
+name its concrete code owner and cite an executable test; preserve existing ids.

@@ -134,7 +134,7 @@ def _authoring_rules(ontology_extensions: bool) -> str:
     return f"Graph authoring rules:\n{extension}{_BASE_AUTHORING_RULES}\n{_LOCAL_CAUSAL_CHECK}"
 
 
-CHAT_MASTER_CONTEXT_VERSION = 8
+CHAT_MASTER_CONTEXT_VERSION = 9
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -446,9 +446,8 @@ def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
 
 {}
 
-Before acting, compare the task and intended graph changes with each description. Read and follow
-only packages whose stated trigger matches; leave unrelated packages as pointers. An explicit
-per-turn invocation is named separately and must be read and followed for that turn.
+Use a staged skill or workflow when its description matches the task. Follow explicitly invoked
+packages for that turn.
 """.format("\n\n".join(blocks))
 
 
@@ -1171,9 +1170,16 @@ Optional watcher handoff:
         return f"""# RCP Work task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 Your task:
-This is one authorized operational turn, not an ingest run. Carry out only the human's requested
-work, report what happened, and optionally reflect a net research-state change in one graph Patch.
-Do not sweep the corpus, re-derive the graph, or invent adjacent work.
+Complete the human's requested outcome, including the investigation, execution, verification, and
+repair needed to achieve it. Inspect results and iterate on failures or incomplete outcomes while
+useful work remains within the available tools and authority. Continue feasible next steps yourself
+instead of treating an incomplete first attempt as completion. Finish when the outcome is achieved,
+when ongoing work needs the watcher handoff described below, or when further useful progress
+requires a concrete unavailable prerequisite or new authority. State what remains and why.
+
+This is one authorized operational turn, not an ingest run. Keep the work tied to the request;
+do not sweep the corpus, re-derive the graph, or invent adjacent work. Report what happened and
+optionally reflect a net research-state change in one graph Patch.
 
 {authority}
 {_retry_context(retry_diagnostics_path)}

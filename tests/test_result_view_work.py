@@ -202,26 +202,22 @@ async def _events(stream) -> list[AgentEvent]:
 
 
 def _created_slot(prompt: str) -> Path:
-    prompt = _launch_contract_text(prompt)
-    match = re.search(r"directly inside `([^`]+)`", prompt)
-    if match is None:
-        raise RuntimeError("result-view create prompt omitted its exact slot")
-    return Path(match.group(1))
+    paths = [Path(code) for code in _launch_contract_text(prompt).split("`")[1::2]]
+    return next(path for path in paths if path.is_absolute() and path.parent.name == "views")
 
 
 def _revised_path(prompt: str) -> Path:
-    prompt = _launch_contract_text(prompt)
-    match = re.search(r"existing HTML file `([^`]+)`", prompt)
-    assert match is not None
-    return Path(match.group(1))
+    paths = [Path(code) for code in _launch_contract_text(prompt).split("`")[1::2]]
+    return next(path for path in paths if path.is_absolute() and path.suffix == ".html")
 
 
 def _launch_contract_text(prompt: str) -> str:
-    contract = re.search(
-        r"Open and follow the immutable RCP task contract at:\s*([^\n]+)",
-        prompt,
+    paths = [Path(line) for line in prompt.splitlines() if line.startswith("/")]
+    return (
+        prompt
+        + "\n"
+        + "\n".join(path.read_text(encoding="utf-8") for path in paths if path.is_file())
     )
-    return Path(contract.group(1)).read_text(encoding="utf-8") if contract is not None else prompt
 
 
 def _receipts(store: AppStore, operation_id: str, category: str):
@@ -285,9 +281,6 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert not [event for event in create_events if event.event == "error"]
     assert [event.event for event in create_events].count("artifact") == 0
     assert create_launcher.prompts[0].count(create_message) == 1
-    assert "rcp-result-view-gesture" in create_launcher.prompts[0]
-    assert "gesture:'box'|'underscore'" in create_launcher.prompts[0]
-    assert "The page may omit gestures" in create_launcher.prompts[0]
     assert create_launcher.workspaces[0] == Path(create_execution.stage_root or "") / "workspace"
     records = store.list_result_views(project_id, chat_id=chat_id)
     assert len(records) == 1
@@ -355,7 +348,6 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert revise_launcher.sessions == [session_id]
     assert revise_launcher.workspaces == [expected_revision_workspace]
     assert revise_launcher.prompts[0].count(revise_message) == 1
-    assert "atomic replacement at that path is allowed" in revise_launcher.prompts[0]
     revised = store.result_view_for_diagnostics(created.view_id)
     assert revised is not None
     assert revised.view_id == created.view_id
@@ -916,7 +908,6 @@ def test_background_retry_recovers_without_reauthoring_an_already_bound_create(
                 encoding="utf-8",
             )
             return
-        assert "result-view authoring contract" not in _launch_contract_text(prompt)
 
     launcher = _ViewLauncher(session_id, create_writer)
     fail_after_bound = True
@@ -971,7 +962,6 @@ def test_background_retry_recovers_without_reauthoring_an_already_bound_create(
     assert store.agent_task_continuation_cause(retried.operation_id) == expected_continuation
     assert recovered.status == "succeeded", recovered.error
     assert len(launcher.prompts) == 2
-    assert "result-view authoring contract" not in _launch_contract_text(launcher.prompts[1])
     unchanged = store.list_result_views(project_id, chat_id=request.chat_id)
     assert len(unchanged) == 1
     assert unchanged[0].view_id == created.view_id
@@ -1053,10 +1043,7 @@ async def test_accepted_create_recovery_continues_without_reauthoring_result_vie
         continuation=continuation,
     )
 
-    def recovery_writer(prompt: str, _workspace: Path) -> None:
-        assert "result-view authoring contract" not in _launch_contract_text(prompt)
-
-    launcher = _ViewLauncher(session_id, recovery_writer)
+    launcher = _ViewLauncher(session_id)
     with monkeypatch.context() as recovery_patch:
         if continuation == "resume":
             # Isolate result-view settlement from the independent prompt-baseline replay seam.
@@ -1188,10 +1175,7 @@ async def test_accepted_revision_recovery_continues_without_reauthoring_result_v
         continuation=continuation,
     )
 
-    def recovery_writer(prompt: str, _workspace: Path) -> None:
-        assert "result-view authoring contract" not in _launch_contract_text(prompt)
-
-    launcher = _ViewLauncher(session_id, recovery_writer)
+    launcher = _ViewLauncher(session_id)
     with monkeypatch.context() as recovery_patch:
         if continuation == "resume":
             # Isolate result-view settlement from the independent prompt-baseline replay seam.
@@ -1295,7 +1279,7 @@ def test_unbound_create_recovery_creates_its_missing_deterministic_slot(
         )
 
 
-def test_result_view_prompt_is_short_private_and_preserves_human_bytes() -> None:
+def test_result_view_prompt_carries_output_paths_and_preserves_human_bytes() -> None:
     from rcp.agents.prompts import PromptFactory
 
     message = "/show  keep  spacing\nand punctuation?!"
@@ -1307,12 +1291,8 @@ def test_result_view_prompt_is_short_private_and_preserves_human_bytes() -> None
     )
 
     assert prompt.count(message) == 1
-    assert len(prompt.splitlines()) < 30
     assert "/stage/views/0123456789abcdef01234567" in prompt
     assert "/stage/turns/op/artifacts" in prompt
-    assert "independent of the turn artifact directory" in prompt
-    assert "{type:'rcp-result-view-gesture',version:1" in prompt
-    assert "The page may omit gestures" in prompt
 
 
 @pytest.mark.asyncio
