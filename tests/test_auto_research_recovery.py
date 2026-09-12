@@ -45,11 +45,11 @@ def _store(tmp_path: Path) -> AppStore:
     return store
 
 
-def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root"):
+def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root", provider: str | None = None):
     episode, root = start_auto_research(
         tasks,
         "project",
-        AutoResearchStartRequest(invocation_ceiling=4, run_truth_scope=["repo"]),
+        AutoResearchStartRequest(invocation_ceiling=4, run_truth_scope=["repo"], provider=provider),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
         ensure_graph_target=lambda _episode: None,
@@ -597,3 +597,63 @@ def test_recovery_admission_whose_launch_fails_records_a_durable_receipt(
     assert admitted is not None
     assert admitted.status == "admitted"
     assert admitted.admitted_operation_id == child.operation_id
+
+
+def test_a_vanished_session_retries_clean_rather_than_resuming_it(tmp_path: Path) -> None:
+    """A thread the provider no longer has cannot be resumed, so an exact retry
+    would fail the same way and spend the allocation proving it."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="gone-session"))
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+            )
+        )
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+
+    assert recovery.failure_kind == "stale_session"
+    assert recovery.retry_mode == "clean"
+
+
+def test_a_revoked_login_schedules_no_automatic_recovery(tmp_path: Path) -> None:
+    """Every attempt fails identically until a person signs in, so spending the
+    allocation on three of them only delays telling them so."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="revoked-session"))
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text='stream error: unexpected status 401 Unauthorized: {"error":'
+                '{"type":"token_revoked","message":"Your session has ended."}}',
+            )
+        )
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks, provider="codex")
+    wait_for_task(store, root.operation_id, expect="failed")
+
+    assert store.agent_task(root.operation_id).failure_kind == "provider_auth"
+    wait_until(
+        lambda: store.agent_task_has_receipt(root.operation_id, "auto_research_recovery_withheld"),
+        detail="settlement never recorded that recovery was withheld",
+    )
+    assert store.auto_research_recovery("task:root") is None

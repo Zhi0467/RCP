@@ -200,6 +200,14 @@ def _experiment_control_response(
     awaiting_human = (
         task.awaiting_human if task is not None else control.operational.current_awaiting_human
     )
+    # A revoked login fails every attempt the same way. The turn is still
+    # recoverable, so health keeps counting it, but the controls that would
+    # spend an attempt on it are withheld until a person signs in.
+    revoked_login = bool(
+        control.operational.current_failure_kind == "provider_auth"
+        and task_control is not None
+        and awaiting_human
+    )
     has_valid_recovery = task_control is not None or (
         task is None and control.operational.task_active and awaiting_human
     )
@@ -221,6 +229,7 @@ def _experiment_control_response(
         active=active,
         awaiting_human=awaiting_human,
         task_control=task_control,
+        revoked_login=revoked_login,
     )
     run_section = _experiment_run_section(health, awaiting_human=awaiting_human)
     ended = episode is not None and episode.ending is not None
@@ -244,7 +253,9 @@ def _experiment_control_response(
         else None
     )
     can_open_report = report_episode_id is not None
-    can_switch_provider = bool(task_control is not None and task is not None and task.can_retry)
+    can_switch_provider = bool(
+        task_control is not None and task is not None and task.can_retry and not revoked_login
+    )
     return ExperimentControlResponse.model_validate(
         {
             **control.model_dump(mode="json"),
@@ -256,7 +267,7 @@ def _experiment_control_response(
             "can_start": control.ready,
             "can_stop": can_stop,
             "stop_pending": stop_pending,
-            "task_control": task_control,
+            "task_control": None if revoked_login else task_control,
             "can_switch_provider": can_switch_provider,
             "can_open_report": can_open_report,
             "report_episode_id": report_episode_id,
@@ -365,6 +376,7 @@ def _experiment_recommendation(
     active: bool,
     awaiting_human: bool,
     task_control: ExperimentTaskControlKind | None,
+    revoked_login: bool,
 ) -> ExperimentRecommendationKind:
     if health in {"stopping", "wrapping_up"}:
         return "wait"
@@ -380,13 +392,9 @@ def _experiment_recommendation(
         return "none"
     if active:
         return "wait"
-    # A revoked login fails every attempt the same way, so offering Retry sends
-    # the human around a loop that cannot end. Say what actually has to happen.
-    if (
-        control.operational.current_failure_kind == "provider_auth"
-        and task_control is not None
-        and awaiting_human
-    ):
+    # Retry is withheld for this turn, so the recommendation is the only thing
+    # left that tells the human what will actually move it forward.
+    if revoked_login:
         return "reauthenticate_provider"
     if task_control is not None:
         return task_control

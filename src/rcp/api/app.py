@@ -1315,11 +1315,16 @@ def create_app(
             # can retry an individual capability when explicitly requested.
             logger.warning("Could not warm provider capabilities: %s", exc)
 
-    async def sweep_remote_run_stages() -> None:
-        # The local half of the same debt: a master killed rather than idled out
-        # leaves a socket behind, and a socket named for one run is never asked
-        # for again, so OpenSSH's own stale-socket cleanup never runs on it.
+    async def sweep_stale_control_sockets() -> None:
+        # A master killed rather than idled out leaves its socket behind, and a
+        # socket named for one stage is never asked for again, so OpenSSH's own
+        # stale-socket cleanup never runs on it. Not tied to the default
+        # project's state host: every project's stages and lock holders keep
+        # their sockets in this one directory, and an install whose default
+        # project is local still has remote ones.
         await asyncio.to_thread(sweep_control_sockets)
+
+    async def sweep_remote_run_stages() -> None:
         try:
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,
@@ -1524,6 +1529,7 @@ def create_app(
                         layout="directories",
                     ).sweep()
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
+                startup_maintenance.append(asyncio.create_task(sweep_stale_control_sockets()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))

@@ -71,8 +71,15 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # v0.3.5 release shape (pre-compute-jobs-v14-7d6546f), missed when its era shipped.
         "c49a8922bd0fee351f656333eafc183c5f2e6f65c95648b39e4f1ccf961b3c5e",
         # graph_runs.failure_kind: why a turn failed, so recovery can offer the
-        # right next step instead of offering Retry for a revoked login.
+        # right next step instead of offering Retry for a revoked login. Two
+        # shapes, because that migration rebuilds the table rather than altering
+        # it: a fresh install writes the canonical text, and an install that
+        # upgrades in place keeps the column order the rebuild produced. An
+        # archive records the digest its server had when the backup was taken,
+        # so leaving the upgraded shape out would refuse every existing
+        # installation its own backups.
         "77dc37f966fdcad42c1fe7219f452aaf8a05c61da7e17cb2af4de935bdecba6c",
+        "70f6364f20be6ce432be4ada6f9db62de11c54a1e9c1ff246a9b2d71e08cee1a",
     }
 )
 

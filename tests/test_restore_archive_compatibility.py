@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -152,3 +153,57 @@ def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries
             )
             in SUPPORTED_RESTORE_DATABASE_SCHEMAS
         )
+
+
+def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
+    tmp_path: Path,
+) -> None:
+    """An installation must be able to restore the backups it took after upgrading.
+
+    A migration that rebuilds a table cannot leave the same schema text a fresh
+    install writes, and an archive records the digest its own server had when
+    the backup was taken. Registering only the fresh shape refuses every
+    upgraded installation its own backups. Whole-database validation does not
+    catch this, because it compares text with whitespace collapsed while the
+    archive manifest hashes the raw text.
+    """
+
+    database = tmp_path / "upgraded.sqlite3"
+    AppStore(database)
+    with AppStore(database).connection() as connection:
+        created = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'graph_runs'"
+        ).fetchone()[0]
+        indexes = [
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_schema "
+                "WHERE type = 'index' AND tbl_name = 'graph_runs' AND sql IS NOT NULL"
+            )
+        ]
+        assert not connection.execute("SELECT 1 FROM graph_runs LIMIT 1").fetchall()
+    assert "failure_kind" in created, "this test must start from the shape that has the column"
+
+    # Put the database back into the era every real installation upgrades from:
+    # graph_runs without the column, and the ledger without that migration. A
+    # rename would rewrite every dependent table's references, so the empty
+    # table is replaced outright.
+    previous = re.sub(r",\s*\n\s*failure_kind TEXT", "", created)
+    assert "failure_kind" not in previous
+    with AppStore(database).connection() as connection:
+        connection.execute("DROP TABLE graph_runs")
+        connection.execute(previous)
+        for statement in indexes:
+            connection.execute(statement)
+        connection.execute(
+            "DELETE FROM storage_schema_migrations "
+            "WHERE migration_name = 'agent_task_failure_kind_v1'"
+        )
+
+    reopened = AppStore(database)
+    with reopened.connection() as connection:
+        assert "failure_kind" in {
+            row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")
+        }, "opening the database must run the migration under test"
+
+    assert _database_schema_sha256(reopened) in SUPPORTED_RESTORE_DATABASE_SCHEMAS

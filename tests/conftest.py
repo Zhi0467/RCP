@@ -26,6 +26,22 @@ def account_credential_lock_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture(autouse=True)
+def ssh_control_socket_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the mux-socket sweep out of the human's own live connections.
+
+    The SSH control directory is keyed by user account, not by data directory,
+    so the developer's own RCP keeps its live masters in the same place a test
+    would sweep. Starting an app runs that sweep, which means the whole suite
+    reaches it, not one test. Each test gets its own root instead.
+    """
+
+    monkeypatch.setattr(
+        "rcp.transport.ssh._control_directory_path",
+        lambda: tmp_path / "ssh-control",
+    )
+
+
+@pytest.fixture(autouse=True)
 def unconfigured_local_providers(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

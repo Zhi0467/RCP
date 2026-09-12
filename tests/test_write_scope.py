@@ -1313,6 +1313,91 @@ def test_legacy_local_chat_scope_can_add_only_its_missing_inputs_protection(
         # A continuation is what the legacy-compat fingerprint exists for; a
         # fresh launch would rebind the stage and never reach that comparison.
         continuation="resume",
-    ).bind_write_scope(new_scope)
+    ).bind_write_scope(new_scope, resumes_native_session=False)
 
     assert store.agent_task("continuation").write_scope_fingerprint == new_scope.fingerprint
+
+
+def _stage_scope(stage: str, *, protected: list[str]) -> ProjectWriteScope:
+    return ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=stage,
+        workspace_root=stage,
+        repositories=[],
+        protected_write_paths=protected,
+    )
+
+
+def test_a_carried_session_binds_as_a_continuation_whatever_its_label(tmp_path: Path) -> None:
+    """A live provider session must not gain write roots it did not start with.
+
+    An ordinary chat follow-up is admitted as `fresh` while still supplying the
+    session id, and the work turn hands that id straight to the provider. If the
+    label alone decided the binding, widening the run scope on that follow-up
+    would rebind the stage and hand the running session the wider roots.
+    """
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    stage = "/tmp/rcp-run.carried-session"
+    narrow = _stage_scope(stage, protected=[f"{stage}/inputs", f"{stage}/held"])
+    wider = _stage_scope(stage, protected=[f"{stage}/inputs"])
+    assert narrow.fingerprint != wider.fingerprint
+    _create_scoped_task(store, "first", stage_root=stage, kind="project_chat")
+    _create_scoped_task(store, "follow-up", stage_root=stage, kind="project_chat")
+    store.bind_agent_task_write_scope(
+        "first",
+        project_id="project",
+        stage_host="",
+        stage_root=stage,
+        fingerprint=narrow.fingerprint,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("first", applied_revision=None, result={})
+
+    follow_up = AgentTaskExecution(
+        operation_id="follow-up",
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=stage,
+        continuation="fresh",
+    )
+
+    with pytest.raises(ValueError):
+        follow_up.bind_write_scope(wider, resumes_native_session=True)
+
+    assert store.agent_task("follow-up").write_scope_fingerprint is None
+
+
+def test_a_sessionless_fresh_launch_still_rebinds_a_finished_stage(tmp_path: Path) -> None:
+    """The failure this branch exists for: a chat stage is named from its chat
+    id and never cleared, so a run that carries no session must be able to
+    change the scope instead of inheriting the first one forever."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    stage = "/tmp/rcp-run.sessionless"
+    narrow = _stage_scope(stage, protected=[f"{stage}/inputs", f"{stage}/held"])
+    wider = _stage_scope(stage, protected=[f"{stage}/inputs"])
+    _create_scoped_task(store, "first", stage_root=stage, kind="project_chat")
+    _create_scoped_task(store, "later", stage_root=stage, kind="project_chat")
+    store.bind_agent_task_write_scope(
+        "first",
+        project_id="project",
+        stage_host="",
+        stage_root=stage,
+        fingerprint=narrow.fingerprint,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("first", applied_revision=None, result={})
+
+    AgentTaskExecution(
+        operation_id="later",
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=stage,
+        continuation="fresh",
+    ).bind_write_scope(wider, resumes_native_session=False)
+
+    assert store.agent_task("later").write_scope_fingerprint == wider.fingerprint

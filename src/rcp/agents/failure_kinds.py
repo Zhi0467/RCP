@@ -24,7 +24,7 @@ def classify_agent_failure(
     return_code: int | None,
     host: str,
     profile: ProviderProfile | None,
-) -> AgentFailureKind:
+) -> AgentFailureKind | None:
     """Name one provider failure so recovery can offer the right next step."""
 
     # The provider's own diagnostic is more specific than an exit code, and a
@@ -33,4 +33,4 @@ def classify_agent_failure(
         return "provider_auth"
     if transport_failure(return_code, host):
         return "transport_lost"
-    return "other"
+    return None

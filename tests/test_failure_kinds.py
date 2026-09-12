@@ -63,7 +63,7 @@ def test_an_ordinary_provider_failure_keeps_its_existing_behaviour() -> None:
             host="gpu.example.edu",
             profile=CODEX,
         )
-        == "other"
+        is None
     )
 
 
@@ -78,5 +78,5 @@ def test_a_profile_without_observed_signatures_does_not_guess() -> None:
             host="gpu.example.edu",
             profile=profile_for("claude"),
         )
-        == "other"
+        is None
     )

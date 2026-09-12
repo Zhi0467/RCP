@@ -2117,6 +2117,9 @@ export interface AgentTask {
   finished_at?: string | null;
   status_message: string;
   error?: string | null;
+  /** Why this turn failed, when that changes what recovery offers. Sealed, so
+   *  a view cannot branch on it: the backend exports the decision. */
+  failure_kind?: AgentFailureKind | null;
   /** Set when the provider succeeded without honouring part of the launch.
    *  Authored by the backend; render it verbatim. */
   degradation?: string | null;

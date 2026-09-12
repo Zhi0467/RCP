@@ -236,7 +236,7 @@ class AgentTaskExecution:
             tier="diagnostic",
         )
 
-    def bind_write_scope(self, scope: ProjectWriteScope) -> None:
+    def bind_write_scope(self, scope: ProjectWriteScope, *, resumes_native_session: bool) -> None:
         if self.stage_root is None:
             raise ValueError(
                 "agent task must checkpoint its exact stage before write-scope binding"
@@ -268,10 +268,12 @@ class AgentTaskExecution:
             stage_host=self.stage_host or "",
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
-            # Only a launch that reuses a native checkpoint is a continuation.
-            # A fresh launch establishes the stage binding rather than
-            # inheriting it, which is how a run scope legitimately changes.
-            continuation_binding=self.reuses_native_checkpoint,
+            # A continuation is a launch that carries an existing provider
+            # session into this turn, whichever label admission gave it: the
+            # session is what would gain authority it did not start with. A
+            # launch that brings no session establishes the stage binding
+            # instead, which is how a run scope legitimately changes.
+            continuation_binding=self.reuses_native_checkpoint or resumes_native_session,
             scope_repositories=[item.alias for item in scope.repositories],
             compatible_previous_fingerprint=compatible_previous_fingerprint,
             compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
@@ -1694,13 +1696,12 @@ class BackgroundAgentTasks:
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
                 profile = profile_for(provider)
-        kind = classify_agent_failure(
+        return classify_agent_failure(
             error=error,
             return_code=self.store.agent_task_provider_exit_code(operation_id),
             host=execution.stage_host or "",
             profile=profile,
         )
-        return None if kind == "other" else kind
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link."""
@@ -1736,37 +1737,62 @@ class BackgroundAgentTasks:
                 tier="summary",
             )
             return
-        delay = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[
-            min(attempt, len(AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS) - 1)
-        ]
         self.store.record_agent_task_receipt(
             settled.operation_id,
             "transport_auto_retry",
-            {"attempt": attempt + 1, "delay_seconds": delay},
+            {
+                "attempt": attempt + 1,
+                "delay_seconds": AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt],
+            },
             tier="summary",
         )
-        self._schedule_transport_retry(settled.operation_id, delay)
+        self._schedule_transport_retry(settled.operation_id, attempt=attempt)
 
-    def _schedule_transport_retry(self, operation_id: str, delay: float) -> None:
+    def _schedule_transport_retry(self, operation_id: str, *, attempt: int) -> None:
+        delay = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt]
+
         def run() -> None:
-            with self._controls_lock:
-                if self._shutdown_requested:
-                    return
             try:
-                self.retry(
-                    operation_id,
-                    authorized_by=self.store.agent_task_authorizer(operation_id),
-                )
-            except Exception as exc:
-                # The human still has Retry; a failed reattempt must not become
-                # a second failure report on top of the one they already have.
-                with suppress(Exception):
-                    self.store.record_agent_task_receipt(
+                with self._controls_lock:
+                    if self._shutdown_requested:
+                        return
+                if self._transport_retry_superseded(operation_id):
+                    return
+                try:
+                    self.retry(
                         operation_id,
-                        "transport_auto_retry_failed",
-                        {"exception_type": type(exc).__name__},
-                        tier="diagnostic",
+                        authorized_by=self.store.agent_task_authorizer(operation_id),
                     )
+                except Exception as exc:
+                    # The human still has Retry; a failed reattempt must not
+                    # become a second failure report on top of the one they
+                    # already have.
+                    with suppress(Exception):
+                        self.store.record_agent_task_receipt(
+                            operation_id,
+                            "transport_auto_retry_failed",
+                            {"exception_type": type(exc).__name__},
+                            tier="diagnostic",
+                        )
+                    # A host that is still rebooting refuses admission too, and
+                    # that is the case the later, longer waits exist for. No
+                    # child was admitted, so the receipt chain cannot carry the
+                    # count and this hands it to the next wait directly.
+                    if attempt + 1 < AGENT_TRANSPORT_RETRY_LIMIT:
+                        with suppress(Exception):
+                            self._schedule_transport_retry(operation_id, attempt=attempt + 1)
+                    else:
+                        with suppress(Exception):
+                            self.store.record_agent_task_receipt(
+                                operation_id,
+                                "transport_auto_retry_exhausted",
+                                {"attempts": attempt + 1},
+                                tier="summary",
+                            )
+            finally:
+                with self._controls_lock:
+                    if timer in self._transport_retry_timers:
+                        self._transport_retry_timers.remove(timer)
 
         timer = threading.Timer(delay, run)
         timer.daemon = True
@@ -1775,6 +1801,33 @@ class BackgroundAgentTasks:
                 return
             self._transport_retry_timers.append(timer)
         timer.start()
+
+    def _transport_retry_superseded(self, operation_id: str) -> bool:
+        """Whether this turn was already taken over while the wait ran.
+
+        A human pressing Retry, a recovery owner, or a second timer all leave a
+        child on the failed task. Firing anyway would run the turn a second time
+        after the first already finished, repeating whatever it did. The check
+        and the admission that follows are not one transaction, but `retry`
+        refuses an overlapping active turn, so the remaining window is a retry
+        that both starts and finishes inside it.
+        """
+
+        settled = self.store.agent_task(operation_id)
+        superseded = (
+            settled is None
+            or not settled.can_retry
+            or self.store.agent_task_has_continuation(operation_id)
+        )
+        if superseded:
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    operation_id,
+                    "transport_auto_retry_superseded",
+                    {"reason": "another attempt already took this turn over"},
+                    tier="summary",
+                )
+        return superseded
 
     def _task_settled(
         self,

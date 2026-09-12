@@ -1935,7 +1935,10 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # `provider_auth` is not: the login is revoked and every attempt fails the same
 # way until a human signs in again. `other` keeps its existing behaviour.
 # `rcp.agents.failure_kinds` decides which one a failure is.
-AgentFailureKind = Literal["transport_lost", "provider_auth", "other"]
+# Why a turn failed, when that changes what recovery should offer. A failure
+# with nothing to name is NULL rather than a member, so every value here is
+# one a recovery owner acts on.
+AgentFailureKind = Literal["transport_lost", "provider_auth"]
 
 # A task is still moving through these; every other status is terminal. "pausing"
 # belongs here because the pause has been requested but not yet observed, so a

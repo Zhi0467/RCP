@@ -222,16 +222,19 @@ repository, incompatible run-scope change, or missing root fails before provider
 launch. Legitimate relocation or scope change starts a fresh task/session; it
 does not widen an existing native session.
 
-A launch that reuses no native checkpoint is that fresh task/session, and it
-establishes the stage binding rather than inheriting it. A chat stage is named
-from its chat id and is never cleared, so comparing a fresh launch against the
-scope a previous episode left there made a conversation's run scope permanent:
-the human could not drop a repository from an Experiment that had ever run.
-A fresh launch is still refused while another turn is live on that stage with a
-different scope, and a continuation is compared against the stage's current
-binding, not against bindings a later fresh launch superseded. A refused
-comparison names the repositories on both sides and says a new episode is how
-run scope changes.
+A launch that carries no provider session is that fresh task/session, and it
+establishes the stage binding rather than inheriting it. What decides this is
+the session the launch actually hands the provider, not the label admission gave
+it: an ordinary follow-up is admitted as fresh while still supplying its chat's
+session id, and that session is what would otherwise gain roots it did not start
+with. A chat stage is named from its chat id and is never cleared, so comparing
+every launch against the scope a previous episode left there made a
+conversation's run scope permanent: the human could not drop a repository from
+an Experiment that had ever run. A sessionless launch is still refused while
+another turn is live on that stage with a different scope, and a continuation is
+compared against the stage's current binding, not against bindings a later fresh
+launch superseded. A refused comparison names the repositories on both sides and
+says a new episode is how run scope changes.
 
 Conversation-local merge integration and the following ordinary turn are the
 one explicit root-transition exception: their related-turn fingerprints may be
@@ -689,12 +692,24 @@ exit codes for a remote run mean the link died rather than the work, and RCP
 reattempts such a turn a bounded number of times with growing waits before
 leaving it to a human; the reattempt is the same recovery a human Retry
 performs, so it resumes the native session rather than repeating the turn. A
-provider whose CLI reports that its own login is no longer valid is never
+reattempt stands down when anything else has already taken the turn over, so a
+wait that outlives the failure it was scheduled for cannot repeat finished work.
+A wait whose reattempt is refused keeps the waits that remain, because a host
+that is still returning is the case the longer waits exist for.
+
+A provider whose CLI reports that its own login is no longer valid is never
 reattempted, because every attempt fails identically until a person signs in
-again, and the projection asks for that instead of offering Retry. A profile
-that has had no real revoked login observed claims none, since a wrong match
-would withdraw Retry from a failure Retry would have fixed. Every other failure
-keeps its existing behaviour. Reattempts and their exhaustion are receipts on
+again. Every recovery owner honours that: the projection asks for the sign-in
+and withholds the Retry control that would spend an attempt proving it, and
+automatic recovery is withheld rather than scheduled. A profile that has had no
+real revoked login observed claims none, since a wrong match would withdraw
+Retry from a failure Retry would have fixed.
+
+A saved provider session the provider no longer has is named separately from one
+that reached its limit, because the remedy differs: a session that is simply
+gone cannot be resumed at all, so recovery starts the turn clean instead of
+resuming into the same failure. Every other failure keeps its existing
+behaviour. Reattempts, their exhaustion, and a withheld recovery are receipts on
 the failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP

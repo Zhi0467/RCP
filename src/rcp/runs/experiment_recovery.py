@@ -66,6 +66,8 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
             if problem is None:
                 if tasks._failure_is_session_limit(previous):
                     problem = "the saved provider session reached its limit"
+                elif tasks._failure_is_stale_session(previous):
+                    problem = "the provider no longer has the saved session"
                 elif tasks._continuation_context_is_unavailable(previous):
                     problem = "the saved continuation context is unavailable"
                 elif (
@@ -207,11 +209,18 @@ def retry_experiment_loop(
         binding_request.reasoning,
     )
     current_config = (original.provider, original.model, original.reasoning)
+    # A session the provider says it no longer has is not a checkpoint. Resuming
+    # it fails identically every time, so this turn starts clean instead.
+    stale_session = tasks._failure_is_stale_session(previous)
     previous_checkpoint = bool(
-        previous.native_session_id and previous.stage_root and tasks._session_is_rcp_owned(previous)
+        previous.native_session_id
+        and previous.stage_root
+        and tasks._session_is_rcp_owned(previous)
+        and not stale_session
     )
     use_active_binding = bool(
         not previous_checkpoint
+        and not stale_session
         and episode is not None
         and episode.session_bound
         and current_config == active_config

@@ -3282,6 +3282,21 @@ class AgentTaskStoreMixin:
             ).fetchone()
         return row is not None
 
+    def agent_task_has_continuation(self, operation_id: str) -> bool:
+        """Whether some later task already continues this one.
+
+        A retry, a recovery and a correction all record themselves as a child of
+        the task they follow, so this answers "has anything already taken this
+        turn over" without knowing which of them did.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM graph_runs WHERE parent_operation_id = ? LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+        return row is not None
+
     def agent_task_provider_exit_code(self, operation_id: str) -> int | None:
         """The exit code of this task's last provider process, if it reported one.
 
