@@ -19,6 +19,14 @@ from rcp.agents.prompts import (
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
+
+# The contract names the fields enforcement actually admits, so the two cannot
+# drift apart into a human-written allowlist beside the real one.
+_PINNED_DECISION_BALLOT_PROSE = "{}, and {}".format(
+    ", ".join(f"`{name}`" for name in PINNED_DECISION_BALLOT_FIELDS[:-1]),
+    f"`{PINNED_DECISION_BALLOT_FIELDS[-1]}`",
+)
 
 _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
 - Treat an unexpected process exit (including SIGTERM), timeout, command failure, or similar
@@ -47,13 +55,21 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
   transient failure is uncertainty, not a Blocker."""
 
 
-_EXPERIMENT_GRAPH_AUTHORITY = """Current Experiment-loop graph authority:
+_EXPERIMENT_GRAPH_AUTHORITY = f"""Current Experiment-loop graph authority:
 This replaces earlier graph-permission instructions for this loop, including broader ordinary
 Work permissions. Only these graph changes are available:
 - Update the focused Experiment's complete `attempts` list, status, `current_summary`, and
   `next_action`. Preserve attempt identity and immutable fields; never rewrite a terminal attempt.
-- Update only a pinned Decision's status: `open` while unresolved, `ready` when its choice is
-  makeable, or `revisit` when new evidence undermines a settled choice. Do not choose an option.
+- Queue a pinned Decision as `open` while unresolved, `ready` when its choice is makeable, or
+  `revisit` when new evidence undermines a settled choice. Any update that leaves it queued may
+  also restate that Decision's {_PINNED_DECISION_BALLOT_PROSE},
+  so the ballot the human reads describes the choice this episode's evidence now presents,
+  including an option it newly raises. Restating one already queued overwrites what the human is
+  reading: do that only on new evidence. Rewording is not removal: change an option's wording
+  freely, and keep every choice this episode's evidence has not closed on the ballot. Leave
+  `selected_option` untouched and never write it or `decided`; the card shows the prior choice
+  even when your wording replaces it. State what the choice now turns on.
+  Do not choose an option.
 - Create Evidence and Blockers. Link each same-Patch Evidence from this Experiment with `produces`
   and each same-Patch Blocker with `blocked_by`. Only same-Patch Evidence may `informs` an existing
   Decision or `addresses` an existing Blocker; neither edge changes its target's lifecycle.
@@ -63,8 +79,8 @@ Work permissions. Only these graph changes are available:
   fields: `situation_cold`, `why_human_now`, `consequences`, and `decision_needed`.
 - Add supplementary glossary definitions with `upsert_glossary`.
 All other graph mutations are unavailable: do not edit Experiment design, other Experiments,
-the pinned bundle, or existing Blockers; remove objects; set standing; choose Decisions; or resolve
-Proposals. The general authoring methods below do not extend this list.
+an attempt's recorded pinned bundle, or existing Blockers; remove objects; set standing; choose
+Decisions; or resolve Proposals. The general authoring methods below do not extend this list.
 """
 
 
@@ -343,7 +359,7 @@ Graph reflection and authority:
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping. Record
-  `repositories_read` honestly; do not set coverage or cursors.
+  `repositories_read` honestly; do not advance the ingestion watermark.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
   independent: report operational truth without claiming RCP accepted the Patch.

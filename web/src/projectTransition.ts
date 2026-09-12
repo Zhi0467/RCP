@@ -264,6 +264,7 @@ function validAttentionProjection(value: unknown): value is GraphAttentionProjec
     "decisions_awaiting_choice_ids",
     "open_blocker_ids",
     "proposal_actions",
+    "decision_prior_choices",
   ];
   if (
     Object.keys(payload).some((key) => !fields.includes(key)) ||
@@ -283,6 +284,17 @@ function validAttentionProjection(value: unknown): value is GraphAttentionProjec
     })
   )
     return false;
+  const priorChoices = payload.decision_prior_choices;
+  if (typeof priorChoices !== "object" || priorChoices === null || Array.isArray(priorChoices)) {
+    return false;
+  }
+  if (
+    Object.values(priorChoices as Record<string, unknown>).some(
+      (choice) => typeof choice !== "string" || choice.length === 0,
+    )
+  ) {
+    return false;
+  }
   const actions = payload.proposal_actions;
   if (typeof actions !== "object" || actions === null || Array.isArray(actions)) return false;
   const pendingIds = payload.pending_proposal_ids as string[];

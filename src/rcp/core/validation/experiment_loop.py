@@ -35,6 +35,27 @@ from rcp.core.validation.report import ValidationReport
 _ATTEMPT_CLOSE_FIELDS = frozenset(
     {"status", "source_refs", "outcome", "failure_reason", "finished_at"}
 )
+# A queued pinned Decision enters human attention as a ballot, so a loop that
+# leaves one queued may restate what that ballot asks. The queued status is the
+# licence, not the transition into it: a loop that queued a Decision in an
+# earlier turn must still be able to add the option a later turn's evidence
+# raises, and demanding a settled Decision would reopen the stale-ballot gap one
+# turn further on.
+#
+# The loop owns this set rather than aliasing the human-edit registry: widening
+# the specialized profile has to be a deliberate change here, not a side effect
+# of adding a field the human card happens to expose. The rendered contract
+# lists these same names, in this order. `selected_option` is absent and a
+# queued `status` is required, so `decided` stays out of reach and the choice
+# itself remains human-only.
+PINNED_DECISION_BALLOT_FIELDS: tuple[str, ...] = (
+    "title",
+    "question",
+    "options",
+    "rationale",
+    "consequences",
+)
+_PINNED_DECISION_FIELDS = frozenset(PINNED_DECISION_BALLOT_FIELDS) | {"status"}
 _TERMINAL_ATTEMPT_STATUSES = frozenset({"failed", "completed", "cancelled", "superseded"})
 
 
@@ -143,15 +164,13 @@ def _validate_updates(
         node_id = update.id
         changes = update.changes
         if node_id in pinned_ids:
-            if set(changes) != {"status"} or changes.get("status") not in {
-                "open",
-                "ready",
-                "revisit",
-            }:
+            forbidden = sorted(set(changes) - _PINNED_DECISION_FIELDS)
+            if forbidden or changes.get("status") not in {"open", "ready", "revisit"}:
                 report.reject(
                     "experiment-loop-decision-action",
                     f"Experiment loop {experiment.id} may only queue pinned Decision {node_id!r} "
-                    "as open, ready, or revisit; it may never decide it.",
+                    "as open, ready, or revisit, restating its ballot in the same update; it may "
+                    "never decide it.",
                     revision,
                     related_node_ids=[experiment.id, node_id],
                 )

@@ -371,7 +371,6 @@ def test_transfer_revision_summary_is_visible_without_changing_graph_semantics(m
 
     assert after.nodes == before.nodes
     assert after.edges == before.edges
-    assert after.coverage == before.coverage
     assert history.revision_summaries(2, 2)[0]["sentences"] == [
         f"Project moved from {SOURCE_SPACE_ID} to {TARGET_SPACE_ID}."
     ]

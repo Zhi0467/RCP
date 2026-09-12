@@ -535,16 +535,6 @@ export function activeBranchMergeTask(episode: Episode): AgentTask | null {
   );
 }
 
-export function shouldShowCoverageBoundaryWarning(
-  project: Pick<ProjectSnapshot, "coverage" | "last_refresh_at">,
-): boolean {
-  return (
-    (project.coverage.sessions_skipped.length > 0 ||
-      project.coverage.repositories_never_seen.length > 0) &&
-    (!project.last_refresh_at || project.coverage.note !== "No seed has completed.")
-  );
-}
-
 export function taskActionNeedsAuthoritativeProjectReload(
   task: AgentTask,
   action: "pause" | "resume" | "retry",
@@ -604,6 +594,7 @@ const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
   decisions_awaiting_choice_ids: [],
   open_blocker_ids: [],
   proposal_actions: {},
+  decision_prior_choices: {},
 };
 
 export function projectAttentionForPresentation(
@@ -4374,14 +4365,6 @@ export default function App() {
             </span>
           </div>
         )}
-        {shouldShowCoverageBoundaryWarning(project) && view === "overview" && (
-          <div className="coverage-banner">
-            <AlertTriangle size={15} />
-            <span>
-              <strong>Coverage boundary:</strong> {project.coverage.note}
-            </span>
-          </div>
-        )}
         {rejectedPatches.length > 0 && view === "attention" && (
           <div className="coverage-banner validation-rejected" role="status">
             <AlertTriangle size={15} />
@@ -4695,6 +4678,7 @@ export default function App() {
             beliefTransitions={graph.belief_transitions}
             validationMessages={graph.validation_messages}
             ontology={presentedGraph.ontology}
+            priorChoiceOffBallot={presentedAttention.decision_prior_choices[node.id] ?? null}
             sizeStorageKey={nodeDetailSizeStorageKey(graphSessionKey(project.id, graphTarget))}
             detailSlot={slot}
             focusRequestToken={detailFocusTokens[slot]}

@@ -37,6 +37,13 @@ interface Props {
   beliefTransitions: BeliefTransition[];
   validationMessages: ValidationMessage[];
   ontology: OntologyState;
+  /**
+   * The choice this Decision still records when its options no longer offer it,
+   * resolved by the backend attention projection. Agents may reword options but
+   * never write `selected_option`, so a reopened ballot carries a choice no
+   * option can mark.
+   */
+  priorChoiceOffBallot?: string | null;
   sizeStorageKey?: string;
   detailSlot: "original" | "companion";
   focusRequestToken?: string | number;
@@ -104,6 +111,7 @@ export function DetailDrawer({
   beliefTransitions,
   validationMessages,
   ontology,
+  priorChoiceOffBallot = null,
   sizeStorageKey,
   detailSlot,
   focusRequestToken,
@@ -510,6 +518,12 @@ export function DetailDrawer({
                       })}
                     </div>
                   </fieldset>
+                  {priorChoiceOffBallot && (
+                    <p className="decision-prior-choice">
+                      <span className="eyebrow">Previously decided · no longer an option</span>
+                      <GlossaryText text={priorChoiceOffBallot} glossaryIndex={glossaryIndex} />
+                    </p>
+                  )}
                 </section>
               ) : (
                 <section className="node-lead">

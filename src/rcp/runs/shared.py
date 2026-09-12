@@ -46,7 +46,6 @@ _STATE_PATH_FIELDS = (
     "research_md_path",
     "introduction_path",
     "glossary_path",
-    "coverage_path",
     "facts_dir",
 )
 _NON_PROMPT_CONTRACT_ROLES = {

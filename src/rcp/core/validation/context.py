@@ -35,9 +35,8 @@ class OpContext:
     reference_patch: Patch | None = None
 
 
-#: Validates one operation, reporting into ``ctx.report``. Returns the oldest
-#: source-reference timestamp the operation cited, or ``None`` when it cites none.
-OpValidator = Callable[[GraphOperation, OpContext], Any]
+#: Validates one operation, reporting into ``ctx.report``.
+OpValidator = Callable[[GraphOperation, OpContext], None]
 
 #: Returns the graph nodes and project-config keys one operation depends on, as
 #: ``(candidate node ids, config keys)``. Node ids are retained even when the

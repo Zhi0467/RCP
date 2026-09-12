@@ -53,10 +53,8 @@ def test_chat_context_reads_exact_materialized_target_and_shared_inputs(branch_s
         assert json.loads(Path(context.glossary_path).read_text()) == {
             term: item.model_dump(mode="json") for term, item in graph.glossary.items()
         }
-        assert json.loads(Path(context.coverage_path).read_text()) == graph.coverage.model_dump(
-            mode="json"
-        )
-        for field in ("graph_path", "research_md_path", "glossary_path", "coverage_path"):
+        assert "coverage_path" not in context.model_dump()
+        for field in ("graph_path", "research_md_path", "glossary_path"):
             assert Path(getattr(context, field)).parent == service.history.root
         assert context.introduction_path == str(main.paper.canonical_path)
         assert Path(context.introduction_path).read_text() == "Human paper introduction.\n"
@@ -110,7 +108,6 @@ def test_remote_context_preserves_target_namespace_and_shared_paper_path(branch_
         ("graph_path", "graph.json"),
         ("research_md_path", "research.md"),
         ("glossary_path", "glossary.json"),
-        ("coverage_path", "coverage.json"),
     ):
         assert updates[field] == str(graph_root / filename)
     assert updates["introduction_path"] == str(canonical / "paper" / "introduction.md")

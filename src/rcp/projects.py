@@ -126,7 +126,6 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "attention",
     "counts",
     "graph_mutation",
-    "coverage",
     "graph",
     "paper",
     "paper_coach",
@@ -2154,6 +2153,7 @@ class ProjectCatalog:
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict):
             return "invalid", None
+        snapshot.pop("coverage", None)
         if not migrate_display_snapshot_settings(snapshot):
             return "invalid", None
         # Pre-identity display caches did not carry the catalog's home-space field.
@@ -2168,6 +2168,7 @@ class ProjectCatalog:
         graph_payload = snapshot.get("graph")
         if not isinstance(graph_payload, dict):
             return "invalid", None
+        graph_payload.pop("coverage", None)
         try:
             graph = GraphState.model_validate(graph_payload)
             if schema_version < 5:
@@ -2185,12 +2186,16 @@ class ProjectCatalog:
             if attention_payload is None:
                 snapshot["attention"] = expected_attention.model_dump(mode="json")
                 counts.update(project_counts(graph, expected_attention).model_dump(mode="json"))
-            elif (
-                isinstance(attention_payload, dict) and "proposal_actions" not in attention_payload
-            ):
-                attention_payload["proposal_actions"] = expected_attention.model_dump(mode="json")[
-                    "proposal_actions"
-                ]
+            elif isinstance(attention_payload, dict):
+                # Older display caches predate these keys. The web decoder requires
+                # every key exactly, so a cache missing one cannot open at all, and
+                # a key whose expected value is non-empty would fail the snapshot
+                # comparison and discard the offline copy. Both are recoverable
+                # from the graph the cache already carries.
+                expected_payload = expected_attention.model_dump(mode="json")
+                for field in ("proposal_actions", "decision_prior_choices"):
+                    if field not in attention_payload:
+                        attention_payload[field] = expected_payload[field]
             if "graph_mutation" not in snapshot:
                 snapshot["graph_mutation"] = project_graph_mutation_availability(graph).model_dump(
                     mode="json"
@@ -3025,7 +3030,6 @@ def _valid_display_snapshot(
             "attention",
             "counts",
             "graph_mutation",
-            "coverage",
             "graph",
             "paper",
             "paper_coach",

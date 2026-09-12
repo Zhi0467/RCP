@@ -53,6 +53,11 @@ class GraphAttentionProjection(_StrictTransitionModel):
     decisions_awaiting_choice_ids: list[str] = Field(default_factory=list)
     open_blocker_ids: list[str] = Field(default_factory=list)
     proposal_actions: dict[str, list[ProposalActionLine]] = Field(default_factory=dict)
+    # Decision id -> the choice it still records, for the Decisions whose options
+    # no longer offer it. Agents may reword options but never write
+    # `selected_option`, so a reopened Decision routinely keeps a choice the
+    # ballot cannot mark, and every consumer must name it the same way.
+    decision_prior_choices: dict[str, str] = Field(default_factory=dict)
 
 
 class ProjectCountsProjection(_StrictTransitionModel):

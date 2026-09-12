@@ -1510,7 +1510,6 @@ class ProjectService:
                 "graph_mutation": project_graph_mutation_availability(state).model_dump(
                     mode="json"
                 ),
-                "coverage": state.coverage.model_dump(mode="json"),
                 "graph": state.model_dump(mode="json"),
                 "paper": paper.model_dump(mode="json"),
                 "paper_coach": self.manifest.coach.model_dump(mode="json"),

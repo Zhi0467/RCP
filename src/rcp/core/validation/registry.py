@@ -99,7 +99,7 @@ OP_RULES: dict[str, OpRule] = {
     "resolve_proposals": OpRule(structural_validate=validate_resolve_proposals),
     "withdraw_proposals": OpRule(structural_validate=validate_withdraw_proposals),
     "upsert_glossary": OpRule(),
-    "set_coverage": OpRule(),
+    "set_coverage": OpRule(legacy_only=True),
     "set_standing": OpRule(structural_validate=validate_set_standing),
     "set_project_truth_scope": OpRule(
         structural_validate=validate_set_project_truth_scope,

@@ -19,9 +19,13 @@ from rcp.agents.experiment_loop_prompt import (
 from rcp.agents.prompts import PromptFactory, _authoring_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.authority import render_agent_graph_authority_contract
-from rcp.core.models import GraphState
+from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.transition_models import GraphTargetRef
+from rcp.core.validation.experiment_loop import (
+    _PINNED_DECISION_FIELDS,
+    PINNED_DECISION_BALLOT_FIELDS,
+)
 from rcp.providers import ProviderSkillReference
 from rcp.runs.chat import _chat_context_delta
 from rcp.runs.experiment_loop import stage_experiment_loop_context
@@ -65,6 +69,24 @@ def _assert_pointer_envelope(prompt: str, contract_path: str) -> None:
     assert "schema" not in prompt.casefold()
     assert "human request" not in prompt.casefold()
     assert "diagnostic" not in prompt.casefold()
+
+
+def test_experiment_contract_names_the_ballot_fields_enforcement_admits() -> None:
+    # The loop owns which pinned-Decision fields it may restate. The contract has
+    # to name that same set: a field admitted but unnamed is a silent widening,
+    # and a field named but refused sends the loop at a rejected Patch.
+    rendered = " ".join(_EXPERIMENT_GRAPH_AUTHORITY.split())
+    for field in PINNED_DECISION_BALLOT_FIELDS:
+        assert f"`{field}`" in rendered
+    assert "`selected_option` untouched" in rendered
+
+    # Enforcement admits the ballot fields plus the queued status, and nothing
+    # else. `selected_option` is the field the whole rule exists to withhold.
+    assert {*PINNED_DECISION_BALLOT_FIELDS, "status"} == _PINNED_DECISION_FIELDS
+    assert "selected_option" not in _PINNED_DECISION_FIELDS
+    # The loop may only restate content the Decision card already carries, so its
+    # set cannot name a field outside the editable-content registry.
+    assert HUMAN_EDITABLE_NODE_FIELDS["decision"] >= _PINNED_DECISION_FIELDS
 
 
 def _assert_shared_graph_authority(contract: str) -> None:
@@ -645,7 +667,7 @@ def test_work_contract_requires_a_semantic_patch_with_rcp_owned_bookkeeping() ->
         "RCP assigns patch kind, agent authorship, revision, run scope, Proposal dependencies and "
         "base revision, object lifecycle, and admission bookkeeping"
     ) in compact
-    assert "Work may not set coverage or cursors" in compact
+    assert "Work may not advance the ingestion watermark" in compact
     assert "one `work`/`agent` Patch" not in contract
     assert "Use the repository list as `run_truth_scope`" not in contract
     assert "only project locations you may change" not in contract

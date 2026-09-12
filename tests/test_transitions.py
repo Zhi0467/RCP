@@ -780,3 +780,10 @@ def test_trigger_manifest_is_backend_versioned_and_conservative() -> None:
         "create_proposals",
         "resolve_proposals",
     }
+    # A Decision's options decide how its recorded choice is presented, so a
+    # staged options edit has to reach the backend rather than being applied to
+    # the previewed graph alone.
+    node_update = next(
+        trigger for trigger in manifest.triggers if trigger.operation == "update_nodes"
+    )
+    assert {"status", "selected_option", "options"} <= set(node_update.node_fields)

@@ -64,7 +64,27 @@ def project_graph_attention(state: GraphState) -> GraphAttentionProjection:
             proposal_id: _proposal_action(state.proposals[proposal_id], state)
             for proposal_id in pending_proposal_ids
         },
+        decision_prior_choices=decision_prior_choices(state),
     )
+
+
+def decision_prior_choices(state: GraphState) -> dict[str, str]:
+    """The recorded choice of each Decision whose options no longer offer it.
+
+    An agent may rewrite a Decision's options but never writes `selected_option`,
+    so reopening one with reworded options leaves the prior choice outside the
+    list. The choice is still what the human decided, and a ballot that marks it
+    only on a matching option would show nothing, so the projection names it
+    rather than leaving each consumer to infer it.
+    """
+
+    return {
+        node.id: node.selected_option
+        for node in state.nodes.values()
+        if isinstance(node, Decision)
+        and node.selected_option is not None
+        and node.selected_option not in node.options
+    }
 
 
 def project_primary_question(state: GraphState) -> ProjectNode | None:

@@ -89,7 +89,7 @@ This numbered registry is cited from source and tests. Never
 renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 1. **Canonical Patch logs are append-only.** Never edit or delete main or branch Patch history; replay would change the past.
-2. **Materialized graph files are outputs.** Never hand-edit `graph.json`, `research.md`, glossary, Proposal, coverage, or control projections.
+2. **Materialized graph files are outputs.** Never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections.
 3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges. The bounded branch orchestrator is the one explicit Decision exception.
 3b. **Existing ResearchQuestions and Hypotheses are protected beliefs.** Agents may create them; structural or semantic changes to existing ones use a Proposal. Never infer protected intent from operation shape.
 4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority; Work uses exact provider-enforced write roots; ingestion writes only scratch; paper coach is read-only.
@@ -102,7 +102,7 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 8. **One RCP process owns one data directory.** OS advisory locks, not path existence, establish local and remote ownership.
 9. **Failed runs retain scratch and patch text.** Delete a stage only after its graph patch applies successfully.
 10. **Conversation and ingestion are different lifecycles.** They share launch
-   plumbing only; chat never advances ingestion cursors or coverage.
+   plumbing only; chat never advances ingestion cursors.
 10b. **Only a captured Work turn has conversation graph authority.** Message wording or a stray file cannot upgrade Discuss.
 10c. **Conversation scratch belongs to the stable chat, not one turn.** Clear the previous turn's patch on entry and fail closed if that cannot be proved.
 10d. **Discuss and Work do not consume prior RCP chat transcripts.** A native provider session may continue, but stored chat history is never task authority.

@@ -213,15 +213,9 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           open_blocker_ids: [],
           decisions_awaiting_choice_ids: [],
           proposal_actions: {},
+          decision_prior_choices: {},
         },
         counts: {},
-        coverage: {
-          repositories_seen: [],
-          repositories_never_seen: [],
-          sessions_read: [],
-          sessions_skipped: [],
-          note: "",
-        },
         graph: {
           revision: 1,
           nodes: { [node.id]: node },
