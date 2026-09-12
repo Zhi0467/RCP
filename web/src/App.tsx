@@ -604,6 +604,7 @@ const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
   decisions_awaiting_choice_ids: [],
   open_blocker_ids: [],
   proposal_actions: {},
+  decision_prior_choices: {},
 };
 
 export function projectAttentionForPresentation(
@@ -4686,6 +4687,7 @@ export default function App() {
             beliefTransitions={graph.belief_transitions}
             validationMessages={graph.validation_messages}
             ontology={presentedGraph.ontology}
+            priorChoiceOffBallot={presentedAttention.decision_prior_choices[node.id] ?? null}
             sizeStorageKey={nodeDetailSizeStorageKey(graphSessionKey(project.id, graphTarget))}
             detailSlot={slot}
             focusRequestToken={detailFocusTokens[slot]}

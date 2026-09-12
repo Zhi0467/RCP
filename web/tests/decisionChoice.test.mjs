@@ -159,26 +159,34 @@ test("Decision choices disable for superseded, globally disabled, and removal-st
   }
 });
 
-test("A reopened Decision shows the prior choice its reworded options dropped", () => {
+test("A reopened Decision shows the backend-resolved prior choice its options dropped", () => {
   // An agent may rewrite `options` but may never write `selected_option`, so a
-  // reopened Decision routinely carries a prior choice whose wording is no
-  // longer on the ballot. The options carry the "Selected" mark, so without
-  // this the human is asked to revisit a decision without seeing what it was.
+  // reopened Decision routinely carries a prior choice no option can mark. The
+  // backend attention projection resolves that; the drawer only renders it.
   const reopened = {
     ...decision,
     status: "revisit",
     options: ["Small", "Medium tier, revised sizing", "Large"],
     selected_option: "Medium",
   };
-  const html = renderDrawer({ node: reopened, allNodes: { [reopened.id]: reopened } });
+  const html = renderDrawer({
+    node: reopened,
+    allNodes: { [reopened.id]: reopened },
+    priorChoiceOffBallot: "Medium",
+  });
 
   assert.match(html, /class="decision-prior-choice"/);
   assert.match(html, /Previously decided · no longer an option/);
+  // The value itself has to reach the reader, not just its container and label.
+  assert.match(
+    html,
+    /<p class="decision-prior-choice"><span class="eyebrow">Previously decided · no longer an option<\/span>Medium<\/p>/,
+  );
   // Shown as the prior choice, never as a selectable option.
   assert.doesNotMatch(html, /value="Medium"/);
 
-  // When the prior choice is still on the ballot, the mark carries it and the
-  // separate line would be duplication.
+  // The projection omits a Decision whose prior choice is still on the ballot,
+  // where the option's own "Selected" mark carries it.
   const intact = {
     ...decision,
     status: "revisit",

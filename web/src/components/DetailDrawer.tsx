@@ -37,6 +37,13 @@ interface Props {
   beliefTransitions: BeliefTransition[];
   validationMessages: ValidationMessage[];
   ontology: OntologyState;
+  /**
+   * The choice this Decision still records when its options no longer offer it,
+   * resolved by the backend attention projection. Agents may reword options but
+   * never write `selected_option`, so a reopened ballot carries a choice no
+   * option can mark.
+   */
+  priorChoiceOffBallot?: string | null;
   sizeStorageKey?: string;
   detailSlot: "original" | "companion";
   focusRequestToken?: string | number;
@@ -104,6 +111,7 @@ export function DetailDrawer({
   beliefTransitions,
   validationMessages,
   ontology,
+  priorChoiceOffBallot = null,
   sizeStorageKey,
   detailSlot,
   focusRequestToken,
@@ -300,15 +308,6 @@ export function DetailDrawer({
   const selectedDecisionOption =
     node.type === "decision" && typeof node.selected_option === "string"
       ? node.selected_option
-      : null;
-  // An agent may rewrite a Decision's options but may never write
-  // `selected_option`, so reopening one with reworded options leaves the prior
-  // choice outside the list. It is still what the human decided, and the options
-  // below carry the "Selected" mark, so show it here or the reopened ballot
-  // would not say what is being revisited.
-  const priorChoiceOffBallot =
-    selectedDecisionOption !== null && !decisionOptions.includes(selectedDecisionOption)
-      ? selectedDecisionOption
       : null;
   const decisionChoiceDisabled =
     nodeMutationDisabled || node.status === "superseded" || !onDecisionChoice;
