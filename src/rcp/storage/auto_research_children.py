@@ -1049,6 +1049,51 @@ class AutoResearchChildrenStoreMixin:
         with self.connection() as connection:
             return self._auto_research_experiment_allowance(connection, episode_id)
 
+    def _auto_research_experiment_wake_diagnostics(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> dict[str, str]:
+        """Project the parent gates that can retain a child's completed watcher."""
+
+        routes = connection.execute(
+            """
+            SELECT parent.*, route.child_episode_id, COALESCE(spend.used, 0) AS used
+            FROM auto_research_child_experiments AS route
+            JOIN episodes AS parent ON parent.episode_id = route.auto_research_episode_id
+            LEFT JOIN (
+                SELECT auto_research_episode_id, COUNT(*) AS used
+                FROM auto_research_experiment_invocations
+                GROUP BY auto_research_episode_id
+            ) AS spend ON spend.auto_research_episode_id = parent.episode_id
+            WHERE route.project_id = ? AND route.state = 'running'
+            """,
+            (project_id,),
+        ).fetchall()
+        diagnostics: dict[str, str] = {}
+        for route in routes:
+            parent_row = dict(route)
+            child_episode_id = str(parent_row.pop("child_episode_id"))
+            used = int(parent_row.pop("used"))
+            parent = self._episode_record(parent_row)
+            try:
+                self._validate_auto_research_parent_admission(parent)
+            except EpisodeNotRunning:
+                diagnostic = (
+                    "The Auto-research parent is not accepting new work, so this "
+                    "Experiment cannot continue from its watchers."
+                )
+            else:
+                allowance = _experiment_allowance(parent.invocation_ceiling, used)
+                if allowance.remaining > 0:
+                    continue
+                diagnostic = (
+                    "The Auto-research parent has spent its shared Experiment invocation "
+                    "allowance, so this Experiment cannot continue from its watchers."
+                )
+            diagnostics[child_episode_id] = diagnostic
+        return diagnostics
+
     @staticmethod
     def _auto_research_experiment_allowance(
         connection: sqlite3.Connection,
@@ -1069,9 +1114,7 @@ class AutoResearchChildrenStoreMixin:
         ).fetchone()
         if row is None:
             raise KeyError(episode_id)
-        total = int(row["invocation_ceiling"]) * AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION
-        used = int(row["used"])
-        return AutoResearchExperimentAllowance(total=total, used=used, remaining=total - used)
+        return _experiment_allowance(int(row["invocation_ceiling"]), int(row["used"]))
 
     def _claim_auto_research_experiment_allowance(
         self,
@@ -2578,3 +2621,8 @@ class AutoResearchChildrenStoreMixin:
             """,
             (now, confirmer),
         )
+
+
+def _experiment_allowance(invocation_ceiling: int, used: int) -> AutoResearchExperimentAllowance:
+    total = invocation_ceiling * AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION
+    return AutoResearchExperimentAllowance(total=total, used=used, remaining=total - used)

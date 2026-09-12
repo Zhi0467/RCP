@@ -62,6 +62,7 @@ class ExperimentOperationalState(BaseModel):
     detached_work_active: bool = False
     watcher_degraded: bool = False
     watcher_completion_pending: bool = False
+    watcher_delivery_diagnostic: str | None = None
     episode_exited: bool = False
     episode_live: bool = False
     stop_requested: bool = False
@@ -275,6 +276,13 @@ def derive_experiment_control_state(
         # nothing to wake it, and only the human's next control closes it. The
         # narrower reasons say more, so this one speaks only when they do not.
         operational_reasons.append("A previous episode is still open on this Experiment.")
+    if (
+        operational is not None
+        and operational.watcher_completion_pending
+        and not operational.detached_work_active
+        and operational.watcher_delivery_diagnostic
+    ):
+        operational_reasons.append(operational.watcher_delivery_diagnostic)
     reasons = [*graph_control.reasons, *fresh_start_reasons, *operational_reasons]
     return ExperimentControlState(
         ready=not reasons,

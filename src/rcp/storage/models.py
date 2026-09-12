@@ -2962,6 +2962,7 @@ class ExperimentLoopRuntime(BaseModel):
     detached_work_active: bool = False
     watcher_degraded: bool = False
     watcher_completion_pending: bool = False
+    watcher_delivery_diagnostic: str | None = None
     episode_exited: bool = False
     decision_bundle: list[dict[str, object]] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
@@ -2976,6 +2977,9 @@ class ExperimentLoopRuntime(BaseModel):
     run_on: str | None = None
     execution_host: str | None = None
     run_truth_scope: list[str] | None = None
+    workflow_ids: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+    resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
     chat_id: str | None = None
     current_operation_id: str | None = None
     current_status: str | None = None
