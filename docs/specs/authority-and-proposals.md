@@ -121,10 +121,12 @@ Queueing may restate the ballot. Any update that leaves a Decision `open`,
 and consequences, so the queued card describes the choice the human now faces
 instead of the one already made. The queued status is the licence, not the
 transition into it: a Decision queued by an earlier turn stays restatable, which
-is how a later turn adds the option its new evidence raises. Restating one
-already queued replaces what the human is reading, so it belongs to new evidence.
-Rewording is not removal: an option's wording may change freely, while a choice
-the evidence has not closed stays on the ballot. This holds for the Experiment loop over its
+is how a later turn adds the option its new evidence raises. Admission checks
+that licence and nothing beyond it: a restatement is accepted on the queued
+status alone. Restating one already queued replaces what the human is reading,
+so the agent contract asks for it only on new evidence, and asks that an
+option's wording change freely while a choice the evidence has not closed stays
+on the ballot. Neither of those is enforced. This holds for the Experiment loop over its
 pinned Decisions. The prior `selected_option` stays untouched: it is what makes
 a `revisit` coherent, and writing it remains the human choice action alone.
 
