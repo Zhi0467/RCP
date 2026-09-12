@@ -1185,6 +1185,31 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
     )
     assert "experiment-loop-ballot-baseline" in _codes(validate_patch(state, dropped, ["repo"]))
 
+    # The queued status licenses the restatement, not the transition into it. A
+    # loop that queued a Decision in an earlier turn still has to be able to add
+    # the option a later turn's evidence raises, so an already-queued Decision
+    # stays restatable and the baseline rule still guards its prior choice.
+    queued = _state()
+    queued.nodes[DECISION_ID] = queued.nodes[DECISION_ID].model_copy(update={"status": "revisit"})
+    later_option = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {
+                            "status": "revisit",
+                            "options": ["4xA100", "8xA100", "4xA100 with earlier compaction"],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert not validate_patch(queued, later_option, ["repo"]).rejected
+    assert "experiment-loop-ballot-baseline" in _codes(validate_patch(queued, dropped, ["repo"]))
+
 
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
     # A finished attempt is a record. Reopening one is caught elsewhere; this is

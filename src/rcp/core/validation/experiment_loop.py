@@ -35,13 +35,19 @@ from rcp.core.validation.report import ValidationReport
 _ATTEMPT_CLOSE_FIELDS = frozenset(
     {"status", "source_refs", "outcome", "failure_reason", "finished_at"}
 )
-# A queued pinned Decision enters human attention as a ballot, so the loop that
-# reopens one may restate what that ballot now asks. The loop owns this set
-# rather than aliasing the human-edit registry: widening the specialized profile
-# has to be a deliberate change here, not a side effect of adding a field the
-# human card happens to expose. The rendered contract lists these same names, in
-# this order. `selected_option` is absent and a queued `status` is required, so
-# `decided` stays out of reach and the choice itself remains human-only.
+# A queued pinned Decision enters human attention as a ballot, so a loop that
+# leaves one queued may restate what that ballot asks. The queued status is the
+# licence, not the transition into it: a loop that queued a Decision in an
+# earlier turn must still be able to add the option a later turn's evidence
+# raises, and demanding a settled Decision would reopen the stale-ballot gap one
+# turn further on.
+#
+# The loop owns this set rather than aliasing the human-edit registry: widening
+# the specialized profile has to be a deliberate change here, not a side effect
+# of adding a field the human card happens to expose. The rendered contract
+# lists these same names, in this order. `selected_option` is absent and a
+# queued `status` is required, so `decided` stays out of reach and the choice
+# itself remains human-only.
 PINNED_DECISION_BALLOT_FIELDS: tuple[str, ...] = (
     "title",
     "question",

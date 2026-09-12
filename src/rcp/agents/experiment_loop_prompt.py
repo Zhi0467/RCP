@@ -61,11 +61,13 @@ Work permissions. Only these graph changes are available:
 - Update the focused Experiment's complete `attempts` list, status, `current_summary`, and
   `next_action`. Preserve attempt identity and immutable fields; never rewrite a terminal attempt.
 - Queue a pinned Decision as `open` while unresolved, `ready` when its choice is makeable, or
-  `revisit` when new evidence undermines a settled choice. The same update may restate that
-  Decision's {_PINNED_DECISION_BALLOT_PROSE} so the queued ballot
-  describes the choice the human now faces, including any option this episode's evidence newly
-  raises. Leave the prior `selected_option` untouched and never write it or `decided`; state what
-  the choice now turns on. Do not choose an option.
+  `revisit` when new evidence undermines a settled choice. Any update that leaves it queued may
+  also restate that Decision's {_PINNED_DECISION_BALLOT_PROSE},
+  so the ballot the human reads describes the choice this episode's evidence now presents,
+  including an option it newly raises. Restating one already queued overwrites what the human is
+  reading: do that only on new evidence, and never to drop an option still live. Keep a reopened
+  Decision's prior choice among its options, leave `selected_option` untouched, and never write it
+  or `decided`; state what the choice now turns on. Do not choose an option.
 - Create Evidence and Blockers. Link each same-Patch Evidence from this Experiment with `produces`
   and each same-Patch Blocker with `blocked_by`. Only same-Patch Evidence may `informs` an existing
   Decision or `addresses` an existing Blocker; neither edge changes its target's lifecycle.
