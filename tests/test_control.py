@@ -1110,6 +1110,106 @@ def test_experiment_loop_may_queue_its_pinned_decision_but_never_decide_it() -> 
     assert "experiment-loop-decision-action" in _codes(validate_patch(state, decided, ["repo"]))
 
 
+def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quietly() -> None:
+    # Queueing a pinned Decision puts it back in human attention as a ballot. The
+    # loop that found the reason is the only author holding it, so the queued
+    # ballot must be able to carry the option its new evidence raises. Editing
+    # that Decision without queueing it is a different move: a settled choice
+    # rewritten underneath the human, so the status is what opens the content.
+    state = _state()
+
+    restated = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {
+                            "status": "revisit",
+                            "question": "Which resource shape survives the observed overflow?",
+                            "options": ["4xA100", "8xA100", "4xA100 with earlier compaction"],
+                            "rationale": "The pinned shape exhausted context before an action.",
+                            "consequences": ["Recovery changes the shared instrument."],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert not validate_patch(state, restated, ["repo"]).rejected
+
+    smuggled = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {"status": "revisit", "selected_option": "8xA100"},
+                    }
+                ],
+            }
+        ]
+    )
+    assert "experiment-loop-decision-action" in _codes(validate_patch(state, smuggled, ["repo"]))
+
+    unqueued = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": DECISION_ID, "changes": {"rationale": "Quietly rewritten."}}],
+            }
+        ]
+    )
+    assert "experiment-loop-decision-action" in _codes(validate_patch(state, unqueued, ["repo"]))
+
+    # An agent may reword an option but may never write `selected_option`, so a
+    # restatement that replaces the chosen wording is the ordinary shape of
+    # reopening a decision rather than an error to refuse. The Decision card
+    # names the prior choice when no option carries it.
+    reworded = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {
+                            "status": "revisit",
+                            "options": ["4xA100 with earlier compaction", "8xA100"],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert not validate_patch(state, reworded, ["repo"]).rejected
+
+    # The queued status licenses the restatement, not the transition into it. A
+    # loop that queued a Decision in an earlier turn still has to be able to add
+    # the option a later turn's evidence raises.
+    queued = _state()
+    queued.nodes[DECISION_ID] = queued.nodes[DECISION_ID].model_copy(update={"status": "revisit"})
+    later_option = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": DECISION_ID,
+                        "changes": {
+                            "status": "revisit",
+                            "options": ["4xA100", "8xA100", "4xA100 with earlier compaction"],
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert not validate_patch(queued, later_option, ["repo"]).rejected
+
+
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
     # A finished attempt is a record. Reopening one is caught elsewhere; this is
     # the subtler move of rewriting a closed attempt into a different closed
