@@ -34,7 +34,6 @@ class RunContext(BaseModel):
     research_md_path: str
     introduction_path: str | None
     glossary_path: str
-    coverage_path: str
     facts_dir: str
     state_repository: str
     ontology_extensions: bool = False
@@ -79,7 +78,6 @@ class ChatContext(BaseModel):
     research_md_path: str
     introduction_path: str | None
     glossary_path: str
-    coverage_path: str
     facts_dir: str
     state_repository: str
     ontology_extensions: bool
@@ -136,7 +134,6 @@ class ContextAssembler:
             research_md_path=str(root / "research.md"),
             introduction_path=str(introduction) if introduction.exists() else None,
             glossary_path=str(root / "glossary.json"),
-            coverage_path=str(root / "coverage.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
             ontology_extensions=_has_ontology_extensions(state),
@@ -186,7 +183,6 @@ class ContextAssembler:
             research_md_path=str(root / "research.md"),
             introduction_path=str(introduction) if introduction.exists() else None,
             glossary_path=str(root / "glossary.json"),
-            coverage_path=str(root / "coverage.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
             ontology_extensions=_has_ontology_extensions(state),
@@ -245,9 +241,7 @@ def validate_work_patch(patch: Patch) -> None:
             "conversations forward from a cursor."
         )
     if any(isinstance(operation, SetCoverageOperation) for operation in patch.ops):
-        raise ValueError(
-            "A Work patch must not set coverage; only seed and refresh move the coverage boundary."
-        )
+        raise ValueError("A Work patch must not set coverage; coverage reporting is retired.")
 
 
 def _has_ontology_extensions(state: GraphState) -> bool:

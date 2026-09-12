@@ -1,9 +1,8 @@
 """One rule function per operation name.
 
-Each ``validate_*`` checks a single operation and returns the oldest source
-reference it cited (or ``None``); each ``depends_*`` reports the existing graph
-and project-config objects that operation would touch. The registry pairs them
-up — see :mod:`rcp.core.validation.registry`.
+Each ``validate_*`` checks a single operation; each ``depends_*`` reports the
+existing graph and project-config objects that operation would touch. The registry
+pairs them up — see :mod:`rcp.core.validation.registry`.
 """
 
 from __future__ import annotations
@@ -67,12 +66,11 @@ from rcp.core.validation.constants import (
 )
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.nodes import (
-    older,
-    oldest_source_ref,
     requires_proposal,
     validate_extension_update,
     validate_new_node,
     validate_new_node_authoring,
+    validate_source_refs,
     validate_updated_node_authoring,
 )
 from rcp.core.validation.proposals import decision_transition_error, validate_proposal
@@ -85,8 +83,7 @@ ASSESSMENT_REQUIRED_FOR = {
 }
 
 
-def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
-    oldest = None
+def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
     for node in op.nodes:
         node_id = node.id
         if ctx.mode == "admission" and node_id in ctx.initial_state.nodes:
@@ -99,8 +96,7 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
             )
         raw = node.model_dump(mode="python", exclude_unset=True)
         validate_new_node(ctx.state, ctx.patch, raw, ctx.report)
-        oldest = older(oldest, oldest_source_ref(raw, ctx.patch, ctx.report))
-    return oldest
+        validate_source_refs(raw, ctx.patch, ctx.report)
 
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
@@ -124,8 +120,7 @@ def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     return None
 
 
-def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
-    oldest = None
+def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
     for update in op.nodes:
         node_id = update.id
         node = ctx.state.nodes.get(node_id)
@@ -243,13 +238,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
                 ctx.revision,
                 related_node_ids=[node.id],
             )
-        oldest = older(
-            oldest,
-            oldest_source_ref(
-                {"source_refs": changes.get("source_refs", [])}, ctx.patch, ctx.report
-            ),
-        )
-    return oldest
+        validate_source_refs({"source_refs": changes.get("source_refs", [])}, ctx.patch, ctx.report)
 
 
 def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:

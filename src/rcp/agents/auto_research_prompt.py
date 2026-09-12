@@ -213,7 +213,7 @@ def orchestrator_graph_authority_contract() -> str:
   messages confer no approval authority.
 - Add or revise thin project-wide glossary definitions with `upsert_glossary` in the Patch.
   These supplementary inline explanations are not nodes or changes to research claims.
-- Do not change project configuration, ontology, coverage, ambiguities, or project truth scope.
+- Do not change project configuration, ontology, ambiguities, or project truth scope.
   Do not authorize a human-only Experiment Run through a Patch.
 """
 

@@ -133,10 +133,14 @@ stable. Current operation families are:
 - `create_proposals`, `resolve_proposals`, and `withdraw_proposals`;
 - historical `create_ambiguities` and `resolve_ambiguities`;
 - `upsert_glossary`;
-- `set_coverage`;
 - `set_standing`;
 - `set_project_truth_scope`; and
 - `set_ontology`.
+
+Historical `set_coverage` operations remain decodable but have no current graph
+effect. New admission rejects them. Reading reports are absent from graph and
+project snapshots, agent context, generated files, validation, and branch merge
+comparisons; their original Patch bytes remain untouched.
 
 Every operation model rejects extra fields and wrong current types, including
 strict nested node, assessment, ontology, source, attempt, and Proposal
@@ -174,7 +178,7 @@ base and then its branch Patch log. Mutable main materializations are never
 copied and treated as branch truth. Main can advance without changing the branch
 base or branch history.
 
-Materialized `graph.json`, `research.md`, glossary, Proposal, coverage, control,
+Materialized `graph.json`, `research.md`, glossary, Proposal, control,
 branch summary, and related files are derived outputs. Materialization replaces
 container slots rather than mutating objects shared with an earlier revision.
 Routes never hand-edit these outputs or canonical Patch files.

@@ -173,6 +173,8 @@ class NewGlossaryTerm(_StrictPayload):
 
 
 class CoverageUpdate(_StrictPayload):
+    """Decode historical reading reports; current admission rejects them."""
+
     repositories_seen: list[str] = Field(default_factory=list)
     repositories_never_seen: list[str] = Field(default_factory=list)
     sessions_read: list[str] = Field(default_factory=list)
@@ -590,6 +592,7 @@ def adapt_persisted_graph_state_document(document: dict[str, Any]) -> dict[str, 
     """Adapt a materialized/cached graph snapshot without changing its source bytes."""
 
     adapted = deepcopy(document)
+    adapted.pop("coverage", None)
     nodes = adapted.get("nodes")
     if isinstance(nodes, dict):
         for node in nodes.values():

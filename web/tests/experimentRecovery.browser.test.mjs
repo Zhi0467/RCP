@@ -216,13 +216,6 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           decision_prior_choices: {},
         },
         counts: {},
-        coverage: {
-          repositories_seen: [],
-          repositories_never_seen: [],
-          sessions_read: [],
-          sessions_skipped: [],
-          note: "",
-        },
         graph: {
           revision: 1,
           nodes: { [node.id]: node },

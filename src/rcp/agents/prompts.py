@@ -1223,7 +1223,7 @@ Optional graph reflection:
   never encode graph changes in the reply or another file.
 - Write only fields present in that schema. RCP assigns patch kind, agent authorship, revision, run
   scope, Proposal dependencies and base revision, object lifecycle, and admission bookkeeping.
-  Record `repositories_read` honestly. Work may not set coverage or cursors.
+  Record `repositories_read` honestly. Work may not advance the ingestion watermark.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   research concepts by their reader-facing titles, never ids or Patch operation names, and do not
   use inventory counts. State only what the Patch records; quote a stored Proposal consequence when

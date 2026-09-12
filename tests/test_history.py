@@ -153,9 +153,9 @@ def test_seed_is_asserted_and_accepted_core_starts_empty(manifest) -> None:
     assert result.state.revision == 1
     assert {node.standing for node in result.state.nodes.values()} == {"asserted"}
     assert (manifest.research_dir / "research.md").read_text(encoding="utf-8") == ""
-    assert result.state.coverage.repositories_seen == []
     assert result.state.last_refresh_at == patch.created_at
-    assert result.state.coverage.repositories_never_seen == ["repo-a", "repo-b"]
+    assert "coverage" not in result.state.model_dump()
+    assert not (manifest.research_dir / "coverage.json").exists()
 
 
 def test_successful_patch_materializes_processed_cursors(manifest) -> None:
@@ -1276,7 +1276,6 @@ def test_adopting_identity_never_mutates_prior_patches_or_research_semantics(man
     assert adopted_state.revision == 2
     assert adopted_state.nodes == original_state.nodes
     assert adopted_state.edges == original_state.edges
-    assert adopted_state.coverage == original_state.coverage
     assert adopted_state.last_refresh_at == original_state.last_refresh_at
 
 

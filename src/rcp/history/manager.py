@@ -602,7 +602,6 @@ class HistoryManager:
             ).model_dump(mode="json"),
             "glossary.json": {},
             "proposals.json": {},
-            "coverage.json": GraphState().coverage.model_dump(mode="json"),
             "cursors.json": {},
             "scope-base.json": {
                 "truth_scope": self.manifest.project.truth_scope,
@@ -1659,7 +1658,6 @@ class HistoryManager:
             "proposals.json": {
                 key: value.model_dump(mode="json") for key, value in result.state.proposals.items()
             },
-            "coverage.json": result.state.coverage.model_dump(mode="json"),
             "cursors.json": result.processed_cursors,
         }
         try:
@@ -1788,9 +1786,6 @@ class HistoryManager:
         self._atomic_json(
             self.root / "proposals.json",
             {key: value.model_dump(mode="json") for key, value in result.state.proposals.items()},
-        )
-        self._atomic_json(
-            self.root / "coverage.json", result.state.coverage.model_dump(mode="json")
         )
         self._atomic_json(self.root / "cursors.json", result.processed_cursors)
         self._atomic_text(self.root / "research.md", render_research_md(result.state))
@@ -2067,7 +2062,6 @@ class HistoryManager:
             Path("graph.json"),
             Path("glossary.json"),
             Path("proposals.json"),
-            Path("coverage.json"),
             Path("cursors.json"),
             Path("scope-base.json"),
             Path("research.md"),

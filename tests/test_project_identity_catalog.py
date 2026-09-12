@@ -54,7 +54,7 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
         "last_refresh_at": None,
         "counts": {},
         "coverage": {},
-        "graph": {"revision": 0},
+        "graph": {"revision": 0, "coverage": {"note": "Historical reading report."}},
         "paper": {},
         "paper_coach": {},
         "agent_profiles": {},
@@ -90,6 +90,8 @@ def test_pre_identity_display_cache_remains_readable_before_legacy_adoption(
 
     assert status == "valid"
     assert cached is not None
+    assert "coverage" not in cached
+    assert "coverage" not in cached["graph"]
     assert cached["home_space_id"] is None
     assert cached["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in cached

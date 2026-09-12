@@ -804,7 +804,6 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
         research_md_path=str(remote.research_dir / "research.md"),
         introduction_path=None,
         glossary_path=str(remote.research_dir / "glossary.json"),
-        coverage_path=str(remote.research_dir / "coverage.json"),
         facts_dir=str(remote.research_dir / "facts"),
     )
     service = SimpleNamespace(manifest=remote)
