@@ -1278,6 +1278,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         "decisions_awaiting_choice_ids": ["dec/ready", "dec/revisit"],
         "open_blocker_ids": ["blk/asserted-open"],
         "proposal_actions": {},
+        "decision_prior_choices": {},
     }
     assert {
         node_id: (node["status"], node["standing"])

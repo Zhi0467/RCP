@@ -4956,6 +4956,17 @@ button:disabled {
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+.decision-prior-choice {
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--editorial);
+  font-size: 14px;
+  gap: 4px;
+  line-height: 1.35;
+  margin: 10px 0 0;
+  padding: 1px 0 1px 13px;
+}
 .decision-choice-section fieldset:disabled .decision-choice-option {
   cursor: not-allowed;
   opacity: 0.58;

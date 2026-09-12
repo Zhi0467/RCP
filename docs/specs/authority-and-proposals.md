@@ -116,6 +116,20 @@ Agents write those options at one level of detail after investigating each
 distinct choice with equal care; a leaning belongs in `rationale`, never in
 option order, length, or wording.
 
+Queueing may restate the ballot. Any update that leaves a Decision `open`,
+`ready`, or `revisit` may also rewrite its title, question, options, rationale,
+and consequences, so the queued card describes the choice the human now faces
+instead of the one already made. The queued status is the licence, not the
+transition into it: a Decision queued by an earlier turn stays restatable, which
+is how a later turn adds the option its new evidence raises. Admission checks
+that licence and nothing beyond it: a restatement is accepted on the queued
+status alone. Restating one already queued replaces what the human is reading,
+so the agent contract asks for it only on new evidence, and asks that an
+option's wording change freely while a choice the evidence has not closed stays
+on the ballot. Neither of those is enforced. This holds for the Experiment loop over its
+pinned Decisions. The prior `selected_option` stays untouched: it is what makes
+a `revisit` coherent, and writing it remains the human choice action alone.
+
 For ordinary work, the node-detail ballot is the only producer of
 `selected_option` plus `status: decided`. Human Sync commits those fields and
 accepted standing together and withdraws competing pending Proposals on that

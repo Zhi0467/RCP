@@ -105,6 +105,7 @@ function snapshot(target, revision) {
       open_blocker_ids: [],
       decisions_awaiting_choice_ids: [],
       proposal_actions: {},
+      decision_prior_choices: {},
     },
   };
 }

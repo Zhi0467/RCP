@@ -107,6 +107,7 @@ test("attention decoding validates shape and referenced graph member types", () 
     decisions_awaiting_choice_ids: ["decision"],
     open_blocker_ids: ["blocker"],
     proposal_actions: { proposal: [{ text: "Review this Proposal." }] },
+    decision_prior_choices: {},
   };
 
   assert.deepEqual(decodeGraphAttentionProjection(attention, state), attention);
@@ -129,6 +130,7 @@ test("attention decoding validates shape and referenced graph member types", () 
           ...attention,
           pending_proposal_ids: ["missing"],
           proposal_actions: { missing: [{ text: "Review." }] },
+          decision_prior_choices: {},
         },
         state,
       ),
@@ -137,6 +139,29 @@ test("attention decoding validates shape and referenced graph member types", () 
   assert.throws(
     () => decodeGraphAttentionProjection({ ...attention, open_blocker_ids: ["decision"] }, state),
     /is not a Blocker/,
+  );
+  assert.deepEqual(
+    decodeGraphAttentionProjection(
+      { ...attention, decision_prior_choices: { decision: "an earlier wording" } },
+      state,
+    ).decision_prior_choices,
+    { decision: "an earlier wording" },
+  );
+  assert.throws(
+    () =>
+      decodeGraphAttentionProjection(
+        { ...attention, decision_prior_choices: { decision: "" } },
+        state,
+      ),
+    /invalid decision_prior_choices/,
+  );
+  assert.throws(
+    () =>
+      decodeGraphAttentionProjection(
+        { ...attention, decision_prior_choices: { blocker: "not a Decision" } },
+        state,
+      ),
+    /is not a Decision/,
   );
 });
 

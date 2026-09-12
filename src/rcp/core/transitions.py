@@ -125,6 +125,11 @@ def transition_trigger_manifest() -> TransitionTriggerManifest:
                 node_fields=[
                     "status",
                     "selected_option",
+                    # A Decision's recorded choice is presented against its
+                    # options, so editing them changes a backend-owned answer.
+                    # Routing the draft keeps the previewed graph and that answer
+                    # from disagreeing until Sync.
+                    "options",
                     "current_summary",
                     "next_action",
                 ],

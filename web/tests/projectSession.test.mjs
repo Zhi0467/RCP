@@ -57,6 +57,7 @@ function snapshot(revision, fields = {}) {
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
       proposal_actions: {},
+      decision_prior_choices: {},
     },
     ...fields,
   };
@@ -72,6 +73,7 @@ function projection(revision) {
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
       proposal_actions: {},
+      decision_prior_choices: {},
     },
     primary_question: null,
     counts: {

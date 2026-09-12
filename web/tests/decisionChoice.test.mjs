@@ -158,3 +158,44 @@ test("Decision choices disable for superseded, globally disabled, and removal-st
     assert.match(html, /<fieldset disabled="">/);
   }
 });
+
+test("A reopened Decision shows the backend-resolved prior choice its options dropped", () => {
+  // An agent may rewrite `options` but may never write `selected_option`, so a
+  // reopened Decision routinely carries a prior choice no option can mark. The
+  // backend attention projection resolves that; the drawer only renders it.
+  const reopened = {
+    ...decision,
+    status: "revisit",
+    options: ["Small", "Medium tier, revised sizing", "Large"],
+    selected_option: "Medium",
+  };
+  const html = renderDrawer({
+    node: reopened,
+    allNodes: { [reopened.id]: reopened },
+    priorChoiceOffBallot: "Medium",
+  });
+
+  assert.match(html, /class="decision-prior-choice"/);
+  assert.match(html, /Previously decided · no longer an option/);
+  // The value itself has to reach the reader, not just its container and label.
+  assert.match(
+    html,
+    /<p class="decision-prior-choice"><span class="eyebrow">Previously decided · no longer an option<\/span>Medium<\/p>/,
+  );
+  // Shown as the prior choice, never as a selectable option. Matching the whole
+  // attribute keeps this from passing only because a reworded fixture happens to
+  // extend the value past the closing quote.
+  assert.doesNotMatch(html, /<input[^>]*\bvalue="Medium"/);
+
+  // The projection omits a Decision whose prior choice is still on the ballot,
+  // where the option's own "Selected" mark carries it.
+  const intact = {
+    ...decision,
+    status: "revisit",
+    options: ["Small", "Medium", "Large"],
+    selected_option: "Medium",
+  };
+  const intactHtml = renderDrawer({ node: intact, allNodes: { [intact.id]: intact } });
+  assert.doesNotMatch(intactHtml, /class="decision-prior-choice"/);
+  assert.match(intactHtml, /Selected/);
+});

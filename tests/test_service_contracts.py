@@ -96,7 +96,48 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
         "proposal_actions": {
             "prop/pending": [{"label": None, "text": "Choose."}],
         },
+        "decision_prior_choices": {},
     }
+
+
+def test_graph_attention_projection_names_a_prior_choice_its_options_dropped() -> None:
+    # An agent may reword a Decision's options but never writes `selected_option`,
+    # so a reopened Decision routinely records a choice its ballot cannot mark.
+    # The projection names it once; no consumer re-derives it.
+    state = GraphState(
+        nodes={
+            "dec/reworded": Decision(
+                id="dec/reworded",
+                type="decision",
+                title="Reworded",
+                question="Which shape?",
+                options=["small, revised sizing", "large"],
+                selected_option="small",
+                status="revisit",
+            ),
+            "dec/intact": Decision(
+                id="dec/intact",
+                type="decision",
+                title="Intact",
+                question="Which shape?",
+                options=["small", "large"],
+                selected_option="small",
+                status="revisit",
+            ),
+            "dec/undecided": Decision(
+                id="dec/undecided",
+                type="decision",
+                title="Undecided",
+                question="Which shape?",
+                options=["small", "large"],
+                status="ready",
+            ),
+        },
+    )
+
+    # Only the Decision whose ballot lost its choice; an option that still
+    # carries the choice marks it itself, and an undecided one has none.
+    assert project_graph_attention(state).decision_prior_choices == {"dec/reworded": "small"}
 
 
 def test_graph_attention_projection_expands_proposal_removal_incident_relations() -> None:
