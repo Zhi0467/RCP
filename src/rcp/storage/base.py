@@ -49,6 +49,7 @@ class AppStoreBase:
         (13, "episode_archives_v1"),
         (14, "team_session_ids_v1"),
         (15, "team_device_pairings_v1"),
+        (16, "agent_task_failure_kind_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -522,6 +523,12 @@ class AppStoreBase:
             version=15,
             name="team_device_pairings_v1",
             migration=self._migrate_team_device_pairings,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=16,
+            name="agent_task_failure_kind_v1",
+            migration=self._migrate_agent_task_failure_kind,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1146,7 +1153,8 @@ class AppStoreBase:
                 authorized_space_id TEXT,
                 authorized_user_id TEXT,
                 authorized_display_name TEXT,
-                visible INTEGER NOT NULL DEFAULT 1
+                visible INTEGER NOT NULL DEFAULT 1,
+                failure_kind TEXT
             );
             CREATE INDEX IF NOT EXISTS graph_runs_project
                 ON graph_runs(project_id, created_at DESC);
@@ -1724,6 +1732,7 @@ class AppStoreBase:
             'TEXT NOT NULL DEFAULT \'{"kind":"main","branch_id":null}\'',
         )
         self._ensure_column(connection, "graph_runs", "write_scope_fingerprint", "TEXT")
+        self._ensure_column(connection, "graph_runs", "failure_kind", "TEXT")
         self._ensure_column(
             connection, "graph_runs", "estimate_seconds", "REAL NOT NULL DEFAULT 300"
         )
@@ -1952,6 +1961,7 @@ class AppStoreBase:
         self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
         self._migrate_compute_job_labels(connection)
+        self._migrate_agent_task_failure_kind(connection)
         self._migrate_episode_archives(connection)
         self._migrate_team_device_pairings(connection)
         self._migrate_team_session_ids(connection)
@@ -2035,6 +2045,27 @@ class AppStoreBase:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_jobs)")}
         if "label" not in columns:
             connection.execute("ALTER TABLE compute_jobs ADD COLUMN label TEXT")
+
+    def _migrate_agent_task_failure_kind(self, connection: sqlite3.Connection) -> None:
+        """Why a turn failed, so recovery can offer the right next step.
+
+        This rebuilds rather than adding a column. SQLite splices a new column
+        in before the original closing parenthesis, so `ADD COLUMN` can never
+        reproduce the canonical `CREATE TABLE` text, and `graph_runs` is a
+        schema-normalized table whose text the validator compares exactly. A
+        fresh database already declares the column, which is also what stops
+        the baseline lookup below from recursing while the template is built.
+        """
+
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
+        if "failure_kind" in columns:
+            return
+        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
+        self._rebuild_storage_table(connection, "graph_runs", expected[("table", "graph_runs")][3])
+        # A rebuild drops the table's indexes with the renamed original.
+        for (object_type, _name), row in expected.items():
+            if object_type == "index" and row[2] == "graph_runs":
+                connection.execute(row[3])
 
     @classmethod
     def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:

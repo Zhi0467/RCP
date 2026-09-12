@@ -70,6 +70,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "8d0058d2d04e21e062808e2e04affed3f29bee56c62edc30f88684c911320374",
         # v0.3.5 release shape (pre-compute-jobs-v14-7d6546f), missed when its era shipped.
         "c49a8922bd0fee351f656333eafc183c5f2e6f65c95648b39e4f1ccf961b3c5e",
+        # graph_runs.failure_kind: why a turn failed, so recovery can offer the
+        # right next step instead of offering Retry for a revoked login.
+        "77dc37f966fdcad42c1fe7219f452aaf8a05c61da7e17cb2af4de935bdecba6c",
     }
 )
 

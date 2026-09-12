@@ -1501,7 +1501,10 @@ def _advisory_lock_holder_arguments(
 
 def _remote_advisory_lock_command(host: str, lock_path: str | os.PathLike[str]) -> list[str]:
     command = shlex.join(_advisory_lock_holder_arguments(lock_path))
-    return ssh_arguments(host, command)
+    # A holder outlives every other call to this host, so it keeps its own
+    # master: a run whose provider link drops leaves its lock still held, and
+    # the retry reattaches instead of racing another process for it.
+    return ssh_arguments(host, command, partition=f"{host}:{os.fspath(lock_path)}")
 
 
 def _stop_lock_holder(process: subprocess.Popen[str]) -> None:

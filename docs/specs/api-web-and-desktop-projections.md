@@ -648,7 +648,14 @@ and diagnostics remain supporting history rather than competing primary states.
 For a terminal Experiment episode, the owning node's human-authored closed status
 is authoritative: the run is Completed and fresh-start control is absent until
 the node is edited back to a nonterminal status. A control is absent unless
-currently valid, and no recommendation names an unavailable action. Report
+currently valid, and no recommendation names an unavailable action. A
+recommendation follows the named cause of the latest failure, not only its
+shape: a revoked provider login asks the human to sign in again rather than
+offering a Retry that cannot succeed. A live episode whose latest turn failed
+states that failure on the card face, where an ended episode states its ending
+diagnostic; neither leaves the reason folded away in task details while the card
+recommends acting on it. The card reads the backend's recommendation, never the
+failure kind itself, which the response seals. Report
 availability is separately backend-decided from the newest report-bearing
 episode for that Experiment and exact graph target; a newer no-report episode
 does not hide the durable report or change which episode owns it. The backend

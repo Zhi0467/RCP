@@ -13,17 +13,20 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
+    AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS,
+    AGENT_TRANSPORT_RETRY_LIMIT,
     BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
     CHAT_ARTIFACT_MAX_COUNT,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
 )
-from rcp.providers import classify_terminal_error, require_runtime_id
+from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchWakeAdmission,
@@ -71,6 +74,7 @@ from rcp.service import (
 )
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
+    AgentFailureKind,
     AgentTaskKind,
     AgentTaskRecord,
     AppStore,
@@ -264,6 +268,11 @@ class AgentTaskExecution:
             stage_host=self.stage_host or "",
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
+            # Only a launch that reuses a native checkpoint is a continuation.
+            # A fresh launch establishes the stage binding rather than
+            # inheriting it, which is how a run scope legitimately changes.
+            continuation_binding=self.reuses_native_checkpoint,
+            scope_repositories=[item.alias for item in scope.repositories],
             compatible_previous_fingerprint=compatible_previous_fingerprint,
             compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
         )
@@ -344,6 +353,7 @@ class BackgroundAgentTasks:
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
+        self._transport_retry_timers: list[threading.Timer] = []
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
@@ -602,6 +612,9 @@ class BackgroundAgentTasks:
         same_reasoning = request.reasoning == original.reasoning
         same_execution_host = request.run_on == original.run_on
         session_limit = self._failure_is_session_limit(previous)
+        # Resuming a session the provider has dropped fails the same way every
+        # time; a fresh session is the only attempt that can succeed.
+        stale_session = self._failure_is_stale_session(previous)
         continuation_context_unavailable = self._continuation_context_is_unavailable(previous)
         owned_checkpoint = (
             bool(previous.native_session_id)
@@ -626,6 +639,8 @@ class BackgroundAgentTasks:
                 stage_available = stage.is_dir() and not stage.is_symlink()
             if session_limit:
                 problem = "the native provider session reached its limit"
+            elif stale_session:
+                problem = "the provider no longer has the saved session"
             elif continuation_context_unavailable:
                 problem = "the saved continuation context is unavailable"
             elif result_view_revision and (
@@ -668,6 +683,7 @@ class BackgroundAgentTasks:
             and same_execution_host
             and owned_checkpoint
             and not session_limit
+            and not stale_session
             and not continuation_context_unavailable
         )
         if retry_same_provider:
@@ -699,16 +715,19 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
             authorized_by=authorized_by,
         )
-        if same_provider and session_limit:
+        if same_provider and (session_limit or stale_session):
+            classification = "session_limit" if session_limit else "stale_session"
             self.store.record_agent_task_receipt(
                 retried.operation_id,
                 "native_resume_skipped",
-                {"classification": "session_limit"},
+                {"classification": classification},
                 tier="diagnostic",
             )
             self.store.record_agent_task_event(
                 retried.operation_id,
-                "The provider session limit was exhausted; starting a clean retry.",
+                "The provider session limit was exhausted; starting a clean retry."
+                if session_limit
+                else "The provider no longer has the saved session; starting a clean retry.",
                 level="warning",
             )
         elif previous.status == "failed" and same_provider and not retry_same_provider:
@@ -860,6 +879,10 @@ class BackgroundAgentTasks:
                 self._shutdown_requested = True
                 active = list(self._controls.items())
                 workers = [self._workers.get(operation_id) for operation_id, _ in active]
+                pending_retries = list(self._transport_retry_timers)
+                self._transport_retry_timers.clear()
+        for timer in pending_retries:
+            timer.cancel()
         for operation_id, control in active:
             with suppress(ValueError):
                 self.store.request_agent_task_pause(operation_id, requested_by="shutdown")
@@ -1583,6 +1606,7 @@ class BackgroundAgentTasks:
                     operation_id,
                     str(exc),
                     result=result if partial or artifacts else None,
+                    failure_kind=self._failure_kind(operation_id, request, execution, str(exc)),
                 )
         else:
             # Only ingest runs owe a graph revision. A chat turn answers a
@@ -1656,6 +1680,102 @@ class BackgroundAgentTasks:
                     tier="diagnostic",
                 )
 
+    def _failure_kind(
+        self,
+        operation_id: str,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+        error: str,
+    ) -> AgentFailureKind | None:
+        """Name this failure so recovery can offer the right next step."""
+
+        provider = getattr(request, "provider", None)
+        profile = None
+        if isinstance(provider, str) and provider:
+            with suppress(ValueError, KeyError):
+                profile = profile_for(provider)
+        kind = classify_agent_failure(
+            error=error,
+            return_code=self.store.agent_task_provider_exit_code(operation_id),
+            host=execution.stage_host or "",
+            profile=profile,
+        )
+        return None if kind == "other" else kind
+
+    def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
+        """How many times this lineage has already been reattempted for a lost link."""
+
+        attempts = 0
+        parent = record.parent_operation_id
+        while parent and attempts <= AGENT_TRANSPORT_RETRY_LIMIT:
+            if not self.store.agent_task_has_receipt(parent, "transport_auto_retry"):
+                break
+            attempts += 1
+            ancestor = self.store.agent_task(parent)
+            parent = ancestor.parent_operation_id if ancestor is not None else None
+        return attempts
+
+    def _auto_retry_transport_loss(self, record: AgentTaskRecord) -> None:
+        """Reattempt a turn whose link died, a bounded number of times.
+
+        The work is not what failed. A run keeps its own SSH connection, so the
+        blame is narrowed to this run, but a network change still ends it for a
+        reason it had no part in. A human pressing Retry is the same call, so
+        this reuses it rather than growing a second recovery path.
+        """
+
+        settled = self.store.agent_task(record.operation_id)
+        if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
+            return
+        attempt = self._transport_retry_attempt(settled)
+        if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
+            self.store.record_agent_task_receipt(
+                settled.operation_id,
+                "transport_auto_retry_exhausted",
+                {"attempts": attempt},
+                tier="summary",
+            )
+            return
+        delay = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[
+            min(attempt, len(AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS) - 1)
+        ]
+        self.store.record_agent_task_receipt(
+            settled.operation_id,
+            "transport_auto_retry",
+            {"attempt": attempt + 1, "delay_seconds": delay},
+            tier="summary",
+        )
+        self._schedule_transport_retry(settled.operation_id, delay)
+
+    def _schedule_transport_retry(self, operation_id: str, delay: float) -> None:
+        def run() -> None:
+            with self._controls_lock:
+                if self._shutdown_requested:
+                    return
+            try:
+                self.retry(
+                    operation_id,
+                    authorized_by=self.store.agent_task_authorizer(operation_id),
+                )
+            except Exception as exc:
+                # The human still has Retry; a failed reattempt must not become
+                # a second failure report on top of the one they already have.
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        operation_id,
+                        "transport_auto_retry_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
+
+        timer = threading.Timer(delay, run)
+        timer.daemon = True
+        with self._controls_lock:
+            if self._shutdown_requested:
+                return
+            self._transport_retry_timers.append(timer)
+        timer.start()
+
     def _task_settled(
         self,
         record: AgentTaskRecord,
@@ -1664,6 +1784,16 @@ class BackgroundAgentTasks:
     ) -> None:
         if isinstance(request, EpisodeReportRunRequest):
             return
+        try:
+            self._auto_retry_transport_loss(record)
+        except Exception as exc:
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "transport_auto_retry_failed",
+                    {"exception_type": type(exc).__name__},
+                    tier="diagnostic",
+                )
         if self.on_task_settled is not None:
             try:
                 self.on_task_settled(record.project_id, record.kind, request, execution)
@@ -1899,13 +2029,21 @@ class BackgroundAgentTasks:
         return tuple(feedback)
 
     def _failure_is_session_limit(self, record: AgentTaskRecord) -> bool:
+        return self._failure_classified_as(record, "session_limit")
+
+    def _failure_is_stale_session(self, record: AgentTaskRecord) -> bool:
+        """The provider no longer holds the native session this task would resume."""
+
+        return self._failure_classified_as(record, "stale_session")
+
+    def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
         classified_receipt = any(
             receipt.category == "provider_terminal_error"
-            and receipt.payload.get("classification") == "session_limit"
+            and receipt.payload.get("classification") == classification
             for receipt in self.store.agent_task_receipts(record.operation_id)
         )
         return classified_receipt or (
-            bool(record.error) and classify_terminal_error(record.error or "") == "session_limit"
+            bool(record.error) and classify_terminal_error(record.error or "") == classification
         )
 
     def _continuation_context_is_unavailable(self, record: AgentTaskRecord) -> bool:

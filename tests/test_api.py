@@ -2780,6 +2780,49 @@ def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> N
     assert any("session limit was exhausted" in item["message"] for item in completed["events"])
 
 
+def test_same_provider_stale_session_retry_starts_clean(manifest, tmp_path) -> None:
+    """Codex reports a dropped native session as "collab spawn failed: no thread
+    with id". Resuming it again can only fail the same way, so Retry -- including
+    the automatic one after a lost connection -- must start a fresh session."""
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    stage = tmp_path / "stale-stage"
+    stage.mkdir()
+
+    async def failed_stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _event_frame(AgentEvent(event="session", session_id="dropped-session"))
+        yield _event_frame(
+            AgentEvent(
+                event="error",
+                text="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+            )
+        )
+
+    app.state.background_tasks.stream = failed_stream
+    client = TestClient(app)
+    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"})
+    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
+
+    async def clean_stream(_project_id, _kind, request, execution):
+        assert request.session_id is None
+        assert execution.continuation == "handoff"
+        assert execution.reuses_native_checkpoint is False
+        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = clean_stream
+    retried = client.post(
+        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
+    )
+    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
+
+    assert completed["status"] == "succeeded"
+    assert "native_resume_skipped" in {item["category"] for item in completed["debug_receipts"]}
+    assert any("no longer has the saved session" in item["message"] for item in completed["events"])
+
+
 def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()

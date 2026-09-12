@@ -297,6 +297,16 @@ export function ExperimentRunDetail({
         </div>
       )}
 
+      {/* An ended episode explains itself through `ending_diagnostic` above. A
+          live episode whose latest turn failed had the same explanation folded
+          away in the task details, which left the card recommending Retry with
+          no visible reason to retry. */}
+      {!episode?.ending_diagnostic && currentTask?.failed && currentTask.error && (
+        <div className="campaign-run-error" role="alert">
+          {currentTask.error}
+        </div>
+      )}
+
       {/* The report is a deliverable of an ended episode, so its failure is reported
           after the reason the episode ended and never in place of it. */}
       {episode?.wrapup_state === "failed" && (

@@ -20,6 +20,7 @@ from rcp.core.operations import (
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
 )
+from rcp.storage.models import AgentFailureKind
 
 
 class DecisionDrift(BaseModel):
@@ -76,6 +77,9 @@ class ExperimentOperationalState(BaseModel):
     current_awaiting_human: bool = False
     current_phase: str | None = None
     current_status_message: str | None = None
+    # Why the turn failed, so the projection can offer the right next step
+    # rather than offering Retry for a login no retry will fix.
+    current_failure_kind: AgentFailureKind | None = None
     current_last_activity_at: str | None = None
     current_invocation: int | None = Field(default=None, ge=1)
     session: ExperimentSessionBinding = Field(default_factory=ExperimentSessionBinding)

@@ -222,6 +222,17 @@ repository, incompatible run-scope change, or missing root fails before provider
 launch. Legitimate relocation or scope change starts a fresh task/session; it
 does not widen an existing native session.
 
+A launch that reuses no native checkpoint is that fresh task/session, and it
+establishes the stage binding rather than inheriting it. A chat stage is named
+from its chat id and is never cleared, so comparing a fresh launch against the
+scope a previous episode left there made a conversation's run scope permanent:
+the human could not drop a repository from an Experiment that had ever run.
+A fresh launch is still refused while another turn is live on that stage with a
+different scope, and a continuation is compared against the stage's current
+binding, not against bindings a later fresh launch superseded. A refused
+comparison names the repositories on both sides and says a new episode is how
+run scope changes.
+
 Conversation-local merge integration and the following ordinary turn are the
 one explicit root-transition exception: their related-turn fingerprints may be
 the exactly recomputed worktree-only or worktree-plus-shared contracts for that
@@ -416,6 +427,17 @@ The remote run stage owns exact path validation, process/event wrappers,
 scratch transfer, and recovery. A task resumed remotely must prove the saved
 host and stage. SSH or provider transport failure is reported as unavailable,
 not converted into semantic correction.
+
+RCP shares an SSH connection per unit of work, not per host. Work that owns
+something durable keeps its own connection, named by what it owns: a run by its
+stage, a lock holder by the lock it holds. A link that drops therefore ends that
+work and nothing else. Short control traffic owns nothing durable and shares one
+connection, which is what keeps it cheap. Stopping a remote process after a
+failure stays on the shared connection on purpose, because it has to reach the
+host exactly when the work's own connection is gone. Connections left behind by
+finished work are cleared by asking whether they still answer, never by whose
+they look like: the local socket directory is keyed by user account, so a second
+RCP instance keeps its live connections in the same place.
 
 ### Compute connections are resources, not execution profiles
 
@@ -654,6 +676,19 @@ event, with a bounded drain after process termination and existing shell TTY
 noise filtering. When the result has no text-bearing field, its subtype is the
 fallback diagnostic. This preserves the real startup failure for task consumers
 that stop reading at the first error.
+
+A settled failure is also named, because recovery differs by cause. SSH's own
+exit codes for a remote run mean the link died rather than the work, and RCP
+reattempts such a turn a bounded number of times with growing waits before
+leaving it to a human; the reattempt is the same recovery a human Retry
+performs, so it resumes the native session rather than repeating the turn. A
+provider whose CLI reports that its own login is no longer valid is never
+reattempted, because every attempt fails identically until a person signs in
+again, and the projection asks for that instead of offering Retry. A profile
+that has had no real revoked login observed claims none, since a wrong match
+would withdraw Retry from a failure Retry would have fixed. Every other failure
+keeps its existing behaviour. Reattempts and their exhaustion are receipts on
+the failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A

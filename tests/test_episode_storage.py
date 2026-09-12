@@ -744,6 +744,7 @@ def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -
         stage_host="",
         stage_root="/tmp/episode-stage",
         fingerprint="a" * 64,
+        continuation_binding=False,
     )
     store.record_agent_task_receipt(
         allocation.operation_id,

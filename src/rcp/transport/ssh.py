@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import os
 import shlex
+import socket
 import stat
 from contextlib import suppress
 from pathlib import Path
 
-from rcp.limits import SSH_SERVER_ALIVE_COUNT_MAX, SSH_SERVER_ALIVE_INTERVAL_SECONDS
+from rcp.limits import (
+    SSH_CONTROL_PERSIST_SECONDS,
+    SSH_SERVER_ALIVE_COUNT_MAX,
+    SSH_SERVER_ALIVE_INTERVAL_SECONDS,
+)
 from rcp.ssh_validation import validate_ssh_destination
+
+# Callers with no work of their own to lose share one master.
+SHARED_CONTROL_PARTITION = "shared"
 
 # Options that do not require local filesystem preparation. A few strict
 # provisioning paths intentionally consume these directly without multiplexing.
@@ -28,33 +38,89 @@ def ssh_arguments(
     command: str,
     *,
     strict_host_key_checking: bool = False,
+    partition: str | None = None,
 ) -> list[str]:
     validate_ssh_destination(host)
     if strict_host_key_checking:
         # A pre-existing multiplexed master has already completed host-key
         # negotiation and can bypass the strict policy on this invocation.
         # OpenSSH documents ``-S none`` as disabling connection sharing.
+        # An unshared connection already isolates this call more strictly than
+        # any partition would, so a partition asked for here has nothing to add.
         options = [*SSH_OPTIONS, "-o", "StrictHostKeyChecking=yes", "-S", "none"]
     else:
-        options = _multiplexed_ssh_options()
+        options = _multiplexed_ssh_options(partition)
     return ["ssh", *options, host, command]
 
 
-def rsync_ssh_arguments() -> list[str]:
-    return ["-e", shlex.join(["ssh", *_multiplexed_ssh_options()])]
+def rsync_ssh_arguments(*, partition: str | None = None) -> list[str]:
+    return ["-e", shlex.join(["ssh", *_multiplexed_ssh_options(partition)])]
 
 
-def _multiplexed_ssh_options() -> list[str]:
+def _multiplexed_ssh_options(partition: str | None = None) -> list[str]:
     control_directory = _require_control_directory()
     return [
         *SSH_OPTIONS,
         "-o",
         "ControlMaster=auto",
         "-o",
-        "ControlPersist=60",
+        f"ControlPersist={SSH_CONTROL_PERSIST_SECONDS}",
         "-o",
-        f"ControlPath={control_directory}/%C",
+        f"ControlPath={control_directory}/{control_partition_token(partition)}-%C",
     ]
+
+
+def control_partition_token(partition: str | None) -> str:
+    """Name the master a caller shares, so one lost link ends one unit of work.
+
+    OpenSSH derives ``%C`` from the destination alone, so without this every
+    caller of one host lands on one master and dies with it. A caller that owns
+    work of its own names that work here and gets its own master; the callers
+    that pass nothing keep sharing one, which is what short control traffic
+    wants. The name is digested because it is a socket path component: the
+    identities callers hold are remote paths, and a socket path has a hard
+    length ceiling well below theirs.
+    """
+
+    if partition is None:
+        return SHARED_CONTROL_PARTITION
+    return hashlib.sha256(partition.encode("utf-8")).hexdigest()[:12]
+
+
+def sweep_control_sockets() -> None:
+    """Unlink mux sockets whose master is gone.
+
+    OpenSSH only clears a dead socket when a later connection asks for the same
+    path, and a partitioned path names work that never happens twice, so nothing
+    would ever clear one. The check is whether the socket still answers, never
+    whose it looks like: the directory is keyed by user id alone, so a second
+    RCP with its own data directory keeps its live masters in here too, and
+    deleting one would cause exactly the lost link this partitioning prevents.
+
+    Best effort, like the remote stage sweep it runs beside: leftover sockets
+    are not worth failing a run over.
+    """
+
+    with suppress(OSError, RuntimeError):
+        for entry in _require_control_directory().iterdir():
+            with suppress(OSError):
+                if stat.S_ISSOCK(entry.lstat().st_mode) and not _socket_answers(entry):
+                    entry.unlink()
+
+
+def _socket_answers(path: Path) -> bool:
+    """Whether a master is still listening. A master listens before it is named."""
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.connect(os.fspath(path))
+    except OSError as exc:
+        # Anything other than a refusal is a question this sweep cannot answer,
+        # so it leaves the socket alone.
+        return exc.errno not in (errno.ECONNREFUSED, errno.ENOENT)
+    finally:
+        probe.close()
+    return True
 
 
 def _require_control_directory() -> Path:

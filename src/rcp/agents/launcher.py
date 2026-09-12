@@ -21,6 +21,7 @@ from typing import Literal
 from pydantic import BaseModel, model_validator
 
 from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.agents.failure_kinds import transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
@@ -678,6 +679,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        transport_partition: str | None = None,
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
@@ -707,6 +709,7 @@ class AgentLauncher:
                             if remote_pid_file and index
                             else remote_pid_file
                         ),
+                        transport_partition=transport_partition,
                         invocation_gate=invocation_gate,
                         capability=capability,
                         binary=binary,
@@ -748,6 +751,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        transport_partition: str | None = None,
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
@@ -850,6 +854,10 @@ class AgentLauncher:
             command = ssh_arguments(
                 host,
                 self._remote_login_command(command, pid_file=remote_pid_file, cwd=cwd),
+                # This turn is the longest-lived call of its run, so it holds
+                # the run's own master rather than whichever short probe
+                # happened to open the host first.
+                partition=transport_partition,
             )
             local_cwd = None
             if control is not None and remote_pid_file:
@@ -1332,8 +1340,9 @@ def _meaningful_stderr(stderr: str) -> str:
 def _exit_reason(provider: str, return_code: int, host: str) -> str:
     """What to say when the provider died without explaining itself."""
     where = f" on {host}" if host else ""
-    if host and return_code == 255:
-        # 255 is ssh's own "the connection failed or was lost" exit code.
+    # `transport_failure` is the one place that decides what a lost link looks
+    # like; this function only chooses the wording for each shape of one.
+    if transport_failure(return_code, host) and return_code == 255:
         return f"The connection to {host} was lost before {provider} finished."
     if return_code < 0:
         # asyncio reports a signalled child as the negated signal number. For a

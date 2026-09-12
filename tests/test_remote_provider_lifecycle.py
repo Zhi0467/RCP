@@ -112,7 +112,7 @@ def transported_launcher(monkeypatch):
         launcher, "_remote_login_command", lambda command, **kwargs: shlex.join(command)
     )
     monkeypatch.setattr(
-        launcher_module, "ssh_arguments", lambda host, command: shlex.split(command)
+        launcher_module, "ssh_arguments", lambda host, command, **kwargs: shlex.split(command)
     )
     return launcher
 
@@ -302,3 +302,42 @@ async def test_remote_process_reservation_precedes_spawn_and_spawn_failure_settl
         assert "could not be spawned" in failed.text
     finally:
         await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_provider_turn_rides_the_master_of_its_own_run(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """The longest call of a run must not inherit a stranger's connection."""
+
+    from rcp.agents import launcher as launcher_module
+
+    partitions: list[str | None] = []
+
+    def capture(host, command, **kwargs):
+        partitions.append(kwargs.get("partition"))
+        return shlex.split(command)
+
+    monkeypatch.setattr(launcher_module, "ssh_arguments", capture)
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", "print('{}')"],
+    )
+
+    async for _event in transported_launcher.stream(
+        "codex",
+        "prompt",
+        cwd=tmp_path,
+        capability="scratch_patch",
+        host="test-host",
+        remote_pid_file=str(tmp_path / "agent.pid"),
+        transport_partition="test-host:/tmp/rcp-run.op-one",
+    ):
+        pass
+
+    # The turn opens the run's own master. Everything after it is cleanup that
+    # has to reach the host precisely when that master may already be gone, so
+    # it deliberately stays on the shared one.
+    assert partitions[0] == "test-host:/tmp/rcp-run.op-one"
+    assert set(partitions[1:]) <= {None}

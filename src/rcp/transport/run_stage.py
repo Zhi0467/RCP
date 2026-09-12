@@ -24,7 +24,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
-from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
+from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments, sweep_control_sockets
 from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
 
 _REMOTE_TREE_HELPERS = """\
@@ -75,18 +75,34 @@ class RemoteRunStage:
             raise RuntimeError("remote run stage is not open")
         return self.root / "workspace"
 
+    @property
+    def transport_partition(self) -> str | None:
+        """The SSH master this stage keeps to itself, named by its own root.
+
+        A stage root belongs to exactly one run, so a lost link ends that run
+        and nothing else. Before the root exists there is no run to isolate,
+        and the sweep and creation calls share the default master.
+        """
+
+        return None if self.root is None else f"{self.host}:{self.root}"
+
     def sweep(
         self,
         *,
         retain_days: int = RUN_STAGE_RETENTION_DAYS,
         protected_roots: Iterable[str] | None = (),
     ) -> None:
-        """Age out stages left behind by failed runs.
+        """Age out stages left behind by failed runs, and their dead local sockets.
 
         A failed run deliberately keeps its scratch folder so the work is not
         lost, which means nothing else ever deletes it. Best effort: a stage that
         cannot be swept is not worth failing a run over.
+
+        The local half runs first because it is the same debt on the near side:
+        a stage keeps its own SSH master, so a run that ended leaves a socket
+        that no later connection will ever ask for again.
         """
+        sweep_control_sockets()
         if protected_roots is None:
             return
         protected = tuple(dict.fromkeys(protected_roots))
@@ -543,7 +559,7 @@ except BaseException:
                     [
                         "rsync",
                         "-a",
-                        *rsync_ssh_arguments(),
+                        *rsync_ssh_arguments(partition=self.transport_partition),
                         f"{pending}/",
                         f"{self.host}:{shlex.quote(str(batch))}/",
                     ],
@@ -1366,7 +1382,7 @@ finally:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
-                ssh_arguments(self.host, command),
+                ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 text=True,
                 timeout=REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
@@ -1385,7 +1401,7 @@ finally:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
-                ssh_arguments(self.host, command),
+                ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 input=input_data,
                 timeout=timeout_seconds,

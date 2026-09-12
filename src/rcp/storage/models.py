@@ -1930,6 +1930,13 @@ AgentTaskStatus = Literal[
 ]
 AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 
+# Why a provider turn ended badly, in the only terms recovery cares about.
+# `transport_lost` is worth another attempt: the link died, not the work.
+# `provider_auth` is not: the login is revoked and every attempt fails the same
+# way until a human signs in again. `other` keeps its existing behaviour.
+# `rcp.agents.failure_kinds` decides which one a failure is.
+AgentFailureKind = Literal["transport_lost", "provider_auth", "other"]
+
 # A task is still moving through these; every other status is terminal. "pausing"
 # belongs here because the pause has been requested but not yet observed, so a
 # caller that treats it as settled reads a state the task is about to leave.
@@ -2116,6 +2123,7 @@ class AgentTaskRecord(BaseModel):
     stage_root: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     write_scope_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    failure_kind: AgentFailureKind | None = None
     estimate_seconds: float = 300.0
     estimate_samples: int = 0
     phase: str = "queued"
@@ -2981,6 +2989,7 @@ class ExperimentLoopRuntime(BaseModel):
     current_status: str | None = None
     current_phase: str | None = None
     current_status_message: str | None = None
+    current_failure_kind: AgentFailureKind | None = None
     current_last_activity_at: str | None = None
     current_invocation: int | None = Field(default=None, ge=1)
 
@@ -3617,6 +3626,7 @@ __all__ = [
     "ACTIVE_AGENT_TASK_STATUSES",
     "AGENT_TASK_TRANSITIONS",
     "AgentCommandInvocationRecord",
+    "AgentFailureKind",
     "AgentTaskContractRecord",
     "AgentTaskEventRecord",
     "AgentTaskKind",

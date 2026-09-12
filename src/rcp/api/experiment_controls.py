@@ -41,6 +41,7 @@ ExperimentRecommendationKind = Literal[
     "wait",
     "resume",
     "retry",
+    "reauthenticate_provider",
     "keep_loop",
     "start_episode",
     "stop_and_restart",
@@ -379,6 +380,14 @@ def _experiment_recommendation(
         return "none"
     if active:
         return "wait"
+    # A revoked login fails every attempt the same way, so offering Retry sends
+    # the human around a loop that cannot end. Say what actually has to happen.
+    if (
+        control.operational.current_failure_kind == "provider_auth"
+        and task_control is not None
+        and awaiting_human
+    ):
+        return "reauthenticate_provider"
     if task_control is not None:
         return task_control
     if health == "degraded":
@@ -449,6 +458,7 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
         current_awaiting_human=runtime.current_status in AWAITING_HUMAN_AGENT_TASK_STATUSES,
         current_phase=runtime.current_phase,
         current_status_message=runtime.current_status_message,
+        current_failure_kind=runtime.current_failure_kind,
         current_last_activity_at=runtime.current_last_activity_at,
         current_invocation=runtime.current_invocation,
         session=ExperimentSessionBinding(

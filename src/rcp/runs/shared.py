@@ -728,6 +728,9 @@ async def _stream_agent_events(
             host=execution_host,
             control=execution.control if execution is not None else None,
             remote_pid_file=remote_pid_file,
+            transport_partition=(
+                remote_stage.transport_partition if remote_stage is not None else None
+            ),
             invocation_gate=invocation_gate,
             capability=capability,
             binary=binary,

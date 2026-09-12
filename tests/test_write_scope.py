@@ -1036,6 +1036,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             stage_host="",
             stage_root="/tmp/rcp-run.scope",
             fingerprint=fingerprint,
+            continuation_binding=False,
         )
     assert (
         AppStore(tmp_path / "rcp.sqlite3").agent_task("operation").write_scope_fingerprint
@@ -1049,6 +1050,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             stage_host="",
             stage_root="/tmp/rcp-run.scope",
             fingerprint=fingerprint,
+            continuation_binding=False,
         )
     with pytest.raises(ValueError, match="saved execution stage"):
         store.bind_agent_task_write_scope(
@@ -1057,6 +1059,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             stage_host="other-host",
             stage_root="/tmp/rcp-run.scope",
             fingerprint=fingerprint,
+            continuation_binding=False,
         )
     with pytest.raises(ValueError, match="changed after it was durably bound"):
         store.bind_agent_task_write_scope(
@@ -1065,6 +1068,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             stage_host="",
             stage_root="/tmp/rcp-run.scope",
             fingerprint="b" * 64,
+            continuation_binding=False,
         )
 
 
@@ -1085,6 +1089,7 @@ def test_durable_task_scope_binding_is_compare_and_set(tmp_path: Path) -> None:
                 stage_host="",
                 stage_root="/tmp/rcp-run.scope",
                 fingerprint=fingerprint,
+                continuation_binding=False,
             )
         except ValueError:
             return None
@@ -1114,16 +1119,154 @@ def test_continuation_scope_binding_rejects_mismatch_on_same_stage(tmp_path: Pat
         stage_host="",
         stage_root="/tmp/rcp-run.scope",
         fingerprint="a" * 64,
+        continuation_binding=False,
     )
 
-    with pytest.raises(ValueError, match="continuation conflicts"):
+    with pytest.raises(ValueError, match="continuation keeps the repository scope"):
         store.bind_agent_task_write_scope(
             "continuation",
             project_id="project",
             stage_host="",
             stage_root="/tmp/rcp-run.scope",
             fingerprint="b" * 64,
+            continuation_binding=True,
         )
+
+
+def test_fresh_launch_rebinds_a_stage_bound_by_an_earlier_episode(tmp_path: Path) -> None:
+    """A chat stage is named from its chat id and never cleared, so comparing a
+    fresh launch against superseded history made a run scope permanent."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _create_scoped_task(store, "earlier", kind="node_chat")
+    _create_scoped_task(store, "fresh", kind="node_chat")
+    store.bind_agent_task_write_scope(
+        "earlier",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="a" * 64,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("earlier", applied_revision=None, result={})
+
+    store.bind_agent_task_write_scope(
+        "fresh",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="b" * 64,
+        continuation_binding=False,
+    )
+
+    assert store.agent_task("fresh").write_scope_fingerprint == "b" * 64
+
+
+def test_fresh_launch_cannot_rebind_under_a_running_turn(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _create_scoped_task(store, "running", kind="node_chat")
+    _create_scoped_task(store, "fresh", kind="node_chat")
+    store.bind_agent_task_write_scope(
+        "running",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="a" * 64,
+        continuation_binding=False,
+    )
+
+    with pytest.raises(ValueError, match="in use by a running turn"):
+        store.bind_agent_task_write_scope(
+            "fresh",
+            project_id="project",
+            stage_host="",
+            stage_root="/tmp/rcp-run.scope",
+            fingerprint="b" * 64,
+            continuation_binding=False,
+        )
+
+
+def test_continuation_follows_the_current_binding_not_superseded_history(
+    tmp_path: Path,
+) -> None:
+    """After a fresh launch rebinds a stage, that episode's own continuations
+    must not trip over the scope the previous episode left behind."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    for name in ("earlier", "fresh", "continuation"):
+        _create_scoped_task(store, name, kind="node_chat")
+    store.bind_agent_task_write_scope(
+        "earlier",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="a" * 64,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("earlier", applied_revision=None, result={})
+    store.bind_agent_task_write_scope(
+        "fresh",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="b" * 64,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("fresh", applied_revision=None, result={})
+
+    store.bind_agent_task_write_scope(
+        "continuation",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="b" * 64,
+        continuation_binding=True,
+    )
+
+    assert store.agent_task("continuation").write_scope_fingerprint == "b" * 64
+
+
+def test_write_scope_conflict_names_both_repository_sets(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    for name in ("bound", "continuation"):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=name,
+                project_id="project",
+                kind="node_chat",
+                status="queued",
+                request={"run_truth_scope": ["repo-a", "repo-b"]},
+                created_at=now,
+                updated_at=now,
+                status_message="queued",
+                stage_root="/tmp/rcp-run.scope",
+            )
+        )
+    store.bind_agent_task_write_scope(
+        "bound",
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/rcp-run.scope",
+        fingerprint="a" * 64,
+        continuation_binding=False,
+    )
+
+    with pytest.raises(ValueError) as caught:
+        store.bind_agent_task_write_scope(
+            "continuation",
+            project_id="project",
+            stage_host="",
+            stage_root="/tmp/rcp-run.scope",
+            fingerprint="b" * 64,
+            continuation_binding=True,
+            scope_repositories=["repo-a"],
+        )
+
+    message = str(caught.value)
+    assert "offers repo-a" in message
+    assert "repo-a and repo-b" in message
+    assert "Start a new episode" in message
 
 
 def test_legacy_local_chat_scope_can_add_only_its_missing_inputs_protection(
@@ -1159,6 +1302,7 @@ def test_legacy_local_chat_scope_can_add_only_its_missing_inputs_protection(
         stage_host="",
         stage_root=stage,
         fingerprint=old_scope.fingerprint,
+        continuation_binding=False,
     )
 
     AgentTaskExecution(
@@ -1166,6 +1310,9 @@ def test_legacy_local_chat_scope_can_add_only_its_missing_inputs_protection(
         store=store,
         control=AgentProcessControl(),
         stage_root=stage,
+        # A continuation is what the legacy-compat fingerprint exists for; a
+        # fresh launch would rebind the stage and never reach that comparison.
+        continuation="resume",
     ).bind_write_scope(new_scope)
 
     assert store.agent_task("continuation").write_scope_fingerprint == new_scope.fingerprint
