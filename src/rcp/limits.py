@@ -48,7 +48,9 @@ STEERING_MESSAGE_MAX_CHARS = 32_000
 # The minimum outlives the provider's first line because neither CLI reports when
 # it rotates its refresh token, and that call may follow the first line.
 PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS = 2.0
-PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS = 20.0
+# Generous, because it caps a hold rather than a startup: remote launches add an
+# SSH round trip, and expiring mid-startup reopens the very race this closes.
+PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS = 60.0
 PROVIDER_STEER_WRITE_TIMEOUT_SECONDS = 10.0
 PROVIDER_STEER_ACK_TIMEOUT_SECONDS = 30.0
 PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS = 2.0

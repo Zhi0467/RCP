@@ -860,8 +860,10 @@ class AgentLauncher:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-        except OSError as exc:
+        except BaseException as exc:
             credential_hold.release()
+            if not isinstance(exc, OSError):
+                raise
             if host and remote_pid_file:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:

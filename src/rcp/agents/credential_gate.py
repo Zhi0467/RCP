@@ -14,10 +14,16 @@ has to stagger them. The gate below admits one startup at a time per
 credential. Turns still run concurrently once past startup.
 
 A hold ends at the later of two marks. The provider's first line proves it is
-running, and a minimum stagger covers the refresh itself, because neither CLI
-says when it rotates the token and the first line may well precede that call.
-Releasing on the first line alone would assume an ordering we cannot observe
-without spending the very token at risk.
+running, and a minimum stagger covers the refresh itself, because no CLI
+reports when it rotates the token and the first line demonstrably precedes that
+call: Codex answers a local `initialize` RPC and Claude emits `system/init`
+before either authenticates. Confirming the true ordering would mean forcing a
+refresh, which spends the very token at risk.
+
+Every primitive here is a threading primitive, not an asyncio one. Background
+tasks each run `asyncio.run` on their own thread, so one launcher's cached lock
+is contended from several event loops at once; an `asyncio.Lock` would wake its
+waiters on the wrong loop and never release them.
 
 This narrows the window rather than closing it: a provider that refreshes again
 mid-turn is outside any boundary RCP controls.
@@ -26,6 +32,9 @@ mid-turn is outside any boundary RCP controls.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from collections.abc import Callable
 
 from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
@@ -36,40 +45,43 @@ from rcp.limits import (
 class CredentialStartupHold:
     """One admitted startup.
 
-    Every exit path must release. Releasing twice is safe, and the hold expires
-    on its own so a provider that never speaks cannot strand the credential for
-    the length of its turn.
+    Every exit path must release. Releasing twice is safe, releasing from a
+    thread other than the acquiring one is safe, and the hold expires on its own
+    so a provider that never speaks cannot strand the credential for the length
+    of its turn.
     """
 
-    def __init__(self, lock: asyncio.Lock | None) -> None:
+    def __init__(self, lock: threading.Lock | None) -> None:
+        self._guard = threading.Lock()
         self._lock = lock
-        self._expiry: asyncio.TimerHandle | None = None
-        self._pending: asyncio.TimerHandle | None = None
+        self._expiry: threading.Timer | None = None
+        self._pending: threading.Timer | None = None
         self._earliest = 0.0
         if lock is not None:
-            loop = asyncio.get_running_loop()
-            self._earliest = loop.time() + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
-            self._expiry = loop.call_later(
+            self._earliest = time.monotonic() + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+            self._expiry = _start_timer(
                 PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self._release_now
             )
 
     def release(self) -> None:
         """End this startup, no earlier than the minimum stagger allows."""
 
-        if self._lock is None or self._pending is not None:
-            return
-        loop = asyncio.get_running_loop()
-        if loop.time() < self._earliest:
-            self._pending = loop.call_at(self._earliest, self._release_now)
-            return
+        with self._guard:
+            if self._lock is None or self._pending is not None:
+                return
+            remaining = self._earliest - time.monotonic()
+            if remaining > 0:
+                self._pending = _start_timer(remaining, self._release_now)
+                return
         self._release_now()
 
     def _release_now(self) -> None:
-        lock, self._lock = self._lock, None
-        for timer in (self._expiry, self._pending):
-            if timer is not None:
-                timer.cancel()
-        self._expiry = self._pending = None
+        with self._guard:
+            lock, self._lock = self._lock, None
+            for timer in (self._expiry, self._pending):
+                if timer is not None:
+                    timer.cancel()
+            self._expiry = self._pending = None
         if lock is not None:
             lock.release()
 
@@ -78,7 +90,11 @@ class ProviderCredentialGate:
     """Admit one provider startup at a time per credential."""
 
     def __init__(self) -> None:
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # One registry lock, because several worker threads reach a shared
+        # launcher and an unguarded read-then-create would hand two startups
+        # separate locks for one credential.
+        self._guard = threading.Lock()
+        self._locks: dict[tuple[str, str], threading.Lock] = {}
 
     async def hold(self, provider: str, host: str) -> CredentialStartupHold:
         """Wait for exclusive use of this credential's startup window.
@@ -89,9 +105,14 @@ class ProviderCredentialGate:
         intended behavior and every holder releases within a bounded window.
         """
 
-        lock = self._locks.get((provider, host))
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[(provider, host)] = lock
-        await lock.acquire()
+        with self._guard:
+            lock = self._locks.setdefault((provider, host), threading.Lock())
+        await asyncio.to_thread(lock.acquire)
         return CredentialStartupHold(lock)
+
+
+def _start_timer(delay: float, action: Callable[[], None]) -> threading.Timer:
+    timer = threading.Timer(delay, action)
+    timer.daemon = True
+    timer.start()
+    return timer

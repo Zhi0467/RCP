@@ -7,6 +7,7 @@ spent token on disk and kill the login until a human signs in again.
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,53 @@ async def test_minimum_stagger_outlasts_an_immediate_first_line(
     assert not waiting.done(), "the credential was freed before the minimum stagger"
 
     (await asyncio.wait_for(waiting, timeout=2)).release()
+
+
+def test_one_credential_serializes_across_worker_event_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background tasks each run `asyncio.run` on their own thread.
+
+    A loop-bound lock would wake a waiter on the wrong loop and strand it, so
+    the gate has to hold across threads, not just across tasks.
+    """
+
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0
+    )
+    gate = ProviderCredentialGate()
+    starting = 0
+    peak = 0
+    peak_guard = threading.Lock()
+    failures: list[BaseException] = []
+
+    def worker() -> None:
+        async def run() -> None:
+            nonlocal starting, peak
+            hold = await gate.hold("codex", "")
+            try:
+                with peak_guard:
+                    starting += 1
+                    peak = max(peak, starting)
+                await asyncio.sleep(0.05)
+                with peak_guard:
+                    starting -= 1
+            finally:
+                hold.release()
+
+        try:
+            asyncio.run(run())
+        except BaseException as exc:  # pragma: no cover - reported below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not [thread for thread in threads if thread.is_alive()], (
+        "a worker never finished; the credential was released onto another loop"
+    )
+    assert not failures, failures
+    assert peak == 1, f"{peak} startups overlapped across worker threads"
