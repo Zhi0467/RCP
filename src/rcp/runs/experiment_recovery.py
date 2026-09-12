@@ -249,12 +249,21 @@ def retry_experiment_loop(
             authorized_by=authorized_by,
         )
 
-    reason = (
-        "the saved provider workspace is unavailable"
-        if owned_checkpoint
-        else "the episode has no complete RCP-owned native checkpoint and stage"
-    )
-    if episode is not None and episode.session_bound and current_config == active_config:
+    if stale_session:
+        # Nothing is left to resume, so refusing would strand the episode on a
+        # session the provider has already dropped. The handoff below starts it
+        # clean and says why on the record rather than falling back silently.
+        reason = "the provider no longer has the saved session"
+    elif owned_checkpoint:
+        reason = "the saved provider workspace is unavailable"
+    else:
+        reason = "the episode has no complete RCP-owned native checkpoint and stage"
+    if (
+        not stale_session
+        and episode is not None
+        and episode.session_bound
+        and current_config == active_config
+    ):
         detail = (
             f"This continuation cannot start a fresh provider session because {reason}. "
             "Switch provider to continue this same episode, or use Stop loop to abandon it."

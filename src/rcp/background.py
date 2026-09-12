@@ -425,6 +425,7 @@ class BackgroundAgentTasks:
         restart_stopping_experiment_recoveries(self)
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
+        self._rearm_owed_transport_retries()
 
     def start(
         self,
@@ -1801,6 +1802,25 @@ class BackgroundAgentTasks:
                 return
             self._transport_retry_timers.append(timer)
         timer.start()
+
+    def _rearm_owed_transport_retries(self) -> None:
+        """Re-arm reattempts a previous process promised and could not keep.
+
+        The receipt that promises one is durable; the wait is a timer that dies
+        with the process. Without this, stopping RCP during a wait turns an
+        automatic reattempt into a turn that stays failed until a human notices.
+        The wait starts over rather than resuming, because how much of it had
+        already elapsed was never written down.
+        """
+
+        for operation_id in self.store.owed_transport_retry_operation_ids():
+            record = self.store.agent_task(operation_id)
+            if record is None or not record.can_retry:
+                continue
+            attempt = self._transport_retry_attempt(record)
+            if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
+                continue
+            self._schedule_transport_retry(operation_id, attempt=attempt)
 
     def _transport_retry_superseded(self, operation_id: str) -> bool:
         """Whether this turn was already taken over while the wait ran.

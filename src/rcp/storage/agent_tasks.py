@@ -3282,6 +3282,35 @@ class AgentTaskStoreMixin:
             ).fetchone()
         return row is not None
 
+    def owed_transport_retry_operation_ids(self) -> list[str]:
+        """Turns whose reattempt was armed but never fired.
+
+        The receipt that promises one is durable and the wait that keeps it is
+        not, so a process that stops mid-wait leaves turns owed a reattempt that
+        would never come. A turn something else already continued is not owed
+        one.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT run.operation_id FROM graph_runs AS run
+                WHERE run.status = 'failed'
+                  AND run.failure_kind = 'transport_lost'
+                  AND EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS receipt
+                      WHERE receipt.operation_id = run.operation_id
+                        AND receipt.category = 'transport_auto_retry'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_runs AS child
+                      WHERE child.parent_operation_id = run.operation_id
+                  )
+                ORDER BY run.created_at, run.operation_id
+                """
+            ).fetchall()
+        return [str(row["operation_id"]) for row in rows]
+
     def agent_task_has_continuation(self, operation_id: str) -> bool:
         """Whether some later task already continues this one.
 

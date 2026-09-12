@@ -155,6 +155,7 @@ class _Loop:
                 record.error or record.status_message,
                 status=record.status,
                 result=record.result,
+                failure_kind=record.failure_kind,
             )
         elif record.status != "queued":
             raise AssertionError(f"Unsupported fixture task status: {record.status}")
@@ -1864,6 +1865,131 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
     assert request.control_invocation == 2
     assert retried.stage_root == str(stage)
     assert retried.parent_operation_id == "limited-wake"
+
+
+def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tmp_path) -> None:
+    """A bound session the provider has dropped leaves nothing to resume.
+
+    Refusing here would strand the episode: Retry could never succeed and the
+    diagnostic would ask for a provider change the failure does not call for.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    stage = tmp_path / "stale-stage"
+    loop.bind_session(stage)
+    loop.arm_watcher("stale-wake-watcher", status="completed")
+    wake_request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["stale-wake-watcher"],
+        }
+    )
+    now = loop.store.now()
+    loop.create_watcher_invocation(
+        AgentTaskRecord(
+            operation_id="stale-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="The provider dropped the session.",
+            error="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+            dispatch_authority=_task_authority(wake_request),
+        ),
+        ["stale-wake-watcher"],
+    )
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "stale-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def stream(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    retried = app.state.background_tasks.retry("stale-wake", authorized_by=loop.authorizer)
+
+    assert observed.wait(timeout=2)
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["continuation"] == "handoff"
+    assert request.session_id is None
+    assert request.provider == "codex"
+    assert request.control_episode_id == loop.episode_id
+    assert retried.parent_operation_id == "stale-wake"
+    reasons = [
+        receipt.payload.get("reason")
+        for receipt in loop.store.agent_task_receipts(retried.operation_id)
+        if receipt.category == "native_resume_unavailable"
+    ]
+    assert reasons == ["the provider no longer has the saved session"]
+
+
+def test_a_revoked_login_withdraws_retry_but_not_the_provider_switch(manifest, tmp_path) -> None:
+    """Retrying the revoked login repeats the failure; another provider does not.
+
+    Recovery takes a provider change before it consults the saved session, so
+    the switch is the one recovery that still works before the human signs in.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    stage = tmp_path / "revoked-stage"
+    loop.bind_session(stage)
+    loop.arm_watcher("revoked-wake-watcher", status="completed")
+    wake_request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["revoked-wake-watcher"],
+        }
+    )
+    now = loop.store.now()
+    loop.create_watcher_invocation(
+        AgentTaskRecord(
+            operation_id="revoked-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="The provider login is no longer valid.",
+            error="You are not logged in. Run codex login to authenticate.",
+            failure_kind="provider_auth",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+            dispatch_authority=_task_authority(wake_request),
+        ),
+        ["revoked-wake-watcher"],
+    )
+
+    control = loop.control()
+
+    assert {
+        field: control[field]
+        for field in ("health", "recommendation", "task_control", "can_switch_provider")
+    } == {
+        "health": "needs_action",
+        "recommendation": "reauthenticate_provider",
+        "task_control": None,
+        "can_switch_provider": True,
+    }
 
 
 def test_provider_switch_is_provisional_until_successful_episode_handoff(

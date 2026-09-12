@@ -2765,6 +2765,84 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert retried == []
 
 
+def test_a_promised_reattempt_survives_a_restart(tmp_path: Path, monkeypatch) -> None:
+    """Stopping RCP during the wait must not quietly cancel the reattempt.
+
+    The receipt that promises one is durable and the timer that keeps it is
+    not, so without startup re-arming the turn stays failed forever while its
+    history says a reattempt is coming.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    failed = _transport_failed_task(store, operation_id="dropped")
+    tasks._auto_retry_transport_loss(failed)
+    assert store.agent_task_has_receipt("dropped", "transport_auto_retry")
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: rearmed.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
+
+
+def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A restart must not reopen the supersession window the timer closes.
+
+    A human who pressed Retry before the process stopped already has the turn
+    running; re-arming would run it a second time.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    # One request for both attempts: a continuation must keep its parent's
+    # dispatch authority, which is derived from the request.
+    shared = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="launch-restart-supersession",
+        message="Exercise the reattempt across a restart.",
+        mode="work",
+        patch_kind="work",
+    )
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    tasks._auto_retry_transport_loss(failed)
+    _admitted_launch_task(
+        store,
+        operation_id="human-retry",
+        parent_operation_id=failed.operation_id,
+        request=shared,
+    )
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[str] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: rearmed.append(operation_id),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == []
+
+
 def test_a_refused_reattempt_keeps_the_remaining_waits(tmp_path: Path, monkeypatch) -> None:
     """A host still rebooting refuses admission, which is what the longer waits
     are for. No child is admitted, so the receipt chain cannot carry the count

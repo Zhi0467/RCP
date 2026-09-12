@@ -253,9 +253,10 @@ def _experiment_control_response(
         else None
     )
     can_open_report = report_episode_id is not None
-    can_switch_provider = bool(
-        task_control is not None and task is not None and task.can_retry and not revoked_login
-    )
+    # A revoked login withdraws Retry but not this: recovery takes the provider
+    # change before it consults the old session, so another provider is the one
+    # recovery that still works without the human repairing that sign-in first.
+    can_switch_provider = bool(task_control is not None and task is not None and task.can_retry)
     return ExperimentControlResponse.model_validate(
         {
             **control.model_dump(mode="json"),
