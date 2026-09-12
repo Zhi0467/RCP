@@ -6,6 +6,10 @@ import pytest
 
 from rcp.core.models import GraphState, Patch
 from rcp.history import HistoryManager, PatchRejected
+from rcp.runs.tasks.graph import _read_prepared_graph_context, _stage_prepared_graph_context
+from rcp.service import RunRequest
+from rcp.storage import AgentTaskRecord
+from tests.helpers import create_named_app as create_app
 from tests.helpers import seed_patch
 
 
@@ -74,3 +78,63 @@ def test_old_graph_snapshot_discards_reading_report_without_mutating_input() -> 
     assert state.revision == 3
     assert "coverage" not in state.model_dump()
     assert raw["coverage"]["note"] == "Old report"
+
+
+def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
+    manifest, tmp_path
+) -> None:
+    # An upgrade can land while a Seed or Refresh keeps a retained stage, and that
+    # stage's version-2 context still names `coverage_path`. `RunContext` forbids
+    # extras, so without the retirement allowlist the checkpoint would fail a
+    # native continuation and quietly force a retry to rebuild the context it
+    # promised to reuse.
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    _stage_prepared_graph_context(
+        stage,
+        None,
+        project_id="project",
+        kind="refresh",
+        graph_revision=context.graph_revision,
+        execution_host="",
+        original_contract_path=str(stage / "inputs/task.md"),
+        context=context,
+    )
+    prepared_path = stage / "inputs/prepared-context.json"
+    payload = json.loads(prepared_path.read_text(encoding="utf-8"))
+    payload["context"]["coverage_path"] = str(manifest.research_dir / "coverage.json")
+    # Staged inputs are written read-only; rewrite as the previous version would have.
+    prepared_path.chmod(0o600)
+    prepared_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    now = "2026-08-04T12:00:00+00:00"
+    record = AgentTaskRecord(
+        operation_id="parent",
+        project_id="project",
+        kind="refresh",
+        status="failed",
+        request={"provider": "codex"},
+        created_at=now,
+        updated_at=now,
+        status_message="failed",
+        attempt=1,
+        stage_root=str(stage),
+    )
+
+    prepared = _read_prepared_graph_context(record)
+
+    assert prepared.graph_revision == context.graph_revision
+    assert prepared.context.research_md_path == context.research_md_path
+    assert "coverage_path" not in prepared.context.model_dump()
+    # The file on disk is evidence of the prior attempt, not a migration target.
+    assert json.loads(prepared_path.read_text(encoding="utf-8"))["context"]["coverage_path"]
+
+    # The allowlist stays closed: only the retired key is dropped.
+    payload["context"]["unrecognized_path"] = "/tmp/unknown"
+    prepared_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unrecognized_path"):
+        _read_prepared_graph_context(record)
