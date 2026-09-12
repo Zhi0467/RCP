@@ -32,10 +32,13 @@ mid-turn is outside any boundary RCP controls.
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from pathlib import Path
 
 from rcp.limits import (
     PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS,
@@ -53,9 +56,16 @@ class CredentialStartupHold:
     of its turn.
     """
 
-    def __init__(self, lock: threading.Lock | None, *, minimum: float | None = None) -> None:
+    def __init__(
+        self,
+        lock: threading.Lock | None,
+        *,
+        minimum: float | None = None,
+        across_processes: int | None = None,
+    ) -> None:
         self._guard = threading.Lock()
         self._lock = lock
+        self._across_processes = across_processes
         self._expiry: threading.Timer | None = None
         self._pending: threading.Timer | None = None
         self._earliest = 0.0
@@ -82,10 +92,13 @@ class CredentialStartupHold:
     def _release_now(self) -> None:
         with self._guard:
             lock, self._lock = self._lock, None
+            descriptor, self._across_processes = self._across_processes, None
             for timer in (self._expiry, self._pending):
                 if timer is not None:
                     timer.cancel()
             self._expiry = self._pending = None
+        if descriptor is not None:
+            _drop_account_lock(descriptor)
         if lock is not None:
             lock.release()
 
@@ -93,12 +106,14 @@ class CredentialStartupHold:
 class ProviderCredentialGate:
     """Admit one provider startup at a time per credential."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, account_lock_root: Path | None = None) -> None:
         # One registry lock, because several worker threads reach a shared
         # launcher and an unguarded read-then-create would hand two startups
         # separate locks for one credential.
         self._guard = threading.Lock()
         self._locks: dict[tuple[str, str], threading.Lock] = {}
+        #: Named so a test never takes a lock in the human's own home.
+        self._account_lock_root = account_lock_root or _DEFAULT_ACCOUNT_LOCK_ROOT
 
     async def hold(self, provider: str, host: str) -> CredentialStartupHold:
         """Wait for exclusive use of this credential's startup window.
@@ -116,24 +131,20 @@ class ProviderCredentialGate:
         startups that did not need it.
         """
 
-        lock = self._lock_for(provider, host)
+        claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
         while True:
             # `to_thread` cannot be cancelled, so each attempt is bounded and
-            # shielded. An attempt that wins after its caller is gone would
-            # otherwise hold the credential with no hold object behind it, and
-            # so no expiry to release it, stranding the login until a restart.
-            # Short attempts also hand the worker thread back between tries, so
-            # a waiting startup cannot pin the loop's executor through shutdown.
-            attempt = asyncio.ensure_future(
-                asyncio.to_thread(lock.acquire, True, PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS)
-            )
+            # shielded, and the claim below decides who owns a win. Short
+            # attempts also hand the worker thread back between tries, so a
+            # waiting startup cannot pin the loop's executor through shutdown.
+            attempt = asyncio.ensure_future(asyncio.to_thread(claim.try_acquire))
             try:
                 acquired = await asyncio.shield(attempt)
             except asyncio.CancelledError:
-                attempt.add_done_callback(_release_if_won(lock))
+                claim.abandon()
                 raise
             if acquired:
-                return CredentialStartupHold(lock)
+                return CredentialStartupHold(claim.lock, across_processes=claim.descriptor)
 
     @contextmanager
     def hold_blocking(self, provider: str, host: str) -> Iterator[None]:
@@ -146,29 +157,131 @@ class ProviderCredentialGate:
         precede its authentication, while an exited probe cannot.
         """
 
-        lock = self._lock_for(provider, host)
-        lock.acquire()
-        hold = CredentialStartupHold(lock, minimum=0.0)
+        claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
+        while not claim.try_acquire():
+            pass
+        hold = CredentialStartupHold(claim.lock, minimum=0.0, across_processes=claim.descriptor)
         try:
             yield
         finally:
             hold.release()
+
+    def _account_lock_path(self, provider: str, host: str) -> Path | None:
+        """Where this OS account's lock for one provider login lives.
+
+        Remote execution has no such file: the credential sits on the other
+        machine and only a lock taken there would mean anything, which is an
+        SSH round trip per launch. Remote launches keep in-process
+        serialization only.
+        """
+
+        if host:
+            return None
+        return self._account_lock_root / f"{provider}.lock"
 
     def _lock_for(self, provider: str, host: str) -> threading.Lock:
         with self._guard:
             return self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
 
 
-def _release_if_won(lock: threading.Lock) -> Callable[[asyncio.Future[bool]], None]:
-    """Give back a lock won by an attempt whose caller has already gone away."""
+class _Claim:
+    """Hand one lock from the acquiring thread to its caller, or give it back.
 
-    def give_back(attempt: asyncio.Future[bool]) -> None:
-        if attempt.cancelled() or attempt.exception() is not None:
-            return
-        if attempt.result():
-            lock.release()
+    Neither side may consult the asyncio wrapper. `to_thread` cannot be
+    cancelled, and during loop teardown the runner cancels the wrapper before
+    the worker finishes, so a win reported only through that future would be
+    lost and the credential locked until RCP restarts. Both sides meet on this
+    guard instead, so whichever arrives second cleans up.
+    """
 
-    return give_back
+    def __init__(self, lock: threading.Lock, account_lock: Path | None) -> None:
+        self.lock = lock
+        self.descriptor: int | None = None
+        self._account_lock = account_lock
+        self._guard = threading.Lock()
+        self._abandoned = False
+        self._won = False
+
+    def try_acquire(self) -> bool:
+        """Win both locks for a caller that still wants them, else give back."""
+
+        if not self.lock.acquire(True, PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS):
+            return False
+        try:
+            descriptor = _take_account_lock(self._account_lock)
+        except _AccountLockBusy:
+            # Another RCP process holds this account. Step off the in-process
+            # lock so a sibling turn is not queued behind our polling.
+            self.lock.release()
+            time.sleep(PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS)
+            return False
+        with self._guard:
+            if not self._abandoned:
+                self._won = True
+                self.descriptor = descriptor
+                return True
+        self._give_back(descriptor)
+        return False
+
+    def abandon(self) -> None:
+        """Give up this claim, releasing a win the caller will never receive."""
+
+        with self._guard:
+            self._abandoned = True
+            if not self._won:
+                return
+            self._won = False
+            descriptor, self.descriptor = self.descriptor, None
+        self._give_back(descriptor)
+
+    def _give_back(self, descriptor: int | None) -> None:
+        if descriptor is not None:
+            _drop_account_lock(descriptor)
+        self.lock.release()
+
+
+#: Alongside the existing ~/.rcp/jobs, so one account keeps one RCP directory.
+_DEFAULT_ACCOUNT_LOCK_ROOT = Path.home() / ".rcp" / "credential-locks"
+
+
+class _AccountLockBusy(Exception):
+    """Another RCP process under this account holds the provider login."""
+
+
+def _take_account_lock(path: Path | None) -> int | None:
+    """Claim this account's provider login against other RCP processes.
+
+    Two RCP processes with different data directories share one provider login,
+    and the single-instance lock only excludes a second process on the same data
+    directory. The OS releases this lock when its holder exits, so a crashed
+    holder never strands the login.
+
+    Returning None means there is no such lock to take. Contention raises, so a
+    caller retries a busy account instead of spinning on a home it cannot use.
+    """
+
+    if path is None:
+        return None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    except OSError:
+        # A home that cannot hold the lock file must not stop a turn; in-process
+        # serialization still covers the common single-process case.
+        return None
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(descriptor)
+        raise _AccountLockBusy(str(path)) from exc
+    return descriptor
+
+
+def _drop_account_lock(descriptor: int) -> None:
+    with suppress(OSError):
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    with suppress(OSError):
+        os.close(descriptor)
 
 
 def _start_timer(delay: float, action: Callable[[], None]) -> threading.Timer:

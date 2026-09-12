@@ -339,3 +339,75 @@ def test_a_finished_probe_releases_without_the_turn_stagger() -> None:
     assert elapsed < PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS, (
         f"two probes took {elapsed:.2f}s; a finished probe waited out the turn stagger"
     )
+
+
+def test_a_win_during_loop_teardown_does_not_strand_the_credential() -> None:
+    """The worker can win after the loop cancelled its wrapper.
+
+    `asyncio.run` cancels pending tasks before shutting its executor down, so a
+    win reported only through that future would be lost and the credential
+    locked until RCP restarts. The claim has to settle ownership off the loop.
+    """
+
+    gate = ProviderCredentialGate()
+    blocker = gate._lock_for("codex", "")
+    blocker.acquire()
+
+    async def queue_then_tear_down() -> None:
+        waiting = asyncio.create_task(gate.hold("codex", ""))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        # Hand the lock over exactly while the cancelled wrapper unwinds.
+        blocker.release()
+
+    asyncio.run(queue_then_tear_down())
+
+    async def later() -> None:
+        hold = await asyncio.wait_for(gate.hold("codex", ""), timeout=5)
+        hold.release()
+
+    asyncio.run(later())
+
+
+@pytest.mark.asyncio
+async def test_two_rcp_processes_under_one_account_do_not_both_hold(
+    tmp_path: Path, prompt_minimum: None
+) -> None:
+    """Separate gates stand in for separate RCP processes.
+
+    Two RCP processes with different data directories share one provider login,
+    and the single-instance lock only excludes a second process on the same data
+    directory. Each has a private in-process map, so only an OS-visible lock can
+    keep them apart.
+    """
+
+    root = tmp_path / "shared-account"
+    first_process = ProviderCredentialGate(account_lock_root=root)
+    second_process = ProviderCredentialGate(account_lock_root=root)
+
+    held = await first_process.hold("codex", "")
+    queued = asyncio.create_task(second_process.hold("codex", ""))
+    await asyncio.sleep(0.3)
+
+    assert not queued.done(), "two RCP processes held one provider login at once"
+
+    held.release()
+    (await asyncio.wait_for(queued, timeout=5)).release()
+
+
+@pytest.mark.asyncio
+async def test_a_remote_launch_is_not_gated_by_the_local_account_lock(
+    tmp_path: Path, prompt_minimum: None
+) -> None:
+    """The credential for a remote account lives on that machine, not this one."""
+
+    root = tmp_path / "shared-account"
+    first_process = ProviderCredentialGate(account_lock_root=root)
+    second_process = ProviderCredentialGate(account_lock_root=root)
+
+    held = await first_process.hold("codex", "agent-host")
+    other = await asyncio.wait_for(second_process.hold("codex", "agent-host"), timeout=2)
+
+    held.release()
+    other.release()
+    assert not (root / "codex.lock").exists()

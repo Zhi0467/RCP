@@ -266,14 +266,17 @@ class AgentProcessControl:
     async def _terminate(process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
-        with suppress(ProcessLookupError):
+        # A reaped child's pid can already belong to someone else, and signalling
+        # a group that is no longer ours fails with EPERM rather than ESRCH.
+        # Both mean this process is gone; killing the stranger would be worse.
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), timeout=5)
             return
         except TimeoutError:
             pass
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
 
@@ -854,8 +857,6 @@ class AgentLauncher:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
-        if host and remote_pid_file:
-            yield AgentEvent(event="remote_process_start", text=remote_pid_file)
         # Held until this provider speaks and the minimum stagger passes, so
         # two turns cannot rotate one credential's refresh token together.
         credential_hold = await self.credential_gate.hold(provider, host)
@@ -864,6 +865,10 @@ class AgentLauncher:
             credential_hold.release()
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
+        # Declared only once this turn is certain to launch. Announcing a remote
+        # pass and then pausing would leave a live pass nothing ever closes.
+        if host and remote_pid_file:
+            yield AgentEvent(event="remote_process_start", text=remote_pid_file)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,

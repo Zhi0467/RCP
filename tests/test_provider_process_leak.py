@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import launcher as launcher_module
-from rcp.agents.launcher import AgentLauncher
+from rcp.agents.launcher import AgentLauncher, AgentProcessControl
 from rcp.config import Manifest
 
 from .helpers import create_named_app, wait_until
@@ -69,3 +70,29 @@ def test_a_real_dispatch_without_a_lifespan_stages_no_provider_process(
     assert settled.status == "failed"
     assert "codex" in (settled.error or "")
     assert not list((tmp_path / "data" / "run-stage").glob("*/inputs/rcp-command-broker-*.py"))
+
+
+@pytest.mark.asyncio
+async def test_terminating_a_reused_pid_does_not_fail_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reaped child's pid can already belong to another user.
+
+    `killpg` then fails with EPERM rather than ESRCH. Our process is gone either
+    way, and signalling the stranger that inherited its pid would be worse, so
+    the turn must not fail on it.
+    """
+
+    class Reaped:
+        returncode = None
+        pid = 424242
+
+        async def wait(self):
+            return 0
+
+    def killpg(_pid: int, _signal: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    await AgentProcessControl._terminate(Reaped())
