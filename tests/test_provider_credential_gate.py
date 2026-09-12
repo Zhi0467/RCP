@@ -8,12 +8,14 @@ spent token on disk and kill the login until a human signs in again.
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
 
@@ -317,3 +319,23 @@ async def test_a_cancelled_wait_does_not_strand_the_credential(
 
     later = await asyncio.wait_for(gate.hold("codex", ""), timeout=5)
     later.release()
+
+
+def test_a_finished_probe_releases_without_the_turn_stagger() -> None:
+    """The minimum exists because a turn's first line can precede its auth.
+
+    A probe that has exited cannot be mid-authentication, so making it wait
+    would serialize readiness behind a stagger it does not need.
+    """
+
+    gate = ProviderCredentialGate()
+    started = time.monotonic()
+    with gate.hold_blocking("codex", ""):
+        pass
+    with gate.hold_blocking("codex", ""):
+        pass
+
+    elapsed = time.monotonic() - started
+    assert elapsed < PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS, (
+        f"two probes took {elapsed:.2f}s; a finished probe waited out the turn stagger"
+    )

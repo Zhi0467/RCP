@@ -53,14 +53,16 @@ class CredentialStartupHold:
     of its turn.
     """
 
-    def __init__(self, lock: threading.Lock | None) -> None:
+    def __init__(self, lock: threading.Lock | None, *, minimum: float | None = None) -> None:
         self._guard = threading.Lock()
         self._lock = lock
         self._expiry: threading.Timer | None = None
         self._pending: threading.Timer | None = None
         self._earliest = 0.0
         if lock is not None:
-            self._earliest = time.monotonic() + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+            if minimum is None:
+                minimum = PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+            self._earliest = time.monotonic() + minimum
             self._expiry = _start_timer(
                 PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self._release_now
             )
@@ -140,12 +142,13 @@ class ProviderCredentialGate:
         Readiness and skill inventory run provider executables on worker
         threads, and those load the same login as a turn does. A probe is short
         and runs to completion, so it holds for its whole duration rather than
-        until a first line.
+        until a first line, and needs no minimum: a turn's first line can
+        precede its authentication, while an exited probe cannot.
         """
 
         lock = self._lock_for(provider, host)
         lock.acquire()
-        hold = CredentialStartupHold(lock)
+        hold = CredentialStartupHold(lock, minimum=0.0)
         try:
             yield
         finally:

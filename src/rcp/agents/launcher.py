@@ -569,10 +569,13 @@ class AgentLauncher:
         # Enumerate only once the CLI is known to answer. An unauthenticated
         # catalog probe just costs a subprocess to learn what auth already said.
         catalog_command = profile.catalog_command(candidate) if authenticated else None
-        # Both of these run the provider itself and load the same login a turn
-        # does, so they are staggered against turns rather than racing them.
-        with self.credential_gate.hold_blocking(provider, host):
-            catalog = self._probe(host, catalog_command) if catalog_command else None
+        # Both probes below run the provider itself and load the same login a
+        # turn does, so they are staggered against turns rather than racing
+        # them. Neither takes the credential when it has nothing to run.
+        catalog = None
+        if catalog_command:
+            with self.credential_gate.hold_blocking(provider, host):
+                catalog = self._probe(host, catalog_command)
         work_like_available = None
         work_like_reason = None
         work_command = profile.work_like_probe_command(candidate) if authenticated else None
@@ -853,8 +856,8 @@ class AgentLauncher:
             return
         if host and remote_pid_file:
             yield AgentEvent(event="remote_process_start", text=remote_pid_file)
-        # Held until this provider speaks, so two turns cannot rotate one
-        # credential's refresh token at the same time.
+        # Held until this provider speaks and the minimum stagger passes, so
+        # two turns cannot rotate one credential's refresh token together.
         credential_hold = await self.credential_gate.hold(provider, host)
         if control is not None and control.pause_requested.is_set():
             # The pre-launch check ran before this wait, which can be long.
@@ -872,6 +875,8 @@ class AgentLauncher:
                 start_new_session=True,
             )
         except BaseException as exc:
+            # Cancellation here would otherwise skip both the arm below and the
+            # stream's own finally, leaving the credential held.
             credential_hold.release()
             if not isinstance(exc, OSError):
                 raise
