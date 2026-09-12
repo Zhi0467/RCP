@@ -237,3 +237,20 @@ def test_one_credential_serializes_across_worker_event_loops(
     )
     assert not failures, failures
     assert peak == 1, f"{peak} startups overlapped across worker threads"
+
+
+@pytest.mark.asyncio
+async def test_one_destination_spelled_two_ways_shares_a_hold(
+    prompt_minimum: None,
+) -> None:
+    """Case and stray space must not split one credential into two keys."""
+
+    gate = ProviderCredentialGate()
+    first = await gate.hold("codex", "Agent-Host")
+    second = asyncio.create_task(gate.hold("codex", " agent-host "))
+    await asyncio.sleep(0)
+
+    assert not second.done(), "one destination was admitted twice under two spellings"
+
+    first.release()
+    (await second).release()

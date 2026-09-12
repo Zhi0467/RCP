@@ -103,10 +103,17 @@ class ProviderCredentialGate:
         per execution account, where the host names the account. A blocked
         caller waits rather than failing, because a staggered start is the
         intended behavior and every holder releases within a bounded window.
+
+        Two spellings of one destination stay distinct here beyond case and
+        surrounding space. Proving them identical needs the remote account
+        probe, which is an SSH round trip this path cannot afford on every
+        turn, so an aliased duplicate of one machine keeps the old race.
+        Folding case is the safe direction: merging two keys only staggers
+        startups that did not need it.
         """
 
         with self._guard:
-            lock = self._locks.setdefault((provider, host), threading.Lock())
+            lock = self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
         await asyncio.to_thread(lock.acquire)
         return CredentialStartupHold(lock)
 
