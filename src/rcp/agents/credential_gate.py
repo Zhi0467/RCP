@@ -34,7 +34,8 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
@@ -112,10 +113,31 @@ class ProviderCredentialGate:
         startups that did not need it.
         """
 
-        with self._guard:
-            lock = self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
+        lock = self._lock_for(provider, host)
         await asyncio.to_thread(lock.acquire)
         return CredentialStartupHold(lock)
+
+    @contextmanager
+    def hold_blocking(self, provider: str, host: str) -> Iterator[None]:
+        """Hold the credential across a synchronous provider probe.
+
+        Readiness and skill inventory run provider executables on worker
+        threads, and those load the same login as a turn does. A probe is short
+        and runs to completion, so it holds for its whole duration rather than
+        until a first line.
+        """
+
+        lock = self._lock_for(provider, host)
+        lock.acquire()
+        hold = CredentialStartupHold(lock)
+        try:
+            yield
+        finally:
+            hold.release()
+
+    def _lock_for(self, provider: str, host: str) -> threading.Lock:
+        with self._guard:
+            return self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
 
 
 def _start_timer(delay: float, action: Callable[[], None]) -> threading.Timer:

@@ -605,6 +605,21 @@ falls back to the declared list rather than leaving a surface with no models.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.
 
+A provider login is one rotating credential owned by one execution account, and
+no provider CLI locks it while refreshing. RCP therefore admits one provider
+startup at a time per provider and execution account. Turns, readiness probes,
+and skill inventory probes share that one gate, because each runs the provider
+executable and each can rotate the same token; a probe holds for its whole run,
+while a turn holds until the provider writes a line of its own and a minimum
+stagger has passed. A broker readiness line is not the provider speaking. A hold
+expires on a generous bound, which prefers a rare unserialized start over one
+stalled startup closing the credential to everything else.
+
+This staggers startups, it does not make rotation safe. A provider that
+refreshes again mid-turn is outside the boundary, and RCP never performs or
+stores the refresh itself. Reaching one account through two spellings of its SSH
+destination still yields two gates.
+
 After authentication succeeds, the Claude profile also supplies a zero-cost
 Work-like startup probe using its strict sandbox settings, stream-json input,
 and closed empty stdin. Sandbox validation happens before any model call. The

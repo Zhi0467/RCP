@@ -132,6 +132,8 @@ def test_concurrent_refreshes_share_owner_probe_and_readiness(
         _host: str,
         _command: list[str],
         _protocol: Literal["jsonrpc", "jsonl"],
+        *,
+        provider: str = "",
     ) -> object:
         nonlocal probe_calls
         with probe_calls_lock:

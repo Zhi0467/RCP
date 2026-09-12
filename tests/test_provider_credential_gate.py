@@ -14,6 +14,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.provider_skills import ProviderSkillInventoryManager
 
 
 @pytest.fixture
@@ -254,3 +255,39 @@ async def test_one_destination_spelled_two_ways_shares_a_hold(
 
     first.release()
     (await second).release()
+
+
+@pytest.mark.asyncio
+async def test_a_skill_probe_and_a_turn_share_one_credential(
+    prompt_minimum: None,
+) -> None:
+    """Skill inventory runs the provider too, so it cannot start beside a turn.
+
+    Composition hands the inventory manager the launcher's gate; a manager with
+    its own gate would leave the credential open to exactly the overlap the
+    launcher gate closes.
+    """
+
+    launcher = AgentLauncher()
+    manager = ProviderSkillInventoryManager(
+        store=None,  # type: ignore[arg-type]
+        credential_gate=launcher.credential_gate,
+    )
+    assert manager.credential_gate is launcher.credential_gate
+
+    turn_hold = await launcher.credential_gate.hold("codex", "")
+    probing = threading.Event()
+
+    def probe() -> None:
+        with manager.credential_gate.hold_blocking("codex", ""):
+            probing.set()
+
+    worker = threading.Thread(target=probe, daemon=True)
+    worker.start()
+    worker.join(timeout=0.2)
+
+    assert not probing.is_set(), "a skill probe started while a turn held the credential"
+
+    turn_hold.release()
+    worker.join(timeout=5)
+    assert probing.is_set()

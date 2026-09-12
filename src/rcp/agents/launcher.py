@@ -374,7 +374,9 @@ class AgentLauncher:
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None], int] = {}
-        self._credential_gate = ProviderCredentialGate()
+        #: Shared so every process that can rotate this login is staggered,
+        #: not only task turns.
+        self.credential_gate = ProviderCredentialGate()
 
     def readiness(
         self,
@@ -567,12 +569,16 @@ class AgentLauncher:
         # Enumerate only once the CLI is known to answer. An unauthenticated
         # catalog probe just costs a subprocess to learn what auth already said.
         catalog_command = profile.catalog_command(candidate) if authenticated else None
-        catalog = self._probe(host, catalog_command) if catalog_command else None
+        # Both of these run the provider itself and load the same login a turn
+        # does, so they are staggered against turns rather than racing them.
+        with self.credential_gate.hold_blocking(provider, host):
+            catalog = self._probe(host, catalog_command) if catalog_command else None
         work_like_available = None
         work_like_reason = None
         work_command = profile.work_like_probe_command(candidate) if authenticated else None
         if work_command is not None:
-            work_probe = self._probe(host, work_command)
+            with self.credential_gate.hold_blocking(provider, host):
+                work_probe = self._probe(host, work_command)
             if work_probe.returncode == 255:
                 where = f" on {host}" if host else ""
                 work_like_reason = (
@@ -849,7 +855,12 @@ class AgentLauncher:
             yield AgentEvent(event="remote_process_start", text=remote_pid_file)
         # Held until this provider speaks, so two turns cannot rotate one
         # credential's refresh token at the same time.
-        credential_hold = await self._credential_gate.hold(provider, host)
+        credential_hold = await self.credential_gate.hold(provider, host)
+        if control is not None and control.pause_requested.is_set():
+            # The pre-launch check ran before this wait, which can be long.
+            credential_hold.release()
+            yield AgentEvent(event="paused", text="Paused before the provider started.")
+            return
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -947,9 +958,6 @@ class AgentLauncher:
                     stderr_pending = False
                 if stdout_task not in done:
                     continue
-                # This provider is past its own auth initialization, so the
-                # next turn may start. Stdin finishing does not prove that.
-                credential_hold.release()
                 try:
                     raw_line, omitted_bytes = stdout_task.result()
                 except StopAsyncIteration:
@@ -965,6 +973,7 @@ class AgentLauncher:
                         ),
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
+                    credential_hold.release()
                     if prompt_delivered:
                         yield event
                     continue
@@ -973,7 +982,12 @@ class AgentLauncher:
                 if not line:
                     continue
                 if invocation_gate is not None and line == invocation_gate.ready_line:
+                    # The broker prints this straight after spawning, before the
+                    # provider authenticates, so it does not end the hold.
                     continue
+                # A line the provider itself wrote: it is past its own auth
+                # initialization and the next startup may begin.
+                credential_hold.release()
                 if stdin_pending:
                     await stdin_task
                     stdin_pending = False
