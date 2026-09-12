@@ -45,6 +45,9 @@ CHAT_TITLE_MAX_CHARS = 120
 CHAT_PREVIEW_MAX_CHARS = 240
 STEERING_MESSAGE_MAX_CHARS = 32_000
 # One provider startup at a time per credential; see agents/credential_gate.py.
+# The minimum outlives the provider's first line because neither CLI reports when
+# it rotates its refresh token, and that call may follow the first line.
+PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS = 2.0
 PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS = 20.0
 PROVIDER_STEER_WRITE_TIMEOUT_SECONDS = 10.0
 PROVIDER_STEER_ACK_TIMEOUT_SECONDS = 30.0

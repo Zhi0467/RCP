@@ -11,9 +11,13 @@ failed turn that exposed it.
 
 RCP is the component that fans those launches out, so RCP is the component that
 has to stagger them. The gate below admits one startup at a time per
-credential, released as soon as the provider emits its first line, which is
-necessarily after it finished initializing auth. Turns still run concurrently
-once past startup.
+credential. Turns still run concurrently once past startup.
+
+A hold ends at the later of two marks. The provider's first line proves it is
+running, and a minimum stagger covers the refresh itself, because neither CLI
+says when it rotates the token and the first line may well precede that call.
+Releasing on the first line alone would assume an ordering we cannot observe
+without spending the very token at risk.
 
 This narrows the window rather than closing it: a provider that refreshes again
 mid-turn is outside any boundary RCP controls.
@@ -23,7 +27,10 @@ from __future__ import annotations
 
 import asyncio
 
-from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS
+from rcp.limits import (
+    PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
+    PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS,
+)
 
 
 class CredentialStartupHold:
@@ -37,16 +44,32 @@ class CredentialStartupHold:
     def __init__(self, lock: asyncio.Lock | None) -> None:
         self._lock = lock
         self._expiry: asyncio.TimerHandle | None = None
+        self._pending: asyncio.TimerHandle | None = None
+        self._earliest = 0.0
         if lock is not None:
-            self._expiry = asyncio.get_running_loop().call_later(
-                PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self.release
+            loop = asyncio.get_running_loop()
+            self._earliest = loop.time() + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+            self._expiry = loop.call_later(
+                PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self._release_now
             )
 
     def release(self) -> None:
+        """End this startup, no earlier than the minimum stagger allows."""
+
+        if self._lock is None or self._pending is not None:
+            return
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._earliest:
+            self._pending = loop.call_at(self._earliest, self._release_now)
+            return
+        self._release_now()
+
+    def _release_now(self) -> None:
         lock, self._lock = self._lock, None
-        if self._expiry is not None:
-            self._expiry.cancel()
-            self._expiry = None
+        for timer in (self._expiry, self._pending):
+            if timer is not None:
+                timer.cancel()
+        self._expiry = self._pending = None
         if lock is not None:
             lock.release()
 

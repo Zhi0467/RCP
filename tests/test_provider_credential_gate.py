@@ -15,8 +15,17 @@ from rcp.agents import AgentLauncher
 from rcp.agents.credential_gate import ProviderCredentialGate
 
 
+@pytest.fixture
+def prompt_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the stagger so a unit test asserts ordering, not wall time."""
+
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0
+    )
+
+
 @pytest.mark.asyncio
-async def test_one_credential_admits_one_startup_at_a_time() -> None:
+async def test_one_credential_admits_one_startup_at_a_time(prompt_minimum: None) -> None:
     gate = ProviderCredentialGate()
     first = await gate.hold("codex", "")
     second = asyncio.create_task(gate.hold("codex", ""))
@@ -29,7 +38,7 @@ async def test_one_credential_admits_one_startup_at_a_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_separate_credentials_start_concurrently() -> None:
+async def test_separate_credentials_start_concurrently(prompt_minimum: None) -> None:
     """Staggering is per login, not global; unrelated accounts must not queue."""
 
     gate = ProviderCredentialGate()
@@ -42,7 +51,7 @@ async def test_separate_credentials_start_concurrently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_release_is_idempotent() -> None:
+async def test_release_is_idempotent(prompt_minimum: None) -> None:
     """Every launcher exit path releases, and several of them can run together."""
 
     gate = ProviderCredentialGate()
@@ -59,6 +68,9 @@ async def test_a_silent_provider_does_not_strand_the_credential(
 ) -> None:
     """A provider that never speaks must not serialize the whole queue behind it."""
 
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0
+    )
     monkeypatch.setattr(
         "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS", 0.05
     )
@@ -132,6 +144,9 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
         peak_starting = max(peak_starting, starting)
         return FakeProcess()
 
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0
+    )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     launcher = AgentLauncher()
     launcher.readiness = lambda provider, host="": type(
@@ -150,3 +165,24 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
         f"{peak_starting} provider startups overlapped on one credential; "
         "concurrent refreshes can spend the same single-use refresh token"
     )
+
+
+@pytest.mark.asyncio
+async def test_minimum_stagger_outlasts_an_immediate_first_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider may rotate its token after it starts talking, so speaking early
+    must not immediately release the credential."""
+
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0.2
+    )
+    gate = ProviderCredentialGate()
+    hold = await gate.hold("codex", "")
+    hold.release()
+
+    waiting = asyncio.create_task(gate.hold("codex", ""))
+    await asyncio.sleep(0.05)
+    assert not waiting.done(), "the credential was freed before the minimum stagger"
+
+    (await asyncio.wait_for(waiting, timeout=2)).release()
