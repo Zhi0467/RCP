@@ -42,7 +42,7 @@ def project_watchers(
         else None
     )
     return [
-        _watcher_response(record)
+        _watcher_response(record, can_stop_watching=_can_stop_watching(store, record))
         for record in store.watchers(catalog.resolve_project_id(project_id))
         if target is None or record.graph_target == target
     ]
@@ -54,6 +54,7 @@ def check_watcher_now(
     watcher_id: str,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     watcher_poller: WatcherPollerDependency,
 ) -> dict[str, object]:
     require_registered_project(catalog, project_id)
@@ -63,7 +64,7 @@ def check_watcher_now(
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _watcher_response(watcher)
+    return _watcher_response(watcher, can_stop_watching=_can_stop_watching(store, watcher))
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
@@ -78,7 +79,7 @@ def stop_watcher(
     watcher = store.watcher(watcher_id)
     if watcher is None or watcher.project_id != project_id:
         raise HTTPException(status_code=404, detail="Watcher not found")
-    if watcher.continuation.patch_kind == "experiment_loop":
+    if _stop_loop_owns_watcher(store, watcher):
         raise HTTPException(
             status_code=409,
             detail="Use Stop loop to stop an Experiment loop and its watchers gracefully.",
@@ -91,7 +92,7 @@ def stop_watcher(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _watcher_response(stopped[0])
+    return _watcher_response(stopped[0], can_stop_watching=_can_stop_watching(store, stopped[0]))
 
 
 @router.post(
@@ -104,6 +105,7 @@ def cancel_watcher(
     request: Request,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     watcher_poller: WatcherPollerDependency,
     identity_access: IdentityDependency,
 ) -> dict[str, object]:
@@ -115,11 +117,46 @@ def cancel_watcher(
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _watcher_response(watcher)
+    return _watcher_response(watcher, can_stop_watching=_can_stop_watching(store, watcher))
 
 
-def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
+def _stop_loop_owns_watcher(store: AppStore, record: StoredWatcherRecord) -> bool:
+    """Whether graceful Stop loop, not a human watcher stop, owns this watcher.
+
+    Stop loop is the right control only while its episode can still take one.
+    Once the episode carries a durable ending its wrap-up fence refuses Stop, so
+    a blanket refusal here would name an action the human cannot reach and leave
+    a live observer with no non-destructive control but Cancel, which kills the
+    observed job.
+    """
+
+    if record.continuation.patch_kind != "experiment_loop":
+        return False
+    episode_id = record.continuation.control_episode_id
+    if not isinstance(episode_id, str) or not episode_id:
+        return False
+    episode = store.episode(episode_id)
+    return episode is not None and episode.ending is None
+
+
+def _can_stop_watching(store: AppStore, record: StoredWatcherRecord) -> bool:
+    """Whether a human may retire this observer without touching the observed job."""
+
+    return bool(
+        record.status in {"active", "degraded", "completed"}
+        and not record.notified
+        and record.notification_operation_id is None
+        and not _stop_loop_owns_watcher(store, record)
+    )
+
+
+def _watcher_response(
+    record: StoredWatcherRecord,
+    *,
+    can_stop_watching: bool = False,
+) -> dict[str, object]:
     payload = record.model_dump(mode="json")
+    payload["can_stop_watching"] = can_stop_watching
     payload["can_cancel"] = isinstance(record, WatcherRecord) and record.can_cancel
     payload["can_check_now"] = bool(
         isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified

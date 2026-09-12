@@ -87,6 +87,19 @@ def run_experiment(
             raise HTTPException(status_code=409, detail=" ".join(control.reasons))
         client_request = dict(body)
         client_request.pop("resolved_compute_context", None)
+        # Reauthorizing the next episode is an operational human act, not research
+        # truth, so an explicit ceiling arrives with the Run instead of requiring a
+        # staged node edit and a Sync. The node value remains the default.
+        requested_ceiling = client_request.pop("invocation_ceiling", None)
+        if requested_ceiling is not None and (
+            not isinstance(requested_ceiling, int)
+            or isinstance(requested_ceiling, bool)
+            or requested_ceiling < 1
+        ):
+            raise ValueError("The authorized invocation limit must be a positive integer.")
+        episode_ceiling = (
+            node.invocation_ceiling if requested_ceiling is None else requested_ceiling
+        )
         supplied = RunRequest.model_validate(client_request)
         if supplied.result_view is not None:
             raise ValueError("Result views require an ordinary node Work turn.")
@@ -109,7 +122,7 @@ def run_experiment(
                 trigger="experiment_run",
                 episode_id=episode_id,
                 invocation=1,
-                invocation_ceiling=node.invocation_ceiling,
+                invocation_ceiling=episode_ceiling,
                 control_revision=state.revision,
                 decision_bundle=control.governing_decisions,
                 completion_criteria=list(node.completion_criteria),
@@ -146,6 +159,7 @@ def run_experiment(
             state_revision=state.revision,
             control=control,
             episode_id=episode_id,
+            invocation_ceiling=episode_ceiling,
         )
         record = background_tasks.start(
             project_id,

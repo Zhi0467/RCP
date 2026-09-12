@@ -935,6 +935,7 @@ interface WatcherDeliveryRecord {
   stopped_at: string | null;
   stop_operation_id: string | null;
   can_check_now: boolean;
+  can_stop_watching: boolean;
   delivery_label: string;
 }
 

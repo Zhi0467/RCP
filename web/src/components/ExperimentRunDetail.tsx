@@ -68,7 +68,7 @@ interface Props {
   allowStart?: boolean;
   startDisabled?: boolean;
   onInspectTask?: (operationId: string) => void;
-  onRun: () => void;
+  onRun: (invocationCeiling?: number) => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
@@ -100,6 +100,7 @@ export function ExperimentRunDetail({
 }: Props) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
+  const [ceilingInput, setCeilingInput] = useState(String(node.invocation_ceiling));
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
@@ -141,6 +142,11 @@ export function ExperimentRunDetail({
   const currentNextAction = currentExperimentGuidance(node, "next_action");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
+  // At the ceiling the next Run is a reauthorization, so the authorized count is
+  // part of the act. It travels with the Run and never edits the graph.
+  const reauthorizing = health === "paused_at_limit";
+  const authorizedCeiling = Number.parseInt(ceilingInput, 10);
+  const authorizedCeilingValid = Number.isInteger(authorizedCeiling) && authorizedCeiling >= 1;
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
@@ -203,18 +209,46 @@ export function ExperimentRunDetail({
               {control.report_is_current ? "Open report" : "Previous episode report"}
             </EpisodeReportLink>
           )}
+          {allowStart && !control.node_closed && reauthorizing && (
+            <label className="experiment-reauthorize-count">
+              <span className="eyebrow">Invocations</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={ceilingInput}
+                disabled={runDisabled || startDisabled || runBusy || !control.can_start}
+                onChange={(event) => setCeilingInput(event.target.value)}
+                aria-label="Invocations to authorize for the next episode"
+              />
+            </label>
+          )}
           {allowStart && !control.node_closed && (
             <button
               type="button"
               className="button primary compact experiment-run-button"
               disabled={
-                runDisabled || startDisabled || runBusy || stopUnsettled || !control.can_start
+                runDisabled ||
+                startDisabled ||
+                runBusy ||
+                stopUnsettled ||
+                !control.can_start ||
+                (reauthorizing && !authorizedCeilingValid)
               }
-              onClick={onRun}
+              onClick={() => onRun(reauthorizing ? authorizedCeiling : undefined)}
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={13} aria-hidden="true" />{" "}
-              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
+              {runBusy
+                ? reauthorizing
+                  ? "Reauthorizing"
+                  : "Starting"
+                : reauthorizing
+                  ? "Reauthorize"
+                  : control.episode_id
+                    ? "Start new episode"
+                    : "Start episode"}
             </button>
           )}
         </div>

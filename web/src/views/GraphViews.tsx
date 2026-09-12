@@ -1112,7 +1112,7 @@ interface ExecutionProps {
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onDetailFocused: () => void;
   onOpenHistory: () => void;
-  onRunExperiment: (node: GraphNode) => void;
+  onRunExperiment: (node: GraphNode, invocationCeiling?: number) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
@@ -1630,7 +1630,7 @@ function ExperimentEpisodeCard({
   onSelectExperiment: (nodeId: string | null) => void;
   onInspectTask: (operationId: string) => void;
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
-  onRunExperiment: (node: GraphNode) => void;
+  onRunExperiment: (node: GraphNode, invocationCeiling?: number) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
@@ -1708,7 +1708,7 @@ function ExperimentEpisodeCard({
             ownedByAutoResearch={Boolean(indexedEntry?.parent_episode_id)}
             watchedByParentAutoResearch={watchedByParentAutoResearch}
             allowStart={!isExactBranchEpisode}
-            onRun={() => onRunExperiment(run.node)}
+            onRun={(invocationCeiling) => onRunExperiment(run.node, invocationCeiling)}
             onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
             onRecover={(action) => {

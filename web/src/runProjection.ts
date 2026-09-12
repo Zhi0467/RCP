@@ -120,7 +120,12 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
       : "Resume this episode",
     retry: "Retry this episode, or switch provider",
     keep_loop: "Keep loop running; check now if needed",
-    start_episode: run.control.episode_id ? "Start a new episode" : "Start an episode",
+    start_episode:
+      run.health === "paused_at_limit"
+        ? "Reauthorize more invocations"
+        : run.control.episode_id
+          ? "Start a new episode"
+          : "Start an episode",
     stop_and_restart: "Stop loop, then start a new episode",
     resolve_requirements: "Resolve the run requirements",
     open_report: "Open report",

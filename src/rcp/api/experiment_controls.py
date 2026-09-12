@@ -367,7 +367,11 @@ def _experiment_recommendation(
 ) -> ExperimentRecommendationKind:
     if health in {"stopping", "wrapping_up"}:
         return "wait"
-    if episode is not None and episode.wrapup_state == "ready":
+    # A report is the deliverable of the ending, not the next step past it. Once
+    # the loop is actually resumable again, recommending the report would leave
+    # the human with no published pointer to the control that moves the work on.
+    resumable = health in {"paused_at_limit", "human_stopped"} and control.ready
+    if episode is not None and episode.wrapup_state == "ready" and not resumable:
         return "open_report"
     if episode is not None and episode.wrapup_state == "legacy_unavailable":
         return "none"

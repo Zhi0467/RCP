@@ -3091,7 +3091,7 @@ export default function App() {
   };
 
   const startExperiment = useCallback(
-    async (node: GraphNode): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
       if (!project || node.type !== "experiment") {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3119,6 +3119,9 @@ export default function App() {
               run_on: profile.run_on,
               run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
               chat_id: chatId,
+              // Omitted unless the human reauthorized an explicit count; the
+              // backend then keeps the Experiment node's own limit.
+              ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
             }),
           },
         );
@@ -3162,9 +3165,9 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode) => {
+    async (node: GraphNode, invocationCeiling?: number) => {
       try {
-        await startExperiment(node);
+        await startExperiment(node, invocationCeiling);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -4552,7 +4555,9 @@ export default function App() {
                 }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
-                onRunExperiment={(node) => void runExperiment(node)}
+                onRunExperiment={(node, invocationCeiling) =>
+                  void runExperiment(node, invocationCeiling)
+                }
                 onStopExperiment={(nodeId, episodeId) =>
                   void stopExperimentLoop(nodeId, episodeId ?? null)
                 }

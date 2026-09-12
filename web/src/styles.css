@@ -3922,6 +3922,14 @@ button:disabled {
   gap: 7px;
   justify-content: flex-end;
 }
+.experiment-reauthorize-count {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+.experiment-reauthorize-count input {
+  width: 4.5em;
+}
 .experiment-run-recommendation {
   align-items: baseline;
   background: color-mix(in srgb, var(--experiment-health) 7%, var(--sheet));
