@@ -20,6 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
+from rcp.agents.credential_gate import ProviderCredentialGate
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
@@ -373,6 +374,7 @@ class AgentLauncher:
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None], int] = {}
+        self._credential_gate = ProviderCredentialGate()
 
     def readiness(
         self,
@@ -845,6 +847,9 @@ class AgentLauncher:
             return
         if host and remote_pid_file:
             yield AgentEvent(event="remote_process_start", text=remote_pid_file)
+        # Held until this provider speaks, so two turns cannot rotate one
+        # credential's refresh token at the same time.
+        credential_hold = await self._credential_gate.hold(provider, host)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -856,6 +861,7 @@ class AgentLauncher:
                 start_new_session=True,
             )
         except OSError as exc:
+            credential_hold.release()
             if host and remote_pid_file:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
@@ -939,6 +945,9 @@ class AgentLauncher:
                     stderr_pending = False
                 if stdout_task not in done:
                     continue
+                # This provider is past its own auth initialization, so the
+                # next turn may start. Stdin finishing does not prove that.
+                credential_hold.release()
                 try:
                     raw_line, omitted_bytes = stdout_task.result()
                 except StopAsyncIteration:
@@ -1148,6 +1157,7 @@ class AgentLauncher:
             else:
                 yield AgentEvent(event="done")
         finally:
+            credential_hold.release()
             steering.close()
 
             async def cleanup() -> None:
