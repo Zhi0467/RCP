@@ -38,6 +38,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from rcp.limits import (
+    PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS,
 )
@@ -114,8 +115,23 @@ class ProviderCredentialGate:
         """
 
         lock = self._lock_for(provider, host)
-        await asyncio.to_thread(lock.acquire)
-        return CredentialStartupHold(lock)
+        while True:
+            # `to_thread` cannot be cancelled, so each attempt is bounded and
+            # shielded. An attempt that wins after its caller is gone would
+            # otherwise hold the credential with no hold object behind it, and
+            # so no expiry to release it, stranding the login until a restart.
+            # Short attempts also hand the worker thread back between tries, so
+            # a waiting startup cannot pin the loop's executor through shutdown.
+            attempt = asyncio.ensure_future(
+                asyncio.to_thread(lock.acquire, True, PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS)
+            )
+            try:
+                acquired = await asyncio.shield(attempt)
+            except asyncio.CancelledError:
+                attempt.add_done_callback(_release_if_won(lock))
+                raise
+            if acquired:
+                return CredentialStartupHold(lock)
 
     @contextmanager
     def hold_blocking(self, provider: str, host: str) -> Iterator[None]:
@@ -138,6 +154,18 @@ class ProviderCredentialGate:
     def _lock_for(self, provider: str, host: str) -> threading.Lock:
         with self._guard:
             return self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
+
+
+def _release_if_won(lock: threading.Lock) -> Callable[[asyncio.Future[bool]], None]:
+    """Give back a lock won by an attempt whose caller has already gone away."""
+
+    def give_back(attempt: asyncio.Future[bool]) -> None:
+        if attempt.cancelled() or attempt.exception() is not None:
+            return
+        if attempt.result():
+            lock.release()
+
+    return give_back
 
 
 def _start_timer(delay: float, action: Callable[[], None]) -> threading.Timer:

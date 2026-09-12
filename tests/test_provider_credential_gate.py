@@ -291,3 +291,29 @@ async def test_a_skill_probe_and_a_turn_share_one_credential(
     turn_hold.release()
     worker.join(timeout=5)
     assert probing.is_set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_wait_does_not_strand_the_credential(
+    prompt_minimum: None,
+) -> None:
+    """`asyncio.to_thread` is not cancellable.
+
+    A cancelled waiter's worker thread still takes the lock, and a win nobody
+    holds has no expiry behind it, so the login would stay locked until RCP
+    restarts.
+    """
+
+    gate = ProviderCredentialGate()
+    holder = await gate.hold("codex", "")
+
+    queued = asyncio.create_task(gate.hold("codex", ""))
+    await asyncio.sleep(0.1)
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+
+    holder.release()
+
+    later = await asyncio.wait_for(gate.hold("codex", ""), timeout=5)
+    later.release()
