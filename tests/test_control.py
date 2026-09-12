@@ -1164,10 +1164,11 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
     )
     assert "experiment-loop-decision-action" in _codes(validate_patch(state, unqueued, ["repo"]))
 
-    # Dropping the prior choice would leave `selected_option` naming an option
-    # the ballot no longer offers, and the card shows that choice only as a mark
-    # on a matching option, so the human would never see what is being revisited.
-    dropped = _patch(
+    # An agent may reword an option but may never write `selected_option`, so a
+    # restatement that replaces the chosen wording is the ordinary shape of
+    # reopening a decision rather than an error to refuse. The Decision card
+    # names the prior choice when no option carries it.
+    reworded = _patch(
         [
             {
                 "op": "update_nodes",
@@ -1176,19 +1177,18 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
                         "id": DECISION_ID,
                         "changes": {
                             "status": "revisit",
-                            "options": ["8xA100", "4xA100 with earlier compaction"],
+                            "options": ["4xA100 with earlier compaction", "8xA100"],
                         },
                     }
                 ],
             }
         ]
     )
-    assert "experiment-loop-ballot-baseline" in _codes(validate_patch(state, dropped, ["repo"]))
+    assert not validate_patch(state, reworded, ["repo"]).rejected
 
     # The queued status licenses the restatement, not the transition into it. A
     # loop that queued a Decision in an earlier turn still has to be able to add
-    # the option a later turn's evidence raises, so an already-queued Decision
-    # stays restatable and the baseline rule still guards its prior choice.
+    # the option a later turn's evidence raises.
     queued = _state()
     queued.nodes[DECISION_ID] = queued.nodes[DECISION_ID].model_copy(update={"status": "revisit"})
     later_option = _patch(
@@ -1208,7 +1208,6 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
         ]
     )
     assert not validate_patch(queued, later_option, ["repo"]).rejected
-    assert "experiment-loop-ballot-baseline" in _codes(validate_patch(queued, dropped, ["repo"]))
 
 
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
