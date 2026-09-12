@@ -89,7 +89,11 @@ def stop_watcher(
             detail="Use Stop loop to stop an Experiment loop and its watchers gracefully.",
         )
     try:
-        stopped = store.stop_watchers(project_id, [watcher_id])
+        # This control is offered only against a live observation, and
+        # can_stop_watching is a projection, not a gate. The storage rule is the
+        # enforcement: an observation that completes between the offer and this
+        # request is a retained result to claim, not an observer to retire.
+        stopped = store.stop_watchers(project_id, [watcher_id], observing_only=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except WatcherClaimConflict as exc:

@@ -2794,3 +2794,43 @@ def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> N
     )
     assert accepted.status_code == 202, accepted.text
     assert accepted.json()["request"]["control_invocation_ceiling"] == 2**53 - 1
+
+
+def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tmp_path) -> None:
+    """The offer is a projection; the storage rule is the enforcement.
+
+    An observation can finish between the list response that offered Stop
+    watching and the POST that acts on it. Retiring it then would discard the
+    retained completion the next human Run claims as invocation one.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("finishes-first")
+    loop.settle_exhausted_ending()
+
+    offered = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "finishes-first"
+    )
+    assert offered["can_stop_watching"] is True
+
+    # The job lands while the human is still looking at that row.
+    loop.store.record_watcher_check("finishes-first", status="completed", exit_code=0, error=None)
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/finishes-first/stop")
+
+    assert response.status_code == 409, response.text
+    assert "finished before it could be stopped" in response.json()["detail"]
+    retained = loop.store.watcher("finishes-first")
+    assert retained.status == "completed"
+    assert retained.notified is False
+    pending = loop.store.completed_experiment_watcher_group(
+        loop.project_id,
+        EXPERIMENT_ID,
+        graph_target=GraphTargetRef(),
+    )
+    assert pending is not None
+    assert [item.watcher_id for item in pending] == ["finishes-first"]
