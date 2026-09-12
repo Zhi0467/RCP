@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { cancelWatcher, stopWatcher } from "../api";
+import { cancelWatcher } from "../api";
 import type { ExternalWatcherRecord } from "../types";
 
 export function ExternalJobRow({
@@ -13,27 +13,12 @@ export function ExternalJobRow({
 }) {
   const [result, setResult] = useState<ExternalWatcherRecord | null>(null);
   const [cancelling, setCancelling] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Existing watcher refreshes own observation; no additional job-list request is needed.
   // The backend's can_cancel owns availability; view locks never disable Cancel.
   useEffect(() => setResult(null), [watcher]);
   const cancellation = result ?? watcher;
   const label = watcher.log_path.split("/").at(-1) || watcher.watcher_id;
-  // Retiring the observer and cancelling the observed job are different acts.
-  // The backend owns both availabilities; this row never infers either.
-  const stopWatching = async () => {
-    if (stopping) return;
-    setStopping(true);
-    setError(null);
-    try {
-      setResult(await stopWatcher(apiBase, watcher.watcher_id));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setStopping(false);
-    }
-  };
   const cancel = async () => {
     if (cancelling) return;
     setCancelling(true);
@@ -67,24 +52,12 @@ export function ExternalJobRow({
       {(error || cancellation.cancel_error) && (
         <span role="alert">{error || cancellation.cancel_error}</span>
       )}
-      {cancellation.can_stop_watching && (
-        <button
-          type="button"
-          className="button compact watcher-action"
-          onClick={() => void stopWatching()}
-          disabled={stopping || cancelling}
-          aria-label={`Stop watching ${label}`}
-          title="Stop observing this job. The job itself keeps running."
-        >
-          {stopping ? "Stopping…" : "Stop watching"}
-        </button>
-      )}
       {cancellation.can_cancel && (
         <button
           type="button"
           className="button compact watcher-action"
           onClick={() => void cancel()}
-          disabled={cancelling || stopping}
+          disabled={cancelling}
           aria-label={`Cancel job ${label}`}
         >
           {cancelling ? "Cancelling…" : "Cancel"}

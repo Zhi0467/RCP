@@ -1115,6 +1115,7 @@ interface ExecutionProps {
   onRunExperiment: (node: GraphNode, invocationCeiling?: number) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
+  onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
   episodeReportHref: (episodeId: string) => string;
@@ -1157,6 +1158,7 @@ export function ExecutionView({
   onRunExperiment,
   onStopExperiment,
   onCheckExperimentWatcher,
+  onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
   episodeReportHref,
@@ -1560,6 +1562,7 @@ export function ExecutionView({
         onRunExperiment={onRunExperiment}
         onStopExperiment={onStopExperiment}
         onCheckExperimentWatcher={onCheckExperimentWatcher}
+        onStopExperimentWatcher={onStopExperimentWatcher}
         onRecoverExperiment={onRecoverExperiment}
         onSwitchExperimentProvider={onSwitchExperimentProvider}
         episodeReportHref={episodeReportHref}
@@ -1605,6 +1608,7 @@ function ExperimentEpisodeCard({
   onRunExperiment,
   onStopExperiment,
   onCheckExperimentWatcher,
+  onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
   episodeReportHref,
@@ -1633,6 +1637,7 @@ function ExperimentEpisodeCard({
   onRunExperiment: (node: GraphNode, invocationCeiling?: number) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
+  onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
   episodeReportHref: (episodeId: string) => string;
@@ -1711,6 +1716,7 @@ function ExperimentEpisodeCard({
             onRun={(invocationCeiling) => onRunExperiment(run.node, invocationCeiling)}
             onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
+            onStopWatcher={onStopExperimentWatcher}
             onRecover={(action) => {
               if (run.currentTask) onRecoverExperiment(run.currentTask, action);
             }}

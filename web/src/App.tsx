@@ -3024,6 +3024,9 @@ export default function App() {
       });
       const nextWatchers = await api<WatcherRecord[]>(graphPath(`${apiBase}/watchers`));
       if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
+      // Retiring an observer can release an Experiment that was held shut by it,
+      // so the control projection is re-read here rather than waiting for a poll.
+      await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -4562,6 +4565,7 @@ export default function App() {
                   void stopExperimentLoop(nodeId, episodeId ?? null)
                 }
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
+                onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
                 onSwitchExperimentProvider={chooseRetryTask}
                 episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}

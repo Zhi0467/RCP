@@ -50,10 +50,6 @@ export interface ExperimentWatcherGroup {
 export type ExperimentWatcherItem =
   { kind: "group"; group: ExperimentWatcherGroup } | { kind: "watcher"; watcher: WatcherRecord };
 
-export function watcherIsActive(watcher: WatcherRecord): boolean {
-  return watcher.status === "active" || watcher.status === "degraded";
-}
-
 export function isExternalWatcherRecord(watcher: WatcherRecord): watcher is ExternalWatcherRecord {
   return "check_command" in watcher;
 }
@@ -101,6 +97,18 @@ export function isExperimentLoopTask(task: AgentTask): boolean {
   return (
     task.request?.patch_kind === "experiment_loop" && Boolean(task.request?.control_node_id ?? null)
   );
+}
+
+/** The whole positive integer a human typed to authorize a budget, or null.
+ *
+ * `parseInt` would accept a prefix, reading "1e2" as 1 and "2.5" as 2, and
+ * submit a different budget than the one on screen.
+ */
+export function authorizedInvocationCount(input: string): number | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  return Number.isInteger(value) && value >= 1 ? value : null;
 }
 
 /** Map the server's recommendation to presentation copy without re-deciding it. */
@@ -266,11 +274,6 @@ function currentExperimentTaskGroup(
 function taskEpisodeId(task: AgentTask): string | null {
   const value = task.request.control_episode_id;
   return typeof value === "string" && value ? value : null;
-}
-
-/** An Experiment-loop watcher is released by Stop loop, never one watcher at a time. */
-export function watcherIsIndividuallyStoppable(watcher: WatcherRecord): boolean {
-  return watcher.continuation?.patch_kind !== "experiment_loop";
 }
 
 function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {

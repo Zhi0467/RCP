@@ -211,6 +211,7 @@ function render(run, props = {}) {
       onRecover() {},
       onSwitchProvider() {},
       onCheckWatcher() {},
+      onStopWatcher() {},
       episodeReportHref: (episodeId) => `/reports/${episodeId}`,
       ...props,
     }),
@@ -889,6 +890,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       onRunExperiment() {},
       onStopExperiment() {},
       onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
     }),
@@ -948,6 +950,26 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
   assert.match(html, /Stop loop/);
   // The reason is the server's sentence, not one this card composed.
   assert.match(html, /A previous episode is still open on this Experiment\./);
+});
+
+test("Reauthorize offers the node's limit as the count the human can override", () => {
+  const html = render({
+    node: node(),
+    control: control({
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+
+  assert.match(html, /Reauthorize/);
+  assert.match(html, /Invocations to authorize for the next episode/);
+  assert.match(html, /value="3"/);
 });
 
 test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
@@ -1262,6 +1284,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       onRunExperiment() {},
       onStopExperiment() {},
       onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
     }),

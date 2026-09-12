@@ -498,6 +498,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
       onRunExperiment() {},
       onStopExperiment() {},
       onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
       episodeReportHref: () => "#",

@@ -4,13 +4,12 @@ import test from "node:test";
 
 import {
   buildExperimentRun,
+  authorizedInvocationCount,
   experimentRecommendation,
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isGraphWatcherRecord,
   visibleChatWatchers,
-  watcherIsActive,
-  watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
 } from "../src/runProjection.ts";
 
@@ -680,11 +679,15 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
   );
 });
 
-test("only a generic watcher can be stopped on its own", () => {
-  assert.equal(watcherIsIndividuallyStoppable({ continuation: { patch_kind: "work" } }), true);
-  assert.equal(
-    watcherIsIndividuallyStoppable({ continuation: { patch_kind: "experiment_loop" } }),
-    false,
-  );
-  assert.equal(watcherIsIndividuallyStoppable({}), true);
+test("an authorized invocation count is the whole number the human typed", () => {
+  // parseInt would read a prefix and authorize a budget nobody chose.
+  assert.equal(authorizedInvocationCount("1e2"), 100);
+  assert.equal(authorizedInvocationCount(" 12 "), 12);
+  assert.equal(authorizedInvocationCount("1"), 1);
+  assert.equal(authorizedInvocationCount("2.5"), null);
+  assert.equal(authorizedInvocationCount("0"), null);
+  assert.equal(authorizedInvocationCount("-4"), null);
+  assert.equal(authorizedInvocationCount(""), null);
+  assert.equal(authorizedInvocationCount("  "), null);
+  assert.equal(authorizedInvocationCount("ten"), null);
 });

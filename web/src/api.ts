@@ -428,7 +428,3 @@ export function probeMachineCompute(apiBase: string, alias: string): Promise<Com
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
 }
-
-export function stopWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
-  return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, { method: "POST" });
-}

@@ -7,6 +7,7 @@ import {
   type ExperimentRun,
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
+  authorizedInvocationCount,
   experimentRecommendation,
   experimentWatcherDisplayItems,
   graphConditionLabel,
@@ -73,6 +74,7 @@ interface Props {
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   episodeReportHref: (episodeId: string) => string;
 }
 
@@ -96,6 +98,7 @@ export function ExperimentRunDetail({
   onRecover,
   onSwitchProvider,
   onCheckWatcher,
+  onStopWatcher,
   episodeReportHref,
 }: Props) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
@@ -145,8 +148,7 @@ export function ExperimentRunDetail({
   // At the ceiling the next Run is a reauthorization, so the authorized count is
   // part of the act. It travels with the Run and never edits the graph.
   const reauthorizing = health === "paused_at_limit";
-  const authorizedCeiling = Number.parseInt(ceilingInput, 10);
-  const authorizedCeilingValid = Number.isInteger(authorizedCeiling) && authorizedCeiling >= 1;
+  const authorizedCeiling = authorizedInvocationCount(ceilingInput);
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
@@ -234,9 +236,9 @@ export function ExperimentRunDetail({
                 runBusy ||
                 stopUnsettled ||
                 !control.can_start ||
-                (reauthorizing && !authorizedCeilingValid)
+                (reauthorizing && authorizedCeiling === null)
               }
-              onClick={() => onRun(reauthorizing ? authorizedCeiling : undefined)}
+              onClick={() => onRun(reauthorizing ? (authorizedCeiling ?? undefined) : undefined)}
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={13} aria-hidden="true" />{" "}
@@ -411,6 +413,7 @@ export function ExperimentRunDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={watcherActionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
               onHideWatcher={watcherVisibility.hide}
             />
           </ul>
@@ -424,6 +427,7 @@ export function ExperimentRunDetail({
                 watcherCheckBusyId={watcherCheckBusyId}
                 actionsDisabled={watcherActionsDisabled}
                 onCheckWatcher={onCheckWatcher}
+                onStopWatcher={onStopWatcher}
                 onHideWatcher={watcherVisibility.hide}
               />
             </ul>
@@ -605,6 +609,7 @@ function WatcherItems({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -612,6 +617,7 @@ function WatcherItems({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   return items.map((item) =>
@@ -622,6 +628,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         key={item.group.groupId}
       />
@@ -632,6 +639,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         key={item.watcher.watcher_id}
       />
@@ -655,6 +663,7 @@ function WatcherGroupDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -662,6 +671,7 @@ function WatcherGroupDetail({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   return (
@@ -686,6 +696,7 @@ function WatcherGroupDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={actionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
               onHideWatcher={onHideWatcher}
               key={watcher.watcher_id}
             />
@@ -702,6 +713,7 @@ function WatcherDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -709,6 +721,7 @@ function WatcherDetail({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
@@ -737,6 +750,18 @@ function WatcherDetail({
               </button>
             )}
           </>
+        )}
+        {watcher.can_stop_watching && (
+          <button
+            type="button"
+            className="button compact watcher-action"
+            disabled={actionsDisabled}
+            onClick={() => onStopWatcher(watcher.watcher_id)}
+            aria-label={`Stop watching ${watcher.watcher_id}`}
+            title="Stop observing this job. The job itself keeps running."
+          >
+            Stop watching
+          </button>
         )}
       </div>
       <details>
