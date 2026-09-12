@@ -733,21 +733,26 @@ class WatcherDelivery:
         if not self._retry.generation_is_current(retry_generation):
             return
         watcher_ids = [item.watcher_id for item in group]
-        authorized_by, terminal_diagnostic = self._store.resolve_watcher_delivery_authorizer(
-            watcher_ids
-        )
-        if not self._retry.generation_is_current(retry_generation):
-            return
-        if authorized_by is None:
-            if terminal_diagnostic is not None:
-                self._logger.warning(
-                    "Watcher delivery terminalized for %s: %s",
-                    watcher_ids,
-                    terminal_diagnostic,
-                )
-            return
         first = group[0]
         continuation = first.continuation
+        # Experiment observations may be adopted across episodes or maintained
+        # by another member. The receiving episode owns their wake authority;
+        # generic Work and Auto-research retain origin-based authorization.
+        authorized_by = None
+        if continuation.patch_kind != "experiment_loop":
+            authorized_by, terminal_diagnostic = self._store.resolve_watcher_delivery_authorizer(
+                watcher_ids
+            )
+            if not self._retry.generation_is_current(retry_generation):
+                return
+            if authorized_by is None:
+                if terminal_diagnostic is not None:
+                    self._logger.warning(
+                        "Watcher delivery terminalized for %s: %s",
+                        watcher_ids,
+                        terminal_diagnostic,
+                    )
+                return
         service = self._graph_project_service(first.project_id, first.graph_target)
         if first.origin_task_kind == "auto_research":
             started: list[str] = []
@@ -804,6 +809,19 @@ class WatcherDelivery:
                     raise ValueError(
                         "An Experiment watcher resolved an episode on another graph target."
                     )
+                parent = self._store.episode(episode.episode_id)
+                authorized_by = parent.authorized_by if parent is not None else None
+                if authorized_by is None:
+                    self._store.record_experiment_episode_diagnostic(
+                        episode_id=episode.episode_id,
+                        project_id=first.project_id,
+                        control_node_id=control_node_id,
+                        diagnostic=(
+                            "This Experiment episode has no recorded human authorizer. "
+                            "Stop the loop and start a new episode."
+                        ),
+                    )
+                    return
                 current_machine = (
                     service.manifest.machine_map.get(runtime.run_on)
                     if runtime.run_on is not None
@@ -895,6 +913,9 @@ class WatcherDelivery:
                         "reasoning": runtime.reasoning,
                         "run_on": runtime.run_on,
                         "run_truth_scope": runtime.run_truth_scope,
+                        "workflow_ids": runtime.workflow_ids,
+                        "skill_ids": runtime.skill_ids,
+                        "resolved_skill_packages": runtime.resolved_skill_packages,
                         "chat_scope": "node",
                         "node_id": control_node_id,
                         "chat_id": episode.chat_id,
@@ -916,6 +937,7 @@ class WatcherDelivery:
                 )
             return
 
+        assert authorized_by is not None
         request = self._generic_request(group)
         with self._experiment_admission(first.project_id, service, request):
             self._start_watcher_notification(

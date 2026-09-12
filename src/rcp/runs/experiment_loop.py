@@ -236,9 +236,9 @@ def preflight_episode_wake(
 ) -> EpisodeWakePreflight:
     """Prove the episode session and exact stage before any claim or budget spend.
 
-    Watcher provenance never selects the session — the newest human-authorized
-    episode does — so an older group that no longer matches the current binding
-    stays pending instead of switching sessions.
+    Watcher provenance never selects the session — the current authorized
+    episode does. Compatible observations from earlier episodes keep their
+    origin while continuing the receiving episode's exact session and stage.
     """
 
     if not group:
@@ -265,14 +265,16 @@ def preflight_episode_wake(
         for label, expected, actual in (
             ("project", episode.project_id, record.project_id),
             ("Experiment", episode.control_node_id, record.node_id),
-            ("episode", episode.episode_id, record.episode_id),
+            ("graph target", episode.graph_target, record.graph_target),
             ("check host", episode.execution_host, record.execution_host),
             ("continuation Experiment", episode.control_node_id, continuation.control_node_id),
-            ("continuation episode", episode.episode_id, continuation.control_episode_id),
+            ("origin episode", record.episode_id, continuation.control_episode_id),
             ("Patch authority", "experiment_loop", continuation.patch_kind),
         ):
             if expected != actual and label not in mismatched:
                 mismatched.append(label)
+        if record.episode_id is None and "origin episode" not in mismatched:
+            mismatched.append("origin episode")
     if mismatched:
         return EpisodeWakePreflight(
             readiness="incompatible",

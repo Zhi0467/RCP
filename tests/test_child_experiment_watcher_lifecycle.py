@@ -5,7 +5,9 @@ import uuid
 
 import pytest
 
+from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import BackgroundAgentTasks
+from rcp.core.models import Experiment, GraphState
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import AppStore, WatcherContinuation
@@ -17,6 +19,7 @@ from .test_auto_research_children_storage import (
     _experiment_task,
     _project,
 )
+from .test_storage import _TracingAppStore
 from .test_watchers import _record
 
 
@@ -109,6 +112,30 @@ def _waiting_child(tmp_path, monkeypatch, *, child_ceiling=10):
     return store, parent, root, task, watcher, launches, poller
 
 
+def test_parent_wake_diagnostics_use_a_constant_number_of_projection_reads(tmp_path):
+    store = _TracingAppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store, ceiling=1)
+    allowance = store.auto_research_experiment_allowance(parent.episode_id)
+    select_counts = []
+    for index in range(allowance.remaining):
+        task = _experiment_task(
+            store, str(uuid.uuid4()), parent.authorized_by, node_id=f"exp/child-{index}"
+        )
+        store.create_experiment_episode_with_invocation(
+            task, auto_research_route=_experiment_route(store, parent, root, task)
+        )
+        store.select_count = 0
+        runtimes = store.project_experiment_loop_runtimes(parent.project_id)
+        select_counts.append(store.select_count)
+        assert len(runtimes) == index + 1
+        exhausted = index + 1 == allowance.remaining
+        assert all(
+            bool(runtime.watcher_delivery_diagnostic) == exhausted for runtime in runtimes.values()
+        )
+    assert len(set(select_counts)) == 1
+
+
 @pytest.mark.parametrize(
     "fence", ["exhausted", "failed", "human_pause", "completed", "shared_E", "child_ceiling"]
 )
@@ -149,11 +176,36 @@ def test_child_experiment_watcher_refusal_retains_completion_without_callback_er
     assert [task.operation_id for task in store.agent_tasks(parent.project_id)] == task_ids
     assert launches == []
     assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+    runtime = store.experiment_loop_runtime_for_target(
+        child.project_id, child.request["control_node_id"], child.graph_target
+    )
+    node = Experiment(
+        type="experiment",
+        id=child.request["control_node_id"],
+        title="Waiting child",
+        objective="Inspect the completed observation.",
+        completion_criteria=["The result is inspected."],
+    )
+    control = _experiment_control_response(
+        GraphState(nodes={node.id: node}), node.id, runtime, None
+    )
+    if fence == "child_ceiling":
+        assert control.health == "paused_at_limit"
+        assert runtime.watcher_delivery_diagnostic is None
+    else:
+        assert control.health == "needs_action"
+        assert control.recommendation == "stop_and_restart"
+        assert runtime.watcher_delivery_diagnostic in control.reasons
+        assert "Auto-research parent" in runtime.watcher_delivery_diagnostic
 
 
 def test_running_parent_child_experiment_watcher_claims_and_launches_once(tmp_path, monkeypatch):
     store, parent, _root, child, watcher, launches, poller = _waiting_child(tmp_path, monkeypatch)
     before = store.auto_research_experiment_allowance(parent.episode_id).used
+    runtime = store.experiment_loop_runtime_for_target(
+        child.project_id, child.request["control_node_id"], child.graph_target
+    )
+    assert runtime.watcher_delivery_diagnostic is None
 
     poller.poll_once()
     assert poller.poll_once() == []

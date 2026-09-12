@@ -399,6 +399,58 @@ test("a waiting Experiment labels its earlier episode report explicitly", () => 
   assert.doesNotMatch(html, /Open report/);
 });
 
+test("a completed watcher waits for continuation delivery, not completion", () => {
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control(
+        {
+          health: "completion_pending",
+          recommendation: "wait",
+          run_section: "running",
+          can_stop: true,
+        },
+        { watcher_completion_pending: true },
+      ),
+      [],
+      [watcher()],
+    ),
+  );
+
+  assertDetailProjection(html, "Completion pending delivery", "Wait for continuation to start");
+  assert.match(html, /Stop loop/);
+  assert.doesNotMatch(html, /Waiting on watchers|Wait for watcher completion/);
+});
+
+test("blocked watcher delivery exposes its backend reason and available next step", () => {
+  const reason = "The owning Auto-research episode has no invocations remaining.";
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control(
+        {
+          ready: false,
+          reasons: [reason],
+          health: "needs_action",
+          recommendation: "stop_and_restart",
+          run_section: "actionable",
+          can_stop: true,
+          can_start: false,
+        },
+        { watcher_completion_pending: true, watcher_delivery_diagnostic: reason },
+      ),
+      [],
+      [watcher()],
+    ),
+  );
+
+  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
+  assert.match(html, /aria-label="Run requirements"/);
+  assert.ok(html.includes(reason));
+  assert.match(html, /Stop loop/);
+  assert.doesNotMatch(html, /Wait for watcher completion/);
+});
+
 test("an Experiment the human closed stays completed whatever its last episode did", () => {
   // Regression: deriving health from the ending alone put every Experiment whose
   // last episode paused for a human decision back into Needs action, including
