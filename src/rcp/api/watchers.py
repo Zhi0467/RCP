@@ -163,10 +163,17 @@ def _can_stop_watching(
     *,
     unended_episodes: dict[str, bool] | None = None,
 ) -> bool:
-    """Whether a human may retire this observer without touching the observed job."""
+    """Whether a human may retire this observer without touching the observed job.
+
+    Only a still-observing watcher qualifies. A completed observation is a
+    retained result waiting to be claimed as the next episode's invocation one,
+    and retiring it marks it notified, so offering this beside it would discard
+    that result under a label that promises nothing is lost. Completed rows keep
+    the non-destructive Hide.
+    """
 
     return bool(
-        record.status in {"active", "degraded", "completed"}
+        record.status in {"active", "degraded"}
         and not record.notified
         and record.notification_operation_id is None
         and not _stop_loop_owns_watcher(store, record, unended_episodes=unended_episodes)

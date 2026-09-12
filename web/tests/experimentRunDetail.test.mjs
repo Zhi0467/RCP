@@ -972,6 +972,29 @@ test("Reauthorize offers the node's limit as the count the human can override", 
   assert.match(html, /value="3"/);
 });
 
+test("the authorized count renders whatever the node's current limit is", () => {
+  // Untouched, the field derives from the node rather than initializing once, so
+  // raising Next episode limit while this card stays mounted cannot leave a stale
+  // default behind. SSR remounts per render, so this checks the derivation only;
+  // the mounted-update path has no coverage here.
+  const paused = (ceiling) => ({
+    node: node({ invocation_ceiling: ceiling }),
+    control: control({
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+
+  assert.match(render(paused(3)), /value="3"/);
+  assert.match(render(paused(10)), /value="10"/);
+});
+
 test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
   // Cancel kills the observed job. Once the episode has ended, Stop loop is gone,
   // so retiring the observer is the only non-destructive way out of the wait.

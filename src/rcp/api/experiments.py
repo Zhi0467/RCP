@@ -95,6 +95,9 @@ def run_experiment(
             not isinstance(requested_ceiling, int)
             or isinstance(requested_ceiling, bool)
             or requested_ceiling < 1
+            # Past 2^53 every JSON client reads back a different number than the
+            # one authorized here, so Runs would act on a budget nobody chose.
+            or requested_ceiling > 2**53 - 1
         ):
             raise ValueError("The authorized invocation limit must be a positive integer.")
         episode_ceiling = (

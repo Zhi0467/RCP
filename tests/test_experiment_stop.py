@@ -2739,3 +2739,58 @@ def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
     assert all(row["can_stop_watching"] is True for row in rows.values())
     # Four observers, one episode between them, one read.
     assert reads == [loop.episode_id]
+
+
+def test_a_retained_completion_is_not_offered_a_stop(manifest, tmp_path) -> None:
+    """A completed observation is a result to claim, not an observer to retire.
+
+    Retiring it marks it notified, so the next human Run could no longer claim it
+    as invocation one. That loss must not sit behind a control whose label says
+    the job keeps running.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("retained-completion", status="completed")
+    loop.settle_exhausted_ending()
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "retained-completion"
+    )
+    assert row["can_stop_watching"] is False
+
+    # The pickup the next episode depends on is still there.
+    pending = loop.store.completed_experiment_watcher_group(
+        loop.project_id,
+        EXPERIMENT_ID,
+        graph_target=GraphTargetRef(),
+    )
+    assert pending is not None
+    assert [item.watcher_id for item in pending] == ["retained-completion"]
+
+
+def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> None:
+    """Past 2^53 every JSON client reads a different number than was authorized."""
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.settle_exhausted_ending()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 2**53 + 1},
+    )
+
+    assert response.status_code == 422
+    assert "positive integer" in response.json()["detail"]
+
+    accepted = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 2**53 - 1},
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["request"]["control_invocation_ceiling"] == 2**53 - 1

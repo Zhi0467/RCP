@@ -103,7 +103,11 @@ export function ExperimentRunDetail({
 }: Props) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
-  const [ceilingInput, setCeilingInput] = useState(String(node.invocation_ceiling));
+  // Untouched, the field follows the node's own limit, which the human sees as
+  // Next episode limit beside it. A one-time initializer would keep a stale
+  // default when that limit changes while this card stays mounted, and then
+  // Reauthorize would send a count the human never chose.
+  const [editedCeiling, setEditedCeiling] = useState<string | null>(null);
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
@@ -148,6 +152,7 @@ export function ExperimentRunDetail({
   // At the ceiling the next Run is a reauthorization, so the authorized count is
   // part of the act. It travels with the Run and never edits the graph.
   const reauthorizing = health === "paused_at_limit";
+  const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
 
   return (
@@ -221,7 +226,7 @@ export function ExperimentRunDetail({
                 inputMode="numeric"
                 value={ceilingInput}
                 disabled={runDisabled || startDisabled || runBusy || !control.can_start}
-                onChange={(event) => setCeilingInput(event.target.value)}
+                onChange={(event) => setEditedCeiling(event.target.value)}
                 aria-label="Invocations to authorize for the next episode"
               />
             </label>
