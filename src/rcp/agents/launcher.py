@@ -554,51 +554,51 @@ class AgentLauncher:
                 path_state="unconfigured",
                 reason=reason,
             )
-        version_result = self._probe(host, [candidate, "--version"])
-        if host and version_result.returncode == 255:
-            return ProviderReadiness(
-                provider=provider,
-                label=profile.label,
-                installed=False,
-                authenticated=False,
-                binary_path=candidate,
-                path_state="unreachable",
-                reason=f"{host} became unreachable while checking {candidate}.",
-            )
-        version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
-        version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
-        auth = self._probe(host, profile.auth_command(candidate))
-        authenticated = profile.is_authenticated(auth)
-        # Enumerate only once the CLI is known to answer. An unauthenticated
-        # catalog probe just costs a subprocess to learn what auth already said.
-        catalog_command = profile.catalog_command(candidate) if authenticated else None
-        # Both probes below run the provider itself and load the same login a
-        # turn does, so they are staggered against turns rather than racing
-        # them. Neither takes the credential when it has nothing to run.
-        catalog = None
-        if catalog_command:
-            with self.credential_gate.hold_blocking(provider, host):
-                catalog = self._probe(host, catalog_command)
-        work_like_available = None
-        work_like_reason = None
-        work_command = profile.work_like_probe_command(candidate) if authenticated else None
-        if work_command is not None:
-            with self.credential_gate.hold_blocking(provider, host):
-                work_probe = self._probe(host, work_command)
-            if work_probe.returncode == 255:
-                where = f" on {host}" if host else ""
-                work_like_reason = (
-                    f"{profile.label} Work readiness could not be checked{where}: "
-                    + (_meaningful_stderr(work_probe.stderr) or "provider probe unavailable.")
+        # Every probe below runs the provider executable, and the ones that
+        # read its login can rotate the same token a turn does. One hold
+        # covers the sequence rather than handing the credential back
+        # between probes that belong to a single readiness answer.
+        with self.credential_gate.hold_blocking(provider, host):
+            version_result = self._probe(host, [candidate, "--version"])
+            if host and version_result.returncode == 255:
+                return ProviderReadiness(
+                    provider=provider,
+                    label=profile.label,
+                    installed=False,
+                    authenticated=False,
+                    binary_path=candidate,
+                    path_state="unreachable",
+                    reason=f"{host} became unreachable while checking {candidate}.",
                 )
-            else:
-                work_like_available = work_probe.returncode == 0
-                if not work_like_available:
+            version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
+            version = (
+                version_lines[-1] if version_result.returncode == 0 and version_lines else None
+            )
+            auth = self._probe(host, profile.auth_command(candidate))
+            authenticated = profile.is_authenticated(auth)
+            # Enumerate only once the CLI is known to answer. An unauthenticated
+            # catalog probe just costs a subprocess to learn what auth already said.
+            catalog_command = profile.catalog_command(candidate) if authenticated else None
+            catalog = self._probe(host, catalog_command) if catalog_command else None
+            work_like_available = None
+            work_like_reason = None
+            work_command = profile.work_like_probe_command(candidate) if authenticated else None
+            if work_command is not None:
+                work_probe = self._probe(host, work_command)
+                if work_probe.returncode == 255:
+                    where = f" on {host}" if host else ""
                     work_like_reason = (
-                        _meaningful_stderr(work_probe.stderr)
-                        or work_probe.stdout.strip()
-                        or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
+                        f"{profile.label} Work readiness could not be checked{where}: "
+                        + (_meaningful_stderr(work_probe.stderr) or "provider probe unavailable.")
                     )
+                else:
+                    work_like_available = work_probe.returncode == 0
+                    if not work_like_available:
+                        work_like_reason = (
+                            _meaningful_stderr(work_probe.stderr)
+                            or work_probe.stdout.strip()
+                            or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
+                        )
         return ProviderReadiness(
             provider=provider,
             label=profile.label,
@@ -868,7 +868,14 @@ class AgentLauncher:
         # Declared only once this turn is certain to launch. Announcing a remote
         # pass and then pausing would leave a live pass nothing ever closes.
         if host and remote_pid_file:
-            yield AgentEvent(event="remote_process_start", text=remote_pid_file)
+            try:
+                yield AgentEvent(event="remote_process_start", text=remote_pid_file)
+            except BaseException:
+                # A consumer closing here, or failing to persist the pass, throws
+                # into this yield: outside the subprocess arm and the stream's
+                # own finally, so nothing else would give the credential back.
+                credential_hold.release()
+                raise
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,

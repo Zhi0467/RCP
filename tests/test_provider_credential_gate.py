@@ -7,6 +7,7 @@ spent token on disk and kill the login until a human signs in again.
 
 import asyncio
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -411,3 +412,79 @@ async def test_a_remote_launch_is_not_gated_by_the_local_account_lock(
     held.release()
     other.release()
     assert not (root / "codex.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_closing_the_stream_at_the_remote_reservation_frees_the_credential(
+    monkeypatch: pytest.MonkeyPatch, prompt_minimum: None
+) -> None:
+    """A consumer can close the generator while it announces a remote pass.
+
+    That yield sits after the credential is held but before the subprocess arm
+    and the stream's own finally, so nothing else would give the credential
+    back and every later launch would wait out the expiry.
+    """
+
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="", binary=None: type(
+        "R",
+        (),
+        {
+            "installed": True,
+            "authenticated": True,
+            "path_state": "resolved",
+            "binary_path": "/opt/claude",
+            "version": "2.1.267",
+        },
+    )()
+
+    async def never_spawn(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("the stream was closed before any provider started")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", never_spawn)
+
+    stream = launcher.stream(
+        "claude",
+        "prompt",
+        cwd=Path("/tmp"),
+        capability="scratch_patch",
+        host="agent-host",
+        binary="/opt/claude",
+        remote_pid_file="/tmp/rcp-test.pid",
+    )
+    async for event in stream:
+        if event.event == "remote_process_start":
+            break
+    await stream.aclose()
+
+    hold = await asyncio.wait_for(launcher.credential_gate.hold("claude", "agent-host"), timeout=5)
+    hold.release()
+
+
+def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
+    """Readiness asks the provider whether it is logged in by running it.
+
+    The spec has readiness probes share the credential gate, so a startup warm
+    or an explicit Refresh cannot touch the login beside a turn that is
+    rotating it.
+    """
+
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    launcher = AgentLauncher()
+    holding: list[str] = []
+
+    def probe(_host, command):
+        assert not launcher.credential_gate._lock_for("claude", "").acquire(False), (
+            f"{command[-2:]} ran without the credential hold"
+        )
+        holding.append(command[-1])
+        if command[-2:] == ["auth", "status"]:
+            return subprocess.CompletedProcess(command, 0, '{"loggedIn":true}', "")
+        return subprocess.CompletedProcess(command, 0, "2.1.267", "")
+
+    launcher._probe = probe
+    launcher.readiness("claude", binary=str(binary))
+
+    assert "status" in holding, "the authentication probe never ran"
