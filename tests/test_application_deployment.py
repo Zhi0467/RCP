@@ -18,9 +18,17 @@ from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_c
 
 import rcp.storage.models as storage_models
 from rcp.api import create_app
+from rcp.server_ops.application_validation import _canonical_sha256
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
-from rcp.server_ops.deployment import PrepareRequest, ValidateRequest, prepare, validate
+from rcp.server_ops.deployment import (
+    ApplicationProof,
+    PrepareRequest,
+    ValidateRequest,
+    _publish_proof,
+    prepare,
+    validate,
+)
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
@@ -193,6 +201,75 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
             )
         )
     assert not (tmp_path / "should-not-exist").exists()
+
+
+@pytest.mark.parametrize("failure", [None, "changed_graph", "changed_startup", "tampered_graph"])
+def test_upgrade_retires_only_authenticated_legacy_coverage(
+    captured, tmp_path: Path, failure: str | None
+) -> None:
+    request, _state, _metadata = captured
+    prepared = prepare(request)
+    proof_path = Path(prepared["proof_path"])
+    proof = ApplicationProof.model_validate_json(proof_path.read_bytes())
+    capture = proof.project_receipt.projects[0]
+    graph_path = (
+        proof_path.parent
+        / "baseline/overlay/projects"
+        / capture.project_id
+        / "repositories"
+        / capture.recovery.configuration.state_repository
+        / ".research/graph.json"
+    )
+    graph = json.loads(graph_path.read_text())
+    # Reproduce the previous release's projection and authenticated proof. This
+    # changes only disposable worker output, never the captured canonical input.
+    graph["coverage"] = {
+        "repositories_seen": ["research"],
+        "repositories_never_seen": [],
+        "sessions_read": ["old-session"],
+        "sessions_skipped": [],
+        "earliest_timestamp": None,
+        "note": "Historical reading report.",
+    }
+    if failure == "changed_graph":
+        graph["nodes"] = {}
+    graph_path.write_text(json.dumps(graph))
+    projects = tuple(
+        project.model_copy(update={"projection_sha256": _canonical_sha256(graph)})
+        if project.project_id == capture.project_id
+        else project
+        for project in proof.read_model.projects
+    )
+    read_model = proof.read_model.model_copy(update={"projects": projects})
+    if failure == "changed_startup":
+        startup = read_model.startup_recovery.model_copy(
+            update={
+                "active_operation_ids": (*read_model.startup_recovery.active_operation_ids, "other")
+            }
+        )
+        read_model = read_model.model_copy(update={"startup_recovery": startup})
+    proof = proof.model_copy(update={"read_model": read_model})
+    proof_path.unlink()
+    digest = _publish_proof(proof_path, proof)
+    if failure == "tampered_graph":
+        graph["coverage"]["note"] = "Changed after the proof was signed."
+        graph_path.write_text(json.dumps(graph))
+    validation = ValidateRequest(
+        version=1,
+        proof_path=str(proof_path),
+        proof_sha256=digest,
+        output_dir=str(tmp_path / "validated"),
+    )
+    if failure:
+        with pytest.raises(MaintenanceRefused, match="read model|projection digest changed"):
+            validate(validation)
+        assert not (tmp_path / "validated/application-proof.json").exists()
+    else:
+        checked = validate(validation)
+        assert checked["status"] == "verified"
+        current = ApplicationProof.model_validate_json(Path(checked["proof_path"]).read_bytes())
+        graph.pop("coverage")
+        assert current.read_model.projects[0].projection_sha256 == _canonical_sha256(graph)
 
 
 def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path: Path) -> None:

@@ -391,7 +391,8 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         proof.project_receipt_sha256,
         Path(proof.capture_root),
     )
-    if observed != proof.read_model:
+    expected = _retire_coverage_projection(Path(request.proof_path), proof, observed)
+    if observed != expected:
         raise MaintenanceRefused(
             "Candidate changed the captured graph or startup recovery read model."
         )
@@ -407,6 +408,48 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         "proof_sha256": digest,
         "verification_sha256": _read_model_digest(observed),
     }
+
+
+def _retire_coverage_projection(
+    proof_path: Path, proof: ApplicationProof, observed: CandidateRehearsalResult
+) -> CandidateRehearsalResult:
+    """Decode the shipped graph digest before the coverage report was retired.
+
+    Version-1 preparation retains its replayed graphs beside the proof. Bind each
+    old graph to that proof's digest before removing only the retired field; all
+    remaining graph content and the rest of the read model still compare exactly.
+    """
+    candidates = {item.project_id: item for item in observed.projects}
+    captures = {item.project_id: item for item in proof.project_receipt.projects}
+    projects = []
+    for expected in proof.read_model.projects:
+        candidate = candidates.get(expected.project_id)
+        if (
+            expected.status == "verified"
+            and candidate is not None
+            and candidate.projection_sha256 != expected.projection_sha256
+        ):
+            capture = captures[expected.project_id]
+            if capture.recovery is None:
+                raise MaintenanceRefused("The previous graph has no captured repository identity.")
+            graph_path = (
+                proof_path.parent
+                / "baseline/overlay/projects"
+                / expected.project_id
+                / "repositories"
+                / capture.recovery.configuration.state_repository
+                / ".research/graph.json"
+            )
+            graph = json.loads(_read(graph_path))
+            if _canonical_sha256(graph) != expected.projection_sha256:
+                raise MaintenanceRefused("The previous graph projection digest changed.")
+            if isinstance(graph, dict) and "coverage" in graph:
+                graph.pop("coverage")
+                expected = expected.model_copy(
+                    update={"projection_sha256": _canonical_sha256(graph)}
+                )
+        projects.append(expected)
+    return proof.read_model.model_copy(update={"projects": tuple(projects)})
 
 
 def _read_model_digest(model: CandidateRehearsalResult) -> str:

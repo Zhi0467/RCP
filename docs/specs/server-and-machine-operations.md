@@ -386,6 +386,11 @@ merge receipts, retained task/stage paths, imported histories, and startup
 recovery inventory. `migrate --check` alone is insufficient. Candidate and old
 live-state proofs are separate, exact application-owned documents. The
 supervisor handles only their digests and complete prepared filesystem trees.
+For a previous release that still exported the retired graph `coverage` report,
+the candidate verifies the retained baseline graph against its recorded digest
+before removing only that field for comparison. All remaining graph content and
+startup recovery reads must still match; the candidate proof records the current
+graph digest used by live verification.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 It uses bounded traversal, regular files, safe ownership and permissions,
