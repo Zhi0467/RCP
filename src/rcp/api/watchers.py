@@ -41,8 +41,12 @@ def project_watchers(
         if branch_id is not None
         else None
     )
+    unended_episodes: dict[str, bool] = {}
     return [
-        _watcher_response(record, can_stop_watching=_can_stop_watching(store, record))
+        _watcher_response(
+            record,
+            can_stop_watching=_can_stop_watching(store, record, unended_episodes=unended_episodes),
+        )
         for record in store.watchers(catalog.resolve_project_id(project_id))
         if target is None or record.graph_target == target
     ]
@@ -120,7 +124,12 @@ def cancel_watcher(
     return _watcher_response(watcher, can_stop_watching=_can_stop_watching(store, watcher))
 
 
-def _stop_loop_owns_watcher(store: AppStore, record: StoredWatcherRecord) -> bool:
+def _stop_loop_owns_watcher(
+    store: AppStore,
+    record: StoredWatcherRecord,
+    *,
+    unended_episodes: dict[str, bool] | None = None,
+) -> bool:
     """Whether graceful Stop loop, not a human watcher stop, owns this watcher.
 
     Stop loop is the right control only while its episode can still take one.
@@ -128,6 +137,10 @@ def _stop_loop_owns_watcher(store: AppStore, record: StoredWatcherRecord) -> boo
     a blanket refusal here would name an action the human cannot reach and leave
     a live observer with no non-destructive control but Cancel, which kills the
     observed job.
+
+    Every episode read opens its own connection, so a caller answering for a whole
+    list passes one ``unended_episodes`` memo and pays per distinct episode rather
+    than per watcher.
     """
 
     if record.continuation.patch_kind != "experiment_loop":
@@ -135,25 +148,35 @@ def _stop_loop_owns_watcher(store: AppStore, record: StoredWatcherRecord) -> boo
     episode_id = record.continuation.control_episode_id
     if not isinstance(episode_id, str) or not episode_id:
         return False
+    if unended_episodes is not None and episode_id in unended_episodes:
+        return unended_episodes[episode_id]
     episode = store.episode(episode_id)
-    return episode is not None and episode.ending is None
+    unended = episode is not None and episode.ending is None
+    if unended_episodes is not None:
+        unended_episodes[episode_id] = unended
+    return unended
 
 
-def _can_stop_watching(store: AppStore, record: StoredWatcherRecord) -> bool:
+def _can_stop_watching(
+    store: AppStore,
+    record: StoredWatcherRecord,
+    *,
+    unended_episodes: dict[str, bool] | None = None,
+) -> bool:
     """Whether a human may retire this observer without touching the observed job."""
 
     return bool(
         record.status in {"active", "degraded", "completed"}
         and not record.notified
         and record.notification_operation_id is None
-        and not _stop_loop_owns_watcher(store, record)
+        and not _stop_loop_owns_watcher(store, record, unended_episodes=unended_episodes)
     )
 
 
 def _watcher_response(
     record: StoredWatcherRecord,
     *,
-    can_stop_watching: bool = False,
+    can_stop_watching: bool,
 ) -> dict[str, object]:
     payload = record.model_dump(mode="json")
     payload["can_stop_watching"] = can_stop_watching

@@ -2704,3 +2704,38 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     assert resumable["recommendation"] == "start_episode"
     # The report stays reachable; it just stops being the recommendation.
     assert resumable["can_open_report"] is True
+
+
+def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
+    """The list route answers for many observers without a read per observer.
+
+    Every episode read opens its own SQLite connection, and the browser polls
+    this route, so the memo is what keeps that cost per episode.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    for index in range(4):
+        loop.arm_watcher(f"shared-episode-observer-{index}")
+    loop.settle_exhausted_ending()
+
+    reads: list[str] = []
+    original = loop.store.episode
+
+    def counting_episode(episode_id: str):
+        reads.append(episode_id)
+        return original(episode_id)
+
+    loop.store.episode = counting_episode  # type: ignore[method-assign]
+    try:
+        listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
+    finally:
+        loop.store.episode = original  # type: ignore[method-assign]
+
+    assert listed.status_code == 200, listed.text
+    rows = {item["watcher_id"]: item for item in listed.json()}
+    assert len(rows) == 4
+    assert all(row["can_stop_watching"] is True for row in rows.values())
+    # Four observers, one episode between them, one read.
+    assert reads == [loop.episode_id]
