@@ -6,6 +6,7 @@ spent token on disk and kill the login until a human signs in again.
 """
 
 import asyncio
+import errno
 import json
 import subprocess
 import threading
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents import AgentLauncher
+from rcp.agents import AgentLauncher, credential_gate
 from rcp.agents.credential_gate import ProviderCredentialGate
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -394,6 +395,81 @@ async def test_two_rcp_processes_under_one_account_do_not_both_hold(
 
     held.release()
     (await asyncio.wait_for(queued, timeout=5)).release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["directory", "open"])
+async def test_account_lock_io_failure_refuses_startup_and_allows_retry(
+    tmp_path: Path, failure: str, prompt_minimum: None
+) -> None:
+    root = tmp_path / "account-locks"
+    lock_path = root / "codex.lock"
+    if failure == "directory":
+        root.write_text("A file prevents the account directory from being created.")
+    else:
+        lock_path.mkdir(parents=True)
+    gate = ProviderCredentialGate(account_lock_root=root)
+
+    with pytest.raises(OSError) as error:
+        hold = await asyncio.wait_for(gate.hold("codex", ""), timeout=5)
+        hold.release()
+    assert error.value.errno in {errno.EEXIST, errno.ENOTDIR, errno.EISDIR}
+    assert not gate._lock_for("codex", "").locked()
+
+    if failure == "directory":
+        root.unlink()
+    else:
+        lock_path.rmdir()
+    (await asyncio.wait_for(gate.hold("codex", ""), timeout=5)).release()
+
+
+@pytest.mark.parametrize("error_number", [errno.EOPNOTSUPP, errno.ENOLCK])
+def test_permanent_account_lock_error_refuses_probe_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_number: int
+) -> None:
+    gate = ProviderCredentialGate(account_lock_root=tmp_path / "account-locks")
+    original_flock = credential_gate.fcntl.flock
+    failed_descriptor: int | None = None
+
+    def fail_once(descriptor: int, operation: int) -> None:
+        nonlocal failed_descriptor
+        if failed_descriptor is None:
+            failed_descriptor = descriptor
+            raise OSError(error_number, "Account filesystem cannot take the lock")
+        original_flock(descriptor, operation)
+
+    monkeypatch.setattr(credential_gate.fcntl, "flock", fail_once)
+    with pytest.raises(OSError) as error, gate.hold_blocking("codex", ""):
+        pytest.fail("A permanent lock error must refuse the probe instead of retrying")
+    assert error.value.errno == error_number
+    assert not gate._lock_for("codex", "").locked()
+    assert failed_descriptor is not None
+    with pytest.raises(OSError) as closed:
+        credential_gate.os.fstat(failed_descriptor)
+    assert closed.value.errno == errno.EBADF
+
+    with gate.hold_blocking("codex", ""):
+        pass
+
+
+@pytest.mark.parametrize("error_number", sorted({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}))
+def test_account_lock_contention_still_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_number: int
+) -> None:
+    gate = ProviderCredentialGate(account_lock_root=tmp_path / "account-locks")
+    original_flock = credential_gate.fcntl.flock
+    busy = True
+
+    def busy_once(descriptor: int, operation: int) -> None:
+        nonlocal busy
+        if busy:
+            busy = False
+            raise OSError(error_number, "Another process holds the account lock")
+        original_flock(descriptor, operation)
+
+    monkeypatch.setattr(credential_gate.fcntl, "flock", busy_once)
+    with gate.hold_blocking("codex", ""):
+        assert not busy
 
 
 @pytest.mark.asyncio

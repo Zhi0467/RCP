@@ -623,6 +623,10 @@ data directory. The operating system drops that lock when its holder exits, so a
 crashed process never strands a login. A remote login has no such file: the
 credential sits on the far machine, where only a lock taken there would mean
 anything, so remote launches are serialized within one RCP process only.
+If the local account lock cannot be created, opened, or acquired because of a
+filesystem error, the startup or probe fails with the lock error. Only lock
+contention retries; a failed acquisition releases its in-process lock so a later
+attempt can succeed after the filesystem problem is corrected.
 
 This staggers startups, it does not make rotation safe. A provider that
 refreshes again mid-turn is outside the boundary, and RCP never performs or

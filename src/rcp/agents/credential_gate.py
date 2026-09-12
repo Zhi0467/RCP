@@ -32,6 +32,7 @@ mid-turn is outside any boundary RCP controls.
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import os
 import threading
@@ -215,6 +216,9 @@ class _Claim:
             self.lock.release()
             time.sleep(PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS)
             return False
+        except BaseException:
+            self.lock.release()
+            raise
         with self._guard:
             if not self._abandoned:
                 self._won = True
@@ -256,24 +260,23 @@ def _take_account_lock(path: Path | None) -> int | None:
     directory. The OS releases this lock when its holder exits, so a crashed
     holder never strands the login.
 
-    Returning None means there is no such lock to take. Contention raises, so a
-    caller retries a busy account instead of spinning on a home it cannot use.
+    Only remote execution has no account lock to take. Contention retries;
+    filesystem failures refuse the startup instead of bypassing the lock.
     """
 
     if path is None:
         return None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    except OSError:
-        # A home that cannot hold the lock file must not stop a turn; in-process
-        # serialization still covers the common single-process case.
-        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         os.close(descriptor)
-        raise _AccountLockBusy(str(path)) from exc
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+            raise _AccountLockBusy(str(path)) from exc
+        raise OSError(
+            exc.errno, f"Cannot acquire provider credential lock: {exc}", str(path)
+        ) from exc
     return descriptor
 
 
