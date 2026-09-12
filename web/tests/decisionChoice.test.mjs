@@ -158,3 +158,34 @@ test("Decision choices disable for superseded, globally disabled, and removal-st
     assert.match(html, /<fieldset disabled="">/);
   }
 });
+
+test("A reopened Decision shows the prior choice its reworded options dropped", () => {
+  // An agent may rewrite `options` but may never write `selected_option`, so a
+  // reopened Decision routinely carries a prior choice whose wording is no
+  // longer on the ballot. The options carry the "Selected" mark, so without
+  // this the human is asked to revisit a decision without seeing what it was.
+  const reopened = {
+    ...decision,
+    status: "revisit",
+    options: ["Small", "Medium tier, revised sizing", "Large"],
+    selected_option: "Medium",
+  };
+  const html = renderDrawer({ node: reopened, allNodes: { [reopened.id]: reopened } });
+
+  assert.match(html, /class="decision-prior-choice"/);
+  assert.match(html, /Previously decided · no longer an option/);
+  // Shown as the prior choice, never as a selectable option.
+  assert.doesNotMatch(html, /value="Medium"/);
+
+  // When the prior choice is still on the ballot, the mark carries it and the
+  // separate line would be duplication.
+  const intact = {
+    ...decision,
+    status: "revisit",
+    options: ["Small", "Medium", "Large"],
+    selected_option: "Medium",
+  };
+  const intactHtml = renderDrawer({ node: intact, allNodes: { [intact.id]: intact } });
+  assert.doesNotMatch(intactHtml, /class="decision-prior-choice"/);
+  assert.match(intactHtml, /Selected/);
+});

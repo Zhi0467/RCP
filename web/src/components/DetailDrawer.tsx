@@ -301,6 +301,15 @@ export function DetailDrawer({
     node.type === "decision" && typeof node.selected_option === "string"
       ? node.selected_option
       : null;
+  // An agent may rewrite a Decision's options but may never write
+  // `selected_option`, so reopening one with reworded options leaves the prior
+  // choice outside the list. It is still what the human decided, and the options
+  // below carry the "Selected" mark, so show it here or the reopened ballot
+  // would not say what is being revisited.
+  const priorChoiceOffBallot =
+    selectedDecisionOption !== null && !decisionOptions.includes(selectedDecisionOption)
+      ? selectedDecisionOption
+      : null;
   const decisionChoiceDisabled =
     nodeMutationDisabled || node.status === "superseded" || !onDecisionChoice;
   const fullscreenTarget = typeof document === "undefined" ? null : document.fullscreenElement;
@@ -510,6 +519,12 @@ export function DetailDrawer({
                       })}
                     </div>
                   </fieldset>
+                  {priorChoiceOffBallot && (
+                    <p className="decision-prior-choice">
+                      <span className="eyebrow">Previously decided · no longer an option</span>
+                      <GlossaryText text={priorChoiceOffBallot} glossaryIndex={glossaryIndex} />
+                    </p>
+                  )}
                 </section>
               ) : (
                 <section className="node-lead">
