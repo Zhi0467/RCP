@@ -7,6 +7,7 @@ import {
   type ExperimentRun,
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
+  authorizedInvocationCount,
   experimentRecommendation,
   experimentWatcherDisplayItems,
   graphConditionLabel,
@@ -68,11 +69,12 @@ interface Props {
   allowStart?: boolean;
   startDisabled?: boolean;
   onInspectTask?: (operationId: string) => void;
-  onRun: () => void;
+  onRun: (invocationCeiling?: number) => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   episodeReportHref: (episodeId: string) => string;
 }
 
@@ -96,10 +98,16 @@ export function ExperimentRunDetail({
   onRecover,
   onSwitchProvider,
   onCheckWatcher,
+  onStopWatcher,
   episodeReportHref,
 }: Props) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
+  // Untouched, the field follows the node's own limit, which the human sees as
+  // Next episode limit beside it. A one-time initializer would keep a stale
+  // default when that limit changes while this card stays mounted, and then
+  // Reauthorize would send a count the human never chose.
+  const [editedCeiling, setEditedCeiling] = useState<string | null>(null);
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
@@ -141,6 +149,11 @@ export function ExperimentRunDetail({
   const currentNextAction = currentExperimentGuidance(node, "next_action");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
+  // At the ceiling the next Run is a reauthorization, so the authorized count is
+  // part of the act. It travels with the Run and never edits the graph.
+  const reauthorizing = health === "paused_at_limit";
+  const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
+  const authorizedCeiling = authorizedInvocationCount(ceilingInput);
 
   return (
     <div className={`experiment-run-detail ${healthTones[health]}`}>
@@ -203,18 +216,46 @@ export function ExperimentRunDetail({
               {control.report_is_current ? "Open report" : "Previous episode report"}
             </EpisodeReportLink>
           )}
+          {allowStart && !control.node_closed && reauthorizing && (
+            <label className="experiment-reauthorize-count">
+              <span className="eyebrow">Invocations</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={ceilingInput}
+                disabled={runDisabled || startDisabled || runBusy || !control.can_start}
+                onChange={(event) => setEditedCeiling(event.target.value)}
+                aria-label="Invocations to authorize for the next episode"
+              />
+            </label>
+          )}
           {allowStart && !control.node_closed && (
             <button
               type="button"
               className="button primary compact experiment-run-button"
               disabled={
-                runDisabled || startDisabled || runBusy || stopUnsettled || !control.can_start
+                runDisabled ||
+                startDisabled ||
+                runBusy ||
+                stopUnsettled ||
+                !control.can_start ||
+                (reauthorizing && authorizedCeiling === null)
               }
-              onClick={onRun}
+              onClick={() => onRun(reauthorizing ? (authorizedCeiling ?? undefined) : undefined)}
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={13} aria-hidden="true" />{" "}
-              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
+              {runBusy
+                ? reauthorizing
+                  ? "Reauthorizing"
+                  : "Starting"
+                : reauthorizing
+                  ? "Reauthorize"
+                  : control.episode_id
+                    ? "Start new episode"
+                    : "Start episode"}
             </button>
           )}
         </div>
@@ -377,6 +418,7 @@ export function ExperimentRunDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={watcherActionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
               onHideWatcher={watcherVisibility.hide}
             />
           </ul>
@@ -390,6 +432,7 @@ export function ExperimentRunDetail({
                 watcherCheckBusyId={watcherCheckBusyId}
                 actionsDisabled={watcherActionsDisabled}
                 onCheckWatcher={onCheckWatcher}
+                onStopWatcher={onStopWatcher}
                 onHideWatcher={watcherVisibility.hide}
               />
             </ul>
@@ -571,6 +614,7 @@ function WatcherItems({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -578,6 +622,7 @@ function WatcherItems({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   return items.map((item) =>
@@ -588,6 +633,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         key={item.group.groupId}
       />
@@ -598,6 +644,7 @@ function WatcherItems({
         watcherCheckBusyId={watcherCheckBusyId}
         actionsDisabled={actionsDisabled}
         onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         key={item.watcher.watcher_id}
       />
@@ -621,6 +668,7 @@ function WatcherGroupDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -628,6 +676,7 @@ function WatcherGroupDetail({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   return (
@@ -652,6 +701,7 @@ function WatcherGroupDetail({
               watcherCheckBusyId={watcherCheckBusyId}
               actionsDisabled={actionsDisabled}
               onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
               onHideWatcher={onHideWatcher}
               key={watcher.watcher_id}
             />
@@ -668,6 +718,7 @@ function WatcherDetail({
   watcherCheckBusyId,
   actionsDisabled,
   onCheckWatcher,
+  onStopWatcher,
   onHideWatcher,
 }: {
   apiBase: string;
@@ -675,9 +726,13 @@ function WatcherDetail({
   watcherCheckBusyId: string | null;
   actionsDisabled: boolean;
   onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
+  // Retiring an observer writes no graph, so the graph-mutation lock folded into
+  // actionsDisabled must not reach it: that would leave destructive Cancel as the
+  // only enabled control, which is the dead end this whole control exists to remove.
   const canCheckNow = watcher.can_check_now;
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
@@ -703,6 +758,17 @@ function WatcherDetail({
               </button>
             )}
           </>
+        )}
+        {watcher.can_stop_watching && (
+          <button
+            type="button"
+            className="button compact watcher-action"
+            onClick={() => onStopWatcher(watcher.watcher_id)}
+            aria-label={`Stop watching ${watcher.watcher_id}`}
+            title="Stop observing this job. The job itself keeps running."
+          >
+            Stop watching
+          </button>
         )}
       </div>
       <details>

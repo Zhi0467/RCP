@@ -14,14 +14,25 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillReference
-from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    AppStore,
+    EpisodeRecord,
+    EpisodeReportRecord,
+    EpisodeWrapupRecord,
+    GraphWatcherRecord,
+    WatcherContinuation,
+    WatcherRecord,
+)
+from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
@@ -267,6 +278,135 @@ class _Loop:
         base.update(overrides)
         return WatcherContinuation.model_validate(base)
 
+    def settle_exhausted_ending(self, *, report: bool = False) -> None:
+        """Put the episode where a spent ceiling leaves it: ended and settled.
+
+        Fencing alone leaves the episode wrapping up, which is still live. The
+        dead zone this covers only appears once wrap-up is finished, and a real
+        episode usually finishes it holding a report.
+        """
+
+        diagnostic = "The authorized operational invocation ceiling was exhausted."
+        self.store.fence_episode_ending(self.episode_id, "exhausted", diagnostic=diagnostic)
+        receipt_json, receipt_sha256 = compact_episode_receipt(
+            {"ending": "exhausted", "episode_id": self.episode_id}
+        )
+        now = self.store.now()
+        if not report:
+            self.store.fail_episode_wrapup_unlaunchable(
+                self.episode_id,
+                EpisodeWrapupRecord(
+                    episode_id=self.episode_id,
+                    ending="exhausted",
+                    partial=True,
+                    concluding_operation_id="loop-root",
+                    receipt_json=receipt_json,
+                    receipt_sha256=receipt_sha256,
+                    state="failed",
+                    diagnostic="The exact report continuation is unavailable.",
+                    created_at=now,
+                    updated_at=now,
+                    finished_at=now,
+                ),
+                ending_diagnostic=diagnostic,
+            )
+            return
+        allocation_operation_id = f"{self.episode_id}-report-allocation"
+        self.store.begin_episode_wrapup(
+            self.episode_id,
+            EpisodeWrapupRecord(
+                episode_id=self.episode_id,
+                ending="exhausted",
+                partial=True,
+                concluding_operation_id="loop-root",
+                allocation_operation_id=allocation_operation_id,
+                provider="codex",
+                run_on="laptop",
+                execution_host="",
+                native_session_id="native-session",
+                stage_host=None,
+                stage_root="/tmp/episode-stage",
+                skill_id="episode-report",
+                skill_version="1",
+                output_name="episode-report.html",
+                output_path="/tmp/episode-stage/episode-report.html",
+                receipt_json=receipt_json,
+                receipt_sha256=receipt_sha256,
+                state="pending",
+                diagnostic=diagnostic,
+                created_at=now,
+                updated_at=now,
+            ),
+            AgentTaskRecord(
+                operation_id=allocation_operation_id,
+                project_id=self.project_id,
+                episode_id=self.episode_id,
+                kind="episode_report",
+                status="queued",
+                request={"provider": "codex", "run_on": "laptop", "execution_host": ""},
+                created_at=now,
+                updated_at=now,
+                status_message="Wrapping up visualization and report",
+                parent_operation_id="loop-root",
+                native_session_id="native-session",
+                stage_root="/tmp/episode-stage",
+                visible=False,
+            ),
+        )
+        attempt = self.store.allocate_episode_report_attempt(self.episode_id)
+        html = "<html><body><figure>Result</figure></body></html>"
+        self.store.finish_episode_report_ready(
+            attempt.attempt_id,
+            EpisodeReportRecord(
+                report_id=f"{self.episode_id}-report",
+                episode_id=self.episode_id,
+                attempt_id=attempt.attempt_id,
+                allocation_operation_id=attempt.allocation_operation_id,
+                ending="exhausted",
+                sha256=hashlib.sha256(html.encode()).hexdigest(),
+                html=html,
+                created_at=self.store.now(),
+            ),
+        )
+
+    def _watcher(
+        self,
+        watcher_id: str,
+        *,
+        continuation: WatcherContinuation | None = None,
+        origin_operation_id: str = "loop-root",
+        execution_host: str = "",
+        group_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
+        chat_id: str | None = None,
+    ) -> WatcherRecord:
+        return WatcherRecord(
+            watcher_id=watcher_id,
+            project_id=self.project_id,
+            origin_operation_id=origin_operation_id,
+            origin_task_kind="node_chat",
+            chat_id=chat_id or self.chat_id,
+            node_id=EXPERIMENT_ID,
+            execution_host=execution_host,
+            group_id=group_id,
+            # Storage keeps group identity and label together.
+            group_label=None if group_id is None else f"Array {group_id}",
+            graph_target=graph_target or GraphTargetRef(),
+            check_command="true",
+            log_path=f"/tmp/{watcher_id}.log",
+            cwd="/tmp",
+            continuation=continuation or self.continuation(),
+            status="active",
+            created_at=self.store.now(),
+        )
+
+    def arm_watcher_group(self, group_id: str, watcher_ids: list[str]) -> None:
+        """Arm one group in a single write; storage refuses a group of one."""
+
+        self.store.create_watchers(
+            [self._watcher(watcher_id, group_id=group_id) for watcher_id in watcher_ids]
+        )
+
     def arm_watcher(
         self,
         watcher_id: str,
@@ -275,24 +415,21 @@ class _Loop:
         continuation: WatcherContinuation | None = None,
         origin_operation_id: str = "loop-root",
         execution_host: str = "",
+        graph_target: GraphTargetRef | None = None,
+        chat_id: str | None = None,
     ) -> WatcherRecord:
-        now = self.store.now()
-        record = WatcherRecord(
-            watcher_id=watcher_id,
-            project_id=self.project_id,
-            origin_operation_id=origin_operation_id,
-            origin_task_kind="node_chat",
-            chat_id=self.chat_id,
-            node_id=EXPERIMENT_ID,
-            execution_host=execution_host,
-            check_command="true",
-            log_path=f"/tmp/{watcher_id}.log",
-            cwd="/tmp",
-            continuation=continuation or self.continuation(),
-            status="active",
-            created_at=now,
+        self.store.create_watchers(
+            [
+                self._watcher(
+                    watcher_id,
+                    continuation=continuation,
+                    origin_operation_id=origin_operation_id,
+                    execution_host=execution_host,
+                    graph_target=graph_target,
+                    chat_id=chat_id,
+                )
+            ]
         )
-        self.store.create_watchers([record])
         if status != "active":
             self.store.record_watcher_check(
                 watcher_id,
@@ -2478,3 +2615,476 @@ def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
     )
     assert response.status_code == 202, response.text
     assert response.json()["episode_id"] != loop.episode_id
+
+
+def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path) -> None:
+    """An exhausted episode's observer keeps a non-destructive human control.
+
+    Stop loop is refused once wrap-up owns the episode, so without this the only
+    enabled control on a live observer is Cancel, which kills the observed job.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("exhausted-watcher")
+    loop.settle_exhausted_ending()
+
+    listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
+    assert listed.status_code == 200, listed.text
+    row = next(item for item in listed.json() if item["watcher_id"] == "exhausted-watcher")
+    assert row["can_stop_watching"] is True
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/exhausted-watcher/stop")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["can_stop_watching"] is False
+    stopped = loop.store.watcher("exhausted-watcher")
+    assert stopped.status == "stopped"
+    assert stopped.stopped_by == "human"
+    # Retiring the observer is not cancelling the job: no cancel was requested.
+    assert stopped.cancel_requested_at is None
+    # The Experiment is startable again now that nothing detached is observed.
+    control = loop.client.get(f"/api/projects/{loop.project_id}").json()["experiment_control"][
+        EXPERIMENT_ID
+    ]
+    assert control["reasons"] == [], control["reasons"]
+    assert control["can_start"] is True
+
+
+def test_live_episode_still_routes_watcher_stop_through_stop_loop(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.arm_watcher("live-watcher")
+
+    listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
+    row = next(item for item in listed.json() if item["watcher_id"] == "live-watcher")
+    assert row["can_stop_watching"] is False
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/live-watcher/stop")
+
+    assert response.status_code == 409
+    assert "Use Stop loop" in response.json()["detail"]
+    assert loop.store.watcher("live-watcher").status == "active"
+
+
+def test_reauthorized_run_pins_its_ceiling_without_a_graph_revision(manifest, tmp_path) -> None:
+    """The authorized count travels with the Run instead of a staged node edit."""
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.settle_exhausted_ending()
+    before = loop.service.history.state()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 9},
+    )
+
+    assert response.status_code == 202, response.text
+    started = response.json()
+    assert started["request"]["control_invocation_ceiling"] == 9
+    after = loop.service.history.state()
+    assert after.revision == before.revision
+    node = after.nodes[EXPERIMENT_ID]
+    assert node.invocation_ceiling == loop.invocation_ceiling
+
+
+def test_run_rejects_a_nonpositive_authorized_ceiling(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    loop.settle_exhausted_ending()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 0},
+    )
+
+    assert response.status_code == 422
+    assert "positive integer" in response.json()["detail"]
+
+
+def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> None:
+    """The report is the ending's deliverable, not the step past it.
+
+    An exhausted episode that produced a report used to recommend Open report
+    forever, so the moment the loop became startable again nothing published
+    said so.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("detached-observer")
+    loop.settle_exhausted_ending(report=True)
+
+    def control() -> dict:
+        return loop.client.get(f"/api/projects/{loop.project_id}").json()["experiment_control"][
+            EXPERIMENT_ID
+        ]
+
+    blocked = control()
+    assert blocked["health"] == "paused_at_limit"
+    assert blocked["can_open_report"] is True
+    # While the observer holds the loop shut the report really is the next step.
+    assert blocked["can_start"] is False
+    assert blocked["recommendation"] == "open_report"
+
+    stopped = loop.client.post(f"/api/projects/{loop.project_id}/watchers/detached-observer/stop")
+    assert stopped.status_code == 200, stopped.text
+
+    resumable = control()
+    assert resumable["health"] == "paused_at_limit"
+    assert resumable["can_start"] is True
+    assert resumable["recommendation"] == "start_episode"
+    # The report stays reachable; it just stops being the recommendation.
+    assert resumable["can_open_report"] is True
+
+
+def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
+    """The list route answers for many observers without a read per observer.
+
+    Every episode read opens its own SQLite connection, and the browser polls
+    this route, so the memo is what keeps that cost per episode.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    for index in range(4):
+        loop.arm_watcher(f"shared-episode-observer-{index}")
+    loop.settle_exhausted_ending()
+
+    reads: list[str] = []
+    original = loop.store.episode
+
+    def counting_episode(episode_id: str):
+        reads.append(episode_id)
+        return original(episode_id)
+
+    loop.store.episode = counting_episode  # type: ignore[method-assign]
+    try:
+        listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
+    finally:
+        loop.store.episode = original  # type: ignore[method-assign]
+
+    assert listed.status_code == 200, listed.text
+    rows = {item["watcher_id"]: item for item in listed.json()}
+    assert len(rows) == 4
+    assert all(row["can_stop_watching"] is True for row in rows.values())
+    # Four observers, one episode between them, one read.
+    assert reads == [loop.episode_id]
+
+
+def test_a_retained_completion_is_not_offered_a_stop(manifest, tmp_path) -> None:
+    """A completed observation is a result to claim, not an observer to retire.
+
+    Retiring it marks it notified, so the next human Run could no longer claim it
+    as invocation one. That loss must not sit behind a control whose label says
+    the job keeps running.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("retained-completion", status="completed")
+    loop.settle_exhausted_ending()
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "retained-completion"
+    )
+    assert row["can_stop_watching"] is False
+
+    # The pickup the next episode depends on is still there.
+    pending = loop.store.completed_experiment_watcher_group(
+        loop.project_id,
+        EXPERIMENT_ID,
+        graph_target=GraphTargetRef(),
+    )
+    assert pending is not None
+    assert [item.watcher_id for item in pending] == ["retained-completion"]
+
+
+def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> None:
+    """Past 2^53 every JSON client reads a different number than was authorized."""
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.settle_exhausted_ending()
+
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 2**53 + 1},
+    )
+
+    assert response.status_code == 422
+    assert "positive integer" in response.json()["detail"]
+
+    accepted = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4()), "invocation_ceiling": 2**53 - 1},
+    )
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["request"]["control_invocation_ceiling"] == 2**53 - 1
+
+
+def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tmp_path) -> None:
+    """The offer is a projection; the storage rule is the enforcement.
+
+    An observation can finish between the list response that offered Stop
+    watching and the POST that acts on it. Retiring it then would discard the
+    retained completion the next human Run claims as invocation one.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("finishes-first")
+    loop.settle_exhausted_ending()
+
+    offered = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "finishes-first"
+    )
+    assert offered["can_stop_watching"] is True
+
+    # The job lands while the human is still looking at that row.
+    loop.store.record_watcher_check("finishes-first", status="completed", exit_code=0, error=None)
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/finishes-first/stop")
+
+    assert response.status_code == 409, response.text
+    assert "finished before it could be stopped" in response.json()["detail"]
+    retained = loop.store.watcher("finishes-first")
+    assert retained.status == "completed"
+    assert retained.notified is False
+    pending = loop.store.completed_experiment_watcher_group(
+        loop.project_id,
+        EXPERIMENT_ID,
+        graph_target=GraphTargetRef(),
+    )
+    assert pending is not None
+    assert [item.watcher_id for item in pending] == ["finishes-first"]
+
+
+def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> None:
+    """One human-stopped member makes the whole group undeliverable, forever.
+
+    A group wakes once, when every member has settled, and the readiness check
+    refuses a group holding a human-stopped member. Retiring one observer would
+    therefore strand every sibling's result behind a control that promises the
+    opposite.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher_group("array-1", ["array-member-1", "array-member-2"])
+    loop.settle_exhausted_ending()
+
+    rows = {
+        item["watcher_id"]: item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+    }
+    assert rows["array-member-1"]["can_stop_watching"] is False
+    assert rows["array-member-2"]["can_stop_watching"] is False
+
+    # The projection is the offer, not the gate: storage refuses the request too.
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/array-member-1/stop")
+
+    assert response.status_code == 422, response.text
+    assert "retired with its group" in response.json()["detail"]
+    assert loop.store.watcher("array-member-1").status == "active"
+    assert loop.store.watcher("array-member-2").status == "active"
+
+
+def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> None:
+    """The main listing carries every target, and the run card groups by node.
+
+    Main and its branches share Experiment node ids, so a branch observer renders
+    inside the main card. Offering retirement there would fence a delivery the
+    main view never owned.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("main-observer")
+    # A branch watcher inherits its origin task's graph binding, and a branch
+    # target exists only as an auto-research episode's own graph.
+    branch_id = str(uuid.uuid4())
+    branch_target = GraphTargetRef(kind="branch", branch_id=branch_id)
+    branch_chat = str(uuid.uuid4())
+    loop.store.create_episode(
+        EpisodeRecord(
+            episode_id=branch_id,
+            project_id=loop.project_id,
+            mode="auto_research",
+            graph_target=branch_target,
+            graph_base_head=GraphHeadRef(revision=0),
+            status="queued",
+            invocation_ceiling=2,
+            authorized_by=loop.authorizer,
+            created_at=loop.store.now(),
+            updated_at=loop.store.now(),
+        )
+    )
+    branch_request = RunRequest(
+        provider="codex",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="node",
+        chat_id=branch_chat,
+        message="Observe the branch job.",
+        mode="work",
+        node_id=EXPERIMENT_ID,
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="branch-root",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=branch_request.model_dump(mode="json"),
+            graph_target=branch_target,
+            created_at=now,
+            updated_at=now,
+            status_message="Observing on a branch.",
+            dispatch_authority=_task_authority(branch_request),
+        )
+    )
+    loop.arm_watcher(
+        "branch-observer",
+        origin_operation_id="branch-root",
+        graph_target=branch_target,
+        chat_id=branch_chat,
+        continuation=loop.continuation(
+            patch_kind="work",
+            control_node_id=None,
+            control_revision=None,
+            control_episode_id=None,
+            control_invocation=None,
+            control_invocation_ceiling=None,
+            control_completion_criteria=[],
+        ),
+    )
+    loop.settle_exhausted_ending()
+
+    rows = {
+        item["watcher_id"]: item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+    }
+    # The branch row still lists on main; only its control is withheld.
+    assert set(rows) == {"main-observer", "branch-observer"}
+    assert rows["main-observer"]["can_stop_watching"] is True
+    assert rows["branch-observer"]["can_stop_watching"] is False
+
+
+def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
+    """The control answers an observed job, and a condition runs none.
+
+    A canonical-graph condition carries the episode's own experiment_loop
+    continuation, so after the ending fence it would otherwise qualify. Retiring
+    it runs no scheduler command and frees no machine; it only discards a future
+    graph delivery.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="graph-condition",
+                project_id=loop.project_id,
+                origin_operation_id="loop-root",
+                origin_task_kind="node_chat",
+                chat_id=loop.chat_id,
+                node_id=EXPERIMENT_ID,
+                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
+                armed_revision=0,
+                continuation=loop.continuation(),
+                status="active",
+                created_at=loop.store.now(),
+                last_evaluated_at=loop.store.now(),
+            )
+        ]
+    )
+    loop.settle_exhausted_ending()
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "graph-condition"
+    )
+    # It holds the episode shut, and this control is still not the answer.
+    assert row["can_stop_watching"] is False
+    assert row["can_cancel"] is False
+    assert loop.control()["reasons"] == ["Detached Experiment work is still running."]
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/graph-condition/stop")
+
+    assert response.status_code == 422, response.text
+    assert "not an observed job to retire" in response.json()["detail"]
+    assert loop.store.watcher("graph-condition").status == "active"
+
+
+def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) -> None:
+    """Only the Experiment path is narrowed; a chat's own condition is untouched.
+
+    An ordinary conversation could always retire the condition it armed. That
+    predates this control and is not this branch's to revoke.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="chat-condition",
+                project_id=loop.project_id,
+                origin_operation_id="loop-root",
+                origin_task_kind="node_chat",
+                chat_id=loop.chat_id,
+                node_id=EXPERIMENT_ID,
+                # The arming task is the loop root, so the row keeps its binding.
+                episode_id=loop.episode_id,
+                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
+                armed_revision=0,
+                continuation=loop.continuation(
+                    patch_kind="work",
+                    control_node_id=None,
+                    control_revision=None,
+                    control_episode_id=None,
+                    control_invocation=None,
+                    control_invocation_ceiling=None,
+                    control_completion_criteria=[],
+                ),
+                status="active",
+                created_at=loop.store.now(),
+                last_evaluated_at=loop.store.now(),
+            )
+        ]
+    )
+
+    row = next(
+        item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+        if item["watcher_id"] == "chat-condition"
+    )
+    assert row["can_stop_watching"] is True
+
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/chat-condition/stop")
+
+    assert response.status_code == 200, response.text
+    assert loop.store.watcher("chat-condition").status == "stopped"

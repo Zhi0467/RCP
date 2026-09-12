@@ -90,9 +90,7 @@ import {
   graphConditionLabel,
   isExternalWatcherRecord,
   visibleChatWatchers,
-  watcherIsIndividuallyStoppable,
   watcherLastObservedAt,
-  watcherIsActive,
 } from "../runProjection";
 import {
   downloadDesktopArtifact,
@@ -1788,18 +1786,15 @@ export function NodeChat({
                     </time>
                   </>
                 )}
-                {!readOnly &&
-                  onStopWatcher &&
-                  watcherIsActive(watcher) &&
-                  watcherIsIndividuallyStoppable(watcher) && (
-                    <button
-                      className="button compact"
-                      type="button"
-                      onClick={() => onStopWatcher(watcher.watcher_id)}
-                    >
-                      Stop watching
-                    </button>
-                  )}
+                {!readOnly && onStopWatcher && watcher.can_stop_watching && (
+                  <button
+                    className="button compact"
+                    type="button"
+                    onClick={() => onStopWatcher(watcher.watcher_id)}
+                  >
+                    Stop watching
+                  </button>
+                )}
               </div>
             );
           })}
