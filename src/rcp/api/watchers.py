@@ -15,6 +15,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore, StoredWatcherRecord, WatcherClaimConflict, WatcherRecord
 from rcp.watchers import WatcherPoller
@@ -41,11 +42,20 @@ def project_watchers(
         if branch_id is not None
         else None
     )
+    # The main listing deliberately carries every target's watchers, and the run
+    # projection groups them by Experiment node, which main and its branches
+    # share. Resolving the displayed target keeps this action off a row that
+    # belongs to another one, where retiring it would fence a delivery this view
+    # never owned.
+    displayed = target or GraphTargetRef()
     unended_episodes: dict[str, bool] = {}
     return [
         _watcher_response(
             record,
-            can_stop_watching=_can_stop_watching(store, record, unended_episodes=unended_episodes),
+            can_stop_watching=(
+                record.graph_target == displayed
+                and _can_stop_watching(store, record, unended_episodes=unended_episodes)
+            ),
         )
         for record in store.watchers(catalog.resolve_project_id(project_id))
         if target is None or record.graph_target == target
@@ -180,6 +190,10 @@ def _can_stop_watching(
         record.status in {"active", "degraded"}
         and not record.notified
         and record.notification_operation_id is None
+        # A group wakes once when every member has settled, and one human-stopped
+        # member makes the whole group undeliverable, stranding its siblings'
+        # results. Retirement is per observer, so it has no answer for a group.
+        and record.group_id is None
         and not _stop_loop_owns_watcher(store, record, unended_episodes=unended_episodes)
     )
 

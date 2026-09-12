@@ -14,7 +14,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
@@ -24,6 +24,7 @@ from rcp.skill_registry import SkillReference
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     EpisodeReportRecord,
     EpisodeWrapupRecord,
     WatcherContinuation,
@@ -366,6 +367,44 @@ class _Loop:
             ),
         )
 
+    def _watcher(
+        self,
+        watcher_id: str,
+        *,
+        continuation: WatcherContinuation | None = None,
+        origin_operation_id: str = "loop-root",
+        execution_host: str = "",
+        group_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
+        chat_id: str | None = None,
+    ) -> WatcherRecord:
+        return WatcherRecord(
+            watcher_id=watcher_id,
+            project_id=self.project_id,
+            origin_operation_id=origin_operation_id,
+            origin_task_kind="node_chat",
+            chat_id=chat_id or self.chat_id,
+            node_id=EXPERIMENT_ID,
+            execution_host=execution_host,
+            group_id=group_id,
+            # Storage keeps group identity and label together.
+            group_label=None if group_id is None else f"Array {group_id}",
+            graph_target=graph_target or GraphTargetRef(),
+            check_command="true",
+            log_path=f"/tmp/{watcher_id}.log",
+            cwd="/tmp",
+            continuation=continuation or self.continuation(),
+            status="active",
+            created_at=self.store.now(),
+        )
+
+    def arm_watcher_group(self, group_id: str, watcher_ids: list[str]) -> None:
+        """Arm one group in a single write; storage refuses a group of one."""
+
+        self.store.create_watchers(
+            [self._watcher(watcher_id, group_id=group_id) for watcher_id in watcher_ids]
+        )
+
     def arm_watcher(
         self,
         watcher_id: str,
@@ -374,24 +413,21 @@ class _Loop:
         continuation: WatcherContinuation | None = None,
         origin_operation_id: str = "loop-root",
         execution_host: str = "",
+        graph_target: GraphTargetRef | None = None,
+        chat_id: str | None = None,
     ) -> WatcherRecord:
-        now = self.store.now()
-        record = WatcherRecord(
-            watcher_id=watcher_id,
-            project_id=self.project_id,
-            origin_operation_id=origin_operation_id,
-            origin_task_kind="node_chat",
-            chat_id=self.chat_id,
-            node_id=EXPERIMENT_ID,
-            execution_host=execution_host,
-            check_command="true",
-            log_path=f"/tmp/{watcher_id}.log",
-            cwd="/tmp",
-            continuation=continuation or self.continuation(),
-            status="active",
-            created_at=now,
+        self.store.create_watchers(
+            [
+                self._watcher(
+                    watcher_id,
+                    continuation=continuation,
+                    origin_operation_id=origin_operation_id,
+                    execution_host=execution_host,
+                    graph_target=graph_target,
+                    chat_id=chat_id,
+                )
+            ]
         )
-        self.store.create_watchers([record])
         if status != "active":
             self.store.record_watcher_check(
                 watcher_id,
@@ -2834,3 +2870,118 @@ def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tm
     )
     assert pending is not None
     assert [item.watcher_id for item in pending] == ["finishes-first"]
+
+
+def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> None:
+    """One human-stopped member makes the whole group undeliverable, forever.
+
+    A group wakes once, when every member has settled, and the readiness check
+    refuses a group holding a human-stopped member. Retiring one observer would
+    therefore strand every sibling's result behind a control that promises the
+    opposite.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher_group("array-1", ["array-member-1", "array-member-2"])
+    loop.settle_exhausted_ending()
+
+    rows = {
+        item["watcher_id"]: item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+    }
+    assert rows["array-member-1"]["can_stop_watching"] is False
+    assert rows["array-member-2"]["can_stop_watching"] is False
+
+    # The projection is the offer, not the gate: storage refuses the request too.
+    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/array-member-1/stop")
+
+    assert response.status_code == 422, response.text
+    assert "retired with its group" in response.json()["detail"]
+    assert loop.store.watcher("array-member-1").status == "active"
+    assert loop.store.watcher("array-member-2").status == "active"
+
+
+def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> None:
+    """The main listing carries every target, and the run card groups by node.
+
+    Main and its branches share Experiment node ids, so a branch observer renders
+    inside the main card. Offering retirement there would fence a delivery the
+    main view never owned.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=1)
+    loop.start_episode()
+    loop.arm_watcher("main-observer")
+    # A branch watcher inherits its origin task's graph binding, and a branch
+    # target exists only as an auto-research episode's own graph.
+    branch_id = str(uuid.uuid4())
+    branch_target = GraphTargetRef(kind="branch", branch_id=branch_id)
+    branch_chat = str(uuid.uuid4())
+    loop.store.create_episode(
+        EpisodeRecord(
+            episode_id=branch_id,
+            project_id=loop.project_id,
+            mode="auto_research",
+            graph_target=branch_target,
+            graph_base_head=GraphHeadRef(revision=0),
+            status="queued",
+            invocation_ceiling=2,
+            authorized_by=loop.authorizer,
+            created_at=loop.store.now(),
+            updated_at=loop.store.now(),
+        )
+    )
+    branch_request = RunRequest(
+        provider="codex",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="node",
+        chat_id=branch_chat,
+        message="Observe the branch job.",
+        mode="work",
+        node_id=EXPERIMENT_ID,
+    )
+    now = loop.store.now()
+    loop.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="branch-root",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request=branch_request.model_dump(mode="json"),
+            graph_target=branch_target,
+            created_at=now,
+            updated_at=now,
+            status_message="Observing on a branch.",
+            dispatch_authority=_task_authority(branch_request),
+        )
+    )
+    loop.arm_watcher(
+        "branch-observer",
+        origin_operation_id="branch-root",
+        graph_target=branch_target,
+        chat_id=branch_chat,
+        continuation=loop.continuation(
+            patch_kind="work",
+            control_node_id=None,
+            control_revision=None,
+            control_episode_id=None,
+            control_invocation=None,
+            control_invocation_ceiling=None,
+            control_completion_criteria=[],
+        ),
+    )
+    loop.settle_exhausted_ending()
+
+    rows = {
+        item["watcher_id"]: item
+        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
+    }
+    # The branch row still lists on main; only its control is withheld.
+    assert set(rows) == {"main-observer", "branch-observer"}
+    assert rows["main-observer"]["can_stop_watching"] is True
+    assert rows["branch-observer"]["can_stop_watching"] is False

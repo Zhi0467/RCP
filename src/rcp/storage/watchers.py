@@ -855,11 +855,12 @@ class WatcherStoreMixin:
         never decides this for itself — a check that cannot answer is reported,
         not interpreted.
 
-        ``observing_only`` refuses a watcher that already completed. A caller that
-        offered this action against a live observation evaluates that rule here,
-        inside the write transaction, so an observation that completes between the
-        offer and the request fails instead of retiring a delivery nobody claimed.
-        Callers acknowledging a pending completion on purpose leave it false.
+        ``observing_only`` refuses a watcher that already completed, and one that
+        belongs to a group. A caller that offered this action against a lone live
+        observation evaluates both rules here, inside the write transaction, so an
+        observation that completes between the offer and the request fails instead
+        of retiring a delivery nobody claimed. Callers acknowledging a pending
+        completion or retiring a whole group on purpose leave it false.
         """
 
         ids = list(dict.fromkeys(watcher_ids))
@@ -870,7 +871,7 @@ class WatcherStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
                 f"""
-                SELECT watcher_id, project_id, status, notified, notification_operation_id
+                SELECT watcher_id, project_id, status, notified, notification_operation_id, group_id
                 FROM watchers
                 WHERE watcher_id IN ({placeholders})
                 """,
@@ -899,6 +900,15 @@ class WatcherStoreMixin:
             if invalid:
                 raise ValueError(f"Watchers cannot be stopped: {', '.join(sorted(invalid))}.")
             if observing_only:
+                # A group wakes once when every member settles, and a human-stopped
+                # member makes the whole group undeliverable, so retiring one member
+                # strands its siblings' results.
+                grouped = [str(row["watcher_id"]) for row in rows if row["group_id"] is not None]
+                if grouped:
+                    raise ValueError(
+                        "A grouped watcher is retired with its group, not on its own: "
+                        f"{', '.join(sorted(grouped))}."
+                    )
                 settled = [str(row["watcher_id"]) for row in rows if row["status"] == "completed"]
                 if settled:
                     raise WatcherClaimConflict(
