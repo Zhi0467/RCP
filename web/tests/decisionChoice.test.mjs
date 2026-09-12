@@ -182,8 +182,10 @@ test("A reopened Decision shows the backend-resolved prior choice its options dr
     html,
     /<p class="decision-prior-choice"><span class="eyebrow">Previously decided · no longer an option<\/span>Medium<\/p>/,
   );
-  // Shown as the prior choice, never as a selectable option.
-  assert.doesNotMatch(html, /value="Medium"/);
+  // Shown as the prior choice, never as a selectable option. Matching the whole
+  // attribute keeps this from passing only because a reworded fixture happens to
+  // extend the value past the closing quote.
+  assert.doesNotMatch(html, /<input[^>]*\bvalue="Medium"/);
 
   // The projection omits a Decision whose prior choice is still on the ballot,
   // where the option's own "Selected" mark carries it.

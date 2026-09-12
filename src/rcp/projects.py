@@ -2185,12 +2185,16 @@ class ProjectCatalog:
             if attention_payload is None:
                 snapshot["attention"] = expected_attention.model_dump(mode="json")
                 counts.update(project_counts(graph, expected_attention).model_dump(mode="json"))
-            elif (
-                isinstance(attention_payload, dict) and "proposal_actions" not in attention_payload
-            ):
-                attention_payload["proposal_actions"] = expected_attention.model_dump(mode="json")[
-                    "proposal_actions"
-                ]
+            elif isinstance(attention_payload, dict):
+                # Older display caches predate these keys. The web decoder requires
+                # every key exactly, so a cache missing one cannot open at all, and
+                # a key whose expected value is non-empty would fail the snapshot
+                # comparison and discard the offline copy. Both are recoverable
+                # from the graph the cache already carries.
+                expected_payload = expected_attention.model_dump(mode="json")
+                for field in ("proposal_actions", "decision_prior_choices"):
+                    if field not in attention_payload:
+                        attention_payload[field] = expected_payload[field]
             if "graph_mutation" not in snapshot:
                 snapshot["graph_mutation"] = project_graph_mutation_availability(graph).model_dump(
                     mode="json"
