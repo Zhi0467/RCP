@@ -11,6 +11,21 @@ from rcp.config import Manifest, load_manifest
 
 
 @pytest.fixture(autouse=True)
+def account_credential_lock_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the cross-process credential lock out of the human's own home.
+
+    A provider launch takes an advisory lock under the account's RCP directory.
+    Left alone, every test would contend on one real file and leave state in
+    `~/.rcp`, so each test gets its own root.
+    """
+
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate._DEFAULT_ACCOUNT_LOCK_ROOT",
+        tmp_path / "credential-locks",
+    )
+
+
+@pytest.fixture(autouse=True)
 def unconfigured_local_providers(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

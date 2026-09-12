@@ -44,6 +44,17 @@ CHAT_PAGE_MAX_LIMIT = 200
 CHAT_TITLE_MAX_CHARS = 120
 CHAT_PREVIEW_MAX_CHARS = 240
 STEERING_MESSAGE_MAX_CHARS = 32_000
+# One provider startup at a time per credential; see agents/credential_gate.py.
+# The minimum outlives the provider's first line because neither CLI reports when
+# it rotates its refresh token, and that call may follow the first line.
+# One waiting attempt, not the whole wait: a waiter retries until it wins. Short
+# enough that a queued startup hands its worker thread back well inside
+# BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS.
+PROVIDER_CREDENTIAL_ACQUIRE_SLICE_SECONDS = 0.5
+PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS = 2.0
+# Generous, because it caps a hold rather than a startup: remote launches add an
+# SSH round trip, and expiring mid-startup reopens the very race this closes.
+PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS = 60.0
 PROVIDER_STEER_WRITE_TIMEOUT_SECONDS = 10.0
 PROVIDER_STEER_ACK_TIMEOUT_SECONDS = 30.0
 PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS = 2.0

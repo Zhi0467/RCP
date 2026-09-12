@@ -20,6 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
+from rcp.agents.credential_gate import ProviderCredentialGate
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
@@ -265,14 +266,17 @@ class AgentProcessControl:
     async def _terminate(process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
-        with suppress(ProcessLookupError):
+        # A reaped child's pid can already belong to someone else, and signalling
+        # a group that is no longer ours fails with EPERM rather than ESRCH.
+        # Both mean this process is gone; killing the stranger would be worse.
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), timeout=5)
             return
         except TimeoutError:
             pass
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
 
@@ -373,6 +377,9 @@ class AgentLauncher:
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None], int] = {}
+        #: Shared so every process that can rotate this login is staggered,
+        #: not only task turns.
+        self.credential_gate = ProviderCredentialGate()
 
     def readiness(
         self,
@@ -547,44 +554,51 @@ class AgentLauncher:
                 path_state="unconfigured",
                 reason=reason,
             )
-        version_result = self._probe(host, [candidate, "--version"])
-        if host and version_result.returncode == 255:
-            return ProviderReadiness(
-                provider=provider,
-                label=profile.label,
-                installed=False,
-                authenticated=False,
-                binary_path=candidate,
-                path_state="unreachable",
-                reason=f"{host} became unreachable while checking {candidate}.",
-            )
-        version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
-        version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
-        auth = self._probe(host, profile.auth_command(candidate))
-        authenticated = profile.is_authenticated(auth)
-        # Enumerate only once the CLI is known to answer. An unauthenticated
-        # catalog probe just costs a subprocess to learn what auth already said.
-        catalog_command = profile.catalog_command(candidate) if authenticated else None
-        catalog = self._probe(host, catalog_command) if catalog_command else None
-        work_like_available = None
-        work_like_reason = None
-        work_command = profile.work_like_probe_command(candidate) if authenticated else None
-        if work_command is not None:
-            work_probe = self._probe(host, work_command)
-            if work_probe.returncode == 255:
-                where = f" on {host}" if host else ""
-                work_like_reason = (
-                    f"{profile.label} Work readiness could not be checked{where}: "
-                    + (_meaningful_stderr(work_probe.stderr) or "provider probe unavailable.")
+        # Every probe below runs the provider executable, and the ones that
+        # read its login can rotate the same token a turn does. One hold
+        # covers the sequence rather than handing the credential back
+        # between probes that belong to a single readiness answer.
+        with self.credential_gate.hold_blocking(provider, host):
+            version_result = self._probe(host, [candidate, "--version"])
+            if host and version_result.returncode == 255:
+                return ProviderReadiness(
+                    provider=provider,
+                    label=profile.label,
+                    installed=False,
+                    authenticated=False,
+                    binary_path=candidate,
+                    path_state="unreachable",
+                    reason=f"{host} became unreachable while checking {candidate}.",
                 )
-            else:
-                work_like_available = work_probe.returncode == 0
-                if not work_like_available:
+            version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
+            version = (
+                version_lines[-1] if version_result.returncode == 0 and version_lines else None
+            )
+            auth = self._probe(host, profile.auth_command(candidate))
+            authenticated = profile.is_authenticated(auth)
+            # Enumerate only once the CLI is known to answer. An unauthenticated
+            # catalog probe just costs a subprocess to learn what auth already said.
+            catalog_command = profile.catalog_command(candidate) if authenticated else None
+            catalog = self._probe(host, catalog_command) if catalog_command else None
+            work_like_available = None
+            work_like_reason = None
+            work_command = profile.work_like_probe_command(candidate) if authenticated else None
+            if work_command is not None:
+                work_probe = self._probe(host, work_command)
+                if work_probe.returncode == 255:
+                    where = f" on {host}" if host else ""
                     work_like_reason = (
-                        _meaningful_stderr(work_probe.stderr)
-                        or work_probe.stdout.strip()
-                        or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
+                        f"{profile.label} Work readiness could not be checked{where}: "
+                        + (_meaningful_stderr(work_probe.stderr) or "provider probe unavailable.")
                     )
+                else:
+                    work_like_available = work_probe.returncode == 0
+                    if not work_like_available:
+                        work_like_reason = (
+                            _meaningful_stderr(work_probe.stderr)
+                            or work_probe.stdout.strip()
+                            or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
+                        )
         return ProviderReadiness(
             provider=provider,
             label=profile.label,
@@ -843,8 +857,25 @@ class AgentLauncher:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
+        # Held until this provider speaks and the minimum stagger passes, so
+        # two turns cannot rotate one credential's refresh token together.
+        credential_hold = await self.credential_gate.hold(provider, host)
+        if control is not None and control.pause_requested.is_set():
+            # The pre-launch check ran before this wait, which can be long.
+            credential_hold.release()
+            yield AgentEvent(event="paused", text="Paused before the provider started.")
+            return
+        # Declared only once this turn is certain to launch. Announcing a remote
+        # pass and then pausing would leave a live pass nothing ever closes.
         if host and remote_pid_file:
-            yield AgentEvent(event="remote_process_start", text=remote_pid_file)
+            try:
+                yield AgentEvent(event="remote_process_start", text=remote_pid_file)
+            except BaseException:
+                # A consumer closing here, or failing to persist the pass, throws
+                # into this yield: outside the subprocess arm and the stream's
+                # own finally, so nothing else would give the credential back.
+                credential_hold.release()
+                raise
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -855,7 +886,12 @@ class AgentLauncher:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-        except OSError as exc:
+        except BaseException as exc:
+            # Cancellation here would otherwise skip both the arm below and the
+            # stream's own finally, leaving the credential held.
+            credential_hold.release()
+            if not isinstance(exc, OSError):
+                raise
             if host and remote_pid_file:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
@@ -954,6 +990,7 @@ class AgentLauncher:
                         ),
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
+                    credential_hold.release()
                     if prompt_delivered:
                         yield event
                     continue
@@ -962,7 +999,12 @@ class AgentLauncher:
                 if not line:
                     continue
                 if invocation_gate is not None and line == invocation_gate.ready_line:
+                    # The broker prints this straight after spawning, before the
+                    # provider authenticates, so it does not end the hold.
                     continue
+                # A line the provider itself wrote: it is past its own auth
+                # initialization and the next startup may begin.
+                credential_hold.release()
                 if stdin_pending:
                     await stdin_task
                     stdin_pending = False
@@ -1148,6 +1190,7 @@ class AgentLauncher:
             else:
                 yield AgentEvent(event="done")
         finally:
+            credential_hold.release()
             steering.close()
 
             async def cleanup() -> None:

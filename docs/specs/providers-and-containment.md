@@ -606,6 +606,33 @@ falls back to the declared list rather than leaving a surface with no models.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.
 
+A provider login is one rotating credential owned by one execution account, and
+no provider CLI locks it while refreshing. RCP therefore admits one provider
+startup at a time per provider and execution account. Turns, readiness probes,
+and skill inventory probes share that one gate, because each runs the provider
+executable and each can rotate the same token; a probe holds for its whole run,
+while a turn holds until the provider writes a line of its own and a minimum
+stagger has passed. A broker readiness line is not the provider speaking. A hold
+expires on a generous bound, which prefers a rare unserialized start over one
+stalled startup closing the credential to everything else.
+
+A local login is also held against other RCP processes through an advisory lock
+under the account's own RCP directory, because two data directories share one
+login while the single-instance lock only excludes a second process on the same
+data directory. The operating system drops that lock when its holder exits, so a
+crashed process never strands a login. A remote login has no such file: the
+credential sits on the far machine, where only a lock taken there would mean
+anything, so remote launches are serialized within one RCP process only.
+If the local account lock cannot be created, opened, or acquired because of a
+filesystem error, the startup or probe fails with the lock error. Only lock
+contention retries; a failed acquisition releases its in-process lock so a later
+attempt can succeed after the filesystem problem is corrected.
+
+This staggers startups, it does not make rotation safe. A provider that
+refreshes again mid-turn is outside the boundary, and RCP never performs or
+stores the refresh itself. Reaching one account through two spellings of its SSH
+destination still yields two gates.
+
 After authentication succeeds, the Claude profile also supplies a zero-cost
 Work-like startup probe using its strict sandbox settings, stream-json input,
 and closed empty stdin. Sandbox validation happens before any model call. The

@@ -459,6 +459,15 @@ class ProviderProfile:
         return None
 
     def is_authenticated(self, result: subprocess.CompletedProcess[str]) -> bool:
+        """Whether the CLI reports a stored credential.
+
+        This is a presence check, not a liveness check. Every provider status
+        command reads its own credential file and names the auth mode without
+        contacting the provider, so a spent refresh token still reports success
+        and only a real turn discovers the 401. A truthful result here means the
+        launch is worth attempting, never that it will authenticate.
+        """
+
         raise NotImplementedError
 
     def catalog_command(self, binary: str) -> list[str] | None:

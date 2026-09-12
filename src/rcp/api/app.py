@@ -638,7 +638,8 @@ def create_app(
         )
         backup_capture_coordinator = BackupCaptureCoordinator(store, app_data, identity)
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
-    provider_skills = ProviderSkillInventoryManager(store)
+    # One gate, so a skill probe and a turn cannot rotate one login together.
+    provider_skills = ProviderSkillInventoryManager(store, credential_gate=launcher.credential_gate)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 

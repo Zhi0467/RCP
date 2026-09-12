@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from rcp.agents.credential_gate import ProviderCredentialGate
 from rcp.agents.launcher import AgentLauncher, ProviderReadiness
 from rcp.providers import ProviderSkill, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
@@ -50,9 +51,18 @@ class _PendingRefresh:
 class ProviderSkillInventoryManager:
     """Refresh and resolve durable provider-owned skill inventories."""
 
-    def __init__(self, store: AppStore, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        store: AppStore,
+        *,
+        timeout: float = 30.0,
+        credential_gate: ProviderCredentialGate | None = None,
+    ) -> None:
         self.store = store
         self.timeout = timeout
+        # Shared with the launcher in composition, so a skill probe and a turn
+        # cannot rotate one provider login at the same time.
+        self.credential_gate = credential_gate or ProviderCredentialGate()
         self._lock = threading.Lock()
         self._pending_refreshes: dict[tuple[str, str, str], _PendingRefresh] = {}
 
@@ -111,7 +121,9 @@ class ProviderSkillInventoryManager:
 
                     profile = profile_for(provider)
                     probe = profile.skill_probe(readiness.binary_path)
-                    payload = self._run_probe(host, probe.command, probe.protocol)
+                    payload = self._run_probe(
+                        host, probe.command, probe.protocol, provider=provider
+                    )
                     skills = sorted(
                         profile.parse_skills(payload), key=lambda item: (item.name, item.path or "")
                     )
@@ -267,23 +279,26 @@ class ProviderSkillInventoryManager:
         host: str,
         command: list[str],
         protocol: Literal["jsonrpc", "jsonl"],
+        *,
+        provider: str,
     ) -> object:
         arguments = command
         if host:
             arguments = ssh_arguments(host, AgentLauncher._remote_login_command(command))
-        if protocol == "jsonl":
-            result = subprocess.run(
-                arguments,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                check=False,
-            )
-            if result.returncode:
-                detail = result.stderr.strip() or f"skill probe exited {result.returncode}"
-                raise ValueError(detail)
-            return result.stdout
-        return self._run_jsonrpc(arguments)
+        with self.credential_gate.hold_blocking(provider, host):
+            if protocol == "jsonl":
+                result = subprocess.run(
+                    arguments,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    check=False,
+                )
+                if result.returncode:
+                    detail = result.stderr.strip() or f"skill probe exited {result.returncode}"
+                    raise ValueError(detail)
+                return result.stdout
+            return self._run_jsonrpc(arguments)
 
     def _run_jsonrpc(self, arguments: list[str]) -> object:
         process = subprocess.Popen(

@@ -277,7 +277,7 @@ the operator's local browser and enter the displayed one-time code there:
 sudo -u rcp -H /bin/bash -lc 'codex login --device-auth'
 ```
 
-Confirm that the credential belongs to `rcp` and is usable:
+Confirm that a credential is stored for `rcp`:
 
 ```bash
 sudo -u rcp -H /bin/bash -lc 'command -v codex && codex login status'
@@ -300,12 +300,20 @@ terminal prompt:
 sudo -u rcp -H /bin/bash -lc 'claude auth login --claudeai'
 ```
 
-Confirm the installed binary and authentication state:
+Confirm the installed binary and the stored credential:
 
 ```bash
 sudo -u rcp -H /bin/bash -lc \
   'command -v claude && claude --version && claude auth status'
 ```
+
+Both status commands read the stored credential and report the auth mode. Neither
+contacts the provider, so they prove a credential exists under `/home/rcp` and
+nothing about whether it still works. A login can be present and dead at once: a
+rotating refresh token that was already spent leaves a complete file on disk.
+The symptom is a task failing with `401` while the status command reports
+success, and the remedy is rerunning the login command above. RCP checks the
+same provider-reported status and inherits the same limit.
 
 The login commands may be rerun safely if the SSH connection closes before the
 browser flow finishes. Never paste a provider token, returned login code, or a
