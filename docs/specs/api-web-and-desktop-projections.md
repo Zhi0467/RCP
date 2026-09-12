@@ -602,8 +602,12 @@ truthful operation fallbacks without inventing causality.
 
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
-it is not a node. A Decision row opens the existing node-detail ballot. Accepted
-or contested open Blockers remain graph state but leave human attention.
+it is not a node. A Decision row opens the existing node-detail ballot. That
+ballot marks the prior choice on the matching option, and shows it separately
+when no option matches: an agent may reword a Decision's options but never
+writes `selected_option`, so a reopened ballot would otherwise not say what is
+being revisited. Accepted or contested open Blockers remain graph state but
+leave human attention.
 Historical Ambiguities never render or count.
 
 ### Research

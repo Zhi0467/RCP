@@ -213,6 +213,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           open_blocker_ids: [],
           decisions_awaiting_choice_ids: [],
           proposal_actions: {},
+          decision_prior_choices: {},
         },
         counts: {},
         coverage: {

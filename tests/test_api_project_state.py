@@ -603,6 +603,49 @@ def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
+def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
+    manifest, tmp_path
+) -> None:
+    # A cache written before `decision_prior_choices` existed decodes it as the
+    # model default. For a project holding a Decision whose options no longer
+    # offer its recorded choice the expected map is not empty, so without a
+    # backfill the snapshot comparison rejects the cache and the project loses
+    # its offline copy.
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    client.get(f"/api/projects/{project_id}")
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    snapshot = envelope["snapshot"]
+    snapshot["graph"]["nodes"]["dec/shape"] = {
+        "id": "dec/shape",
+        "type": "decision",
+        "title": "Resource shape",
+        "question": "Which resource shape?",
+        "options": ["4xA100, with the revised sizing rule", "8xA100"],
+        "selected_option": "4xA100",
+        "status": "revisit",
+        "standing": "asserted",
+        "created_rev": 1,
+        "updated_rev": 1,
+        "source_refs": [],
+        "extension_fields": {},
+    }
+    snapshot["counts"]["decisions_awaiting_choice"] += 1
+    snapshot["counts"]["asserted"] += 1
+    snapshot["attention"]["decisions_awaiting_choice_ids"] = ["dec/shape"]
+    snapshot["attention"].pop("decision_prior_choices")
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    restored = client.get(f"/api/projects/{project_id}/cached")
+
+    assert restored.status_code == 200
+    assert restored.json()["attention"]["decision_prior_choices"] == {"dec/shape": "4xA100"}
+
+
 def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -635,6 +678,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
         "default_auto_research_invocation_ceiling"
     )
     legacy_snapshot["attention"].pop("proposal_actions")
+    legacy_snapshot["attention"].pop("decision_prior_choices")
     legacy_snapshot.pop("graph_mutation")
     legacy = {
         "schema_version": 2,
@@ -648,6 +692,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     assert migrated.json()["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in migrated.json()
     assert migrated.json()["attention"]["proposal_actions"] == {}
+    assert migrated.json()["attention"]["decision_prior_choices"] == {}
     assert migrated.json()["graph_mutation"] == {"available": True, "reason": None}
 
     legacy["snapshot"]["default_auto_research_invocation_ceiling"] = 11

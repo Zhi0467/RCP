@@ -1224,6 +1224,7 @@ export function decodeGraphAttentionProjection(
     "decisions_awaiting_choice_ids",
     "open_blocker_ids",
     "proposal_actions",
+    "decision_prior_choices",
   ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
     throw new Error("Project attention projection is missing or malformed.");
@@ -1270,11 +1271,19 @@ export function decodeGraphAttentionProjection(
     }
     proposalActions[proposalId] = lines as ProposalActionLine[];
   }
+  const rawPriorChoices = value.decision_prior_choices;
+  if (
+    !isPlainRecord(rawPriorChoices) ||
+    Object.values(rawPriorChoices).some((choice) => !isNonEmptyString(choice))
+  ) {
+    throw new Error("Project attention projection has invalid decision_prior_choices.");
+  }
   const attention: GraphAttentionProjection = {
     pending_proposal_ids: pendingProposalIds,
     decisions_awaiting_choice_ids: readIds("decisions_awaiting_choice_ids"),
     open_blocker_ids: readIds("open_blocker_ids"),
     proposal_actions: proposalActions,
+    decision_prior_choices: { ...(rawPriorChoices as Record<string, string>) },
   };
   for (const proposalId of attention.pending_proposal_ids) {
     if (!graph.proposals[proposalId]) {
@@ -1289,6 +1298,11 @@ export function decodeGraphAttentionProjection(
   for (const blockerId of attention.open_blocker_ids) {
     if (graph.nodes[blockerId]?.type !== "blocker") {
       throw new Error(`Project attention member ${blockerId} is not a Blocker.`);
+    }
+  }
+  for (const decisionId of Object.keys(attention.decision_prior_choices)) {
+    if (graph.nodes[decisionId]?.type !== "decision") {
+      throw new Error(`Project attention prior choice ${decisionId} is not a Decision.`);
     }
   }
   return attention;
@@ -1637,6 +1651,8 @@ export interface GraphAttentionProjection {
   decisions_awaiting_choice_ids: string[];
   open_blocker_ids: string[];
   proposal_actions: Record<string, ProposalActionLine[]>;
+  /** Decision id -> the choice it records, when its options no longer offer it. */
+  decision_prior_choices: Record<string, string>;
 }
 
 export interface ProposalActionLine {

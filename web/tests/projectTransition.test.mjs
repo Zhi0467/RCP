@@ -36,6 +36,7 @@ function projection(fields = {}) {
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
       proposal_actions: {},
+      decision_prior_choices: {},
     },
     primary_question: null,
     counts: {
@@ -84,6 +85,7 @@ test("transition replacement refuses missing or malformed attention", () => {
         pending_proposal_ids: [],
         decisions_awaiting_choice_ids: [],
         proposal_actions: {},
+        decision_prior_choices: {},
       },
     }),
     projection({
@@ -92,6 +94,7 @@ test("transition replacement refuses missing or malformed attention", () => {
         decisions_awaiting_choice_ids: [],
         open_blocker_ids: [],
         proposal_actions: {},
+        decision_prior_choices: {},
       },
     }),
   ];
