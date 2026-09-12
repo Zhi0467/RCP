@@ -779,6 +779,7 @@ export interface ExperimentOperationalState {
   detached_work_active: boolean;
   watcher_degraded: boolean;
   watcher_completion_pending: boolean;
+  watcher_delivery_diagnostic: string | null;
   episode_exited: boolean;
   episode_live: boolean;
   stop_requested: boolean;
@@ -800,6 +801,7 @@ export type ExperimentLoopHealth =
   | "starting"
   | "agent_active"
   | "waiting_on_watchers"
+  | "completion_pending"
   | "degraded"
   | "stopping"
   | "wrapping_up"

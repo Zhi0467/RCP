@@ -2233,6 +2233,15 @@ class ExperimentStoreMixin:
             episode_id,
         )
         episode = self._experiment_episode_record(requested)
+        current = self._experiment_episode_for_stop(
+            connection,
+            project_id,
+            control_node_id,
+            graph_target=episode.graph_target,
+        )
+        # Current Stop retires adopted observations too. A later reconciliation
+        # of a historical Stop must never sweep the replacement episode's work.
+        stop_adopted = current is not None and current[0] == episode_id
         watcher_rows = connection.execute(
             """
             SELECT * FROM watchers
@@ -2246,7 +2255,14 @@ class ExperimentStoreMixin:
         watcher_ids = {
             record.watcher_id
             for record in (self._watcher_record(row) for row in watcher_rows)
-            if record.episode_id == episode_id
+            if (
+                record.episode_id == episode_id
+                or (
+                    stop_adopted
+                    and not record.notified
+                    and record.notification_operation_id is None
+                )
+            )
             and root_request is not None
             and self._experiment_watcher_matches_current(record, root_request, episode)
         }
@@ -2792,6 +2808,7 @@ class ExperimentStoreMixin:
             else requested
         )
         projected: dict[str, ExperimentLoopRuntime] = {}
+        wake_diagnostics = self._auto_research_experiment_wake_diagnostics(_connection, project_id)
         for control_node_id in control_node_ids:
             parent = parents_by_control.get(control_node_id)
             try:
@@ -2802,6 +2819,12 @@ class ExperimentStoreMixin:
                     episodes,
                     parent,
                 )
+                if parent is not None and parent.episode_id in wake_diagnostics:
+                    projected[control_node_id] = projected[control_node_id].model_copy(
+                        update={
+                            "watcher_delivery_diagnostic": wake_diagnostics[parent.episode_id],
+                        }
+                    )
             except ValueError as exc:
                 # A malformed durable ledger is a per-control degraded fact. It
                 # must remain visible without hiding healthy sibling controls;

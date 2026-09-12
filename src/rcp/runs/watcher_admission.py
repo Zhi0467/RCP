@@ -64,7 +64,15 @@ def start_watcher_notification(
     branch_episode_ids = {
         item.episode_id for item in resolved_watchers if item.episode_id is not None
     }
-    if graph_target.kind == "branch" and len({item.episode_id for item in resolved_watchers}) != 1:
+    experiment_delivery = request.patch_kind == "experiment_loop" and all(
+        item.continuation.patch_kind == "experiment_loop" and item.worker_id is None
+        for item in resolved_watchers
+    )
+    if (
+        graph_target.kind == "branch"
+        and not experiment_delivery
+        and len({item.episode_id for item in resolved_watchers}) != 1
+    ):
         raise ValueError("A branch watcher notification requires one exact episode binding.")
 
     worker_ids = {item.worker_id for item in resolved_watchers}

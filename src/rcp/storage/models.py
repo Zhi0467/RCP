@@ -2962,6 +2962,7 @@ class ExperimentLoopRuntime(BaseModel):
     detached_work_active: bool = False
     watcher_degraded: bool = False
     watcher_completion_pending: bool = False
+    watcher_delivery_diagnostic: str | None = None
     episode_exited: bool = False
     decision_bundle: list[dict[str, object]] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)

@@ -28,6 +28,7 @@ ExperimentLoopHealth = Literal[
     "starting",
     "agent_active",
     "waiting_on_watchers",
+    "completion_pending",
     "degraded",
     "stopping",
     "wrapping_up",
@@ -335,6 +336,7 @@ def _experiment_run_health(
         and control.invocations_remaining > 0
         and not operational.episode_exited
         and not operational.session.diagnostic
+        and not operational.watcher_delivery_diagnostic
         and not control.graph_reasons
     )
     if (completion_pending or detached_work_active) and control.invocations_remaining <= 0:
@@ -345,8 +347,10 @@ def _experiment_run_health(
         return "needs_action"
     if operational.watcher_degraded:
         return "degraded"
-    if completion_pending or detached_work_active:
+    if detached_work_active:
         return "waiting_on_watchers"
+    if completion_pending:
+        return "completion_pending"
     if node.status in CLOSED_EXPERIMENT_STATUSES:
         return "completed"
     if stop_requested:
@@ -383,7 +387,7 @@ def _experiment_recommendation(
         return task_control
     if health == "degraded":
         return "keep_loop"
-    if health == "waiting_on_watchers":
+    if health in {"waiting_on_watchers", "completion_pending"}:
         return "wait"
     if health == "completed":
         return "none"
@@ -415,6 +419,7 @@ def _experiment_run_section(
         "starting",
         "agent_active",
         "waiting_on_watchers",
+        "completion_pending",
         "degraded",
         "stopping",
         "wrapping_up",
@@ -437,6 +442,7 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
         detached_work_active=runtime.detached_work_active,
         watcher_degraded=runtime.watcher_degraded,
         watcher_completion_pending=runtime.watcher_completion_pending,
+        watcher_delivery_diagnostic=runtime.watcher_delivery_diagnostic,
         episode_exited=runtime.episode_exited,
         episode_live=runtime.episode_live,
         stop_requested=runtime.stop_requested,

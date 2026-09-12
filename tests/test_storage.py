@@ -1529,15 +1529,15 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
     all_experiment_selects = store.select_count
 
     assert set(runtimes) == set(control_node_ids)
-    assert one_experiment_selects == all_experiment_selects == 5
+    assert one_experiment_selects == all_experiment_selects == 6
 
     store.select_count = 0
     assert set(store.project_experiment_loop_runtimes(project_id)) == set(control_node_ids)
-    assert store.select_count == 5
+    assert store.select_count == 6
 
     store.select_count = 0
     assert store.active_experiment_control_ids(project_id) == set(control_node_ids)
-    assert store.select_count == 5
+    assert store.select_count == 6
 
 
 def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:

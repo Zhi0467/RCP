@@ -311,6 +311,11 @@ watcher can win a new claim. It means: finish the already-authorized turn, retai
 its valid Patch and semantic result, stop existing and newly emitted compatible
 watchers, and admit no automatic continuation.
 
+The current loop's Stop also retires unclaimed observations adopted from older
+episodes on the same Experiment, graph target, and execution host. Their origin
+remains intact, but a later episode cannot revive their delivery. Reconciliation
+of a historical Stop never retires a replacement episode's observations.
+
 If no unresolved task remains, Stop settles immediately. While the current turn
 is queued, running, or pausing, Runs shows **Stopping gracefully** and recommends
 waiting. If that turn pauses, fails, or is interrupted, the episode shows
@@ -342,6 +347,17 @@ separate exact resources, not a client-chosen mode field.
 A branch watcher can never wake a main task, and a main watcher can never spend
 a branch episode. Watcher selection, staging, atomic claim, task creation, and
 episode association retain the same target.
+
+An Experiment episode adopts unclaimed compatible observations from earlier
+episodes of that Experiment on the same exact graph target and execution host.
+Completions may coalesce across those origin episodes, including on a branch.
+The receiving episode supplies the human authorization, native session, stage,
+pinned Experiment policy, and invocation budget; watcher origin is immutable
+provenance, including when another human created or maintained the observation.
+This adoption does not change ordinary conversation, Auto-research root, or
+child Work routing. Existing group readiness and atomic, once-only claims still
+apply. A child Experiment also retains its receiving parent's admission and
+shared Experiment allowance gates.
 
 Every watcher file has two all-or-none lists:
 
@@ -505,6 +521,14 @@ The stopped episode remains current history; the report link retains its actual
 owning episode id. The backend also publishes `report_is_current`; a report from
 an earlier episode is labelled **Previous episode report**, while the selected
 episode's own report is labelled **Open report**.
+
+Active observations read **Waiting on watchers**. When only completed results
+remain, Runs reads **Completion pending delivery**. A receiving Auto-research
+parent that cannot admit new work or has spent its shared Experiment allowance
+produces **Needs action** with the current reason, rather than recommending
+waiting for an already-completed observation. These parent facts are read from
+the same SQLite snapshot as the Experiment runtime, not persisted as stale
+delivery errors.
 
 The runtime, parent episode, visible task rows, usage meter, and latest available
 report used for one Experiment-control answer come from one SQLite read snapshot.
