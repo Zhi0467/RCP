@@ -3,6 +3,26 @@
 RCP is a source-built research control panel. The same Python backend and React
 interface run in a browser or in the macOS desktop app.
 
+## Set up with your agent
+
+- **Supported agents:** Codex and Claude Code (more to come).
+- **Supported platforms:** macOS 13+ on Apple Silicon for the desktop app;
+  Ubuntu 22.04 or 24.04 LTS on x86-64 for the web app and team server.
+
+Send this to your agent:
+
+> Clone Zhi0467/RCP from GitHub. Build the web app and, on macOS, the desktop app
+> from source, following the README and docs/desktop.md. Then walk me through
+> using RCP.
+
+For a Linux machine your team will share as an RCP server, make sure you have SSH
+access, then send:
+
+> Set up my RCP team server using `<ssh-host>` as the SSH host, following
+> docs/server.md. Pause and ask about optional setup choices or when you need
+> sudo access. Then show me how to use my team space in the desktop app,
+> including inviting people, transferring projects, and creating shared projects.
+
 ## Features
 
 - Visualize ResearchQuestions, Hypotheses, Evidence, Experiments, Decisions,
