@@ -116,6 +116,13 @@ Agents write those options at one level of detail after investigating each
 distinct choice with equal care; a leaning belongs in `rationale`, never in
 option order, length, or wording.
 
+Queueing may restate the ballot. An agent that reopens a settled Decision may
+rewrite its title, question, options, rationale, and consequences in the same
+update, so the queued card describes the choice the human now faces instead of
+the one already made. This holds for the Experiment loop over its pinned
+Decisions. The prior `selected_option` stays untouched: it is what makes a
+`revisit` coherent, and writing it remains the human choice action alone.
+
 For ordinary work, the node-detail ballot is the only producer of
 `selected_option` plus `status: decided`. Human Sync commits those fields and
 accepted standing together and withdraws competing pending Proposals on that

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from rcp.core.authority import EVIDENCE_RELATIONS
 from rcp.core.models import (
+    HUMAN_EDITABLE_NODE_FIELDS,
     RELATION_SPEC,
     Decision,
     Experiment,
@@ -35,6 +36,11 @@ from rcp.core.validation.report import ValidationReport
 _ATTEMPT_CLOSE_FIELDS = frozenset(
     {"status", "source_refs", "outcome", "failure_reason", "finished_at"}
 )
+# A queued pinned Decision enters human attention as a ballot, so the loop that
+# reopens one may restate what that ballot now asks. The editable-content
+# registry already withholds `selected_option`, and requiring a queued `status`
+# keeps `decided` out of reach, so the choice itself stays human-only.
+_PINNED_DECISION_FIELDS = HUMAN_EDITABLE_NODE_FIELDS["decision"]
 _TERMINAL_ATTEMPT_STATUSES = frozenset({"failed", "completed", "cancelled", "superseded"})
 
 
@@ -143,15 +149,13 @@ def _validate_updates(
         node_id = update.id
         changes = update.changes
         if node_id in pinned_ids:
-            if set(changes) != {"status"} or changes.get("status") not in {
-                "open",
-                "ready",
-                "revisit",
-            }:
+            forbidden = sorted(set(changes) - _PINNED_DECISION_FIELDS)
+            if forbidden or changes.get("status") not in {"open", "ready", "revisit"}:
                 report.reject(
                     "experiment-loop-decision-action",
                     f"Experiment loop {experiment.id} may only queue pinned Decision {node_id!r} "
-                    "as open, ready, or revisit; it may never decide it.",
+                    "as open, ready, or revisit, restating its ballot in the same update; it may "
+                    "never decide it.",
                     revision,
                     related_node_ids=[experiment.id, node_id],
                 )

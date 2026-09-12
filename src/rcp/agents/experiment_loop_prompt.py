@@ -52,8 +52,12 @@ This replaces earlier graph-permission instructions for this loop, including bro
 Work permissions. Only these graph changes are available:
 - Update the focused Experiment's complete `attempts` list, status, `current_summary`, and
   `next_action`. Preserve attempt identity and immutable fields; never rewrite a terminal attempt.
-- Update only a pinned Decision's status: `open` while unresolved, `ready` when its choice is
-  makeable, or `revisit` when new evidence undermines a settled choice. Do not choose an option.
+- Queue a pinned Decision as `open` while unresolved, `ready` when its choice is makeable, or
+  `revisit` when new evidence undermines a settled choice. The same update may restate that
+  Decision's `title`, `question`, `options`, `rationale`, and `consequences` so the queued ballot
+  describes the choice the human now faces, including any option this episode's evidence newly
+  raises. Leave the prior `selected_option` untouched and never write it or `decided`; state what
+  the choice now turns on. Do not choose an option.
 - Create Evidence and Blockers. Link each same-Patch Evidence from this Experiment with `produces`
   and each same-Patch Blocker with `blocked_by`. Only same-Patch Evidence may `informs` an existing
   Decision or `addresses` an existing Blocker; neither edge changes its target's lifecycle.
@@ -63,8 +67,8 @@ Work permissions. Only these graph changes are available:
   fields: `situation_cold`, `why_human_now`, `consequences`, and `decision_needed`.
 - Add supplementary glossary definitions with `upsert_glossary`.
 All other graph mutations are unavailable: do not edit Experiment design, other Experiments,
-the pinned bundle, or existing Blockers; remove objects; set standing; choose Decisions; or resolve
-Proposals. The general authoring methods below do not extend this list.
+an attempt's recorded pinned bundle, or existing Blockers; remove objects; set standing; choose
+Decisions; or resolve Proposals. The general authoring methods below do not extend this list.
 """
 
 
