@@ -162,3 +162,24 @@ npm --prefix web test
 npm --prefix web run build
 uv run pre-commit run --all-files
 ```
+
+### Opt-in test gates
+
+Some tests skip unless a tool is installed or an environment variable is set, so
+a clean run still reports skips. CI installs `age` and runs the exact-base
+upgrade; the rest need real credentials or a reachable host and are opt-in
+locally.
+
+| Gate | Unlocks |
+| --- | --- |
+| `age` and `age-keygen` on `PATH` | real age encryption of a backup archive, rather than the stub |
+| `systemd-run` on `PATH` | the compute-job backend probe |
+| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data |
+| `RCP_FROZEN_BACKEND=<path to the built backend binary>` | local unpushed commits through a frozen desktop backend |
+| `RCP_RUN_GIT_CREDENTIALS_LIVE=1` plus `RCP_LIVE_GITHUB_ADMIN_TOKEN` and `RCP_LIVE_GITHUB_REPOSITORY` | live GitHub credential checks |
+| `RCP_RUN_PROJECT_CHECKOUT_LIVE=1` plus `RCP_LIVE_PROJECT_CHECKOUT_SSH_HOST` and `RCP_LIVE_PROJECT_CHECKOUT_SSH_ACCOUNT` | project checkout over real SSH |
+| `RCP_RUN_PROVIDER_READINESS_LIVE=1` | provider readiness against real logins |
+| `RCP_LIVE_TRANSFER_GIT_HOST` | transfer against a real Git host |
+
+Point the live gates at a throwaway account, repository, or host. Never at a
+real project's data.

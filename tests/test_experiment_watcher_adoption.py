@@ -9,6 +9,8 @@ from rcp.core.models import GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.experiment_loop import preflight_episode_wake
 from rcp.skill_registry import SkillReference
+from rcp.storage import WatcherStopRequest
+from rcp.watchers import WatcherBinding
 
 from .helpers import create_named_app as create_app
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
@@ -194,3 +196,43 @@ def test_stop_preserves_an_already_delivered_older_completion(manifest, tmp_path
     )
     assert loop.store.watcher("old-watcher") == before
     assert loop.store.watcher("current-watcher").status == "stopped"
+
+
+def test_agent_stop_retires_an_observer_adopted_from_an_earlier_episode(manifest, tmp_path) -> None:
+    """Stop compatibility is node, target and host, never the control episode id.
+
+    Both watcher prompts tell the agent that a differing `episode_id` is that
+    watcher's provenance rather than a reason to leave stale work armed. This
+    pins the enforcement those sentences describe, so narrowing the predicate
+    fails here instead of quietly making the prose wrong again.
+    """
+
+    loop, target, old_episode = _adopted_loop(manifest, tmp_path, branch=False, old_status="active")
+    current = loop.store.watcher("current-watcher")
+    adopted = loop.store.watcher("old-watcher")
+    assert adopted.continuation.control_episode_id == old_episode != loop.episode_id
+
+    loop.store.persist_experiment_watchers_idempotently(
+        [],
+        stops=[
+            WatcherStopRequest(
+                stop_watcher_id="old-watcher",
+                reason="Superseded by the work this episode is watching.",
+            )
+        ],
+        binding=WatcherBinding(
+            project_id=current.project_id,
+            origin_operation_id="current-root",
+            origin_task_kind=current.origin_task_kind,
+            chat_id=current.chat_id,
+            node_id=current.node_id,
+            episode_id=current.episode_id,
+            graph_target=current.graph_target,
+            execution_host=current.execution_host,
+            continuation=current.continuation,
+        ),
+    )
+
+    retired = loop.store.watcher("old-watcher")
+    assert retired.status == "stopped"
+    assert retired.stopped_by == "agent"
