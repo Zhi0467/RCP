@@ -13,6 +13,7 @@ from rcp.history import ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
+    experiment_observer_watcher_id,
     experiment_watcher_output_name,
     persist_experiment_watchers_idempotently,
     read_experiment_watcher_outputs,
@@ -196,6 +197,15 @@ async def _process_experiment_watcher_maintenance(
                         )
                         if handoff.observers
                         else []
+                    )
+                    execution.store.validate_experiment_observer_duplicates(
+                        binding,
+                        handoff.observers,
+                        stops=handoff.stops,
+                        rearmed_watcher_ids=[
+                            experiment_observer_watcher_id(binding, index, spec)
+                            for index, spec in enumerate(handoff.observers)
+                        ],
                     )
                 except (WatcherInitialCheckError, ValueError) as exc:
                     problem = str(exc)

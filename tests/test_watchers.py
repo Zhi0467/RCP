@@ -1251,6 +1251,44 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
     assert store.watcher("first").status == "stopped"
 
 
+def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
+    live = _record("live", origin="loop-root").model_copy(update={"continuation": continuation})
+    store.persist_experiment_watchers_idempotently([live], binding=binding)
+    spec = ExperimentWatchSpec(
+        check_command=live.check_command,
+        log_path=live.log_path,
+        cwd=live.cwd,
+    )
+
+    # Watcher ids derive from the declaration's list index, so re-declaring a
+    # live observer elsewhere in the list reaches persistence under a fresh id.
+    # The refusal has to land here, where the turn can still answer it.
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(binding, [spec])
+
+    # Retiring it in the same handoff is what the refusal asks for, so the dry
+    # run has to read the stops the handoff has not applied yet.
+    store.validate_experiment_observer_duplicates(
+        binding,
+        [spec],
+        stops=[WatcherStopRequest(stop_watcher_id="live", reason="Replaced observer")],
+    )
+
+    # A pending completion is still an unspent wake, and a group is exempt.
+    store.record_watcher_check("live", status="completed", exit_code=0, error=None)
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(binding, [spec])
+    store.validate_experiment_observer_duplicates(
+        binding,
+        [spec.model_copy(update={"group": "shards"})],
+    )
+
+
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     specs = [
