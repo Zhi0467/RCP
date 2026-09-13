@@ -12,10 +12,10 @@ from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
 
-_SANDBOX_REASON = "sandbox required but unavailable: bubblewrap (bwrap) not installed"
+_WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
 
 
-def _claude_binary(tmp_path: Path, *, authenticated: bool = True, sandbox: bool = False) -> Path:
+def _claude_binary(tmp_path: Path, *, authenticated: bool = True, work_ready: bool = False) -> Path:
     binary = tmp_path / "claude"
     binary.write_text(
         f"#!{sys.executable}\n"
@@ -27,15 +27,15 @@ def _claude_binary(tmp_path: Path, *, authenticated: bool = True, sandbox: bool 
         f"    print(json.dumps({{'loggedIn': {authenticated!r}}}))\n"
         "elif '--settings' in args:\n"
         "    settings = json.loads(args[args.index('--settings') + 1])\n"
-        "    assert settings['sandbox']['enabled']\n"
-        "    assert settings['sandbox']['failIfUnavailable']\n"
+        "    assert settings['sandbox'] == {'enabled': False}\n"
+        "    assert settings['permissions']['defaultMode'] == 'dontAsk'\n"
         "    assert args[args.index('--input-format') + 1] == 'stream-json'\n"
         "    assert args[args.index('--permission-mode') + 1] == 'dontAsk'\n"
         "    assert sys.stdin.read() == ''\n"
         f"    with pathlib.Path({str(tmp_path / 'probes')!r}).open('a') as f: f.write('probe\\n')\n"
-        f"    if not {sandbox!r}:\n"
+        f"    if not {work_ready!r}:\n"
         "        print('bash: no job control in this shell', file=sys.stderr)\n"
-        f"        print({_SANDBOX_REASON!r}, file=sys.stderr)\n"
+        f"        print({_WORK_PROBE_REASON!r}, file=sys.stderr)\n"
         "        sys.exit(1)\n"
         "else:\n"
         "    command = json.loads(sys.stdin.readline())\n"
@@ -46,22 +46,22 @@ def _claude_binary(tmp_path: Path, *, authenticated: bool = True, sandbox: bool 
     return binary
 
 
-@pytest.mark.parametrize("sandbox", [False, True])
-def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, sandbox: bool) -> None:
-    binary = _claude_binary(tmp_path, sandbox=sandbox)
+@pytest.mark.parametrize("work_ready", [False, True])
+def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_ready: bool) -> None:
+    binary = _claude_binary(tmp_path, work_ready=work_ready)
     launcher = AgentLauncher()
 
     readiness = launcher.readiness("claude", binary=str(binary))
     assert readiness.authenticated
-    assert readiness.work_like_available is sandbox
+    assert readiness.work_like_available is work_ready
     # A Work-only fault never becomes the general readiness reason: `reason` also
     # carries benign notes, so folding them together makes a usable Discuss
     # provider read as broken.
     assert readiness.reason is None
-    if sandbox:
+    if work_ready:
         assert readiness.work_like_reason is None
     else:
-        assert _SANDBOX_REASON in readiness.work_like_reason
+        assert _WORK_PROBE_REASON in readiness.work_like_reason
         assert "job control" not in readiness.work_like_reason
     assert launcher.readiness("claude", binary=str(binary)) == readiness
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
@@ -69,7 +69,7 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, sandbo
     assert (tmp_path / "probes").read_text().splitlines() == ["probe", "probe"]
 
 
-def test_unauthenticated_provider_does_not_probe_sandbox(tmp_path: Path) -> None:
+def test_unauthenticated_provider_does_not_probe_work_readiness(tmp_path: Path) -> None:
     binary = _claude_binary(tmp_path, authenticated=False)
     readiness = AgentLauncher().readiness("claude", binary=str(binary))
     assert not readiness.authenticated
@@ -93,7 +93,7 @@ async def test_failed_work_readiness_refuses_before_launch_but_discuss_runs(
     ]
     assert len(errors) == 1
     assert errors[0].event == "error"
-    assert _SANDBOX_REASON in errors[0].text
+    assert _WORK_PROBE_REASON in errors[0].text
 
     events = [
         event
@@ -107,7 +107,7 @@ async def test_failed_work_readiness_refuses_before_launch_but_discuss_runs(
 
 
 @pytest.mark.parametrize("host", ["", "compute.example"])
-def test_probe_transport_failure_is_not_a_missing_sandbox(
+def test_probe_transport_failure_is_not_a_rejected_setting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
     binary = _claude_binary(tmp_path)
@@ -125,7 +125,7 @@ def test_probe_transport_failure_is_not_a_missing_sandbox(
     assert readiness.work_like_available is None
     assert "could not be checked" in readiness.work_like_reason
     assert "connection failed" in readiness.work_like_reason
-    assert "sandbox" not in readiness.work_like_reason
+    assert _WORK_PROBE_REASON not in readiness.work_like_reason
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,7 @@ async def test_first_provider_error_contains_stderr_cause(
         "import json, sys, time\n"
         "sys.stdin.readline()\n"
         "print('bash: no job control in this shell', file=sys.stderr, flush=True)\n"
-        f"print({_SANDBOX_REASON!r}, file=sys.stderr, flush=True)\n"
+        f"print({_WORK_PROBE_REASON!r}, file=sys.stderr, flush=True)\n"
         "print(json.dumps({'type':'result','subtype':'error_during_execution',"
         "'is_error':True,'result':None,'error':None,'message':None}),flush=True)\n"
         "time.sleep(30)\n"
@@ -158,7 +158,7 @@ async def test_first_provider_error_contains_stderr_cause(
     ) as stream:
         async for event in stream:
             if event.event == "error":
-                assert _SANDBOX_REASON in event.text
+                assert _WORK_PROBE_REASON in event.text
                 assert "job control" not in event.text
                 break
         else:
@@ -184,9 +184,9 @@ def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
     unchecked = ready.model_copy(update={"work_like_available": None})
     assert work_like_launch_problem(unchecked) is None
     blocked = ready.model_copy(
-        update={"work_like_available": False, "work_like_reason": _SANDBOX_REASON}
+        update={"work_like_available": False, "work_like_reason": _WORK_PROBE_REASON}
     )
-    assert work_like_launch_problem(blocked) == _SANDBOX_REASON
+    assert work_like_launch_problem(blocked) == _WORK_PROBE_REASON
     inconclusive = ready.model_copy(
         update={"work_like_available": None, "work_like_reason": "could not be checked"}
     )
@@ -194,14 +194,14 @@ def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
     assert work_like_launch_problem(inconclusive) == "could not be checked"
 
 
-def test_auto_research_retry_is_refused_before_allocation_on_a_host_that_cannot_sandbox() -> None:
+def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_failed() -> None:
     """Retry admission consults the same policy as launch instead of installed+authenticated."""
     blocked = ProviderReadiness(
         provider="claude",
         installed=True,
         authenticated=True,
         work_like_available=False,
-        work_like_reason=_SANDBOX_REASON,
+        work_like_reason=_WORK_PROBE_REASON,
     )
     machine = SimpleNamespace(host="gpu.example", provider_paths={"claude": "/bin/claude"})
     service = SimpleNamespace(
@@ -209,7 +209,7 @@ def test_auto_research_retry_is_refused_before_allocation_on_a_host_that_cannot_
         launcher=SimpleNamespace(readiness=lambda *_args, **_kwargs: blocked),
     )
     request = SimpleNamespace(provider="claude", run_on="remote-1")
-    with pytest.raises(ValueError, match="bubblewrap"):
+    with pytest.raises(ValueError, match="unknown permission mode"):
         _require_auto_research_retry_target_ready(service, request)
 
     service.launcher = SimpleNamespace(

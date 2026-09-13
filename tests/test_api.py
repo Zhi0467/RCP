@@ -5534,7 +5534,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         launch["payload"]["provider_enforcement_mode"]
         == {
             "codex": "codex.permission-profile.v1",
-            "claude": "claude.sandbox-allowlist.v1",
+            "claude": "claude.permission-allowlist.v1",
         }[provider]
     )
     assert launch["payload"]["canonical_repository_roots"] == [repository_root]

@@ -739,7 +739,7 @@ def test_claude_error_uses_text_then_result_subtype(fields, expected):
     assert event.text == expected
 
 
-def test_claude_work_readiness_probe_uses_fail_closed_sandbox_without_a_prompt():
+def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt():
     command = ClaudeProfile().work_like_probe_command("/bin/claude")
     assert command[0] == "/bin/claude"
     assert command[command.index("--input-format") + 1] == "stream-json"
@@ -747,8 +747,8 @@ def test_claude_work_readiness_probe_uses_fail_closed_sandbox_without_a_prompt()
     assert command[command.index("--setting-sources") + 1] == ""
     settings = json.loads(command[command.index("--settings") + 1])
     assert settings["disableAllHooks"] is True
-    assert settings["sandbox"]["enabled"] is True
-    assert settings["sandbox"]["failIfUnavailable"] is True
-    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
-    assert settings["sandbox"]["filesystem"]["allowWrite"] == []
+    # The probe carries no project write authority, so it grants no write root.
+    assert settings["permissions"]["allow"] == ["Bash", "WebSearch", "WebFetch"]
+    assert settings["permissions"]["deny"] == []
+    assert settings["sandbox"] == {"enabled": False}
     assert CodexProfile().work_like_probe_command("codex") is None

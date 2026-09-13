@@ -208,13 +208,21 @@ repository roots. They never use `bypassPermissions`. RCP suppresses user
 settings and unrelated MCP configuration for this enforced launch. Public
 WebSearch and WebFetch remain available under the provider contract.
 
-Claude's sandbox denies the `AF_UNIX` socket family outright: creating one fails
-with `EPERM` before any path is touched, while `AF_INET` succeeds. RCP's staged
-command client therefore cannot reach this turn's command broker, so a Claude
-Work turn's pre-flight validator self-check always fails and the turn proceeds
-on Apply-time validation alone. Codex is unaffected. No filesystem allow-list
-entry can change this; the broker transport itself is what would have to change,
-and that decision is not yet taken.
+Claude's OS sandbox is off. Its Linux backend always unshares the network
+namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
+sandboxed Work turn cannot reach a scheduler, a GPU device, its own command
+broker, or any non-HTTP service on its execution host. Turning it off is a
+deliberate capability choice: Work on this provider is meant to run real
+compute, and a containment that forbids that is not usable containment.
+
+Write roots are therefore enforced by Claude's file permission rules. `Edit(path)`
+is the only rule kind Claude matches for file writes, and it covers every
+file-editing tool; a `Write(path)` rule is accepted and then ignored, so RCP
+emits only the `Edit` form. These rules bound every file-editing tool and do not
+bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
+on its execution machine. That is an accepted accidental-write gap for this
+provider, not a claim of containment; Codex's native permission profile still
+bounds both. Nothing here widens graph authority, which stays with `patch.json`.
 
 ### Version failure
 
@@ -683,8 +691,9 @@ stores the refresh itself. Reaching one account through two spellings of its SSH
 destination still yields two gates.
 
 After authentication succeeds, the Claude profile also supplies a zero-cost
-Work-like startup probe using its strict sandbox settings, stream-json input,
-and closed empty stdin. Sandbox validation happens before any model call. The
+Work-like startup probe using its enforced Work settings, stream-json input,
+and closed empty stdin. It proves the installed CLI accepts those settings
+before any model call; it does not prove containment. The
 cached readiness result records Work-like availability and its concrete reason,
 kept apart from the general readiness reason, which also carries benign notes
 such as a discovered path. Settings renders it only on a profile the projection
@@ -693,10 +702,10 @@ capability cannot establish: a chat profile defaults to Discuss and still
 launches Work. The paper coach is never subject to it. A Work or orchestrate
 launch checks this
 precondition alongside the profile's version requirement before starting its
-provider turn. A missing sandbox fails with the provider's actual diagnostic;
-connection loss or an unreachable host is reported as such, not diagnosed as a
-missing sandbox. Discuss does not require this precondition or attach the sandbox
-settings. Refresh and normal readiness invalidation also invalidate the probe.
+provider turn. A CLI that refuses those settings fails with the provider's actual
+diagnostic; connection loss or an unreachable host is reported as such, not
+diagnosed as a refused setting. Discuss does not require this precondition or
+attach the enforced write settings. Refresh and normal readiness invalidation also invalidate the probe.
 
 A decoded provider error includes meaningful captured stderr in the first error
 event, with a bounded drain after process termination and existing shell TTY
