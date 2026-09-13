@@ -585,6 +585,59 @@ export function persistProjectHumanDraft(
   }
 }
 
+function sameProjectSlice(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Keep the identity of what a re-read did not change.
+ *
+ * Live operational polling re-reads the whole project every few seconds, mostly
+ * to deliver watcher results. The staged-preview effects key off `graph`,
+ * `attention` and `experiment_control` by identity, so decoding alone would hand
+ * them a new object on every tick and restart the preview, flipping the view
+ * between canonical and candidate state.
+ *
+ * Only unchanged slices are shared. Watcher, control and attention state that
+ * really did move at an unchanged graph revision still replaces what is
+ * rendered, which is the whole point of that poll.
+ */
+function preserveUnchangedProjectSlices(
+  previous: ProjectSnapshot,
+  next: ProjectSnapshot,
+): ProjectSnapshot {
+  if (sameProjectSlice(previous, next)) return previous;
+  const shared: Partial<ProjectSnapshot> = {};
+  if (sameProjectSlice(previous.graph, next.graph)) shared.graph = previous.graph;
+  if (sameProjectSlice(previous.attention, next.attention)) shared.attention = previous.attention;
+  if (sameProjectSlice(previous.counts, next.counts)) shared.counts = previous.counts;
+  if (sameProjectSlice(previous.experiment_control, next.experiment_control)) {
+    shared.experiment_control = previous.experiment_control;
+  }
+  return { ...next, ...shared };
+}
+
+/**
+ * Whether a staged preview computed against `previous` still describes `next`.
+ *
+ * A transition projection is built from the canonical graph at one head and the
+ * operational inputs the backend folds in beside it. Presentation prefers the
+ * projection's own control and attention maps over the stored project's, so a
+ * retained projection whose operational inputs have moved renders pre-delivery
+ * state — and delivery stops the poll that would have corrected it. Identity is
+ * the test because `preserveUnchangedProjectSlices` shares exactly the slices
+ * that did not change.
+ */
+function projectionInputsSurvive(previous: ProjectSnapshot, next: ProjectSnapshot): boolean {
+  return (
+    next.graph === previous.graph &&
+    next.attention === previous.attention &&
+    next.counts === previous.counts &&
+    next.experiment_control === previous.experiment_control &&
+    next.primary_question === previous.primary_question
+  );
+}
+
 function applyProjectSnapshot(
   state: ProjectSessionState,
   action: Extract<ProjectSessionAction, { kind: "snapshot_applied" }>,
@@ -648,8 +701,33 @@ function applyProjectSnapshot(
       : { draft: normalizeHumanDraft(state.humanDraft, nextGraph), discardedProposalIds: [] }
     : null;
   const rebasedDraft = reconciliation?.draft ?? null;
-  const humanDraft = rebasedDraft && humanDraftChangeCount(rebasedDraft) > 0 ? rebasedDraft : null;
+  const rebased = rebasedDraft && humanDraftChangeCount(rebasedDraft) > 0 ? rebasedDraft : null;
   const revisionAdvanced = authoritative && nextGraph.revision !== previousRevision;
+  // A snapshot that carries no new canonical state must not disturb the staged
+  // draft. Live operational polling re-applies the same snapshot on a timer, and
+  // rebasing the draft there restarts the preview on every tick, flipping the
+  // view between canonical and candidate.
+  const carriesNoNewCanonicalState =
+    !revisionAdvanced &&
+    nextGraph.revision === previousRevision &&
+    transitionHeadsEqual(state.transitionHead, nextHead) &&
+    (reconciliation?.discardedProposalIds.length ?? 0) === 0 &&
+    humanDraftChangeCount(rebased) === humanDraftChangeCount(state.humanDraft);
+  const humanDraft = carriesNoNewCanonicalState ? state.humanDraft : rebased;
+  const storedProject = action.preserve_readiness
+    ? preserveProjectReadiness(decodedProject, state.project)
+    : decodedProject;
+  const project = state.project
+    ? preserveUnchangedProjectSlices(state.project, storedProject)
+    : storedProject;
+  // The staged preview survives only while everything it was computed from is
+  // still current: the canonical head, the draft, and the operational inputs the
+  // projection carries. Watcher or control state moving at an unchanged revision
+  // makes it stale, so it is dropped and the preview effects refetch it.
+  const stagedPreviewSurvives =
+    carriesNoNewCanonicalState &&
+    state.project !== null &&
+    projectionInputsSurvive(state.project, project);
   const transitionCoordinator = reduceProjectTransitionCoordinator(state.transitionCoordinator, {
     kind: "observe_head",
     project_id: decodedProject.id,
@@ -657,12 +735,12 @@ function applyProjectSnapshot(
   });
   return {
     ...state,
-    project: action.preserve_readiness
-      ? preserveProjectReadiness(decodedProject, state.project)
-      : decodedProject,
+    project,
     renderedRevision: nextGraph.revision,
     humanDraft,
-    transitionHead: nextHead,
+    transitionHead: transitionHeadsEqual(state.transitionHead, nextHead)
+      ? state.transitionHead
+      : nextHead,
     transitionManifestState: revisionAdvanced
       ? {
           status: "loading",
@@ -677,9 +755,14 @@ function applyProjectSnapshot(
     transitionManifestExpectedRulesetTag: revisionAdvanced
       ? null
       : state.transitionManifestExpectedRulesetTag,
-    draftTransitionProjection: null,
-    draftPreviewConflict: null,
-    draftPreviewPending: false,
+    draftTransitionProjection: stagedPreviewSurvives ? state.draftTransitionProjection : null,
+    // Preview status travels with the projection it describes. Clearing a
+    // conflict beside a surviving projection would hide it permanently, now that
+    // an unchanged snapshot no longer reruns the preview effects, and would
+    // re-enable Sync on an edit the backend already refused. Clearing pending
+    // would enable Sync before an in-flight preview returns.
+    draftPreviewConflict: stagedPreviewSurvives ? state.draftPreviewConflict : null,
+    draftPreviewPending: stagedPreviewSurvives ? state.draftPreviewPending : false,
     draftReconciliationDiscardedProposalIds: [
       ...new Set([
         ...state.draftReconciliationDiscardedProposalIds,

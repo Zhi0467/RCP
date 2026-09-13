@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Claude Work runs without the OS sandbox](2026-09-13-claude-work-runs-without-the-os-sandbox.md)
+  records why that sandbox is off for one provider, what enforces write roots
+  instead, the shell gap this accepts, and why re-enabling it is not a cleanup.
+
 - [Graph-branch scope is reopened](2026-09-08-graph-branch-scope-is-reopened.md)
   retires the outright rejection of a version-control model for the research
   graph, fixes what human authority keeps, and puts the deterministic merge core

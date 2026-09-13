@@ -1026,7 +1026,7 @@ class ClaudeProfile(ProviderProfile):
         ]
 
     def project_write_enforcement_mode(self) -> str:
-        return "claude.sandbox-allowlist.v1"
+        return "claude.permission-allowlist.v1"
 
     def command(
         self,
@@ -1252,19 +1252,18 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
 
 
 def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, object]:
-    # Readiness validates this same sandbox with no project write authority.
+    # Readiness validates these same settings with no project write authority.
+    # Claude's OS sandbox stays off. Its Linux backend always unshares the
+    # network namespace and remounts a minimal `/dev`, so a sandboxed Work turn
+    # cannot reach a scheduler, a GPU device, or any non-HTTP service on its own
+    # execution host. Exact write roots are enforced by Claude's file-permission
+    # rules instead: they bound every file-editing tool, and Bash is not bounded.
     writable_roots = scope.writable_roots if scope is not None else []
     protected_write_paths = scope.protected_write_paths if scope is not None else []
-    allow_patterns = [
-        f"{tool}({_claude_absolute_pattern(path)})"
-        for path in writable_roots
-        for tool in ("Edit", "Write")
-    ]
-    deny_patterns = [
-        f"{tool}({_claude_absolute_pattern(path)})"
-        for path in protected_write_paths
-        for tool in ("Edit", "Write")
-    ]
+    # `Edit(path)` is the only file permission rule Claude matches, and it covers
+    # every file-editing tool. A `Write(path)` rule is accepted and then ignored.
+    allow_patterns = [f"Edit({_claude_absolute_pattern(path)})" for path in writable_roots]
+    deny_patterns = [f"Edit({_claude_absolute_pattern(path)})" for path in protected_write_paths]
     return {
         "disableAllHooks": True,
         "permissions": {
@@ -1274,17 +1273,7 @@ def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, 
             "allow": ["Bash", "WebSearch", "WebFetch", *allow_patterns],
             "deny": deny_patterns,
         },
-        "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,
-            "filesystem": {
-                "allowWrite": writable_roots,
-                "denyWrite": protected_write_paths,
-            },
-            "network": {"allowedDomains": ["*"]},
-        },
+        "sandbox": {"enabled": False},
     }
 
 

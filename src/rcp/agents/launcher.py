@@ -122,9 +122,9 @@ def work_like_launch_problem(readiness: object) -> str | None:
     """The one reason a Work-like launch is refused on readiness grounds.
 
     Launch, `rcp server provider check`, and Auto-research Retry admission all
-    consult this, so a host that cannot sandbox is refused before a task is
-    allocated rather than after its stream begins. `None` means launch may
-    proceed; an unchecked probe is not a refusal.
+    consult this, so a host whose CLI will not accept RCP's enforced settings is
+    refused before a task is allocated rather than after its stream begins.
+    `None` means launch may proceed; an unchecked probe is not a refusal.
     """
 
     if getattr(readiness, "work_like_available", None) is False:

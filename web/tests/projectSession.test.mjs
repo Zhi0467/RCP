@@ -225,6 +225,116 @@ test("snapshot movement invalidates the manifest and rebases the draft in one tr
   assert.equal(moved.draftPreviewPending, false);
 });
 
+test("re-applying an unchanged snapshot keeps the staged draft and its preview", () => {
+  const originalNode = {
+    id: "hyp/example",
+    type: "hypothesis",
+    title: "Canonical",
+    statement: "Statement",
+    standing: "accepted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { graph: graph(1, originalNode) }),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_loaded",
+    draft: {
+      version: 1,
+      base_revision: 1,
+      nodes: {},
+      removed_node_ids: [originalNode.id],
+      proposals: {},
+      ontology: null,
+      custom_nodes: {},
+      added_edges: [],
+      removed_edge_ids: [],
+      edge_base_revision: null,
+    },
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: projection(2),
+    conflict: null,
+    pending: false,
+  });
+  const stagedDraft = state.humanDraft;
+  const stagedProjection = state.draftTransitionProjection;
+  const stagedHead = state.transitionHead;
+
+  // Live watcher-delivery polling re-applies the same canonical snapshot every
+  // few seconds. It must not restart the staged preview, or the view flips
+  // between canonical and candidate for as long as a watcher is undelivered.
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { graph: graph(1, originalNode) }),
+    preserve_readiness: false,
+  });
+
+  assert.strictEqual(repolled.humanDraft, stagedDraft);
+  assert.strictEqual(repolled.draftTransitionProjection, stagedProjection);
+  assert.strictEqual(repolled.transitionHead, stagedHead);
+  assert.equal(repolled.draftPreviewPending, false);
+
+  // Operational state that really did move at the same graph revision is still
+  // applied: that poll exists to deliver watcher and control state, and holding
+  // a stale control projection would strand Runs on "waiting" indefinitely.
+  // Presentation prefers the projection's own control map, so the projection is
+  // dropped rather than retained beside fresh state, and the effects refetch it.
+  const controlMoved = projectSessionReducer(repolled, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, {
+      graph: graph(1, originalNode),
+      experiment_control: { "exp/one": { health: "completed" } },
+    }),
+    preserve_readiness: false,
+  });
+
+  assert.deepEqual(controlMoved.project.experiment_control, {
+    "exp/one": { health: "completed" },
+  });
+  assert.equal(controlMoved.draftTransitionProjection, null);
+  assert.strictEqual(controlMoved.humanDraft, stagedDraft);
+  assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
+});
+
+test("an unchanged snapshot keeps preview status, and a moved one clears it", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: null,
+    conflict: "Staged transition preview was refused: stale base head.",
+    pending: false,
+  });
+
+  // Sync is gated on this conflict. Clearing it on a watcher-delivery poll would
+  // re-enable Sync for an edit the backend already refused, and the preview
+  // effects no longer rerun to restore it.
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  assert.equal(repolled.draftPreviewConflict, state.draftPreviewConflict);
+
+  const moved = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2),
+    preserve_readiness: false,
+  });
+  assert.equal(moved.draftPreviewConflict, null);
+  assert.equal(moved.draftPreviewPending, false);
+});
+
 test("a committed transition replaces the canonical session in one transition", () => {
   let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",
