@@ -447,11 +447,27 @@ Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is
 either complete or persistently unobservable at the capped tier. The latter is
 diagnostic readiness, not scientific success. Stop/disposition items may retire
-only a staged compatible external observer after the agent has settled its work;
-they cannot retire graph conditions or claim RCP cancelled the process.
+any staged compatible watcher after the agent has settled its work, external
+observer or graph condition alike, and always travel in the `external` list.
+Retiring a condition discards only a future graph delivery, so the agent that
+armed one withdraws it the same way it withdraws an observer; a watcher it has
+stopped needing otherwise holds the loop open and spends an invocation when it
+fires. A stop still never claims RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
-atomically. One invalid item arms none. An empty final watcher declaration is
+atomically. One invalid item arms none. An Experiment observer repeating an
+ungrouped one already armed for that node, graph target, execution host,
+directory, check command, and log path is one such invalid item: identity jitter
+keeps the pair out of a shared delivery pass, so each spends a wake on one
+completion. An unnotified completion counts as already armed, being a wake the
+episode has not spent yet, and grouping exempts neither side: one group wakes
+once, but two are two delivery units that coalesce only when they become ready
+in a single poll. Retiring one member does not strand its siblings, because a
+group's readiness ignores agent-retired members. Generic Work and child Work
+arming is unchanged. Observing one
+job through genuinely different commands cannot be told apart mechanically, so
+the staged watcher state is what every surface that arms an Experiment observer
+reconciles against first. An empty final watcher declaration is
 legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.

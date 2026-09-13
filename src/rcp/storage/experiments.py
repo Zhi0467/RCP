@@ -29,13 +29,14 @@ from rcp.storage.models import (
     StoredWatcherRecord,
     WatcherClaimConflict,
     WatcherContinuation,
+    WatcherRecord,
     WatcherStopRequest,
     _experiment_pinned_value,
     _optional_str,
 )
 
 if TYPE_CHECKING:
-    from rcp.watchers import WatcherBinding
+    from rcp.watchers import ExperimentWatchSpec, WatcherBinding
 
 
 class ExperimentStoreMixin:
@@ -1096,6 +1097,13 @@ class ExperimentStoreMixin:
         existing_by_id = {
             str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
         }
+        if not stopped:
+            # Rows born stopped cannot deliver, so they cannot double-spend, and a
+            # re-armed id is idempotent replay rather than a second observation.
+            self._reject_duplicate_live_experiment_observers(
+                connection,
+                [record for record in records if record.watcher_id not in existing_by_id],
+            )
         for desired in records:
             existing = existing_by_id.get(desired.watcher_id)
             if existing is not None:
@@ -1126,6 +1134,168 @@ class ExperimentStoreMixin:
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    @staticmethod
+    def _experiment_observer_identity(
+        project_id: str,
+        graph_target_json: str,
+        node_id: str | None,
+        execution_host: str,
+        cwd: str,
+        check_command: str,
+        log_path: str,
+    ) -> tuple[str, ...]:
+        """One observer's work identity, in this lookup's column order."""
+
+        return (
+            project_id,
+            graph_target_json,
+            node_id or "",
+            execution_host,
+            cwd,
+            check_command,
+            log_path,
+        )
+
+    @classmethod
+    def _reject_repeated_experiment_observers(
+        cls,
+        connection: sqlite3.Connection,
+        candidates: list[tuple[str, ...]],
+        *,
+        retiring: set[str],
+    ) -> None:
+        """Refuse a repeat of work a live observer already covers.
+
+        Grouping does not exempt either side. One group wakes once, but two
+        groups are two delivery units that coalesce only when they become ready
+        in the same poll, and jittered member checks are what keep them apart.
+        A member repeating work another observer already covers therefore costs
+        the same extra invocation an ungrouped repeat does. Retiring one member
+        does not strand its siblings, because a group's readiness ignores
+        agent-retired members.
+
+        `retiring` names watchers the same handoff will stop, so validating a
+        retire-and-replace before the stops apply sees what persistence will.
+        """
+
+        armed: set[tuple[str, ...]] = set()
+        for identity in candidates:
+            if identity in armed:
+                raise ValueError(
+                    f"this watch list arms one check twice; observe this work once: {identity[-2]}"
+                )
+            armed.add(identity)
+            rows = connection.execute(
+                """
+                SELECT watcher_id FROM watchers
+                WHERE project_id = ?
+                  AND graph_target_json = ?
+                  AND IFNULL(node_id, '') = ?
+                  AND execution_host = ?
+                  AND cwd = ?
+                  AND check_command = ?
+                  AND log_path = ?
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                  AND status IN ('active', 'degraded', 'completed')
+                  AND notified = 0
+                ORDER BY created_at, watcher_id
+                """,
+                identity,
+            ).fetchall()
+            for row in rows:
+                watcher_id = str(row["watcher_id"])
+                if watcher_id in retiring:
+                    continue
+                raise ValueError(
+                    "an identical observer already covers this work: "
+                    f"{watcher_id}; rely on it, or retire it with a stop "
+                    "item in this same handoff and arm the replacement"
+                )
+
+    def validate_experiment_observer_duplicates(
+        self,
+        binding: WatcherBinding,
+        observers: list[ExperimentWatchSpec],
+        *,
+        stops: list[WatcherStopRequest] | None = None,
+        rearmed_watcher_ids: list[str] | None = None,
+    ) -> None:
+        """Fail a repeated observer while the turn can still correct it.
+
+        The arming transaction keeps the same lookup as its atomic backstop, but
+        that runs after the turn has ended, where a refusal costs the invocation
+        the rule exists to save. This dry run is the one the agent can answer.
+
+        `rearmed_watcher_ids` are the ids this declaration would resolve to.
+        Persistence treats a row already carrying one as an idempotent re-arm,
+        which is how Retry and crash recovery replay a handoff, so the dry run
+        excludes them rather than reading a replay as a repeat.
+        """
+
+        if not observers:
+            return
+        graph_target_json = binding.graph_target.model_dump_json()
+        candidates = [
+            self._experiment_observer_identity(
+                binding.project_id,
+                graph_target_json,
+                binding.node_id,
+                binding.execution_host,
+                item.cwd,
+                item.check_command,
+                item.log_path,
+            )
+            for item in observers
+        ]
+        with self.connection() as connection:
+            self._reject_repeated_experiment_observers(
+                connection,
+                candidates,
+                retiring={item.stop_watcher_id for item in (stops or [])}
+                | set(rearmed_watcher_ids or []),
+            )
+
+    @classmethod
+    def _reject_duplicate_live_experiment_observers(
+        cls,
+        connection: sqlite3.Connection,
+        records: list[StoredWatcherRecord],
+    ) -> None:
+        """Hold the duplicate rule atomically, after its correctable dry run.
+
+        Healthy checks carry identity jitter, so two observers of one job notice
+        its completion in separate polls, never share a delivery pass, and each
+        buys the episode a wake for the single event. An unnotified completion
+        counts the same: it is a wake this episode has not spent yet. Only an
+        exact repeat of the check on the same node, target, host, and directory
+        is refused; observing one job through genuinely different commands
+        cannot be told apart mechanically and stays a judgement the agent makes
+        from its staged watcher state.
+
+        `validate_experiment_observer_duplicates` runs first, while the turn can
+        still be corrected, so reaching a refusal here means the rows moved after
+        that check. Stops in this handoff have already applied, so nothing needs
+        excluding.
+        """
+
+        cls._reject_repeated_experiment_observers(
+            connection,
+            [
+                cls._experiment_observer_identity(
+                    record.project_id,
+                    record.graph_target.model_dump_json(),
+                    record.node_id,
+                    record.execution_host,
+                    record.cwd,
+                    record.check_command,
+                    record.log_path,
+                )
+                for record in records
+                if isinstance(record, WatcherRecord)
+            ],
+            retiring=set(),
+        )
 
     def persist_experiment_watchers_idempotently(
         self,

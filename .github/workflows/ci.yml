@@ -62,7 +62,14 @@ jobs:
       # test that depends on the SPA catch-all route being mounted.
       - run: npm --prefix web ci
       - run: npm --prefix web run build
-      - run: uv sync
+      # `--locked` fails when uv.lock no longer matches pyproject.toml. Bare
+      # `uv sync` re-resolves and rewrites it inside the runner, so a dependency
+      # added without `uv lock` passed here and shipped a stale
+      # requirements.lock.txt from the build job.
+      - run: uv sync --locked
+      # test_real_age_1x_encrypts_and_decrypts_the_archive skips without these,
+      # so backup encryption was only ever exercised against the stub.
+      - run: sudo apt-get update && sudo apt-get install -y age
       - run: uv run pytest
 
   old-data-upgrade:

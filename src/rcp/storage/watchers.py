@@ -128,11 +128,6 @@ class WatcherStoreMixin:
                 raise ValueError(
                     f"Watcher stop names an unknown staged watcher: {stop.stop_watcher_id}"
                 )
-            if isinstance(record, GraphWatcherRecord):
-                raise ValueError(
-                    "Experiment agent watcher stops may retire only external observers: "
-                    f"{stop.stop_watcher_id}"
-                )
             if record.status == "stopped":
                 if (
                     record.stopped_by == "agent"

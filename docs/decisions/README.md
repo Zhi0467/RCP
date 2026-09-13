@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Agents retire graph conditions](2026-09-13-agents-retire-graph-conditions.md)
+  records why an agent withdraws a canonical condition the same way it withdraws
+  an observer, why the human control's narrower scope is not an argument against
+  it, and which question about an ended episode stays open.
+
 - [Claude Work runs without the OS sandbox](2026-09-13-claude-work-runs-without-the-os-sandbox.md)
   records why that sandbox is off for one provider, what enforces write roots
   instead, the shell gap this accepts, and why re-enabling it is not a cleanup.

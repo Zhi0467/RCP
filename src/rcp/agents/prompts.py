@@ -391,9 +391,22 @@ Node-attached Experiment watcher maintenance:
 - Each maintenance file is one JSON object with exactly `external` and `graph` lists. `external`
   contains observer items, plus an optional non-blank `group`, or stop items with exactly
   `stop_watcher_id` and a non-blank `reason`. Observers use `check_command`, `log_path`, and `cwd`,
-  with optional `cancel_command`. Same-label observers form an immutable group and each new group needs at least two observers. A stop may
-  name only a compatible external observer in the staged current episode, never a graph condition,
-  and never requests the human-only **Stop loop** action.
+  with optional `cancel_command`. Same-label observers form an immutable group and each new group
+  needs at least two observers. A stop may name any compatible staged watcher, external observer or
+  graph condition alike, and never requests the human-only **Stop loop** action. Every stop goes in
+  `external`, including one retiring a graph condition; `graph` holds only conditions you are
+  arming. Compatible means the staged watcher state lists it for this Experiment node, graph
+  target, and execution host, and its status is still `active`, `degraded`, or `completed` with
+  `notified` false. A watcher armed by an earlier episode and adopted by this one qualifies: a
+  differing `episode_id` is that watcher's immutable provenance, not a reason to leave stale work
+  armed.
+- Before arming an observer, reconcile it against that staged watcher state. When a listed
+  `active`, `degraded`, or unnotified `completed` watcher already covers the same work, do not arm
+  a second one for it, even where your command text differs from its `check_command`. Observers
+  whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or process
+  observe one piece of work: they complete at separate times and wake the episode twice, spending
+  two of its invocations on a single event. Either rely on the watcher already armed, or retire it
+  with a stop item in this same file and arm your replacement.
 - `graph` contains only one of two strict canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision

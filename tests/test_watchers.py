@@ -1208,6 +1208,92 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
                     os.kill(child_pid, signal.SIGKILL)
 
 
+def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
+    first = _record("first", origin="loop-root").model_copy(update={"continuation": continuation})
+    store.persist_experiment_watchers_idempotently([first], binding=binding)
+
+    # A later turn repeating that check observes one job twice, and jitter keeps
+    # the pair out of a shared delivery pass, so each would buy its own wake.
+    repeat = first.model_copy(update={"watcher_id": "repeat"})
+    with pytest.raises(ValueError, match="already covers this work: first"):
+        store.persist_experiment_watchers_idempotently([repeat], binding=binding)
+    assert store.watcher("repeat") is None
+
+    # A completion still waiting for delivery is a wake this episode has not
+    # spent, so repeating it beside the pending one still costs two invocations.
+    store.record_watcher_check("first", status="completed", exit_code=0, error=None)
+    assert store.watcher("first").notified is False
+    with pytest.raises(ValueError, match="already covers this work: first"):
+        store.persist_experiment_watchers_idempotently([repeat], binding=binding)
+    assert store.watcher("repeat") is None
+
+    # One handoff arming the same check twice is refused whole, stops included.
+    with pytest.raises(ValueError, match="arms one check twice"):
+        store.persist_experiment_watchers_idempotently(
+            [repeat, first.model_copy(update={"watcher_id": "twin"})],
+            stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
+            binding=binding,
+        )
+    assert store.watcher("first").status == "completed"
+
+    # Retiring the observer in the same handoff lets its replacement arm.
+    stored = store.persist_experiment_watchers_idempotently(
+        [repeat],
+        stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
+        binding=binding,
+    )
+    assert [item.watcher_id for item in stored] == ["repeat"]
+    assert store.watcher("first").status == "stopped"
+
+
+def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    continuation = _loop_continuation(episode_id)
+    binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
+    live = _record("live", origin="loop-root").model_copy(update={"continuation": continuation})
+    store.persist_experiment_watchers_idempotently([live], binding=binding)
+    spec = ExperimentWatchSpec(
+        check_command=live.check_command,
+        log_path=live.log_path,
+        cwd=live.cwd,
+    )
+
+    # Watcher ids derive from the declaration's list index, so re-declaring a
+    # live observer elsewhere in the list reaches persistence under a fresh id.
+    # The refusal has to land here, where the turn can still answer it.
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(binding, [spec])
+
+    # Retiring it in the same handoff is what the refusal asks for, so the dry
+    # run has to read the stops the handoff has not applied yet.
+    store.validate_experiment_observer_duplicates(
+        binding,
+        [spec],
+        stops=[WatcherStopRequest(stop_watcher_id="live", reason="Replaced observer")],
+    )
+
+    # A pending completion is still an unspent wake.
+    store.record_watcher_check("live", status="completed", exit_code=0, error=None)
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(binding, [spec])
+
+    # Grouping exempts neither side. Two groups are two delivery units that
+    # coalesce only when they become ready in one poll, which jittered member
+    # checks are exactly what prevent.
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(
+            binding,
+            [spec.model_copy(update={"group": "shards"})],
+        )
+
+
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     specs = [
