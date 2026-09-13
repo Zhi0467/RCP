@@ -1208,6 +1208,34 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
                     os.kill(child_pid, signal.SIGKILL)
 
 
+def _still_running(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+    return WatcherCheckResult(state="active", checked_at="2026-08-01T00:00:00+00:00", exit_code=1)
+
+
+def test_repeating_a_live_observer_is_refused_so_one_job_wakes_its_owner_once(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    job = WatchSpec(check_command="scheduler-status job-a", log_path="/runs/a.log", cwd="/repo")
+    armed = arm_watchers(store, [job], _binding(), check_runner=_still_running)
+
+    # A later turn repeating that check would observe one job twice, and jitter
+    # keeps the pair out of a shared delivery pass, so each would buy a wake.
+    later = WatchSpec(check_command="scheduler-status job-b", log_path="/runs/b.log", cwd="/repo")
+    with pytest.raises(ValueError, match=armed[0].watcher_id):
+        arm_watchers(store, [job, later], _binding(origin="later"), check_runner=_still_running)
+    assert [record.watcher_id for record in store.watchers("project")] == [armed[0].watcher_id]
+
+    with pytest.raises(ValueError, match="arms one check twice"):
+        arm_watchers(store, [later, later], _binding(origin="twice"), check_runner=_still_running)
+    assert [record.watcher_id for record in store.watchers("project")] == [armed[0].watcher_id]
+
+    # Retiring the observer frees its work to be watched again.
+    store.stop_watchers("project", [armed[0].watcher_id])
+    rearmed = arm_watchers(
+        store, [job], _binding(origin="replacement"), check_runner=_still_running
+    )
+    assert rearmed[0].watcher_id != armed[0].watcher_id
+
+
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     specs = [

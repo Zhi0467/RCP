@@ -451,7 +451,13 @@ only a staged compatible external observer after the agent has settled its work;
 they cannot retire graph conditions or claim RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
-atomically. One invalid item arms none. An empty final watcher declaration is
+atomically. One invalid item arms none. An ungrouped observer repeating a live
+ungrouped one exactly, on the same owner scope, execution host, directory, check
+command, and log path, is one such invalid item: identity jitter keeps the pair
+out of a shared delivery pass, so each would spend a wake on a single completion.
+A group is exempt because it wakes once by construction. Observing one job
+through genuinely different commands cannot be told apart mechanically, so the
+staged watcher state is what the agent reconciles against before arming. An empty final watcher declaration is
 legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.

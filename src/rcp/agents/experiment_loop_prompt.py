@@ -312,11 +312,21 @@ Watcher handoff protocol:
 - Each observer may also add one non-blank `group` label.
   Observers sharing a label form one immutable group of at least two newly armed observers;
   a member completing early does not wake this loop by itself.
+- Before arming an observer, reconcile it against the watcher state. When a listed `active`,
+  `degraded`, or unnotified `completed` observer already covers that same external work, do not
+  arm a second one for it, even where your command text differs from its `check_command`.
+  Observers whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or
+  process observe one piece of work: they complete at separate times and wake this loop twice,
+  spending two invocations on a single event. Either rely on the observer already armed, or retire
+  it with a stop item in this same handoff and arm your replacement.
 - The `external` list may also contain a stop item with exactly `stop_watcher_id` and a non-blank
   `reason`. Use it only after you have cancelled or otherwise settled obsolete external work. The
-  id must be a compatible staged external observer in this current Experiment episode, never a
-  graph condition; it carries no command or path. Stopping a watcher does not prove a job was
-  cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
+  id must be a compatible staged external observer, never a graph condition; it carries no command
+  or path. Compatible means the watcher state lists it for this Experiment node, graph target, and
+  execution host, and its status is still `active`, `degraded`, or `completed` with `notified`
+  false. An observer armed by an earlier episode and adopted by this one qualifies: a differing
+  `episode_id` is that observer's immutable provenance, not a reason to leave stale work armed.
+  Stopping a watcher does not prove a job was cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
   including retiring old watchers while arming replacements.
 {_EXPERIMENT_WATCH_HANDOFF}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
