@@ -691,25 +691,29 @@ A settled failure is also named, because recovery differs by cause. SSH's own
 exit codes for a remote run mean the link died rather than the work, and RCP
 reattempts such a turn a bounded number of times with growing waits before
 leaving it to a human; the reattempt is the same recovery a human Retry
-performs, so it resumes the native session rather than repeating the turn. A
-reattempt stands down when anything else has already taken the turn over, so a
-wait that outlives the failure it was scheduled for cannot repeat finished work.
-A wait whose reattempt is refused keeps the waits that remain, because a host
-that is still returning is the case the longer waits exist for. The promise of a
-reattempt is durable while the wait holding it is not, so startup re-arms the
-waits a stopped process could not keep; the wait starts over, since how much of
-it had elapsed was never written down, and a turn something else has already
-continued is not re-armed.
+performs, so it resumes the native session rather than repeating the turn. Those
+exit codes decide this only for a turn that said nothing: ssh returns 255 for a
+provider that exits 255 as readily as for a link it lost, so a provider that
+reached its own terminal event or reported its own error is never blamed on the
+link, whatever the code. A reattempt stands down when anything else has already
+taken the turn over, so a wait that outlives the failure it was scheduled for
+cannot repeat finished work. A wait whose reattempt is refused keeps the waits
+that remain, because a host that is still returning is the case the longer waits
+exist for. The promise of a reattempt is durable while the wait holding it is
+not, so startup re-arms the waits a stopped process could not keep, at the wait
+the sequence had reached rather than at its first; a turn something else has
+already continued is not re-armed.
 
-A provider whose CLI reports that its own login is no longer valid is never
-reattempted, because every attempt fails identically until a person signs in
-again. Every recovery owner honours that: the projection asks for the sign-in
-and withholds the Retry control that would spend an attempt proving it, and
-automatic recovery is withheld rather than scheduled. Switching provider stays
-offered, because Experiment recovery takes a provider change before it consults
-the saved session, so it is the one recovery that still works before the human
-signs in. A profile that has had no real revoked login observed claims none,
-since a wrong match would withdraw Retry from a failure Retry would have fixed.
+A provider whose CLI reports that its own login is no longer valid is named
+separately, because no unattended attempt can fix it: every one fails
+identically until a person signs in again. That name informs, and never
+withdraws the way back. It stops the automatic transport reattempt, which would
+only spend three waits proving the point, and it makes the projection ask for
+the sign-in. It withdraws no control and withholds no scheduled recovery: a
+failure kind never changes, so anything taken away on one could never be given
+back, and signing in again is exactly what makes the next attempt work. A
+profile that has had no real revoked login observed claims none, since a wrong
+match would name a failure Retry would have fixed.
 
 A saved provider session the provider no longer has is named separately from one
 that reached its limit, because the remedy differs: a session that is simply
@@ -717,8 +721,8 @@ gone cannot be resumed at all, so recovery starts the turn clean instead of
 resuming into the same failure. A session-bound episode is the same case: its
 binding names a session the provider has dropped, so recovery hands the episode
 to a clean session on the record rather than refusing and stranding it. Every
-other failure keeps its existing behaviour. Reattempts, their exhaustion, and a withheld recovery are receipts on
-the failed turn.
+other failure keeps its existing behaviour. Reattempts, their refusals, and
+their exhaustion are receipts on the failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A

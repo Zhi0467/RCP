@@ -90,17 +90,6 @@ def reconcile_auto_research_task_settlement(
             diagnostic=task.error or "The auto_research orchestrator failed structurally.",
         )
 
-    if task.failure_kind == "provider_auth":
-        # Every attempt fails identically until a human signs in again, so this
-        # turn waits for that instead of spending the recovery budget proving it.
-        store.record_agent_task_receipt(
-            task.operation_id,
-            "auto_research_recovery_withheld",
-            {"classification": "provider_auth"},
-            tier="summary",
-        )
-        return None
-
     failure_kind, retry_mode = _recoverable_failure(store, task.operation_id, request)
     store.schedule_auto_research_task_recovery(
         task.operation_id,

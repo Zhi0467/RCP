@@ -69,6 +69,7 @@ from rcp.storage.models import (
     AgentUsageSnapshot,
     AutoResearchRole,
     ChatSessionContextRecord,
+    ProviderExit,
     RunStageLifecycleRecord,
     _canonical_uuid4,
     _required_timestamp,
@@ -3326,12 +3327,14 @@ class AgentTaskStoreMixin:
             ).fetchone()
         return row is not None
 
-    def agent_task_provider_exit_code(self, operation_id: str) -> int | None:
-        """The exit code of this task's last provider process, if it reported one.
+    def agent_task_provider_exit(self, operation_id: str) -> ProviderExit | None:
+        """How this task's last provider process ended, if it reported.
 
-        Failure classification needs the code and the diagnostic together: a
-        revoked login and a dropped link can both end a turn, and only the pair
-        says which happened.
+        Failure classification needs more than the code: a revoked login and a
+        dropped link can both end a turn, and a provider that reached its own
+        terminal event or reported its own error exits through ssh the same way
+        a lost link does. Only the code and what the provider managed to say
+        together name what happened.
         """
 
         with self.connection() as connection:
@@ -3345,13 +3348,21 @@ class AgentTaskStoreMixin:
             ).fetchone()
         if row is None:
             return None
+        payload: object = None
         with suppress(ValueError, TypeError):
             payload = json.loads(row["payload_json"])
-            if isinstance(payload, dict):
-                code = payload.get("return_code")
-                if isinstance(code, int) and not isinstance(code, bool):
-                    return code
-        return None
+        if not isinstance(payload, dict):
+            return None
+        code = payload.get("return_code")
+        counts = payload.get("event_counts")
+        errors = counts.get("error") if isinstance(counts, dict) else None
+        return ProviderExit(
+            return_code=code if isinstance(code, int) and not isinstance(code, bool) else None,
+            spoke_for_itself=(
+                payload.get("explicit_terminal_event") is True
+                or (isinstance(errors, int) and not isinstance(errors, bool) and errors > 0)
+            ),
+        )
 
     @staticmethod
     def _write_scope_conflict_message(

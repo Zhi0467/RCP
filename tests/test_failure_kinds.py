@@ -35,6 +35,7 @@ def test_lost_connection_is_worth_another_attempt() -> None:
             return_code=255,
             host="gpu.example.edu",
             profile=CODEX,
+            provider_spoke_for_itself=False,
         )
         == "transport_lost"
     )
@@ -50,6 +51,7 @@ def test_revoked_login_is_named_even_when_it_exits_like_a_dropped_link() -> None
             return_code=255,
             host="gpu.example.edu",
             profile=CODEX,
+            provider_spoke_for_itself=False,
         )
         == "provider_auth"
     )
@@ -62,6 +64,7 @@ def test_an_ordinary_provider_failure_keeps_its_existing_behaviour() -> None:
             return_code=2,
             host="gpu.example.edu",
             profile=CODEX,
+            provider_spoke_for_itself=False,
         )
         is None
     )
@@ -77,6 +80,35 @@ def test_a_profile_without_observed_signatures_does_not_guess() -> None:
             return_code=1,
             host="gpu.example.edu",
             profile=profile_for("claude"),
+            provider_spoke_for_itself=False,
         )
         is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("spoke", "expected"),
+    [(False, "transport_lost"), (True, None)],
+)
+def test_a_provider_that_spoke_for_itself_did_not_lose_its_link(
+    spoke: bool, expected: str | None
+) -> None:
+    """ssh returns 255 for a provider that exits 255 as readily as for a lost link.
+
+    Both shapes were observed on one real remote host: a turn that streamed its
+    answers, reached its own terminal event and then exited 255 complaining that
+    its thread was gone, and a turn whose stream simply stopped. Only what the
+    provider managed to say separates them, and calling the first a lost link
+    would reattempt work it had already done.
+    """
+
+    assert (
+        classify_agent_failure(
+            error="codex could not finish.",
+            return_code=255,
+            host="gpu.example.edu",
+            profile=CODEX,
+            provider_spoke_for_itself=spoke,
+        )
+        == expected
     )

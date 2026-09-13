@@ -1939,11 +1939,15 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
     assert reasons == ["the provider no longer has the saved session"]
 
 
-def test_a_revoked_login_withdraws_retry_but_not_the_provider_switch(manifest, tmp_path) -> None:
-    """Retrying the revoked login repeats the failure; another provider does not.
+def test_a_revoked_login_is_recommended_a_sign_in_without_losing_its_controls(
+    manifest, tmp_path
+) -> None:
+    """A failure kind never changes, so it must not be what withdraws a control.
 
-    Recovery takes a provider change before it consults the saved session, so
-    the switch is the one recovery that still works before the human signs in.
+    Signing in again is exactly what makes Retry work, and nothing would give
+    the button back once the projection had taken it away. The recommendation
+    carries the reason instead, and switching provider stays offered because
+    recovery takes a provider change before it consults the saved session.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1987,7 +1991,7 @@ def test_a_revoked_login_withdraws_retry_but_not_the_provider_switch(manifest, t
     } == {
         "health": "needs_action",
         "recommendation": "reauthenticate_provider",
-        "task_control": None,
+        "task_control": "retry",
         "can_switch_provider": True,
     }
 

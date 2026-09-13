@@ -6,6 +6,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -2765,6 +2766,50 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert retried == []
 
 
+@pytest.mark.parametrize(
+    ("exit_payload", "expected"),
+    [
+        ({"return_code": 255, "event_counts": {"raw": 11}}, "transport_lost"),
+        (
+            {
+                "return_code": 255,
+                "event_counts": {"answer": 2, "raw": 1},
+                "explicit_terminal_event": True,
+            },
+            None,
+        ),
+        ({"return_code": -15, "event_counts": {"error": 1}}, None),
+    ],
+)
+def test_a_turn_the_provider_explained_is_never_blamed_on_the_link(
+    tmp_path: Path, exit_payload: dict[str, object], expected: str | None
+) -> None:
+    """One remote host produced both 255s: a stream that simply stopped, and a
+    turn that streamed its answers, reached its own terminal event, then exited
+    255 saying its thread was gone. Naming the second a lost link would reattempt
+    work the provider had already done for a reason no attempt can change."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="explained")
+    store.mark_agent_task_running(task.operation_id)
+    store.record_agent_task_receipt(
+        task.operation_id, "provider_exit", exit_payload, tier="diagnostic"
+    )
+    execution = SimpleNamespace(stage_host="gpu.example.edu")
+    request = tasks._request_from_record(store.agent_task(task.operation_id))
+
+    assert (
+        tasks._failure_kind(
+            task.operation_id,
+            request,
+            execution,  # type: ignore[arg-type]
+            "codex could not finish.",
+        )
+        == expected
+    )
+
+
 def test_a_promised_reattempt_survives_a_restart(tmp_path: Path, monkeypatch) -> None:
     """Stopping RCP during the wait must not quietly cancel the reattempt.
 
@@ -2793,6 +2838,45 @@ def test_a_promised_reattempt_survives_a_restart(tmp_path: Path, monkeypatch) ->
     restarted.recover_at_startup()
 
     assert rearmed == [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
+
+
+def test_a_restart_resumes_the_waits_a_refused_reattempt_had_reached(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A refused reattempt admits no child, so the lineage cannot carry it.
+
+    If a restart recomputed the position from lineage alone it would hand the
+    turn the first, shortest wait again, and restarts could reattempt a turn
+    without bound however many the limit says.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    failed = _transport_failed_task(store, operation_id="still-down")
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    tasks._auto_retry_transport_loss(failed)
+    # The first wait elapsed and its reattempt was refused, exactly as the
+    # timer's own failure path records it.
+    store.record_agent_task_receipt(
+        failed.operation_id,
+        "transport_auto_retry_failed",
+        {"exception_type": "ValueError"},
+        tier="diagnostic",
+    )
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[float] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda _operation, *, attempt: rearmed.append(
+            AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt]
+        ),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == [AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[1]]
 
 
 def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(

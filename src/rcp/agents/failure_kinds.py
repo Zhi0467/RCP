@@ -24,6 +24,7 @@ def classify_agent_failure(
     return_code: int | None,
     host: str,
     profile: ProviderProfile | None,
+    provider_spoke_for_itself: bool,
 ) -> AgentFailureKind | None:
     """Name one provider failure so recovery can offer the right next step."""
 
@@ -31,6 +32,13 @@ def classify_agent_failure(
     # revoked login can still exit the way a dropped link does.
     if profile is not None and profile.credential_failure(error):
         return "provider_auth"
+    # A provider that reached its own terminal event, or reported its own
+    # error, said what happened before the process ended. The exit code cannot
+    # contradict that: ssh returns 255 for a provider that exits 255 as readily
+    # as for a link it lost. Reattempting such a turn would repeat work the
+    # provider already did for a reason another attempt cannot change.
+    if provider_spoke_for_itself:
+        return None
     if transport_failure(return_code, host):
         return "transport_lost"
     return None

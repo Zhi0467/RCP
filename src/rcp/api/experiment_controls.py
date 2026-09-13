@@ -269,7 +269,7 @@ def _experiment_control_response(
             "can_start": control.ready,
             "can_stop": can_stop,
             "stop_pending": stop_pending,
-            "task_control": None if revoked_login else task_control,
+            "task_control": task_control,
             "can_switch_provider": can_switch_provider,
             "can_open_report": can_open_report,
             "report_episode_id": report_episode_id,
@@ -398,8 +398,9 @@ def _experiment_recommendation(
         return "none"
     if active:
         return "wait"
-    # Retry is withheld for this turn, so the recommendation is the only thing
-    # left that tells the human what will actually move it forward.
+    # Retry stays available, because signing in is what makes it work and
+    # nothing would restore a control withdrawn on a failure that never
+    # changes. This is what tells the human to sign in first.
     if revoked_login:
         return "reauthenticate_provider"
     if task_control is not None:

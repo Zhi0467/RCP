@@ -627,9 +627,14 @@ def test_a_vanished_session_retries_clean_rather_than_resuming_it(tmp_path: Path
     assert recovery.retry_mode == "clean"
 
 
-def test_a_revoked_login_schedules_no_automatic_recovery(tmp_path: Path) -> None:
-    """Every attempt fails identically until a person signs in, so spending the
-    allocation on three of them only delays telling them so."""
+def test_a_revoked_login_is_named_but_still_recovered(tmp_path: Path) -> None:
+    """The classification says what happened; it must not remove the way back.
+
+    Recovery is bounded and spaced, so spending it is also what lets a human's
+    sign-in be picked up without anyone touching the episode. Withholding it on
+    a failure kind that never changes would leave the episode running with no
+    recovery pending and nothing that could ever release it.
+    """
 
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
@@ -652,8 +657,8 @@ def test_a_revoked_login_schedules_no_automatic_recovery(tmp_path: Path) -> None
     wait_for_task(store, root.operation_id, expect="failed")
 
     assert store.agent_task(root.operation_id).failure_kind == "provider_auth"
-    wait_until(
-        lambda: store.agent_task_has_receipt(root.operation_id, "auto_research_recovery_withheld"),
-        detail="settlement never recorded that recovery was withheld",
+    recovery = wait_until(
+        lambda: store.auto_research_recovery("task:root"),
+        detail="settlement never scheduled the recovery",
     )
-    assert store.auto_research_recovery("task:root") is None
+    assert recovery.status == "pending"

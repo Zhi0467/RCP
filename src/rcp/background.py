@@ -1697,17 +1697,28 @@ class BackgroundAgentTasks:
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
                 profile = profile_for(provider)
+        exit = self.store.agent_task_provider_exit(operation_id)
         return classify_agent_failure(
             error=error,
-            return_code=self.store.agent_task_provider_exit_code(operation_id),
+            return_code=exit.return_code if exit is not None else None,
             host=execution.stage_host or "",
             profile=profile,
+            provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
-        """How many times this lineage has already been reattempted for a lost link."""
+        """How many times this lineage has already been reattempted for a lost link.
 
-        attempts = 0
+        A wait that ended in a refused admission admits no child, so the lineage
+        cannot carry it. Its receipt can, and must: without it a restart would
+        recompute this as zero and hand the turn the first, shortest wait again,
+        so repeated restarts could reattempt without bound.
+        """
+
+        attempts = sum(
+            receipt.category == "transport_auto_retry_failed"
+            for receipt in self.store.agent_task_receipts(record.operation_id)
+        )
         parent = record.parent_operation_id
         while parent and attempts <= AGENT_TRANSPORT_RETRY_LIMIT:
             if not self.store.agent_task_has_receipt(parent, "transport_auto_retry"):

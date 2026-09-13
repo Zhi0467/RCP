@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -1939,6 +1939,19 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # with nothing to name is NULL rather than a member, so every value here is
 # one a recovery owner acts on.
 AgentFailureKind = Literal["transport_lost", "provider_auth"]
+
+
+class ProviderExit(NamedTuple):
+    """How a task's last provider process ended.
+
+    The exit code alone cannot name the failure: a provider that reports its
+    own trouble and then exits through ssh leaves the same 255 a dropped link
+    does. Whether the provider spoke for itself is what separates them.
+    """
+
+    return_code: int | None
+    spoke_for_itself: bool
+
 
 # A task is still moving through these; every other status is terminal. "pausing"
 # belongs here because the pause has been requested but not yet observed, so a
