@@ -585,6 +585,37 @@ export function persistProjectHumanDraft(
   }
 }
 
+function sameProjectSlice(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Keep the identity of what a re-read did not change.
+ *
+ * Live operational polling re-reads the whole project every few seconds, mostly
+ * to deliver watcher results. The staged-preview effects key off `graph`,
+ * `attention` and `experiment_control` by identity, so decoding alone would hand
+ * them a new object on every tick and restart the preview, flipping the view
+ * between canonical and candidate state.
+ *
+ * Only unchanged slices are shared. Watcher, control and attention state that
+ * really did move at an unchanged graph revision still replaces what is
+ * rendered, which is the whole point of that poll.
+ */
+function preserveUnchangedProjectSlices(
+  previous: ProjectSnapshot,
+  next: ProjectSnapshot,
+): ProjectSnapshot {
+  if (sameProjectSlice(previous, next)) return previous;
+  const shared: Partial<ProjectSnapshot> = {};
+  if (sameProjectSlice(previous.graph, next.graph)) shared.graph = previous.graph;
+  if (sameProjectSlice(previous.attention, next.attention)) shared.attention = previous.attention;
+  if (sameProjectSlice(previous.experiment_control, next.experiment_control)) {
+    shared.experiment_control = previous.experiment_control;
+  }
+  return { ...next, ...shared };
+}
+
 function applyProjectSnapshot(
   state: ProjectSessionState,
   action: Extract<ProjectSessionAction, { kind: "snapshot_applied" }>,
@@ -667,11 +698,14 @@ function applyProjectSnapshot(
     project_id: decodedProject.id,
     head: nextHead,
   });
+  const storedProject = action.preserve_readiness
+    ? preserveProjectReadiness(decodedProject, state.project)
+    : decodedProject;
   return {
     ...state,
-    project: action.preserve_readiness
-      ? preserveProjectReadiness(decodedProject, state.project)
-      : decodedProject,
+    project: state.project
+      ? preserveUnchangedProjectSlices(state.project, storedProject)
+      : storedProject,
     renderedRevision: nextGraph.revision,
     humanDraft,
     transitionHead: transitionHeadsEqual(state.transitionHead, nextHead)

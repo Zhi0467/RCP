@@ -280,6 +280,25 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.strictEqual(repolled.draftTransitionProjection, stagedProjection);
   assert.strictEqual(repolled.transitionHead, stagedHead);
   assert.equal(repolled.draftPreviewPending, false);
+
+  // Operational state that really did move at the same graph revision is still
+  // applied: that poll exists to deliver watcher and control state, and holding
+  // a stale control projection would strand Runs on "waiting" indefinitely.
+  const controlMoved = projectSessionReducer(repolled, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, {
+      graph: graph(1, originalNode),
+      experiment_control: { "exp/one": { health: "completed" } },
+    }),
+    preserve_readiness: false,
+  });
+
+  assert.deepEqual(controlMoved.project.experiment_control, {
+    "exp/one": { health: "completed" },
+  });
+  assert.strictEqual(controlMoved.humanDraft, stagedDraft);
+  assert.strictEqual(controlMoved.draftTransitionProjection, stagedProjection);
+  assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
 });
 
 test("a committed transition replaces the canonical session in one transition", () => {
