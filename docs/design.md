@@ -95,10 +95,12 @@ number here.
   choose Decisions directly. No agent may approve a Proposal.
 - **Operational capability and graph authority are separate.** A task's fixed
   surface, provider profile, graph action, project target, current state, and
-  budget all have to admit an effect. Work-like providers use native unattended
-  write containment for the exact task stage and admitted project repository
-  roots. This is an accidental-write guardrail for cooperative users, not a
-  hostile-user security boundary or a read-confidentiality claim.
+  budget all have to admit an effect. Work-like providers name the exact task
+  stage and admitted project repository roots to the provider's own unattended
+  enforcement, which bounds file-editing tools on every provider and the shell
+  only where the provider can do so without disabling real compute. This is an
+  accidental-write guardrail for cooperative users, not a hostile-user security
+  boundary or a read-confidentiality claim.
 - **Canonical state has one home.** A project has one durable id, one home
   space, and one local or remote canonical state repository. Main and graph
   branch namespaces live inside that repository. Routes never write canonical

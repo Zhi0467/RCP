@@ -1339,26 +1339,11 @@ def test_claude_work_uses_exact_sandbox_and_tool_allowlists() -> None:
                 "WebSearch",
                 "WebFetch",
                 "Edit(//data/chat-stage/**)",
-                "Write(//data/chat-stage/**)",
                 "Edit(//project/repo-a/**)",
-                "Write(//project/repo-a/**)",
             ],
-            "deny": [
-                "Edit(//project/repo-a/.research/**)",
-                "Write(//project/repo-a/.research/**)",
-            ],
+            "deny": ["Edit(//project/repo-a/.research/**)"],
         },
-        "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,
-            "filesystem": {
-                "allowWrite": ["/data/chat-stage", "/project/repo-a"],
-                "denyWrite": ["/project/repo-a/.research"],
-            },
-            "network": {"allowedDomains": ["*"]},
-        },
+        "sandbox": {"enabled": False},
     }
     assert command[command.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
@@ -1402,9 +1387,9 @@ def test_claude_split_chat_reads_outer_inputs_without_write_authority() -> None:
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert inputs in add_dirs
     settings = json.loads(command[command.index("--settings") + 1])
-    assert settings["sandbox"]["filesystem"]["allowWrite"] == [
-        workspace,
-        repository.path,
+    assert settings["permissions"]["allow"][3:] == [
+        f"Edit(//{workspace.lstrip('/')}/**)",
+        f"Edit(//{repository.path.lstrip('/')}/**)",
     ]
     assert inputs not in scope.writable_roots
 
@@ -1434,14 +1419,11 @@ def test_claude_orchestrate_allows_only_its_resolved_project_roots() -> None:
     assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
     settings = json.loads(command[command.index("--settings") + 1])
-    assert settings["sandbox"]["filesystem"] == {
-        "allowWrite": ["/data/campaign-stage", "/project/repo-b"],
-        "denyWrite": ["/project/repo-b/.research"],
-    }
-    assert settings["permissions"]["deny"] == [
-        "Edit(//project/repo-b/.research/**)",
-        "Write(//project/repo-b/.research/**)",
+    assert settings["permissions"]["allow"][3:] == [
+        "Edit(//data/campaign-stage/**)",
+        "Edit(//project/repo-b/**)",
     ]
+    assert settings["permissions"]["deny"] == ["Edit(//project/repo-b/.research/**)"]
     assert "Edit(//project/repo-a/**)" not in settings["permissions"]["allow"]
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert add_dirs == ["/project/repo-a", "/project/repo-b"]
@@ -1470,10 +1452,7 @@ def test_claude_graph_only_orchestrate_accepts_no_repository_write_roots() -> No
     )
 
     settings = json.loads(command[command.index("--settings") + 1])
-    assert settings["sandbox"]["filesystem"] == {
-        "allowWrite": [stage],
-        "denyWrite": [],
-    }
+    assert settings["permissions"]["allow"][3:] == [f"Edit(//{stage.lstrip('/')}/**)"]
     assert settings["permissions"]["deny"] == []
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert add_dirs == [inputs]
@@ -1505,11 +1484,11 @@ def test_claude_work_resume_keeps_the_native_session_and_exact_scope() -> None:
     assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
     settings = json.loads(command[command.index("--settings") + 1])
-    assert settings["sandbox"]["filesystem"]["allowWrite"] == [
-        "/data/chat-stage",
-        "/project/repo-a",
+    assert settings["permissions"]["allow"][3:] == [
+        "Edit(//data/chat-stage/**)",
+        "Edit(//project/repo-a/**)",
     ]
-    assert settings["sandbox"]["filesystem"]["denyWrite"] == ["/project/repo-a/.research"]
+    assert settings["permissions"]["deny"] == ["Edit(//project/repo-a/.research/**)"]
     assert command[command.index("--resume") + 1] == session_id
 
 

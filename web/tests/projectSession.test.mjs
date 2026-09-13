@@ -225,6 +225,63 @@ test("snapshot movement invalidates the manifest and rebases the draft in one tr
   assert.equal(moved.draftPreviewPending, false);
 });
 
+test("re-applying an unchanged snapshot keeps the staged draft and its preview", () => {
+  const originalNode = {
+    id: "hyp/example",
+    type: "hypothesis",
+    title: "Canonical",
+    statement: "Statement",
+    standing: "accepted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { graph: graph(1, originalNode) }),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_loaded",
+    draft: {
+      version: 1,
+      base_revision: 1,
+      nodes: {},
+      removed_node_ids: [originalNode.id],
+      proposals: {},
+      ontology: null,
+      custom_nodes: {},
+      added_edges: [],
+      removed_edge_ids: [],
+      edge_base_revision: null,
+    },
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: projection(2),
+    conflict: null,
+    pending: false,
+  });
+  const stagedDraft = state.humanDraft;
+  const stagedProjection = state.draftTransitionProjection;
+  const stagedHead = state.transitionHead;
+
+  // Live watcher-delivery polling re-applies the same canonical snapshot every
+  // few seconds. It must not restart the staged preview, or the view flips
+  // between canonical and candidate for as long as a watcher is undelivered.
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { graph: graph(1, originalNode) }),
+    preserve_readiness: false,
+  });
+
+  assert.strictEqual(repolled.humanDraft, stagedDraft);
+  assert.strictEqual(repolled.draftTransitionProjection, stagedProjection);
+  assert.strictEqual(repolled.transitionHead, stagedHead);
+  assert.equal(repolled.draftPreviewPending, false);
+});
+
 test("a committed transition replaces the canonical session in one transition", () => {
   let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",

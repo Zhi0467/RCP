@@ -2668,12 +2668,26 @@ export default function App() {
           projectSnapshotRequestIsCurrent(requestedProjectId, requestId)
         ) {
           const hasUnseenWatcherResults = recordWatcherResults(nextTasks);
-          const applied = applyProjectSnapshot(
-            nextProject,
-            authoritativeProjectId.current === requestedProjectId,
-            { projectId: requestedProjectId, requestId },
-          );
-          if (!applied) return;
+          // This poll runs for watcher delivery, not for canonical change, and
+          // it runs while staged edits are open. Re-applying an unchanged
+          // snapshot would rebuild the session's project and restart the staged
+          // transition preview on every tick, so apply only what actually moved.
+          const session = getProjectSessionState();
+          const snapshotMoved =
+            canonicalRevisionNeedsReload(
+              nextProject.graph.revision,
+              session.renderedRevision,
+              nextProject.graph_mutation,
+              session.project?.graph_mutation,
+            ) || projectHeartbeatMetadataChanged(nextProject, session.project, graphTarget);
+          if (snapshotMoved) {
+            const applied = applyProjectSnapshot(
+              nextProject,
+              authoritativeProjectId.current === requestedProjectId,
+              { projectId: requestedProjectId, requestId },
+            );
+            if (!applied) return;
+          }
           authoritativeProjectId.current = requestedProjectId;
           setProjectReconciliation("authoritative");
           setWatchers(nextWatchers);
@@ -2708,6 +2722,7 @@ export default function App() {
     graphPath,
     isActiveGraph,
     beginProjectSnapshotRequest,
+    getProjectSessionState,
     isActiveProject,
     projectId,
     projectSnapshotRequestIsCurrent,

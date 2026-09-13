@@ -208,13 +208,21 @@ repository roots. They never use `bypassPermissions`. RCP suppresses user
 settings and unrelated MCP configuration for this enforced launch. Public
 WebSearch and WebFetch remain available under the provider contract.
 
-Claude's sandbox denies the `AF_UNIX` socket family outright: creating one fails
-with `EPERM` before any path is touched, while `AF_INET` succeeds. RCP's staged
-command client therefore cannot reach this turn's command broker, so a Claude
-Work turn's pre-flight validator self-check always fails and the turn proceeds
-on Apply-time validation alone. Codex is unaffected. No filesystem allow-list
-entry can change this; the broker transport itself is what would have to change,
-and that decision is not yet taken.
+Claude's OS sandbox is off. Its Linux backend always unshares the network
+namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
+sandboxed Work turn cannot reach a scheduler, a GPU device, its own command
+broker, or any non-HTTP service on its execution host. Turning it off is a
+deliberate capability choice: Work on this provider is meant to run real
+compute, and a containment that forbids that is not usable containment.
+
+Write roots are therefore enforced by Claude's file permission rules. `Edit(path)`
+is the only rule kind Claude matches for file writes, and it covers every
+file-editing tool; a `Write(path)` rule is accepted and then ignored, so RCP
+emits only the `Edit` form. These rules bound every file-editing tool and do not
+bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
+on its execution machine. That is an accepted accidental-write gap for this
+provider, not a claim of containment; Codex's native permission profile still
+bounds both. Nothing here widens graph authority, which stays with `patch.json`.
 
 ### Version failure
 

@@ -648,8 +648,20 @@ function applyProjectSnapshot(
       : { draft: normalizeHumanDraft(state.humanDraft, nextGraph), discardedProposalIds: [] }
     : null;
   const rebasedDraft = reconciliation?.draft ?? null;
-  const humanDraft = rebasedDraft && humanDraftChangeCount(rebasedDraft) > 0 ? rebasedDraft : null;
+  const rebased = rebasedDraft && humanDraftChangeCount(rebasedDraft) > 0 ? rebasedDraft : null;
   const revisionAdvanced = authoritative && nextGraph.revision !== previousRevision;
+  // A snapshot that carries no new canonical state must not disturb staged work.
+  // Live operational polling re-applies the same snapshot on a timer, and
+  // rebuilding the draft or dropping the staged projection there restarts the
+  // preview every tick, flipping the view between canonical and candidate.
+  // Anything that moves the head, or rebases the draft, still drops the preview.
+  const carriesNoNewCanonicalState =
+    !revisionAdvanced &&
+    nextGraph.revision === previousRevision &&
+    transitionHeadsEqual(state.transitionHead, nextHead) &&
+    (reconciliation?.discardedProposalIds.length ?? 0) === 0 &&
+    humanDraftChangeCount(rebased) === humanDraftChangeCount(state.humanDraft);
+  const humanDraft = carriesNoNewCanonicalState ? state.humanDraft : rebased;
   const transitionCoordinator = reduceProjectTransitionCoordinator(state.transitionCoordinator, {
     kind: "observe_head",
     project_id: decodedProject.id,
@@ -662,7 +674,9 @@ function applyProjectSnapshot(
       : decodedProject,
     renderedRevision: nextGraph.revision,
     humanDraft,
-    transitionHead: nextHead,
+    transitionHead: transitionHeadsEqual(state.transitionHead, nextHead)
+      ? state.transitionHead
+      : nextHead,
     transitionManifestState: revisionAdvanced
       ? {
           status: "loading",
@@ -677,7 +691,7 @@ function applyProjectSnapshot(
     transitionManifestExpectedRulesetTag: revisionAdvanced
       ? null
       : state.transitionManifestExpectedRulesetTag,
-    draftTransitionProjection: null,
+    draftTransitionProjection: carriesNoNewCanonicalState ? state.draftTransitionProjection : null,
     draftPreviewConflict: null,
     draftPreviewPending: false,
     draftReconciliationDiscardedProposalIds: [
