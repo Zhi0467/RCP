@@ -1279,14 +1279,19 @@ def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(tmp
         stops=[WatcherStopRequest(stop_watcher_id="live", reason="Replaced observer")],
     )
 
-    # A pending completion is still an unspent wake, and a group is exempt.
+    # A pending completion is still an unspent wake.
     store.record_watcher_check("live", status="completed", exit_code=0, error=None)
     with pytest.raises(ValueError, match="already covers this work: live"):
         store.validate_experiment_observer_duplicates(binding, [spec])
-    store.validate_experiment_observer_duplicates(
-        binding,
-        [spec.model_copy(update={"group": "shards"})],
-    )
+
+    # Grouping exempts neither side. Two groups are two delivery units that
+    # coalesce only when they become ready in one poll, which jittered member
+    # checks are exactly what prevent.
+    with pytest.raises(ValueError, match="already covers this work: live"):
+        store.validate_experiment_observer_duplicates(
+            binding,
+            [spec.model_copy(update={"group": "shards"})],
+        )
 
 
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:

@@ -460,8 +460,11 @@ ungrouped one already armed for that node, graph target, execution host,
 directory, check command, and log path is one such invalid item: identity jitter
 keeps the pair out of a shared delivery pass, so each spends a wake on one
 completion. An unnotified completion counts as already armed, being a wake the
-episode has not spent yet. A group is exempt because it wakes once by
-construction, and generic Work and child Work arming is unchanged. Observing one
+episode has not spent yet, and grouping exempts neither side: one group wakes
+once, but two are two delivery units that coalesce only when they become ready
+in a single poll. Retiring one member does not strand its siblings, because a
+group's readiness ignores agent-retired members. Generic Work and child Work
+arming is unchanged. Observing one
 job through genuinely different commands cannot be told apart mechanically, so
 the staged watcher state is what every surface that arms an Experiment observer
 reconciles against first. An empty final watcher declaration is

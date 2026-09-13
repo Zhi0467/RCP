@@ -1161,22 +1161,26 @@ class ExperimentStoreMixin:
     def _reject_repeated_experiment_observers(
         cls,
         connection: sqlite3.Connection,
-        candidates: list[tuple[tuple[str, ...], bool]],
+        candidates: list[tuple[str, ...]],
         *,
         retiring: set[str],
     ) -> None:
-        """Refuse a repeat of work an ungrouped observer already covers.
+        """Refuse a repeat of work a live observer already covers.
+
+        Grouping does not exempt either side. One group wakes once, but two
+        groups are two delivery units that coalesce only when they become ready
+        in the same poll, and jittered member checks are what keep them apart.
+        A member repeating work another observer already covers therefore costs
+        the same extra invocation an ungrouped repeat does. Retiring one member
+        does not strand its siblings, because a group's readiness ignores
+        agent-retired members.
 
         `retiring` names watchers the same handoff will stop, so validating a
         retire-and-replace before the stops apply sees what persistence will.
         """
 
         armed: set[tuple[str, ...]] = set()
-        for identity, grouped in candidates:
-            # A group is one immutable unit that wakes the episode once, so
-            # repeats within it cannot double-spend an invocation.
-            if grouped:
-                continue
+        for identity in candidates:
             if identity in armed:
                 raise ValueError(
                     f"this watch list arms one check twice; observe this work once: {identity[-2]}"
@@ -1192,7 +1196,6 @@ class ExperimentStoreMixin:
                   AND cwd = ?
                   AND check_command = ?
                   AND log_path = ?
-                  AND group_id IS NULL
                   AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
                   AND status IN ('active', 'degraded', 'completed')
                   AND notified = 0
@@ -1234,17 +1237,14 @@ class ExperimentStoreMixin:
             return
         graph_target_json = binding.graph_target.model_dump_json()
         candidates = [
-            (
-                self._experiment_observer_identity(
-                    binding.project_id,
-                    graph_target_json,
-                    binding.node_id,
-                    binding.execution_host,
-                    item.cwd,
-                    item.check_command,
-                    item.log_path,
-                ),
-                getattr(item, "group", None) is not None,
+            self._experiment_observer_identity(
+                binding.project_id,
+                graph_target_json,
+                binding.node_id,
+                binding.execution_host,
+                item.cwd,
+                item.check_command,
+                item.log_path,
             )
             for item in observers
         ]
@@ -1282,17 +1282,14 @@ class ExperimentStoreMixin:
         cls._reject_repeated_experiment_observers(
             connection,
             [
-                (
-                    cls._experiment_observer_identity(
-                        record.project_id,
-                        record.graph_target.model_dump_json(),
-                        record.node_id,
-                        record.execution_host,
-                        record.cwd,
-                        record.check_command,
-                        record.log_path,
-                    ),
-                    record.group_id is not None,
+                cls._experiment_observer_identity(
+                    record.project_id,
+                    record.graph_target.model_dump_json(),
+                    record.node_id,
+                    record.execution_host,
+                    record.cwd,
+                    record.check_command,
+                    record.log_path,
                 )
                 for record in records
                 if isinstance(record, WatcherRecord)
