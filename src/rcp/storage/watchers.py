@@ -81,7 +81,6 @@ class WatcherStoreMixin:
         watcher_ids = [record.watcher_id for record in records]
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._reject_duplicate_live_observers(connection, records)
             for record in records:
                 self._insert_watcher(connection, record)
         stored: list[StoredWatcherRecord] = []
@@ -90,70 +89,6 @@ class WatcherStoreMixin:
             assert record is not None
             stored.append(record)
         return stored
-
-    @staticmethod
-    def _reject_duplicate_live_observers(
-        connection: sqlite3.Connection,
-        records: list[StoredWatcherRecord],
-    ) -> None:
-        """Refuse an observer that repeats one already watching the same work.
-
-        Healthy checks carry identity jitter, so two observers of one job notice
-        its completion in separate polls, never share a delivery pass, and each
-        buys its owner a wake for the single event. Only an exact repeat of the
-        check on the same owner scope, host, and directory is refused here.
-        Observing one job through genuinely different commands cannot be told
-        apart mechanically and stays a judgement the owner makes from its staged
-        watcher state.
-        """
-
-        armed: set[tuple[str, ...]] = set()
-        for record in records:
-            # A group is one immutable unit that wakes its owner once, so repeats
-            # within it cannot double-spend an invocation.
-            if not isinstance(record, WatcherRecord) or record.group_id is not None:
-                continue
-            identity = (
-                record.project_id,
-                record.graph_target.model_dump_json(),
-                record.node_id or "",
-                record.chat_id or "",
-                record.execution_host,
-                record.cwd,
-                record.check_command,
-                record.log_path,
-            )
-            if identity in armed:
-                raise ValueError(
-                    "this watch list arms one check twice; observe this work once: "
-                    f"{record.check_command}"
-                )
-            armed.add(identity)
-            existing = connection.execute(
-                """
-                SELECT watcher_id FROM watchers
-                WHERE project_id = ?
-                  AND graph_target_json = ?
-                  AND IFNULL(node_id, '') = ?
-                  AND IFNULL(chat_id, '') = ?
-                  AND execution_host = ?
-                  AND cwd = ?
-                  AND check_command = ?
-                  AND log_path = ?
-                  AND group_id IS NULL
-                  AND status IN ('active', 'degraded')
-                  AND notified = 0
-                ORDER BY created_at, watcher_id
-                LIMIT 1
-                """,
-                identity,
-            ).fetchone()
-            if existing is not None:
-                raise ValueError(
-                    "an identical observer is already watching this work: "
-                    f"{existing['watcher_id']}; rely on it, or retire it with a stop "
-                    "item in this same handoff and arm the replacement"
-                )
 
     def _validate_and_apply_agent_watcher_stops(
         self,

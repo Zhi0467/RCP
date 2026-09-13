@@ -29,6 +29,7 @@ from rcp.storage.models import (
     StoredWatcherRecord,
     WatcherClaimConflict,
     WatcherContinuation,
+    WatcherRecord,
     WatcherStopRequest,
     _experiment_pinned_value,
     _optional_str,
@@ -1096,6 +1097,13 @@ class ExperimentStoreMixin:
         existing_by_id = {
             str(row["watcher_id"]): self._watcher_record(row) for row in existing_rows
         }
+        if not stopped:
+            # Rows born stopped cannot deliver, so they cannot double-spend, and a
+            # re-armed id is idempotent replay rather than a second observation.
+            self._reject_duplicate_live_experiment_observers(
+                connection,
+                [record for record in records if record.watcher_id not in existing_by_id],
+            )
         for desired in records:
             existing = existing_by_id.get(desired.watcher_id)
             if existing is not None:
@@ -1126,6 +1134,70 @@ class ExperimentStoreMixin:
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    @staticmethod
+    def _reject_duplicate_live_experiment_observers(
+        connection: sqlite3.Connection,
+        records: list[StoredWatcherRecord],
+    ) -> None:
+        """Refuse an observer that repeats one already watching this loop's work.
+
+        Healthy checks carry identity jitter, so two observers of one job notice
+        its completion in separate polls, never share a delivery pass, and each
+        buys the episode a wake for the single event. Only an exact repeat of the
+        check on the same node, target, host, and directory is refused; observing
+        one job through genuinely different commands cannot be told apart
+        mechanically and stays a judgement the agent makes from its staged
+        watcher state. Stops in the same handoff have already been applied, so
+        retiring the old observer and arming a replacement still works.
+        """
+
+        armed: set[tuple[str, ...]] = set()
+        for record in records:
+            # A group is one immutable unit that wakes the episode once, so
+            # repeats within it cannot double-spend an invocation.
+            if not isinstance(record, WatcherRecord) or record.group_id is not None:
+                continue
+            identity = (
+                record.project_id,
+                record.graph_target.model_dump_json(),
+                record.node_id or "",
+                record.execution_host,
+                record.cwd,
+                record.check_command,
+                record.log_path,
+            )
+            if identity in armed:
+                raise ValueError(
+                    "this watch list arms one check twice; observe this work once: "
+                    f"{record.check_command}"
+                )
+            armed.add(identity)
+            existing = connection.execute(
+                """
+                SELECT watcher_id FROM watchers
+                WHERE project_id = ?
+                  AND graph_target_json = ?
+                  AND IFNULL(node_id, '') = ?
+                  AND execution_host = ?
+                  AND cwd = ?
+                  AND check_command = ?
+                  AND log_path = ?
+                  AND group_id IS NULL
+                  AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
+                  AND status IN ('active', 'degraded')
+                  AND notified = 0
+                ORDER BY created_at, watcher_id
+                LIMIT 1
+                """,
+                identity,
+            ).fetchone()
+            if existing is not None:
+                raise ValueError(
+                    "an identical observer is already watching this work: "
+                    f"{existing['watcher_id']}; rely on it, or retire it with a stop "
+                    "item in this same handoff and arm the replacement"
+                )
 
     def persist_experiment_watchers_idempotently(
         self,
