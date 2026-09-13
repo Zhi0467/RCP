@@ -301,6 +301,38 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
 });
 
+test("an unchanged snapshot keeps preview status, and a moved one clears it", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: null,
+    conflict: "Staged transition preview was refused: stale base head.",
+    pending: false,
+  });
+
+  // Sync is gated on this conflict. Clearing it on a watcher-delivery poll would
+  // re-enable Sync for an edit the backend already refused, and the preview
+  // effects no longer rerun to restore it.
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  assert.equal(repolled.draftPreviewConflict, state.draftPreviewConflict);
+
+  const moved = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2),
+    preserve_readiness: false,
+  });
+  assert.equal(moved.draftPreviewConflict, null);
+  assert.equal(moved.draftPreviewPending, false);
+});
+
 test("a committed transition replaces the canonical session in one transition", () => {
   let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",

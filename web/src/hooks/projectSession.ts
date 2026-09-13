@@ -726,8 +726,13 @@ function applyProjectSnapshot(
       ? null
       : state.transitionManifestExpectedRulesetTag,
     draftTransitionProjection: carriesNoNewCanonicalState ? state.draftTransitionProjection : null,
-    draftPreviewConflict: null,
-    draftPreviewPending: false,
+    // Preview status travels with the projection it describes. Clearing a
+    // conflict here would hide it permanently, now that an unchanged snapshot no
+    // longer reruns the preview effects, and would re-enable Sync on an edit the
+    // backend already refused. Clearing pending would enable Sync before an
+    // in-flight preview returns.
+    draftPreviewConflict: carriesNoNewCanonicalState ? state.draftPreviewConflict : null,
+    draftPreviewPending: carriesNoNewCanonicalState ? state.draftPreviewPending : false,
     draftReconciliationDiscardedProposalIds: [
       ...new Set([
         ...state.draftReconciliationDiscardedProposalIds,

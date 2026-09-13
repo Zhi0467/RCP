@@ -691,8 +691,9 @@ stores the refresh itself. Reaching one account through two spellings of its SSH
 destination still yields two gates.
 
 After authentication succeeds, the Claude profile also supplies a zero-cost
-Work-like startup probe using its strict sandbox settings, stream-json input,
-and closed empty stdin. Sandbox validation happens before any model call. The
+Work-like startup probe using its enforced Work settings, stream-json input,
+and closed empty stdin. It proves the installed CLI accepts those settings
+before any model call; it does not prove containment. The
 cached readiness result records Work-like availability and its concrete reason,
 kept apart from the general readiness reason, which also carries benign notes
 such as a discovered path. Settings renders it only on a profile the projection
@@ -701,10 +702,10 @@ capability cannot establish: a chat profile defaults to Discuss and still
 launches Work. The paper coach is never subject to it. A Work or orchestrate
 launch checks this
 precondition alongside the profile's version requirement before starting its
-provider turn. A missing sandbox fails with the provider's actual diagnostic;
-connection loss or an unreachable host is reported as such, not diagnosed as a
-missing sandbox. Discuss does not require this precondition or attach the sandbox
-settings. Refresh and normal readiness invalidation also invalidate the probe.
+provider turn. A CLI that refuses those settings fails with the provider's actual
+diagnostic; connection loss or an unreachable host is reported as such, not
+diagnosed as a refused setting. Discuss does not require this precondition or
+attach the enforced write settings. Refresh and normal readiness invalidation also invalidate the probe.
 
 A decoded provider error includes meaningful captured stderr in the first error
 event, with a bounded drain after process termination and existing shell TTY
