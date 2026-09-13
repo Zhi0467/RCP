@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents.failure_kinds import classify_agent_failure, transport_failure
-from rcp.providers import profile_for
+from rcp.providers import classify_terminal_error, profile_for
 
 CODEX = profile_for("codex")
 
@@ -111,4 +111,24 @@ def test_a_provider_that_spoke_for_itself_did_not_lose_its_link(
             provider_spoke_for_itself=spoke,
         )
         == expected
+    )
+
+
+def test_only_the_missing_thread_half_means_the_session_is_gone() -> None:
+    """A vanished session sends recovery down the clean-start paths.
+
+    That is right when the thread is gone and wrong for any other spawn
+    failure, which still has its session: starting clean would throw away a
+    live checkpoint and repeat the work it holds.
+    """
+
+    assert (
+        classify_terminal_error(
+            "collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198"
+        )
+        == "stale_session"
+    )
+    assert (
+        classify_terminal_error("collab spawn failed: sandbox denied the request")
+        == "provider_error"
     )

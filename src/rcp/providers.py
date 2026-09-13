@@ -1318,7 +1318,10 @@ def classify_terminal_error(text: str) -> str:
     # The provider still answers, but the native session RCP asked it to resume
     # is gone. Resuming again cannot work; a fresh session can. Observed from
     # Codex on 2026-09-12 as "collab spawn failed: no thread with id: <uuid>".
-    if any(marker in folded for marker in ("no thread with id", "collab spawn failed")):
+    # Only the missing-thread half is the evidence: a spawn that failed for some
+    # other reason still has its session, and starting clean would throw away a
+    # live checkpoint and repeat the work it holds.
+    if "no thread with id" in folded:
         return "stale_session"
     return "provider_error"
 
