@@ -577,6 +577,20 @@ class ProviderProfile:
         del stderr, requested_reasoning
         return None
 
+    def credential_failure(self, stderr: str) -> bool:
+        """Whether this CLI's diagnostic says its own login is no longer valid.
+
+        A revoked or expired login fails every attempt the same way, so RCP has
+        to tell it apart from a dropped connection: one is worth retrying and
+        the other is not. The provider owns these signatures because only it
+        knows what its CLI prints. A profile that has not had a real revoked
+        login observed returns False rather than guessing, because a wrong
+        match here would withdraw Retry from a failure Retry would have fixed.
+        """
+
+        del stderr
+        return False
+
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         return ProviderStreamEvent(event="raw", text=raw)
 
@@ -630,6 +644,21 @@ class CodexProfile(ProviderProfile):
         # which hid this; that is the CLI's choice to change, not ours to rely on.
         reported = (result.stdout + result.stderr).lower()
         return "not logged in" not in reported and "logged in" in reported
+
+    def credential_failure(self, stderr: str) -> bool:
+        # Observed from a real run on 2026-09-12: `codex login status` still
+        # reported a healthy login while every turn died on these. The run's
+        # own diagnostic is the only trustworthy signal.
+        reported = stderr.lower()
+        return any(
+            signature in reported
+            for signature in (
+                "token_revoked",
+                "refresh_token_invalidated",
+                "refresh token was revoked",
+                "your session has ended. please log in again",
+            )
+        )
 
     def catalog_command(self, binary: str) -> list[str] | None:
         return [binary, "debug", "models"]
@@ -1286,6 +1315,14 @@ def classify_terminal_error(text: str) -> str:
         )
     ):
         return "session_limit"
+    # The provider still answers, but the native session RCP asked it to resume
+    # is gone. Resuming again cannot work; a fresh session can. Observed from
+    # Codex on 2026-09-12 as "collab spawn failed: no thread with id: <uuid>".
+    # Only the missing-thread half is the evidence: a spawn that failed for some
+    # other reason still has its session, and starting clean would throw away a
+    # live checkpoint and repeat the work it holds.
+    if "no thread with id" in folded:
+        return "stale_session"
     return "provider_error"
 
 

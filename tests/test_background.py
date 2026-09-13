@@ -6,12 +6,14 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     auto_research_child_work_task,
@@ -48,7 +50,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, wait_until
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
@@ -2347,6 +2349,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         stage_host="",
         stage_root=str(tmp_path / "report-stage"),
         fingerprint="a" * 64,
+        continuation_binding=False,
     )
     store.record_agent_task_receipt(
         hidden.operation_id,
@@ -2549,3 +2552,412 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
     assert "predates the recorded human authorizer" in message
     assert "Press Run on the Experiment to start a fresh episode." in message
     assert store.agent_task(root.operation_id).status == "failed"
+
+
+def _transport_failed_task(
+    store: AppStore,
+    *,
+    operation_id: str,
+    parent_operation_id: str | None = None,
+    failure_kind: str = "transport_lost",
+    request: RunRequest | None = None,
+    record_updates: dict[str, object] | None = None,
+) -> AgentTaskRecord:
+    task = _admitted_launch_task(
+        store,
+        operation_id=operation_id,
+        parent_operation_id=parent_operation_id,
+        request=request,
+        record_updates=record_updates,
+    )
+    store.mark_agent_task_running(task.operation_id)
+    store.fail_agent_task(
+        task.operation_id,
+        "The connection to gpu.example.edu was lost before codex finished.",
+        failure_kind=failure_kind,  # type: ignore[arg-type]
+    )
+    settled = store.agent_task(task.operation_id)
+    assert settled is not None
+    return settled
+
+
+def test_lost_connection_is_reattempted_without_a_human(tmp_path: Path, monkeypatch) -> None:
+    """A network change ends a turn for a reason the turn had no part in.
+
+    That is not the human's failure to diagnose, and this is a chat turn:
+    a dropped link is reattempted wherever it lands, not only in an episode.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    scheduled: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+    failed = _transport_failed_task(store, operation_id="dropped")
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
+    assert store.agent_task_has_receipt("dropped", "transport_auto_retry")
+
+
+def test_a_revoked_login_is_never_reattempted(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    scheduled: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+    failed = _transport_failed_task(store, operation_id="revoked", failure_kind="provider_auth")
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == []
+    assert not store.agent_task_has_receipt("revoked", "transport_auto_retry")
+
+
+def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) -> None:
+    """A link still down after the last wait is not a transient stall, and a
+    loop that never ends would burn an episode's invocations on the network."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    scheduled: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+
+    # One lineage means one dispatch authority, so every attempt carries the
+    # same request the human authorized.
+    lineage = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="launch-lineage",
+        message="Exercise the reattempt budget.",
+        mode="work",
+        patch_kind="work",
+    )
+    parent: str | None = None
+    for index in range(AGENT_TRANSPORT_RETRY_LIMIT):
+        name = f"attempt-{index}"
+        failed = _transport_failed_task(
+            store, operation_id=name, parent_operation_id=parent, request=lineage
+        )
+        tasks._auto_retry_transport_loss(failed)
+        parent = name
+
+    exhausted = _transport_failed_task(
+        store, operation_id="exhausted", parent_operation_id=parent, request=lineage
+    )
+    tasks._auto_retry_transport_loss(exhausted)
+
+    assert [delay for _operation, delay in scheduled] == list(
+        AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[:AGENT_TRANSPORT_RETRY_LIMIT]
+    )
+    assert not store.agent_task_has_receipt("exhausted", "transport_auto_retry")
+    assert store.agent_task_has_receipt("exhausted", "transport_auto_retry_exhausted")
+
+
+def test_shutdown_cancels_a_pending_reattempt(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    _transport_failed_task(store, operation_id="pending")
+
+    tasks._schedule_transport_retry("pending", attempt=2)
+    assert tasks._transport_retry_timers
+
+    tasks.shutdown(timeout=0.1)
+
+    assert tasks._transport_retry_timers == []
+    assert store.agent_task("pending").status == "failed"
+
+
+def test_an_episode_turn_is_reattempted_on_the_same_terms_as_a_chat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A dropped link is a transport fact, so the surface it landed on is not one.
+
+    An Experiment episode turn is an ordinary node chat, so this covers the
+    other half of what a lost link can interrupt.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    scheduled: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+    failed = _transport_failed_task(
+        store,
+        operation_id="episode-dropped",
+        record_updates={"kind": "node_chat"},
+    )
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == [("episode-dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
+
+
+def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The wait can outlast the failure it was scheduled for.
+
+    A human pressing Retry, or any recovery owner, leaves a child on the failed
+    task. Firing the timer anyway would run the same turn a second time after
+    the first already finished, repeating whatever that turn did.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    # One request for both attempts: a continuation must keep its parent's
+    # dispatch authority, which is derived from the request.
+    shared = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="launch-supersession",
+        message="Exercise the admitted launch boundary.",
+        mode="work",
+        patch_kind="work",
+    )
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    retried: list[str] = []
+    monkeypatch.setattr(
+        tasks, "retry", lambda operation_id, **_kwargs: retried.append(operation_id)
+    )
+
+    # Nothing has taken it over yet, so the wait still means something.
+    assert not tasks._transport_retry_superseded(failed.operation_id)
+
+    _admitted_launch_task(
+        store,
+        operation_id="human-retry",
+        parent_operation_id=failed.operation_id,
+        request=shared,
+    )
+
+    assert tasks._transport_retry_superseded(failed.operation_id)
+    assert store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry_superseded")
+    assert retried == []
+
+
+@pytest.mark.parametrize(
+    ("exit_payload", "expected"),
+    [
+        ({"return_code": 255, "event_counts": {"raw": 11}}, "transport_lost"),
+        (
+            {
+                "return_code": 255,
+                "event_counts": {"answer": 2, "raw": 1},
+                "explicit_terminal_event": True,
+            },
+            None,
+        ),
+        ({"return_code": -15, "event_counts": {"error": 1}}, None),
+    ],
+)
+def test_a_turn_the_provider_explained_is_never_blamed_on_the_link(
+    tmp_path: Path, exit_payload: dict[str, object], expected: str | None
+) -> None:
+    """One remote host produced both 255s: a stream that simply stopped, and a
+    turn that streamed its answers, reached its own terminal event, then exited
+    255 saying its thread was gone. Naming the second a lost link would reattempt
+    work the provider had already done for a reason no attempt can change."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="explained")
+    store.mark_agent_task_running(task.operation_id)
+    store.record_agent_task_receipt(
+        task.operation_id, "provider_exit", exit_payload, tier="diagnostic"
+    )
+    execution = SimpleNamespace(stage_host="gpu.example.edu")
+    request = tasks._request_from_record(store.agent_task(task.operation_id))
+
+    assert (
+        tasks._failure_kind(
+            task.operation_id,
+            request,
+            execution,  # type: ignore[arg-type]
+            "codex could not finish.",
+        )
+        == expected
+    )
+
+
+def test_a_promised_reattempt_survives_a_restart(tmp_path: Path, monkeypatch) -> None:
+    """Stopping RCP during the wait must not quietly cancel the reattempt.
+
+    The receipt that promises one is durable and the timer that keeps it is
+    not, so without startup re-arming the turn stays failed forever while its
+    history says a reattempt is coming.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    failed = _transport_failed_task(store, operation_id="dropped")
+    tasks._auto_retry_transport_loss(failed)
+    assert store.agent_task_has_receipt("dropped", "transport_auto_retry")
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: rearmed.append(
+            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
+        ),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
+
+
+def test_a_restart_resumes_the_waits_a_refused_reattempt_had_reached(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A refused reattempt admits no child, so the lineage cannot carry it.
+
+    If a restart recomputed the position from lineage alone it would hand the
+    turn the first, shortest wait again, and restarts could reattempt a turn
+    without bound however many the limit says.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    failed = _transport_failed_task(store, operation_id="still-down")
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    tasks._auto_retry_transport_loss(failed)
+    # The first wait elapsed and its reattempt was refused, exactly as the
+    # timer's own failure path records it.
+    store.record_agent_task_receipt(
+        failed.operation_id,
+        "transport_auto_retry_failed",
+        {"exception_type": "ValueError"},
+        tier="diagnostic",
+    )
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[float] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda _operation, *, attempt: rearmed.append(
+            AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt]
+        ),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == [AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[1]]
+
+
+def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A restart must not reopen the supersession window the timer closes.
+
+    A human who pressed Retry before the process stopped already has the turn
+    running; re-arming would run it a second time.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
+    # One request for both attempts: a continuation must keep its parent's
+    # dispatch authority, which is derived from the request.
+    shared = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="launch-restart-supersession",
+        message="Exercise the reattempt across a restart.",
+        mode="work",
+        patch_kind="work",
+    )
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    tasks._auto_retry_transport_loss(failed)
+    _admitted_launch_task(
+        store,
+        operation_id="human-retry",
+        parent_operation_id=failed.operation_id,
+        request=shared,
+    )
+
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    rearmed: list[str] = []
+    monkeypatch.setattr(
+        restarted,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: rearmed.append(operation_id),
+    )
+
+    restarted.recover_at_startup()
+
+    assert rearmed == []
+
+
+def test_a_refused_reattempt_keeps_the_remaining_waits(tmp_path: Path, monkeypatch) -> None:
+    """A host still rebooting refuses admission, which is what the longer waits
+    are for. No child is admitted, so the receipt chain cannot carry the count
+    and the sequence has to hand it on itself."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    failed = _transport_failed_task(store, operation_id="still-down")
+
+    def refuse(_operation_id, **_kwargs):
+        raise ValueError("the execution machine is unavailable")
+
+    monkeypatch.setattr(tasks, "retry", refuse)
+    scheduled: list[int] = []
+    original = tasks._schedule_transport_retry
+
+    def record(operation_id: str, *, attempt: int) -> None:
+        scheduled.append(attempt)
+        if len(scheduled) == 1:
+            original(operation_id, attempt=attempt)
+
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", record)
+    monkeypatch.setattr("rcp.background.AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS", (0.01, 0.01, 0.01))
+
+    tasks._auto_retry_transport_loss(failed)
+    wait_until(
+        lambda: len(scheduled) >= 2,
+        timeout=5,
+        detail=lambda: f"the next wait was never scheduled: {scheduled}",
+    )
+    tasks.shutdown(timeout=0.5)
+
+    assert scheduled[:2] == [0, 1]
+    assert store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry_failed")

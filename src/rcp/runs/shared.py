@@ -31,6 +31,7 @@ from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.run_stage import run_stage_partition
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -602,7 +603,13 @@ def _record_agent_launch_receipt(
         if write_scope is None:
             raise ValueError(f"{capability} launch receipt requires a project write scope")
         if execution is not None:
-            execution.bind_write_scope(write_scope)
+            # The provider is handed this session id verbatim by the work turn,
+            # so a request that carries one is continuing that session no matter
+            # what the continuation label says.
+            execution.bind_write_scope(
+                write_scope,
+                resumes_native_session=bool(getattr(request, "session_id", None)),
+            )
         scope_payload = {
             "project_id": write_scope.project_id,
             "execution_machine": write_scope.execution_machine,
@@ -728,6 +735,11 @@ async def _stream_agent_events(
             host=execution_host,
             control=execution.control if execution is not None else None,
             remote_pid_file=remote_pid_file,
+            transport_partition=(
+                run_stage_partition(execution_host, remote_stage.root)
+                if remote_stage is not None
+                else None
+            ),
             invocation_gate=invocation_gate,
             capability=capability,
             binary=binary,

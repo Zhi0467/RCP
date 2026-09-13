@@ -677,6 +677,22 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
     }).step,
     "resolve_requirements",
   );
+  // A revoked login names the provider, because "retry" is the one thing that
+  // cannot fix it and the human has to know which login to repair.
+  assert.deepEqual(
+    experimentRecommendation({
+      ...base,
+      control: control(
+        {
+          episode_id: "episode-recommendation",
+          recommendation: "reauthenticate_provider",
+        },
+        { session: { provider: "codex" } },
+      ),
+      health: "needs_action",
+    }),
+    { step: "reauthenticate_provider", label: "Sign in to codex again, then retry" },
+  );
 });
 
 test("an authorized invocation count is the whole number the human typed", () => {

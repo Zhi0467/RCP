@@ -34,6 +34,23 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Task-engine ownership
+
+`BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,
+Experiment recovery, watcher admission, and report owners intentionally share
+named calls with it. These are navigational module boundaries, not plugins.
+Add no `kind`, `patch_kind`, or request-subtype branch to the engine unless the
+change removes an existing exception or the rule belongs to universal task-row
+construction. A feature touching three or more engine entry points requires
+moving one complete policy decision to its concrete owner; do not manufacture
+a registry, facade, callback bus, or event bus to hide the coupling.
+
+An orchestrator-triggered chat is specialized child Work only when its durable
+child-route row exists. Missing route identity intentionally follows ordinary
+Work for compatibility; changing that to a failure requires a product decision.
+The [backend structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+records the accepted coupling and rejected extractions.
+
 ## Provider runtime selection
 
 Each project agent profile selects a provider-owned runtime. An omitted value is
@@ -221,6 +238,20 @@ fingerprint with the durable binding. A cross-project session/stage, relocated
 repository, incompatible run-scope change, or missing root fails before provider
 launch. Legitimate relocation or scope change starts a fresh task/session; it
 does not widen an existing native session.
+
+A launch that carries no provider session is that fresh task/session, and it
+establishes the stage binding rather than inheriting it. What decides this is
+the session the launch actually hands the provider, not the label admission gave
+it: an ordinary follow-up is admitted as fresh while still supplying its chat's
+session id, and that session is what would otherwise gain roots it did not start
+with. A chat stage is named from its chat id and is never cleared, so comparing
+every launch against the scope a previous episode left there made a
+conversation's run scope permanent: the human could not drop a repository from
+an Experiment that had ever run. A sessionless launch is still refused while
+another turn is live on that stage with a different scope, and a continuation is
+compared against the stage's current binding, not against bindings a later fresh
+launch superseded. A refused comparison names the repositories on both sides and
+says a new episode is how run scope changes.
 
 Conversation-local merge integration and the following ordinary turn are the
 one explicit root-transition exception: their related-turn fingerprints may be
@@ -416,6 +447,24 @@ The remote run stage owns exact path validation, process/event wrappers,
 scratch transfer, and recovery. A task resumed remotely must prove the saved
 host and stage. SSH or provider transport failure is reported as unavailable,
 not converted into semantic correction.
+
+RCP shares an SSH connection per unit of work, not per host. Work that owns
+something durable keeps its own connection, named by what it owns: the work in
+one run stage by that stage's root, a lock holder by the lock it holds. A link
+that drops therefore ends the work on that connection and nothing else. Short
+control traffic owns nothing durable and shares one connection, which is what
+keeps it cheap. Stopping a remote process after a failure stays on the shared
+connection on purpose: it must not ride the connection whose death it is
+cleaning up after, and the shared one is the only path OpenSSH reopens by
+itself. Connections left behind by finished work are cleared by asking whether
+they still answer, never by whose they look like, because the local socket
+directory is keyed by user account and a second RCP instance keeps its live
+connections in the same place.
+
+This separates work that would otherwise fail together for no reason of its
+own. It does not make a host's connections independent of the network between
+them: an outage still ends every connection to that host, now as separate
+failures rather than one.
 
 ### Compute connections are resources, not execution profiles
 
@@ -654,6 +703,43 @@ event, with a bounded drain after process termination and existing shell TTY
 noise filtering. When the result has no text-bearing field, its subtype is the
 fallback diagnostic. This preserves the real startup failure for task consumers
 that stop reading at the first error.
+
+A settled failure is also named, because recovery differs by cause. SSH's own
+exit codes for a remote run mean the link died rather than the work, and RCP
+reattempts such a turn a bounded number of times with growing waits before
+leaving it to a human; the reattempt is the same recovery a human Retry
+performs, so it resumes the native session rather than repeating the turn. Those
+exit codes decide this only for a turn that said nothing: ssh returns 255 for a
+provider that exits 255 as readily as for a link it lost, so a provider that
+reached its own terminal event or reported its own error is never blamed on the
+link, whatever the code. A reattempt stands down when anything else has already
+taken the turn over, so a wait that outlives the failure it was scheduled for
+cannot repeat finished work. A wait whose reattempt is refused keeps the waits
+that remain, because a host that is still returning is the case the longer waits
+exist for. The promise of a reattempt is durable while the wait holding it is
+not, so startup re-arms the waits a stopped process could not keep, at the wait
+the sequence had reached rather than at its first; a turn something else has
+already continued is not re-armed.
+
+A provider whose CLI reports that its own login is no longer valid is named
+separately, because no unattended attempt can fix it: every one fails
+identically until a person signs in again. That name informs, and never
+withdraws the way back. It stops the automatic transport reattempt, which would
+only spend three waits proving the point, and it makes the projection ask for
+the sign-in. It withdraws no control and withholds no scheduled recovery: a
+failure kind never changes, so anything taken away on one could never be given
+back, and signing in again is exactly what makes the next attempt work. A
+profile that has had no real revoked login observed claims none, since a wrong
+match would name a failure Retry would have fixed.
+
+A saved provider session the provider no longer has is named separately from one
+that reached its limit, because the remedy differs: a session that is simply
+gone cannot be resumed at all, so recovery starts the turn clean instead of
+resuming into the same failure. A session-bound episode is the same case: its
+binding names a session the provider has dropped, so recovery hands the episode
+to a clean session on the record rather than refusing and stranding it. Every
+other failure keeps its existing behaviour. Reattempts, their refusals, and
+their exhaustion are receipts on the failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A

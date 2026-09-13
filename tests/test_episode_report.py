@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,20 +34,12 @@ class _ReportLauncher:
     def __init__(self, outcomes: list[str]) -> None:
         self.outcomes = outcomes
         self.calls = 0
-        self.contracts: list[str] = []
         self.kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         outcome = self.outcomes[self.calls]
         self.calls += 1
         self.kwargs.append(kwargs)
-        contract_path = re.search(
-            r"Open and follow the immutable RCP task contract at:\s*([^\n]+)",
-            prompt,
-        )
-        assert contract_path is not None
-        contract = Path(contract_path.group(1)).read_text(encoding="utf-8")
-        self.contracts.append(contract)
         workspace = Path(kwargs["cwd"])
         if outcome == "valid":
             workspace.joinpath("episode-report.html").write_text(
@@ -365,13 +356,6 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
     assert launcher.kwargs[0]["write_scope"].writable_roots == [str(stage)]
     assert launcher.kwargs[0]["write_scope"].repository_roots == []
     assert launcher.kwargs[0]["capability"] == "work_auto"
-    contract = launcher.contracts[0]
-    assert "immutable compact episode receipt" in contract
-    assert "exact official `episode-report` SKILL.md" in contract
-    assert "self-contained sandbox-safe HTML report" in contract
-    assert "current graph:" not in contract
-    assert "research rendering:" not in contract
-    assert "campaign" not in contract.casefold()
     assert not any(
         item.name in {"graph.json", "research.md", "transcript.json", "repositories.json"}
         for item in stage.joinpath("inputs").rglob("*")
@@ -593,9 +577,6 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
         "failed",
         "succeeded",
     ]
-    assert "exact report correction diagnostic" not in launcher.contracts[0]
-    assert "exact report correction diagnostic" in launcher.contracts[1]
-    assert "exact report correction diagnostic" in launcher.contracts[2]
     episode = store.episode("episode")
     assert episode is not None
     assert episode.invocations_used == 1

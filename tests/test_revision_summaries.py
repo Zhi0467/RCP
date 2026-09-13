@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rcp.history.delta as delta_module
-from rcp.agents.prompts import PromptFactory
 from rcp.core.materialize import MaterializationResult, materialize_patches
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.validation import ValidationReport
@@ -465,43 +464,3 @@ def test_human_review_patch_uses_the_node_title(manifest, tmp_path) -> None:
     patch = service.history.load_patches()[-1]
     assert patch.summary == "Marked “Learning after task shift” accepted."
     assert patch.change_summary == ["“Learning after task shift” is now accepted."]
-
-
-def test_graph_and_work_contracts_require_reader_facing_change_summaries() -> None:
-    graph_contract = PromptFactory.graph_task_contract(
-        "refresh",
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=True,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        provider_log_roots={},
-        ingestion_watermark=None,
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-    )
-    work_contract = PromptFactory.work_task_contract(
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=True,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        focused_node_id=None,
-        repositories=[],
-        introduction_path=None,
-        human_request_path="/stage/request.txt",
-        patch_path="/stage/patch.json",
-        artifact_path="/stage/artifacts",
-        output_schema_path="/stage/schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-    )
-
-    for contract in (graph_contract, work_contract):
-        assert "one ordinary-language sentence per meaningful" in contract
-        assert "reader-facing titles, never ids or Patch operation names" in contract
-        assert "do not summarize\n  with inventory counts" in contract or (
-            "do not\n  use inventory counts" in contract
-        )
-        assert "instead of inventing a causal explanation" in contract

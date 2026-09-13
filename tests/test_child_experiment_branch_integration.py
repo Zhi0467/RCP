@@ -30,12 +30,10 @@ class _CompletingExperimentProvider:
         self.validation_results: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
-        contract = Path(prompt.splitlines()[1]).read_text(encoding="utf-8")
-        pointer = re.search(
-            r"Current graph, including the Experiment's attempts: `([^`]+)`", contract
-        )
-        assert pointer is not None
-        graph = GraphState.model_validate_json(Path(pointer.group(1)).read_text(encoding="utf-8"))
+        (contract_path,) = [Path(line) for line in prompt.splitlines() if Path(line).is_absolute()]
+        contract = contract_path.read_text(encoding="utf-8")
+        (graph_path,) = set(re.findall(r"`(/[^`]+/graph\.json)`", contract))
+        graph = GraphState.model_validate_json(Path(graph_path).read_text(encoding="utf-8"))
         self.graphs.append(graph)
         assert graph.nodes[EXPERIMENT_ID].type == "experiment"
         (Path(kwargs["cwd"]) / "patch.json").write_text(
@@ -57,11 +55,10 @@ class _CompletingExperimentProvider:
         (Path(kwargs["cwd"]) / "watch.json").write_text(
             '{"external": [], "graph": []}', encoding="utf-8"
         )
-        validator = re.search(r"run this exact command: `([^`]+)`", contract)
-        assert validator is not None
+        (validator,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
         async with kwargs["invocation_gate"].serve_current_session():
             process = await asyncio.create_subprocess_exec(
-                *shlex.split(validator.group(1)),
+                *shlex.split(validator),
                 cwd=kwargs["cwd"],
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

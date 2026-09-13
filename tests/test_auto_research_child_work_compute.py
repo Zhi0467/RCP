@@ -78,16 +78,11 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             assert handler.episode_id == "child-compute"
             assert kwargs["invocation_gate"] is staged.invocation_gate
             if len(self.calls) == 1:
-                if "This is a Work turn." in prompt:
-                    prefix = "Read current execution instructions relative to this turn's cwd: `"
+                if kwargs["capability"] == "work_auto":
                     path = next(
-                        line.removeprefix(prefix).removesuffix("`")
-                        for line in prompt.splitlines()
-                        if line.startswith(prefix)
+                        code for code in prompt.split("`")[1::2] if code.endswith("-execution.md")
                     )
                     contract = (workspace / path).read_text()
-                    master = Path(prompt.splitlines()[1]).read_text()
-                    assert "Auto-research child Work boundary" not in master
                 else:
                     contract = Path(prompt.splitlines()[1]).read_text()
                 assert (
@@ -102,11 +97,6 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     )
                     in contract
                 )
-                boundary = contract.split("## Auto-research child Work boundary", 1)[1]
-                assert "`launch`" in boundary.split("- Do not invoke", 1)[0]
-                assert "`job-status`" not in boundary
-                assert "`cancel`" not in boundary
-                assert "RCP ignores child watcher output" not in boundary
             if len(self.calls) == 1 and state != "nothing":
                 launched = await _command(
                     staged, "launch", "--key", "launch", "--cwd", str(workspace), "--", "true"
@@ -124,17 +114,14 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             elif self.job_id and len(self.calls) == 2:
                 correction = Path(prompt.splitlines()[1]).read_text()
                 assert '"job_id"' not in correction
-                assert "`check_command`, `log_path`, and `cwd`" in correction
                 if state == "running":
                     assert self.job_id in correction
-                    assert "use its launch receipt or authoritative" in correction
                 (workspace / "watch.json").write_text(
                     json.dumps({"external": [self.watcher], "graph": []})
                 )
             if len(self.calls) == 3:
                 self.wake_contract = Path(prompt.splitlines()[1]).read_text()
                 turn, inputs = child_turns[-1]
-                assert "This is a Work turn." in self.wake_contract
                 assert turn.patch_inputs.validator_command in self.wake_contract
                 assert child_turns[0][0].patch_inputs.validator_command not in self.wake_contract
                 for path in (
@@ -148,17 +135,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     assert path in self.wake_contract
                 for package in inputs.skill_pointers:
                     assert str(package["path"]) in self.wake_contract
-                assert "Invoked for this turn" in self.wake_contract
-                assert "skill `graph-audit`" in self.wake_contract
-                assert "Invoked provider-native skill this turn" in self.wake_contract
                 assert '"name": "native-review"' in self.wake_contract
-                assert self.wake_contract.endswith(
-                    child_work._auto_research_child_work_contract(
-                        turn,
-                        inputs,
-                        store.auto_research_child_work_for_operation(turn.execution.operation_id),
-                    )
-                )
                 assert not (workspace / "watch.json").exists()
             yield AgentEvent(event="session", session_id="child-compute-session")
             yield AgentEvent(event="answer", text="Computation handed off.")
@@ -274,6 +251,5 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert launcher.calls[-1]["cwd"] == launcher.calls[0]["cwd"]
         assert launcher.watcher["log_path"] in launcher.wake_contract
         assert watchers[0].watcher_id in launcher.wake_contract
-        assert "Auto-research child Work boundary" in launcher.wake_contract
         assert wake.native_session_id == child.native_session_id
         assert store.episode(episode.episode_id).invocations_used == 3

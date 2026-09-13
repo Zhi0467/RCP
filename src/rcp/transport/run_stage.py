@@ -60,6 +60,23 @@ class ImportedProviderSourceReadback:
     payload_size_bytes: int
 
 
+def run_stage_partition(host: str, root: str | PurePosixPath | None) -> str | None:
+    """The SSH master one stage keeps to itself, named by the stage root.
+
+    One stage root, one master. That is the stage the work runs in, not the run
+    itself: a conversation keeps one stage across its turns, so a later turn
+    reaching the same root reuses the same connection. Which is what is wanted,
+    because those turns are the same conversation and nobody else is on it. What
+    matters is that nothing outside the stage is, so a lost link ends the work
+    in that stage and nothing else. The provider turn of the same stage names
+    its master here too, so the turn and its file work share one fate. Before
+    the root exists there is nothing to isolate, and creation shares the
+    default.
+    """
+
+    return None if root is None else f"{host}:{root}"
+
+
 class RemoteRunStage:
     def __init__(self, host: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", host):
@@ -74,6 +91,10 @@ class RemoteRunStage:
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         return self.root / "workspace"
+
+    @property
+    def transport_partition(self) -> str | None:
+        return run_stage_partition(self.host, self.root)
 
     def sweep(
         self,
@@ -543,7 +564,7 @@ except BaseException:
                     [
                         "rsync",
                         "-a",
-                        *rsync_ssh_arguments(),
+                        *rsync_ssh_arguments(partition=self.transport_partition),
                         f"{pending}/",
                         f"{self.host}:{shlex.quote(str(batch))}/",
                     ],
@@ -1366,7 +1387,7 @@ finally:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
-                ssh_arguments(self.host, command),
+                ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 text=True,
                 timeout=REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
@@ -1385,7 +1406,7 @@ finally:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
             return subprocess.run(
-                ssh_arguments(self.host, command),
+                ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 input=input_data,
                 timeout=timeout_seconds,

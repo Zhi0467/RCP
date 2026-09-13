@@ -127,7 +127,8 @@ async def stream_branch_merge_task(
             app_data_dir=data_dir,
             repository_inventory=service.repository_ownership_inventory(project_id=task.project_id),
         )
-        execution.bind_write_scope(write_scope)
+        # A merge orchestrator never carries a provider session into its turn.
+        execution.bind_write_scope(write_scope, resumes_native_session=False)
 
         branch = service.history.branch(
             episode.episode_id,

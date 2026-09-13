@@ -2715,7 +2715,7 @@ class ExperimentStoreMixin:
         task_rows = _connection.execute(
             """
                 SELECT operation_id, parent_operation_id, status, attempt, request_json,
-                       created_at, phase, status_message, last_activity_at,
+                       created_at, phase, status_message, failure_kind, last_activity_at,
                        rowid AS storage_rowid
                 FROM graph_runs
                 WHERE project_id = ?
@@ -3016,6 +3016,7 @@ class ExperimentStoreMixin:
             current_status=current_row["status"],
             current_phase=current_row["phase"],
             current_status_message=current_row["status_message"],
+            current_failure_kind=current_row["failure_kind"],
             current_last_activity_at=current_row["last_activity_at"],
             current_invocation=(
                 current_invocation if isinstance(current_invocation, int) else None

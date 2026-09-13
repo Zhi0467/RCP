@@ -130,6 +130,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
       ? "Resume this episode, or switch provider"
       : "Resume this episode",
     retry: "Retry this episode, or switch provider",
+    reauthenticate_provider: `Sign in to ${run.control.operational?.session?.provider ?? "the provider"} again, then retry`,
     keep_loop: "Keep loop running; check now if needed",
     start_episode:
       run.health === "paused_at_limit"

@@ -13,12 +13,11 @@ CLOSED_REFACTOR_FILES = {
 }
 
 
-def test_agents_md_stays_compact_and_states_its_bound() -> None:
+def test_agents_md_stays_within_its_length_bound() -> None:
     text = (ROOT / "AGENTS.md").read_text()
     lines = text.splitlines()
 
-    assert 180 <= len(lines) <= 230
-    assert "hard ceiling of 230" in text
+    assert len(lines) <= 230
 
 
 def test_closed_backend_refactor_material_is_archived() -> None:

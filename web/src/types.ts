@@ -20,6 +20,13 @@ export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
  */
 declare const OPAQUE_TASK_STATUS: unique symbol;
 export type AgentTaskStatus = { readonly [OPAQUE_TASK_STATUS]: "AgentTaskStatus" };
+/**
+ * Why a provider turn failed. The backend decides what to offer because of it
+ * and exports that as `recommendation`, so this is sealed: a view that branched
+ * on the kind would be re-deriving a decision the projection already made.
+ */
+declare const OPAQUE_FAILURE_KIND: unique symbol;
+export type AgentFailureKind = { readonly [OPAQUE_FAILURE_KIND]: "AgentFailureKind" };
 declare const OPAQUE_STEER_RECEIPT_STATUS: unique symbol;
 export type SteerReceiptStatus = {
   readonly [OPAQUE_STEER_RECEIPT_STATUS]: "SteerReceiptStatus";
@@ -792,6 +799,7 @@ export interface ExperimentOperationalState {
   current_awaiting_human: boolean;
   current_phase: string | null;
   current_status_message: string | null;
+  current_failure_kind: AgentFailureKind | null;
   current_last_activity_at: string | null;
   current_invocation: number | null;
   session: ExperimentSessionBinding;
@@ -814,6 +822,7 @@ export type ExperimentRecommendedStep =
   | "wait"
   | "resume"
   | "retry"
+  | "reauthenticate_provider"
   | "keep_loop"
   | "start_episode"
   | "stop_and_restart"
@@ -2110,6 +2119,9 @@ export interface AgentTask {
   finished_at?: string | null;
   status_message: string;
   error?: string | null;
+  /** Why this turn failed, when that changes what recovery offers. Sealed, so
+   *  a view cannot branch on it: the backend exports the decision. */
+  failure_kind?: AgentFailureKind | null;
   /** Set when the provider succeeded without honouring part of the launch.
    *  Authored by the backend; render it verbatim. */
   degradation?: string | null;

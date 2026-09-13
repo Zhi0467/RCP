@@ -42,6 +42,7 @@ ExperimentRecommendationKind = Literal[
     "wait",
     "resume",
     "retry",
+    "reauthenticate_provider",
     "keep_loop",
     "start_episode",
     "stop_and_restart",
@@ -200,6 +201,14 @@ def _experiment_control_response(
     awaiting_human = (
         task.awaiting_human if task is not None else control.operational.current_awaiting_human
     )
+    # A revoked login fails every attempt the same way. The turn is still
+    # recoverable, so health keeps counting it, but the controls that would
+    # spend an attempt on it are withheld until a person signs in.
+    revoked_login = bool(
+        control.operational.current_failure_kind == "provider_auth"
+        and task_control is not None
+        and awaiting_human
+    )
     has_valid_recovery = task_control is not None or (
         task is None and control.operational.task_active and awaiting_human
     )
@@ -221,6 +230,7 @@ def _experiment_control_response(
         active=active,
         awaiting_human=awaiting_human,
         task_control=task_control,
+        revoked_login=revoked_login,
     )
     run_section = _experiment_run_section(health, awaiting_human=awaiting_human)
     ended = episode is not None and episode.ending is not None
@@ -244,6 +254,9 @@ def _experiment_control_response(
         else None
     )
     can_open_report = report_episode_id is not None
+    # A revoked login withdraws Retry but not this: recovery takes the provider
+    # change before it consults the old session, so another provider is the one
+    # recovery that still works without the human repairing that sign-in first.
     can_switch_provider = bool(task_control is not None and task is not None and task.can_retry)
     return ExperimentControlResponse.model_validate(
         {
@@ -369,6 +382,7 @@ def _experiment_recommendation(
     active: bool,
     awaiting_human: bool,
     task_control: ExperimentTaskControlKind | None,
+    revoked_login: bool,
 ) -> ExperimentRecommendationKind:
     if health in {"stopping", "wrapping_up"}:
         return "wait"
@@ -384,6 +398,11 @@ def _experiment_recommendation(
         return "none"
     if active:
         return "wait"
+    # Retry stays available, because signing in is what makes it work and
+    # nothing would restore a control withdrawn on a failure that never
+    # changes. This is what tells the human to sign in first.
+    if revoked_login:
+        return "reauthenticate_provider"
     if task_control is not None:
         return task_control
     if health == "degraded":
@@ -456,6 +475,7 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
         current_awaiting_human=runtime.current_status in AWAITING_HUMAN_AGENT_TASK_STATUSES,
         current_phase=runtime.current_phase,
         current_status_message=runtime.current_status_message,
+        current_failure_kind=runtime.current_failure_kind,
         current_last_activity_at=runtime.current_last_activity_at,
         current_invocation=runtime.current_invocation,
         session=ExperimentSessionBinding(

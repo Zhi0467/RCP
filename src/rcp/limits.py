@@ -201,6 +201,23 @@ PROJECT_TRANSFER_STABLE_READ_ATTEMPTS = 3
 SSH_SERVER_ALIVE_INTERVAL_SECONDS = 15
 SSH_SERVER_ALIVE_COUNT_MAX = 4
 
+# How long a multiplexed master outlives its last client. The window only
+# spares a follow-up call the cost of a fresh handshake; it never shortens a
+# call in progress, because the timer does not run while a client is attached.
+SSH_CONTROL_PERSIST_SECONDS = 60
+# Asking a leftover mux socket whether anyone is still listening is a local
+# connect, so anything slower than this is a socket that cannot answer.
+SSH_CONTROL_PROBE_TIMEOUT_SECONDS = 1.0
+
+# A run keeps its own SSH connection, so a dropped link ends that run and not
+# its neighbours. It still ends it for a reason that has nothing to do with the
+# work, so RCP reattempts such a turn a bounded number of times and then leaves
+# it to a human, because a link still down after the last wait is not a
+# transient stall. The waits grow so a host rebooting or a laptop changing
+# networks has time to come back.
+AGENT_TRANSPORT_RETRY_LIMIT = 3
+AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS = (30.0, 120.0, 600.0)
+
 # Canonical-state advisory lock acquisition and holder lifecycle.
 STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
 # A read-side snapshot refresh gives up on a lock another run holds instead of
