@@ -1140,16 +1140,19 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         records: list[StoredWatcherRecord],
     ) -> None:
-        """Refuse an observer that repeats one already watching this loop's work.
+        """Refuse an observer that repeats one already covering this loop's work.
 
         Healthy checks carry identity jitter, so two observers of one job notice
         its completion in separate polls, never share a delivery pass, and each
-        buys the episode a wake for the single event. Only an exact repeat of the
-        check on the same node, target, host, and directory is refused; observing
-        one job through genuinely different commands cannot be told apart
-        mechanically and stays a judgement the agent makes from its staged
-        watcher state. Stops in the same handoff have already been applied, so
-        retiring the old observer and arming a replacement still works.
+        buys the episode a wake for the single event. An unnotified completion
+        counts the same: it is a wake this episode has not spent yet, so a
+        repeat beside it still costs two invocations for one event. Only an
+        exact repeat of the check on the same node, target, host, and directory
+        is refused; observing one job through genuinely different commands
+        cannot be told apart mechanically and stays a judgement the agent makes
+        from its staged watcher state. Stops in the same handoff have already
+        been applied, and a stop may name an unnotified completion, so retiring
+        the old observer and arming a replacement still works.
         """
 
         armed: set[tuple[str, ...]] = set()
@@ -1185,7 +1188,7 @@ class ExperimentStoreMixin:
                   AND log_path = ?
                   AND group_id IS NULL
                   AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-                  AND status IN ('active', 'degraded')
+                  AND status IN ('active', 'degraded', 'completed')
                   AND notified = 0
                 ORDER BY created_at, watcher_id
                 LIMIT 1
@@ -1194,7 +1197,7 @@ class ExperimentStoreMixin:
             ).fetchone()
             if existing is not None:
                 raise ValueError(
-                    "an identical observer is already watching this work: "
+                    "an identical observer already covers this work: "
                     f"{existing['watcher_id']}; rely on it, or retire it with a stop "
                     "item in this same handoff and arm the replacement"
                 )

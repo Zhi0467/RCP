@@ -400,6 +400,13 @@ Node-attached Experiment watcher maintenance:
   `notified` false. A watcher armed by an earlier episode and adopted by this one qualifies: a
   differing `episode_id` is that watcher's immutable provenance, not a reason to leave stale work
   armed.
+- Before arming an observer, reconcile it against that staged watcher state. When a listed
+  `active`, `degraded`, or unnotified `completed` watcher already covers the same work, do not arm
+  a second one for it, even where your command text differs from its `check_command`. Observers
+  whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or process
+  observe one piece of work: they complete at separate times and wake the episode twice, spending
+  two of its invocations on a single event. Either rely on the watcher already armed, or retire it
+  with a stop item in this same file and arm your replacement.
 - `graph` contains only one of two strict canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision

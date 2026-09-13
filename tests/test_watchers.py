@@ -1220,7 +1220,15 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
     # A later turn repeating that check observes one job twice, and jitter keeps
     # the pair out of a shared delivery pass, so each would buy its own wake.
     repeat = first.model_copy(update={"watcher_id": "repeat"})
-    with pytest.raises(ValueError, match="already watching this work: first"):
+    with pytest.raises(ValueError, match="already covers this work: first"):
+        store.persist_experiment_watchers_idempotently([repeat], binding=binding)
+    assert store.watcher("repeat") is None
+
+    # A completion still waiting for delivery is a wake this episode has not
+    # spent, so repeating it beside the pending one still costs two invocations.
+    store.record_watcher_check("first", status="completed", exit_code=0, error=None)
+    assert store.watcher("first").notified is False
+    with pytest.raises(ValueError, match="already covers this work: first"):
         store.persist_experiment_watchers_idempotently([repeat], binding=binding)
     assert store.watcher("repeat") is None
 
@@ -1231,9 +1239,9 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
             stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
             binding=binding,
         )
-    assert store.watcher("first").status == "active"
+    assert store.watcher("first").status == "completed"
 
-    # Retiring the live observer in the same handoff lets its replacement arm.
+    # Retiring the observer in the same handoff lets its replacement arm.
     stored = store.persist_experiment_watchers_idempotently(
         [repeat],
         stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
