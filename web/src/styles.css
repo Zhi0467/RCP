@@ -57,11 +57,11 @@
 
 /* Dark mode.
  *
- * `data-theme` is stamped on the root before first paint and maintained by
+ * `data-color-mode` is stamped on the root before first paint and maintained by
  * useTheme, so an explicit Light or Dark choice wins over the OS in both
  * directions. Only the base palette is restated here: every alias and every
  * `color-mix` above is late-bound and follows on its own. */
-:root[data-theme="dark"] {
+:root[data-color-mode="dark"] {
   color-scheme: dark;
   --paper: #191512;
   --paper-deep: #221d19;
@@ -9929,33 +9929,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-weight: 550;
   margin: 0;
 }
-.appearance-controls {
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-}
-.appearance-controls button {
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: var(--ui);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 5px 11px;
-}
-.appearance-controls button:hover {
-  color: var(--ink);
-}
-.appearance-controls button.is-selected {
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 14%);
-  color: var(--ink);
-}
 .text-scale-controls {
   align-items: center;
   display: flex;
@@ -13174,6 +13147,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .artifact-entry {
   padding: 1.25rem 0;
   border-top: 1px solid var(--rule);
+  position: relative;
+}
+
+/* One preview link owns the whole row, including its name and whitespace. */
+.artifact-entry-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.artifact-entry .artifact-entry-open:active {
+  transform: none;
+}
+
+.artifact-entry:has(.artifact-entry-open:focus-visible) {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
 }
 
 .artifact-entry > div {

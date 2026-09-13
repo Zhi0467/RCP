@@ -89,7 +89,7 @@ const teamIdentity: IdentityResponse | null = new URLSearchParams(window.locatio
   : null;
 
 function Fixture() {
-  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+  useTheme();
   const [project, setProject] = useState(() => projectFor("alpha"));
   const [visible, setVisible] = useState(true);
   return (
@@ -117,8 +117,6 @@ function Fixture() {
           onRefreshReadiness={async () => undefined}
           showTextScale={false}
           spaceKind={teamIdentity ? "team" : "personal"}
-          themeChoice={themeChoice}
-          onThemeChoiceChange={setThemeChoice}
           textScale={100}
           onTextScaleChange={() => undefined}
         />

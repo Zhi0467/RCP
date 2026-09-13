@@ -12,23 +12,35 @@
       (function () {
         // Storage and the OS preference are read independently: blocked storage
         // must not cost a dark reader the preference this script exists to honour.
-        var choice = "system";
+        var theme = "classic";
+        var mode = "system";
         try {
-          var stored = localStorage.getItem("rcp:theme");
-          if (stored === "light" || stored === "dark" || stored === "aqua") choice = stored;
+          var legacy = localStorage.getItem("rcp:theme");
+          theme = legacy === "aqua" ? "aqua" : "classic";
+          mode =
+            legacy === "aqua"
+              ? "light"
+              : legacy === "light" || legacy === "dark"
+                ? legacy
+                : "system";
+          var stored = JSON.parse(localStorage.getItem("rcp:appearance") || "null");
+          if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+            theme = stored.theme === "aqua" ? "aqua" : "classic";
+            mode = stored.mode === "light" || stored.mode === "dark" ? stored.mode : "system";
+          }
         } catch (error) {
           // An unremembered choice still resolves through the OS below.
         }
-        var dark = choice === "dark";
-        if (choice === "system") {
+        var dark = mode === "dark";
+        if (mode === "system") {
           try {
             dark = window.matchMedia("(prefers-color-scheme: dark)").matches === true;
           } catch (error) {
             dark = false;
           }
         }
-        document.documentElement.dataset.theme =
-          choice === "aqua" ? "aqua" : dark ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.colorMode = dark ? "dark" : "light";
       })();
     </script>
   </head>

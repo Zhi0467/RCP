@@ -54,6 +54,19 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         unavailable_reason: null,
         viewer_url: "/api/projects/project/tasks/task/artifacts/plot/viewer",
       },
+      {
+        id: "artifact:unavailable",
+        name: "Unavailable plot",
+        kind: "artifact",
+        created_at: "2026-09-10T12:00:00Z",
+        path: "artifacts/unavailable.html",
+        operation_id: "task",
+        artifact_id: "unavailable",
+        episode_id: null,
+        can_open: false,
+        unavailable_reason: "Preview unavailable.",
+        viewer_url: null,
+      },
     ];
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
@@ -82,6 +95,39 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
       await page.getByRole("link", { name: "Open Validation report" }).getAttribute("target"),
       "_blank",
     );
+    // The title and whitespace belong to the existing link, in both Aqua modes.
+    const report = page.locator(".artifact-entry").filter({ hasText: "Validation report" });
+    const unavailable = page.locator(".artifact-entry").filter({ hasText: "Unavailable plot" });
+    const classicShadow = await report.evaluate((row) => getComputedStyle(row).boxShadow);
+    for (const mode of ["light", "dark"]) {
+      await page.evaluate((mode) => {
+        document.documentElement.dataset.theme = "aqua";
+        document.documentElement.dataset.colorMode = mode;
+      }, mode);
+      const raised = await report.evaluate((row) => getComputedStyle(row).boxShadow);
+      assert.notEqual(raised, "none");
+      assert.equal(await unavailable.evaluate((row) => getComputedStyle(row).boxShadow), "none");
+      assert.equal(await unavailable.getByRole("link").count(), 0);
+      await report.hover({ position: { x: 25, y: 25 } });
+      await page.mouse.down();
+      const pressed = await report.evaluate((row) => getComputedStyle(row).boxShadow);
+      assert.match(pressed, /inset/);
+      assert.notEqual(pressed, raised);
+      // Moving out cancels navigation while still exercising the pressed state.
+      await page.mouse.move(0, 0);
+      await page.mouse.up();
+      await page.setViewportSize({ width: 360, height: 780 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      await page.setViewportSize({ width: 626, height: 850 });
+    }
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "classic";
+      document.documentElement.dataset.colorMode = "light";
+    });
+    assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), classicShadow);
     failure = true;
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "Storage unavailable" }).waitFor();
@@ -98,7 +144,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         },
       };
     });
-    await page.getByRole("link", { name: "Open Validation report" }).click();
+    await report.click({ position: { x: 12, y: 12 } });
     // Each link's handler records its call after its own await, so clicking both
     // before either lands leaves the recorded order to chance.
     await page.waitForFunction(() => window.previewCalls.length === 1);

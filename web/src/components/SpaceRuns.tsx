@@ -1,7 +1,6 @@
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "../experimentBoard";
-import { useTheme } from "../hooks/useTheme";
 import type { ResolvedTheme } from "../theme";
 import type { SpaceRunIndexEntry, SpaceRunMode } from "../types";
 import {
@@ -11,6 +10,7 @@ import {
 } from "./EpisodeRunControls";
 
 interface Props {
+  theme: ResolvedTheme;
   entries: SpaceRunIndexEntry[];
   onOpen: (projectId: string, experimentRoute?: string) => void;
   onArchive: ArchiveEpisodeAction;
@@ -26,7 +26,7 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
   ResolvedTheme,
   Record<SpaceRunIndexEntry["health_tone"], { background: string; foreground: string }>
 > = {
-  light: {
+  "classic-light": {
     running: { background: "#dce9e5", foreground: "#245759" },
     waiting: { background: "#f4e7c1", foreground: "#604600" },
     degraded: { background: "#f5e5df", foreground: "#7d2e24" },
@@ -35,7 +35,7 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
     actionable: { background: "#f5e5df", foreground: "#7d2e24" },
     completed: { background: "#dce9e5", foreground: "#245759" },
   },
-  dark: {
+  "classic-dark": {
     running: { background: "#1e3a38", foreground: "#8fd3cb" },
     waiting: { background: "#3a301a", foreground: "#e8c579" },
     degraded: { background: "#3d2521", foreground: "#f0a08c" },
@@ -44,7 +44,7 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
     actionable: { background: "#3d2521", foreground: "#f0a08c" },
     completed: { background: "#1e3a38", foreground: "#8fd3cb" },
   },
-  aqua: {
+  "aqua-light": {
     running: { background: "#dcece8", foreground: "#28594f" },
     waiting: { background: "#f2e9ce", foreground: "#675016" },
     degraded: { background: "#f2e0dd", foreground: "#803f35" },
@@ -53,11 +53,19 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
     actionable: { background: "#f2e0dd", foreground: "#803f35" },
     completed: { background: "#dcece8", foreground: "#28594f" },
   },
+  "aqua-dark": {
+    running: { background: "#24443e", foreground: "#a5dace" },
+    waiting: { background: "#443b27", foreground: "#ead293" },
+    degraded: { background: "#4d3032", foreground: "#efb4ad" },
+    stopping: { background: "#443b27", foreground: "#ead293" },
+    stopped: { background: "#343f4c", foreground: "#c0cedd" },
+    actionable: { background: "#4d3032", foreground: "#efb4ad" },
+    completed: { background: "#24443e", foreground: "#a5dace" },
+  },
 };
 
-export function SpaceRuns({ entries, onOpen, onArchive }: Props) {
+export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {
   const [showArchived, setShowArchived] = useState(false);
-  const { resolved: theme } = useTheme();
   const groups = useMemo(() => {
     const visible = entries.filter((entry) => !entry.archived);
     const needsAction = visible.filter((entry) => entry.run_section === "actionable");

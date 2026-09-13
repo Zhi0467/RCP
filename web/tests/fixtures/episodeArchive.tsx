@@ -5,7 +5,9 @@ import { SpaceRuns } from "../../src/components/SpaceRuns";
 import { parseProjectHash } from "../../src/experimentBoard";
 import { useEpisodeDialogs } from "../../src/hooks/useEpisodeDialogs";
 import { useProjectTabs } from "../../src/hooks/useProjectTabs";
+import { useTheme } from "../../src/hooks/useTheme";
 import { ExecutionView } from "../../src/views/GraphViews";
+import { ProjectOverview } from "../../src/views/ProjectOverview";
 import type { ProjectSnapshot } from "../../src/types";
 import "../../src/styles.css";
 
@@ -16,6 +18,8 @@ const resolved = () => Promise.resolve();
 const initialRoute = parseProjectHash(window.location.hash);
 
 function Fixture() {
+  const { palette } = useTheme();
+  const [overviewDestination, setOverviewDestination] = useState("");
   const [snapshot, setSnapshot] = useState<ProjectSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -58,6 +62,14 @@ function Fixture() {
   return (
     <main style={{ padding: 24 }}>
       {error && <div role="alert">{error}</div>}
+      <ProjectOverview
+        project={snapshot}
+        graph={snapshot.graph}
+        pendingProposals={[]}
+        decisionsAwaitingChoice={[]}
+        onNavigate={setOverviewDestination}
+      />
+      <output aria-label="Overview destination">{overviewDestination}</output>
       <button
         type="button"
         onClick={() => {
@@ -113,7 +125,7 @@ function Fixture() {
         </div>
       )}
       <div data-surface="space">
-        <SpaceRuns entries={tabs.spaceRuns} onOpen={noop} onArchive={onArchive} />
+        <SpaceRuns entries={tabs.spaceRuns} theme={palette} onOpen={noop} onArchive={onArchive} />
       </div>
     </main>
   );

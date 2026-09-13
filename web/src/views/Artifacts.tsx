@@ -98,7 +98,7 @@ export function Artifacts({ projectId }: { projectId: string }) {
               </div>
               {entry.can_open && (
                 <a
-                  className="button compact secondary"
+                  className="button compact secondary artifact-entry-open"
                   href={entry.viewer_url}
                   target="_blank"
                   rel="noopener noreferrer"

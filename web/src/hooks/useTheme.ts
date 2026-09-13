@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  normalizeThemeChoice,
+  APPEARANCE_STORAGE_KEY,
+  LEGACY_THEME_STORAGE_KEY,
+  readStoredAppearance,
+  resolveColorMode,
   resolveTheme,
-  THEME_STORAGE_KEY,
-  type ResolvedTheme,
+  type AppearanceChoice,
+  type ColorModeChoice,
   type ThemeChoice,
 } from "../theme";
 
@@ -13,26 +16,21 @@ function prefersDark(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.(DARK_QUERY).matches === true;
 }
 
-function readChoice(): ThemeChoice {
+function readChoice(): AppearanceChoice {
   try {
-    return normalizeThemeChoice(localStorage.getItem(THEME_STORAGE_KEY));
+    return readStoredAppearance(
+      localStorage.getItem(APPEARANCE_STORAGE_KEY),
+      localStorage.getItem(LEGACY_THEME_STORAGE_KEY),
+    );
   } catch {
     // Appearance is a convenience; storage failures must not affect the project.
-    return "system";
+    return { theme: "classic", mode: "system" };
   }
 }
 
-/** Own the painted theme: persist the choice and stamp the resolved value on the root.
- *
- * The attribute, not a media query, is what the stylesheet reads, so an explicit
- * appearance choice wins over the OS preference.
- */
-export function useTheme(): {
-  choice: ThemeChoice;
-  resolved: ResolvedTheme;
-  setChoice: (choice: ThemeChoice) => void;
-} {
-  const [choice, setChoiceState] = useState<ThemeChoice>(readChoice);
+/** One app owner paints and remembers the independent theme and color mode. */
+export function useTheme() {
+  const [choice, setChoice] = useState<AppearanceChoice>(readChoice);
   const [systemDark, setSystemDark] = useState(prefersDark);
 
   useEffect(() => {
@@ -43,20 +41,28 @@ export function useTheme(): {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
-  const resolved = resolveTheme(choice, systemDark);
+  const resolvedMode = resolveColorMode(choice.mode, systemDark);
+  const palette = resolveTheme(choice.theme, resolvedMode);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = resolved;
-  }, [resolved]);
+    document.documentElement.dataset.theme = choice.theme;
+    document.documentElement.dataset.colorMode = resolvedMode;
+  }, [choice.theme, resolvedMode]);
 
-  const setChoice = useCallback((next: ThemeChoice) => {
-    setChoiceState(next);
+  useEffect(() => {
     try {
-      localStorage.setItem(THEME_STORAGE_KEY, next);
+      localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(choice));
     } catch {
-      // A theme that cannot be remembered still applies for this session.
+      // A preference that cannot be remembered still applies for this session.
     }
+  }, [choice]);
+
+  const setTheme = useCallback((theme: ThemeChoice) => {
+    setChoice((current) => ({ ...current, theme }));
+  }, []);
+  const setMode = useCallback((mode: ColorModeChoice) => {
+    setChoice((current) => ({ ...current, mode }));
   }, []);
 
-  return { choice, resolved, setChoice };
+  return { theme: choice.theme, mode: choice.mode, resolvedMode, palette, setTheme, setMode };
 }

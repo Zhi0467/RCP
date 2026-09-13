@@ -221,6 +221,8 @@ test("active and unresolved episodes archive without stopping work and restore a
       }),
     ];
     const snapshot = {
+      counts: { accepted: 1 },
+      canonical_state: { remote: false },
       graph: {
         revision: 1,
         nodes: { [nodes.main.id]: nodes.main },
@@ -349,6 +351,65 @@ test("active and unresolved episodes archive without stopping work and restore a
       1,
     );
     assert.equal(await projectCard("main-old").count(), 0);
+
+    // Check relief on the actual hit targets before exercising archive actions.
+    const overviewRow = page.locator(".overview-questions > button").first();
+    const runToggle = projectCard("main-current").locator(".campaign-run-toggle");
+    const spaceButton = spaceCard("main-current").locator(":scope > button");
+    for (const mode of ["light", "dark"]) {
+      await page.evaluate((mode) => {
+        document.documentElement.dataset.theme = "aqua";
+        document.documentElement.dataset.colorMode = mode;
+      }, mode);
+      for (const [target, surface, raisedSurface] of [
+        [overviewRow, overviewRow, overviewRow],
+        [
+          runToggle,
+          projectCard("main-current").locator(".campaign-run-heading"),
+          projectCard("main-current"),
+        ],
+        [spaceButton, spaceCard("main-current"), spaceCard("main-current")],
+      ]) {
+        const raised = await raisedSurface.evaluate(
+          (element) => getComputedStyle(element).boxShadow,
+        );
+        assert.notEqual(raised, "none", `${mode}: clickable surface has relief`);
+        await target.hover({ position: { x: 12, y: 12 } });
+        await page.mouse.down();
+        await page.waitForFunction(
+          ({ element, raised }) => {
+            const shadow = getComputedStyle(element).boxShadow;
+            return shadow.includes("inset") && shadow !== raised;
+          },
+          { element: await surface.elementHandle(), raised },
+        );
+        const pressed = await surface.evaluate((element) => getComputedStyle(element).boxShadow);
+        assert.notEqual(pressed, raised, `${mode}: holding the control presses it inward`);
+        await page.mouse.up();
+      }
+      assert.equal(await page.getByLabel("Overview destination").textContent(), "scientific");
+      assert.equal(await runToggle.getAttribute("aria-expanded"), "true");
+      await runToggle.click();
+      await overviewRow.focus();
+      await page.keyboard.press("Tab");
+      const focus = await page
+        .locator(".overview-questions > button")
+        .nth(1)
+        .evaluate((element) => ({
+          visible: element.matches(":focus-visible"),
+          outline: getComputedStyle(element).outlineStyle,
+        }));
+      assert.equal(focus.visible, true);
+      assert.notEqual(focus.outline, "none");
+    }
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "classic";
+      document.documentElement.dataset.colorMode = "light";
+    });
+    assert.equal(
+      await overviewRow.evaluate((element) => getComputedStyle(element).boxShadow),
+      "none",
+    );
 
     await projectCard("active").getByRole("button", { name: "Archive", exact: true }).click();
     await projectCard("active").waitFor({ state: "detached" });

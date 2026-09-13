@@ -7,7 +7,7 @@ the data those surfaces read and the shell that hosts them.
 
 ## Visual grammar
 
-RCP's Light and Dark appearances share Margin Dev's visual grammar: a
+RCP's **Classic** theme uses Margin Dev's visual grammar: a
 restrained paper, sheet, walnut, and oxblood system, warm rules and shadows,
 compatible typography, and tactile book materials. Project covers share one
 oxblood base and differ by texture only; decorative color is never assigned per
@@ -15,18 +15,27 @@ card. Their textures are restrained bookcloth and paper grain, never loud dye,
 mosaic, or simulated wood. Semantic accents are reserved for meaningful type or
 state. RCP keeps its own information architecture and behavior.
 
-**Soft Aqua** is an optional appearance beside **System**, **Light**, and **Dark**
-in Settings → Display. It uses pearl-gray surfaces, rounded controls, shallow
-bevels, and restrained blue highlights. One upper-left light source gives raised
+**Aqua** is an optional theme with pearl-gray or dark slate surfaces, rounded
+controls, shallow bevels, and restrained blue highlights. One upper-left light source gives raised
 buttons a bright upper edge and a soft lower shadow; fields and selected controls
 use inset shadows. Pressing a button changes its relief. Project tiles use plain
 raised surfaces instead of book materials. Semantic type, status, warning, and
-focus indicators remain distinct.
+focus indicators remain distinct. Clickable Overview rows, Runs card headers,
+space Runs rows, and available artifact rows also rise from the surface and
+press inward while held. Expanded run detail and unavailable artifacts do not
+use the same action cue. An available artifact's preview link spans its entire
+row and keeps the existing browser or desktop preview behavior.
 
-Appearance is remembered on this browser origin and applies across projects,
-including before the first paint. System follows the operating system's light or
-dark preference; Soft Aqua stays light regardless of that preference. Changing
-appearance does not change project settings or research state.
+The space landing page's **Display** control places **Mode** above **Theme**.
+Mode offers **System**, **Light**, and **Dark** independently of **Classic** or
+**Aqua**. Both themes support all three modes, and changing theme preserves the
+selected mode. Classic with System mode remains the default.
+
+Both choices are remembered on this browser origin and apply across projects,
+including before the first paint. System follows the operating system's light
+or dark preference. Legacy System, Light, and Dark choices become Classic with
+the same mode; legacy Soft Aqua becomes Aqua with Light mode. Display preferences
+do not change project settings or research state.
 
 The RCP mark is one unified logo. An initial tile beside the full acronym reads
 as a duplicated letter, so the visible logo contains **RCP** exactly once.
