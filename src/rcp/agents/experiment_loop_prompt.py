@@ -320,14 +320,19 @@ Watcher handoff protocol:
   spending two invocations on a single event. Either rely on the observer already armed, or retire
   it with a stop item in this same handoff and arm your replacement.
 - The `external` list may also contain a stop item with exactly `stop_watcher_id` and a non-blank
-  `reason`. Use it only after you have cancelled or otherwise settled obsolete external work. The
-  id must be a compatible staged external observer, never a graph condition; it carries no command
-  or path. Compatible means the watcher state lists it for this Experiment node, graph target, and
-  execution host, and its status is still `active`, `degraded`, or `completed` with `notified`
-  false. An observer armed by an earlier episode and adopted by this one qualifies: a differing
-  `episode_id` is that observer's immutable provenance, not a reason to leave stale work armed.
-  Stopping a watcher does not prove a job was cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
-  including retiring old watchers while arming replacements.
+  `reason`. Use it only after you have cancelled or otherwise settled the obsolete work. The id
+  must be a compatible staged watcher and carries no command or path. Compatible means the watcher
+  state lists it for this Experiment node, graph target, and execution host, and its status is
+  still `active`, `degraded`, or `completed` with `notified` false. Retire either kind: an external
+  observer you no longer need, or a graph condition whose canonical fact you have stopped waiting
+  for. Both go in the `external` list as stop items, because that list carries every stop; the
+  `graph` list holds only conditions you are arming. A watcher armed by an earlier episode and
+  adopted by this one qualifies too: a differing `episode_id` is that watcher's immutable
+  provenance, not a reason to leave stale work armed. A live watcher you have stopped needing still
+  holds this loop open and spends an invocation when it fires, so retire it rather than leaving it
+  armed. Stopping a watcher does not prove a job was cancelled and does not request or set
+  **Stop loop**. You may mix stop items and observers, including retiring old watchers while
+  arming replacements.
 {_EXPERIMENT_WATCH_HANDOFF}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
   revisions and at startup, never through the shell poller. A staged but unsynced draft cannot

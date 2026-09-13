@@ -447,8 +447,12 @@ Experiment watchers may form immutable groups of at least two new observations.
 A group wakes once when no member remains active and every nonretired member is
 either complete or persistently unobservable at the capped tier. The latter is
 diagnostic readiness, not scientific success. Stop/disposition items may retire
-only a staged compatible external observer after the agent has settled its work;
-they cannot retire graph conditions or claim RCP cancelled the process.
+any staged compatible watcher after the agent has settled its work, external
+observer or graph condition alike, and always travel in the `external` list.
+Retiring a condition discards only a future graph delivery, so the agent that
+armed one withdraws it the same way it withdraws an observer; a watcher it has
+stopped needing otherwise holds the loop open and spends an invocation when it
+fires. A stop still never claims RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
 atomically. One invalid item arms none. An ungrouped observer repeating a live

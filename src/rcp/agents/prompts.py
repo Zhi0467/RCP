@@ -392,12 +392,14 @@ Node-attached Experiment watcher maintenance:
   contains observer items, plus an optional non-blank `group`, or stop items with exactly
   `stop_watcher_id` and a non-blank `reason`. Observers use `check_command`, `log_path`, and `cwd`,
   with optional `cancel_command`. Same-label observers form an immutable group and each new group
-  needs at least two observers. A stop may name only a compatible external observer, never a graph
-  condition, and never requests the human-only **Stop loop** action. Compatible means the staged
-  watcher state lists it for this Experiment node, graph target, and execution host, and its status
-  is still `active`, `degraded`, or `completed` with `notified` false. An observer armed by an
-  earlier episode and adopted by this one qualifies: a differing `episode_id` is that observer's
-  immutable provenance, not a reason to leave stale work armed.
+  needs at least two observers. A stop may name any compatible staged watcher, external observer or
+  graph condition alike, and never requests the human-only **Stop loop** action. Every stop goes in
+  `external`, including one retiring a graph condition; `graph` holds only conditions you are
+  arming. Compatible means the staged watcher state lists it for this Experiment node, graph
+  target, and execution host, and its status is still `active`, `degraded`, or `completed` with
+  `notified` false. A watcher armed by an earlier episode and adopted by this one qualifies: a
+  differing `episode_id` is that watcher's immutable provenance, not a reason to leave stale work
+  armed.
 - `graph` contains only one of two strict canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision

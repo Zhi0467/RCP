@@ -2549,7 +2549,7 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(tmp_path) -> None:
     assert runtime.invocation_ceiling - runtime.invocations_used == 0
 
 
-def test_experiment_agent_cannot_retire_graph_watcher_and_stop_list_is_atomic(
+def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
     tmp_path,
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -2609,30 +2609,42 @@ def test_experiment_agent_cannot_retire_graph_watcher_and_stop_list_is_atomic(
         ]
     )
 
-    with pytest.raises(ValueError, match="only external observers: protected-graph"):
+    stops = [
+        WatcherStopRequest(
+            stop_watcher_id="stoppable-external",
+            reason="External work is no longer needed.",
+        ),
+        WatcherStopRequest(
+            stop_watcher_id="protected-graph",
+            reason="The canonical condition is no longer needed.",
+        ),
+    ]
+
+    # One unknown id retires none of the list, including the pair it names.
+    with pytest.raises(ValueError, match="unknown staged watcher: absent"):
         store.persist_experiment_watchers_idempotently(
             [],
-            stops=[
-                WatcherStopRequest(
-                    stop_watcher_id="stoppable-external",
-                    reason="External work is no longer needed.",
-                ),
-                WatcherStopRequest(
-                    stop_watcher_id="protected-graph",
-                    reason="The canonical condition is no longer needed.",
-                ),
-            ],
+            stops=[*stops, WatcherStopRequest(stop_watcher_id="absent", reason="Gone.")],
             binding=binding,
         )
+    assert [store.watcher(item.stop_watcher_id).status for item in stops] == ["active", "active"]
+
+    # A condition the agent has stopped waiting for would otherwise hold the loop
+    # open and spend an invocation when it fires, so it retires like an observer.
+    store.persist_experiment_watchers_idempotently([], stops=stops, binding=binding)
 
     external = store.watcher("stoppable-external")
     graph = store.watcher("protected-graph")
     assert isinstance(external, WatcherRecord)
     assert isinstance(graph, GraphWatcherRecord)
-    assert external.status == "active"
-    assert external.notified is False
-    assert graph.status == "active"
-    assert graph.notified is False
+    assert external.status == "stopped"
+    assert graph.status == "stopped"
+    assert graph.stopped_by == "agent"
+    assert graph.stop_reason == "The canonical condition is no longer needed."
+    # A retired condition leaves the canonical evaluation index for good.
+    assert "protected-graph" not in {
+        item.watcher_id for item in store.active_graph_watchers("project")
+    }
 
 
 def test_pre_start_pause_still_runs_settlement_hook_without_stream_close(tmp_path) -> None:
