@@ -284,6 +284,8 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   // Operational state that really did move at the same graph revision is still
   // applied: that poll exists to deliver watcher and control state, and holding
   // a stale control projection would strand Runs on "waiting" indefinitely.
+  // Presentation prefers the projection's own control map, so the projection is
+  // dropped rather than retained beside fresh state, and the effects refetch it.
   const controlMoved = projectSessionReducer(repolled, {
     kind: "snapshot_applied",
     snapshot: snapshot(1, {
@@ -296,8 +298,8 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.deepEqual(controlMoved.project.experiment_control, {
     "exp/one": { health: "completed" },
   });
+  assert.equal(controlMoved.draftTransitionProjection, null);
   assert.strictEqual(controlMoved.humanDraft, stagedDraft);
-  assert.strictEqual(controlMoved.draftTransitionProjection, stagedProjection);
   assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
 });
 
