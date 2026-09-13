@@ -455,13 +455,16 @@ stopped needing otherwise holds the loop open and spends an invocation when it
 fires. A stop still never claims RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
-atomically. One invalid item arms none. An ungrouped observer repeating a live
-ungrouped one exactly, on the same owner scope, execution host, directory, check
-command, and log path, is one such invalid item: identity jitter keeps the pair
-out of a shared delivery pass, so each would spend a wake on a single completion.
-A group is exempt because it wakes once by construction. Observing one job
-through genuinely different commands cannot be told apart mechanically, so the
-staged watcher state is what the agent reconciles against before arming. An empty final watcher declaration is
+atomically. One invalid item arms none. An Experiment observer repeating an
+ungrouped one already armed for that node, graph target, execution host,
+directory, check command, and log path is one such invalid item: identity jitter
+keeps the pair out of a shared delivery pass, so each spends a wake on one
+completion. An unnotified completion counts as already armed, being a wake the
+episode has not spent yet. A group is exempt because it wakes once by
+construction, and generic Work and child Work arming is unchanged. Observing one
+job through genuinely different commands cannot be told apart mechanically, so
+the staged watcher state is what every surface that arms an Experiment observer
+reconciles against first. An empty final watcher declaration is
 legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
