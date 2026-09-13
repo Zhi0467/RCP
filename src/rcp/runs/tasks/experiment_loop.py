@@ -66,6 +66,7 @@ from rcp.runs.experiment_loop import (
     experiment_graph_result_summary,
     experiment_loop_ending_signal,
     experiment_loop_semantic_ending,
+    experiment_observer_watcher_id,
     prepare_experiment_episode_context_candidate,
     prepare_experiment_watcher_records,
     root_experiment_loop_operation_id,
@@ -970,6 +971,15 @@ async def _validate_watch_deliverable(
                 binding,
                 handoff.stops,
             )
+        turn.execution.store.validate_experiment_observer_duplicates(
+            binding,
+            handoff.observers,
+            stops=handoff.stops,
+            rearmed_watcher_ids=[
+                experiment_observer_watcher_id(binding, index, spec)
+                for index, spec in enumerate(handoff.observers)
+            ],
+        )
         graph_armed_revision = None
         if handoff.graph_conditions:
             graph_state = await asyncio.to_thread(turn.service.history.state)

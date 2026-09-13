@@ -625,6 +625,87 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    episode_id = "00000000-0000-4000-8000-000000000096"
+    request = _loop_request(
+        episode_id,
+        "chat-duplicate-observer-correction",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    execution = _execution(
+        app.state.background_tasks.store,
+        project_id,
+        "loop-duplicate-observer-correction",
+        request,
+    )
+
+    class DuplicateThenCorrectedLauncher:
+        """First handoff observes one job twice; the correction observes it once."""
+
+        def __init__(self) -> None:
+            self.contracts: list[str] = []
+            self.diagnostics: list[str] = []
+
+        async def stream(self, _provider, prompt, **kwargs):
+            contract_path = Path(prompt.splitlines()[1])
+            contract = contract_path.read_text(encoding="utf-8")
+            self.contracts.append(contract)
+            for line in contract.splitlines():
+                if "Exact watcher diagnostic" in line:
+                    self.diagnostics.append(Path(line.split("`")[1]).read_text(encoding="utf-8"))
+            workspace = Path(kwargs["cwd"])
+            observer = {
+                "check_command": "false",
+                "log_path": str(tmp_path / "detached.log"),
+                "cwd": str(tmp_path),
+            }
+            repeated = len(self.contracts) == 1
+            (workspace / "watch.json").write_text(
+                json.dumps(
+                    {
+                        "external": [observer, dict(observer)] if repeated else [observer],
+                        "graph": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield AgentEvent(event="session", session_id="duplicate-observer-session")
+            yield AgentEvent(event="answer", text="Handed off the bounded work.")
+            yield AgentEvent(event="done")
+
+    launcher = DuplicateThenCorrectedLauncher()
+    events = await _events(
+        stream_experiment_loop_task(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution=execution,
+        )
+    )
+
+    # The refusal has to reach the agent as a correction it can answer. Raising
+    # it from the arming transaction instead spends the invocation the rule
+    # exists to save, with the graph Patch already applied.
+    assert not [event for event in events if event.event == "error"]
+    assert len(launcher.contracts) == 2
+    assert any("arms one check twice" in item for item in launcher.diagnostics)
+    armed = app.state.background_tasks.store.watchers(project_id)
+    assert [item.check_command for item in armed] == ["false"]
+
+
+@pytest.mark.asyncio
 async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
     manifest,
     tmp_path: Path,

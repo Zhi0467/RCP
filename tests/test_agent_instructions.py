@@ -6,13 +6,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-CLOSED_REFACTOR_FILES = {
-    "handoff-2026-08-18-backend-structural-refactor.md",
-    "handoff-2026-08-19-backend-structural-refactor-pickup.md",
-    "rcp_architecture_audit.md",
-}
-
-
 def test_agents_md_stays_within_its_length_bound() -> None:
     text = (ROOT / "AGENTS.md").read_text()
     lines = text.splitlines()
@@ -20,19 +13,31 @@ def test_agents_md_stays_within_its_length_bound() -> None:
     assert len(lines) <= 230
 
 
-def test_closed_backend_refactor_material_is_archived() -> None:
+def test_handoff_index_lists_exactly_the_active_handoffs() -> None:
     active = ROOT / "docs" / "handoffs"
-    archived = ROOT / "docs" / "archive" / "handoffs"
-
-    for name in CLOSED_REFACTOR_FILES:
-        assert not (active / name).exists()
-        assert (archived / name).is_file()
-
     index = (active / "README.md").read_text()
+
     active_handoffs = {path.name for path in active.glob("*.md") if path.name != "README.md"}
     indexed_handoffs = set(re.findall(r"\]\(([^/)]+\.md)\)", index))
+
     assert indexed_handoffs == active_handoffs
     assert ("There are no active implementation handoffs." in index) is (not active_handoffs)
-    for name in CLOSED_REFACTOR_FILES:
+
+
+def test_archived_handoffs_are_neither_active_nor_indexed() -> None:
+    """Archived material is evidence only, so it must not read as current work.
+
+    This replaces a one-time migration check that pinned three 2026-08 filenames
+    by name; the invariant they were a sample of holds for every archived file.
+    """
+
+    active = ROOT / "docs" / "handoffs"
+    archived = ROOT / "docs" / "archive" / "handoffs"
+    index = (active / "README.md").read_text()
+
+    archived_handoffs = [path.name for path in archived.glob("*.md") if path.name != "README.md"]
+    assert archived_handoffs
+
+    for name in archived_handoffs:
+        assert not (active / name).exists()
         assert f"]({name})" not in index
-    assert "2026-08-20-backend-structural-refactor-closure.md" in index

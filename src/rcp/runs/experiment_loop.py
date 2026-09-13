@@ -793,6 +793,37 @@ def root_experiment_loop_operation_id(execution: AgentTaskExecution) -> str:
         operation_id = record.parent_operation_id
 
 
+def experiment_observer_watcher_id(
+    binding: WatcherBinding,
+    index: int,
+    spec: ExperimentWatchSpec,
+) -> str:
+    """Derive one observer's deterministic id so Retry re-arms the same row.
+
+    The declaration's list position is part of the identity, so the same
+    observer moved elsewhere in the list is a different row. Validation derives
+    ids with this too, so it excludes exactly the rows persistence will treat as
+    an idempotent re-arm rather than refusing them as repeats.
+    """
+
+    identity = json.dumps(
+        {
+            "origin": binding.origin_operation_id,
+            "node_id": binding.node_id,
+            "episode_id": binding.continuation.control_episode_id,
+            "index": index,
+            "check_command": spec.check_command,
+            "log_path": spec.log_path,
+            "cwd": spec.cwd,
+            "group": getattr(spec, "group", None),
+            "cancel_command": spec.cancel_command,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return str(uuid5(NAMESPACE_URL, f"rcp-experiment-watcher:{identity}"))
+
+
 def prepare_experiment_watcher_records(
     execution: AgentTaskExecution,
     specs: list[ExperimentWatchSpec],
@@ -823,25 +854,10 @@ def prepare_experiment_watcher_records(
     desired: list[StoredWatcherRecord] = []
     for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
         group = getattr(spec, "group", None)
-        identity = json.dumps(
-            {
-                "origin": binding.origin_operation_id,
-                "node_id": binding.node_id,
-                "episode_id": binding.continuation.control_episode_id,
-                "index": index,
-                "check_command": spec.check_command,
-                "log_path": spec.log_path,
-                "cwd": spec.cwd,
-                "group": group,
-                "cancel_command": spec.cancel_command,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
         completed = result.state == "complete"
         desired.append(
             WatcherRecord(
-                watcher_id=str(uuid5(NAMESPACE_URL, f"rcp-experiment-watcher:{identity}")),
+                watcher_id=experiment_observer_watcher_id(binding, index, spec),
                 project_id=binding.project_id,
                 origin_operation_id=binding.origin_operation_id,
                 origin_task_kind=binding.origin_task_kind,
