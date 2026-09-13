@@ -18,17 +18,21 @@ test("an unreadable stored choice falls back to following the system", () => {
   assert.equal(normalizeThemeChoice(undefined), "system");
   assert.equal(normalizeThemeChoice("dark"), "dark");
   assert.equal(normalizeThemeChoice("light"), "light");
+  assert.equal(normalizeThemeChoice("aqua"), "aqua");
 });
 
 test("an explicit choice outranks the system preference in both directions", () => {
   assert.equal(resolveTheme("light", true), "light");
   assert.equal(resolveTheme("dark", false), "dark");
+  assert.equal(resolveTheme("aqua", true), "aqua");
+  assert.equal(resolveTheme("aqua", false), "aqua");
   assert.equal(resolveTheme("system", true), "dark");
   assert.equal(resolveTheme("system", false), "light");
 });
 
 test("every offered choice has a label", () => {
-  assert.deepEqual(THEME_CHOICES, ["system", "light", "dark"]);
+  assert.deepEqual(THEME_CHOICES, ["system", "light", "dark", "aqua"]);
+  assert.equal(themeChoiceLabel("aqua"), "Soft Aqua");
   for (const choice of THEME_CHOICES) {
     assert.ok(themeChoiceLabel(choice).length > 0);
   }
@@ -62,11 +66,15 @@ function stampedTheme({ stored, systemDark }) {
 }
 
 test("the pre-paint script stamps the same theme the hook would resolve", () => {
-  assert.equal(stampedTheme({ stored: "dark", systemDark: false }), "dark");
-  assert.equal(stampedTheme({ stored: "light", systemDark: true }), "light");
-  assert.equal(stampedTheme({ stored: null, systemDark: true }), "dark");
-  assert.equal(stampedTheme({ stored: "sepia", systemDark: true }), "dark");
-  assert.equal(stampedTheme({ stored: null, systemDark: false }), "light");
+  for (const stored of [...THEME_CHOICES, null, "sepia"]) {
+    for (const systemDark of [false, true]) {
+      assert.equal(
+        stampedTheme({ stored, systemDark }),
+        resolveTheme(normalizeThemeChoice(stored), systemDark),
+        `stored ${stored} with ${systemDark ? "dark" : "light"} OS preference`,
+      );
+    }
+  }
 });
 
 test("blocked storage still honours a dark system preference before first paint", () => {
@@ -77,10 +85,9 @@ test("blocked storage still honours a dark system preference before first paint"
   assert.equal(stampedTheme({ stored: blocked, systemDark: false }), "light");
 });
 
-const STYLESHEET = readFileSync(
-  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
-  "utf-8",
-);
+const STYLESHEET = ["../src/styles.css", "../src/themes/aqua.css"]
+  .map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8"))
+  .join("\n");
 
 function rootTokens(selector) {
   const start = STYLESHEET.indexOf(`${selector} {`);
@@ -97,8 +104,8 @@ function rootTokens(selector) {
 /** Resolve one token for a theme, following var() indirection through the base palette. */
 function resolveToken(name, theme) {
   const base = rootTokens(":root");
-  const dark = rootTokens(':root[data-theme="dark"]');
-  const lookup = theme === "dark" ? { ...base, ...dark } : base;
+  const lookup =
+    theme === "light" ? base : { ...base, ...rootTokens(`:root[data-theme="${theme}"]`) };
   let value = lookup[name];
   for (let hop = 0; hop < 4 && value?.startsWith("var("); hop += 1) {
     value = lookup[value.slice(4, value.indexOf(")")).trim()];
@@ -122,8 +129,8 @@ function contrastRatio(foreground, background) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-test("text on the inverting ink surface stays readable in both themes", () => {
-  for (const theme of ["light", "dark"]) {
+test("text on the inverting ink surface stays readable in every theme", () => {
+  for (const theme of ["light", "dark", "aqua"]) {
     const ratio = contrastRatio(resolveToken("--paper", theme), resolveToken("--ink", theme));
     assert.ok(ratio >= 4.5, `${theme} ink surface contrast is ${ratio.toFixed(2)}:1`);
   }

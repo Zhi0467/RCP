@@ -95,8 +95,8 @@ test("space Runs always names every section and its empty count", () => {
   assert.match(html, /No completed runs in the last 7 days\./);
 });
 
-test("every space lifecycle badge color pair meets WCAG AA contrast in both themes", () => {
-  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), ["dark", "light"]);
+test("every space lifecycle badge color pair meets WCAG AA contrast in every theme", () => {
+  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), ["aqua", "dark", "light"]);
   for (const [theme, palette] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
     assert.deepEqual(
       Object.keys(palette).sort(),

@@ -25,7 +25,7 @@ function readChoice(): ThemeChoice {
 /** Own the painted theme: persist the choice and stamp the resolved value on the root.
  *
  * The attribute, not a media query, is what the stylesheet reads, so an explicit
- * Light or Dark choice wins over the OS in both directions.
+ * appearance choice wins over the OS preference.
  */
 export function useTheme(): {
   choice: ThemeChoice;

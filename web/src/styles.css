@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./themes/aqua.css";
 
 :root {
   color-scheme: light;

@@ -44,6 +44,15 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
     actionable: { background: "#3d2521", foreground: "#f0a08c" },
     completed: { background: "#1e3a38", foreground: "#8fd3cb" },
   },
+  aqua: {
+    running: { background: "#dcece8", foreground: "#28594f" },
+    waiting: { background: "#f2e9ce", foreground: "#675016" },
+    degraded: { background: "#f2e0dd", foreground: "#803f35" },
+    stopping: { background: "#f2e9ce", foreground: "#675016" },
+    stopped: { background: "#e2e6eb", foreground: "#4a5664" },
+    actionable: { background: "#f2e0dd", foreground: "#803f35" },
+    completed: { background: "#dcece8", foreground: "#28594f" },
+  },
 };
 
 export function SpaceRuns({ entries, onOpen, onArchive }: Props) {

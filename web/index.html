@@ -15,7 +15,7 @@
         var choice = "system";
         try {
           var stored = localStorage.getItem("rcp:theme");
-          if (stored === "light" || stored === "dark") choice = stored;
+          if (stored === "light" || stored === "dark" || stored === "aqua") choice = stored;
         } catch (error) {
           // An unremembered choice still resolves through the OS below.
         }
@@ -27,7 +27,8 @@
             dark = false;
           }
         }
-        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        document.documentElement.dataset.theme =
+          choice === "aqua" ? "aqua" : dark ? "dark" : "light";
       })();
     </script>
   </head>

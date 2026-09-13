@@ -7,13 +7,26 @@ the data those surfaces read and the shell that hosts them.
 
 ## Visual grammar
 
-RCP shares Margin Dev's visual grammar without copying its catalog literally: a
+RCP's Light and Dark appearances share Margin Dev's visual grammar: a
 restrained paper, sheet, walnut, and oxblood system, warm rules and shadows,
 compatible typography, and tactile book materials. Project covers share one
 oxblood base and differ by texture only; decorative color is never assigned per
 card. Their textures are restrained bookcloth and paper grain, never loud dye,
 mosaic, or simulated wood. Semantic accents are reserved for meaningful type or
 state. RCP keeps its own information architecture and behavior.
+
+**Soft Aqua** is an optional appearance beside **System**, **Light**, and **Dark**
+in Settings → Display. It uses pearl-gray surfaces, rounded controls, shallow
+bevels, and restrained blue highlights. One upper-left light source gives raised
+buttons a bright upper edge and a soft lower shadow; fields and selected controls
+use inset shadows. Pressing a button changes its relief. Project tiles use plain
+raised surfaces instead of book materials. Semantic type, status, warning, and
+focus indicators remain distinct.
+
+Appearance is remembered on this browser origin and applies across projects,
+including before the first paint. System follows the operating system's light or
+dark preference; Soft Aqua stays light regardless of that preference. Changing
+appearance does not change project settings or research state.
 
 The RCP mark is one unified logo. An initial tile beside the full acronym reads
 as a duplicated letter, so the visible logo contains **RCP** exactly once.
