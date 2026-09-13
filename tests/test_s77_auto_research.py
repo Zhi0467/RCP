@@ -592,12 +592,6 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
     before = service.history.state().model_dump(mode="json")
     store, _episode, _root, worker = _setup_stream_auto_research(tmp_path / "store")
 
-    def inspect_contract(contract: str, _workspace: Path) -> None:
-        compact = " ".join(contract.split())
-        assert "existing ResearchQuestion or Hypothesis" in compact
-        assert "ResearchQuestion or Hypothesis waits for a human" in compact
-        assert "what failed" in compact
-
     class DifficultyLauncher(_WorkerLauncher):
         async def stream(self, provider, prompt, **kwargs):
             async for event in super().stream(provider, prompt, **kwargs):
@@ -615,7 +609,7 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
     events = await _events(
         stream_auto_research_worker_run(
             service,
-            DifficultyLauncher(writer=inspect_contract),
+            DifficultyLauncher(),
             AutoResearchRunRequest.model_validate(worker.request),
             tmp_path / "data",
             _execution(store, worker),

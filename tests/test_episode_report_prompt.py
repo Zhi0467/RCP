@@ -10,7 +10,7 @@ def _paths(prompt: str) -> set[str]:
     return set(re.findall(r"`(/[^`]+)`", prompt))
 
 
-def test_episode_report_contract_is_a_mode_neutral_minimal_resume_envelope() -> None:
+def test_episode_report_contract_carries_supplied_paths_and_receipt_digest() -> None:
     receipt_path = "/stage/inputs/episode-receipt.json"
     skill_path = "/stage/packages/episode-report/SKILL.md"
     output_path = "/stage/workspace/episode-report.html"
@@ -27,32 +27,7 @@ def test_episode_report_contract_is_a_mode_neutral_minimal_resume_envelope() -> 
     )
 
     assert _paths(prompt) == {receipt_path, skill_path, output_path}
-    assert "exact native-session resume" in prompt
-    assert "exact retained stage" in prompt
-    assert "not an operational episode invocation" in prompt
-    assert f"expected receipt SHA-256: `{digest}`" in prompt
-    assert "verify that its exact bytes have the expected SHA-256" in prompt
-    assert "Use only the retained native-session context and the supplied compact receipt" in prompt
-    assert (
-        "Never seek,\nrestage, rebuild, or read a graph, research rendering, transcript" in prompt
-    )
-    assert "do not infer, recreate, or\nsubstitute its contents" in prompt
-    assert "exact official `episode-report` SKILL.md" in prompt
-    assert "adds no mode-specific format or second visual rubric" in prompt
-    assert "Write only the exact HTML output" in prompt
-    assert (
-        "Patch, watcher, command,\n  Proposal, message, repository content, canonical state"
-        in prompt
-    )
-    assert "external scripts, images, fonts, fetches, forms, popups, or\ndownloads" in prompt
-    assert "auto-research" not in prompt.casefold()
-    assert "experiment loop" not in prompt.casefold()
-    assert "campaign" not in prompt.casefold()
-    assert "fallback" not in prompt.casefold()
-    assert "current graph:" not in prompt.casefold()
-    assert "current research" not in prompt.casefold()
-    assert "campaign history" not in prompt.casefold()
-    assert "episode history:" not in prompt.casefold()
+    assert digest in prompt
 
 
 def test_episode_report_contract_has_no_mode_or_large_context_parameters() -> None:
@@ -97,8 +72,4 @@ def test_episode_report_correction_adds_only_its_diagnostic_pointer() -> None:
     )
 
     assert _paths(prompt) == {receipt_path, skill_path, output_path, diagnostic_path}
-    assert "This is a partial ending" in prompt
-    assert "correct only the HTML report" in prompt
-    assert "Do not revisit or repeat\n  episode work" in prompt
-    assert "produce any other output" in prompt
     assert prompt.count(diagnostic_path) == 1

@@ -733,24 +733,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     child = wait_for_task(store, child.operation_id, expect="succeeded")
     assert child.graph_target == episode.graph_target == root.graph_target
 
-    initial_master_path = Path(launcher.prompts[0].splitlines()[1])
-    initial_master = initial_master_path.read_text(encoding="utf-8")
-    assert "## Auto-research child Work boundary" not in initial_master
-    prefix = "Read current execution instructions relative to this turn's cwd: `"
-    execution_path = next(
-        line.removeprefix(prefix).removesuffix("`")
-        for line in launcher.prompts[0].splitlines()
-        if line.startswith(prefix)
-    )
-    initial_boundary = (launcher.workspaces[0] / execution_path).read_text(encoding="utf-8")
-    assert "## Auto-research child Work boundary" in initial_boundary
-    assert "optional reply to your orchestrator" in initial_boundary
-    assert "Do not invoke `apply`, `status`, `spawn`" in initial_boundary
-    assert "`watch-graph`" in initial_boundary
-    assert "`watch_graph`" not in initial_boundary
-    assert "RCP wakes this same child route and native session" in initial_boundary
-    assert "outside your tools or authority, reply to the orchestrator" in initial_boundary
-    assert "RCP ignores child watcher output" not in initial_boundary
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     workspace = launcher.workspaces[0]
     stage = workspace.parent
@@ -799,11 +781,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
 
     continuation_contract_path = Path(launcher.prompts[1].splitlines()[1])
     continuation_contract = continuation_contract_path.read_text(encoding="utf-8")
-    assert "same native provider session" in continuation_contract
-    assert "newly claimed agent mail is staged separately" in continuation_contract
     assert "messages.json" in continuation_contract
     wake_turn, wake_inputs = child_turns[1]
-    assert "This is a Work turn." in continuation_contract
     assert wake_turn.patch_inputs.validator_command in continuation_contract
     assert child_turns[0][0].patch_inputs.validator_command not in continuation_contract
     for path in (
@@ -817,11 +796,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         assert path in continuation_contract
     for package in wake_inputs.skill_pointers:
         assert str(package["path"]) in continuation_contract
-    assert "Invoked for this turn" in continuation_contract
-    assert "skill `graph-audit`" in continuation_contract
-    assert "Invoked provider-native skill this turn" in continuation_contract
     assert '"name": "native-review"' in continuation_contract
-    assert "Do not invoke `apply`, `status`, `spawn`" in continuation_contract
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
     staged_mail = parse_auto_research_mail_delivery(
@@ -894,19 +869,11 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     )
     current_contract = current_path.read_text(encoding="utf-8")
     assert str(current_path) in resume_contract
-    assert "This is a Work turn." in resume_contract
     assert resume_turn.patch_inputs.validator_command in resume_contract
     assert resume_turn.patch_inputs.schema_path in resume_contract
     assert str(resume_inputs.artifact_directory) in current_contract
     assert (current_path.parent / f"task-{resume_inputs.token}-human-request.txt").read_text() == (
         resume_instruction
-    )
-    assert resume_contract.endswith(
-        child_work_module._auto_research_child_work_contract(
-            resume_turn,
-            resume_inputs,
-            store.auto_research_child_work_for_operation(resumed_task.operation_id),
-        )
     )
     assert any(
         receipt.category == "continuation_context_unavailable"

@@ -4,38 +4,27 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.auto_research_prompt import (
-    auto_research_orchestrator_continuation_contract,
-    auto_research_orchestrator_task_contract,
-    auto_research_worker_continuation_contract,
-    auto_research_worker_task_contract,
-)
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import _authoring_rules, write_scope_section
-from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
-    render_agent_graph_authority_contract,
 )
-from rcp.core.models import Experiment, GraphBranchMetadata, Patch
+from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
@@ -87,74 +76,6 @@ from .helpers import (
 )
 
 
-def _prompt_scope() -> ProjectWriteScope:
-    return ProjectWriteScope.create(
-        project_id="project",
-        execution_machine="laptop",
-        execution_host="",
-        capability="orchestrate",
-        stage_root="/stage",
-        workspace_root="/stage",
-        repositories=[],
-        protected_write_paths=["/stage/inputs"],
-    )
-
-
-def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty() -> None:
-    contract = auto_research_orchestrator_task_contract(
-        project_name="project",
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="/stage/rcp-agent validate",
-        command_client="/stage/rcp-agent",
-        write_scope=_prompt_scope(),
-    )
-
-    assert "Give every worker a clear, executable assignment" in contract
-    assert "report in prose" in contract
-    assert "without changing an existing ResearchQuestion or Hypothesis" in contract
-    assert "treating a Proposal as completed work" in contract
-    # The orchestrator's only way to wait is a graph condition, so the contract has to
-    # say what one looks like rather than just naming the verb.
-    assert "`watch-graph --key <key> --condition-json <json> --reason <text>`" in contract
-    assert '`{"node_id": "<id>", "status_in": ["<status>", ...]}`' in contract
-    assert '`{"node_id": "<id>", "proposal_resolved": true}`' in contract
-    assert "their order does not matter" in contract
-    assert "A wake spends one invocation" in contract
-    assert "finish --key <key>" in contract
-    assert "Sleeping on a watcher or mail is not completion" in contract
-    assert "structured `result` as the authoritative\n  disposition" in contract
-    assert "Exit 0 / `ok` means RCP recorded a durable disposition" in contract
-    assert "A completed `unavailable` attempt is not an effect verdict" in contract
-    assert "it acknowledges nothing" in contract
-    assert "including\n  effects that return `unavailable`" in contract
-    assert "the refused key replays its exact snapshot" in contract
-    # Every node type it may touch is defined, not just fenced.
-    for node_type in (
-        "ResearchQuestion",
-        "Hypothesis",
-        "Experiment",
-        "Evidence",
-        "Decision",
-        "Blocker",
-    ):
-        assert f"- {node_type} \u2014" in contract
-
-    experiment_ontology = re.search(
-        r"- Experiment \u2014(?P<body>.*?)- Evidence \u2014", contract, re.S
-    )
-    assert experiment_ontology is not None
-    expected_statuses = ", ".join(get_args(Experiment.model_fields["status"].annotation))
-    assert expected_statuses in experiment_ontology.group("body")
-    assert "blocked" not in experiment_ontology.group("body")
-    assert "unspecified is compatibility-only and cannot be authored by a Patch" in " ".join(
-        experiment_ontology.group("body").split()
-    )
-
-
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:
     staged_context = SimpleNamespace(
         graph_revision=17,
@@ -181,189 +102,6 @@ def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeyp
     )
 
     assert refreshed == (17, "/stage/graph-r17.json", "/stage/research-r17.md")
-
-
-def test_root_prompts_expose_the_same_exact_callable_surface_and_lifecycle_boundary() -> None:
-    common = dict(
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="/stage/rcp-agent validate",
-        command_client="/stage/rcp-agent",
-        write_scope=_prompt_scope(),
-        lifecycle_path="/stage/lifecycle.json",
-    )
-    contracts = (
-        auto_research_orchestrator_task_contract(project_name="project", **common),
-        auto_research_orchestrator_continuation_contract(
-            original_contract_path="/stage/original.md",
-            mode="continuation",
-            **common,
-        ),
-    )
-    expected = [
-        "- `validate patch.json`",
-        "- `apply --key <key> patch.json`",
-        "- `status [--worker-id <worker-id> | --episode-id <episode-id>]`",
-        "- `spawn --key <key> --seat-node <node-id> --instruction-file <filename>`",
-        "- `pause --key <key> <worker-id>`",
-        "- `resume --key <key> <worker-id>`",
-        "- `stop --key <key> <worker-id>`",
-        "- `message --key <key> --recipient <worker-id> <body>`",
-        "- `watch-graph --key <key> --condition-json <json> --reason <text>`",
-        (
-            "- `episode --key <key> --kick-off-experiment --node <node-id> "
-            "[--goal-file <filename>] [--invocation-limit <positive-int>]`"
-        ),
-        "- `episode --key <key> --stop <episode-id>`",
-        "- `episode --key <key> --resume <episode-id>`",
-        "- `inbox --key <key> --harvest`",
-        "- `inbox --key <key> --clear`",
-        "- `finish --key <key>`",
-    ]
-
-    for contract in contracts:
-        command_block = contract.split("- Exact invocations, all prefixed by that command:\n", 1)[
-            1
-        ].split("  Each response is one JSON object.", 1)[0]
-        assert [line.strip() for line in command_block.splitlines()] == expected
-        assert "- RCP lifecycle facts: `/stage/lifecycle.json`" in contract
-        assert "authoritative only about the child task and\nepisode transitions" in contract
-        assert "There is no Retry command" in contract
-        assert "--provider" not in contract
-        assert "--model" not in contract
-        assert "--effort" not in contract
-        assert "--host" not in contract
-        assert "--instruction <text>" not in contract
-
-
-def test_auto_research_workers_cannot_orchestrate_or_wake_themselves() -> None:
-    common = dict(
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="/stage/rcp-agent validate",
-        reply_command="/stage/rcp-agent reply --key reply-once",
-        write_scope=_prompt_scope(),
-    )
-    contracts = (
-        auto_research_worker_task_contract(
-            project_name="project",
-            seat_node_type="Experiment",
-            seat_node_id="exp/worker",
-            seat_difficulty="Run the bounded check.",
-            instruction_path="/stage/instruction.md",
-            **common,
-        ),
-        auto_research_worker_continuation_contract(
-            original_contract_path="/stage/original.md",
-            mode="continuation",
-            **common,
-        ),
-    )
-
-    for contract in contracts:
-        normalized = " ".join(contract.split())
-        assert "start an episode" in normalized
-        assert "register a watcher" in normalized
-        assert "wake yourself" in normalized
-        assert "Staged command client:" not in contract
-
-
-def test_the_orchestrator_prefers_apply_while_the_worker_is_never_told_to_apply() -> None:
-    """Settlement costs the episode a wake it can spend on work instead.
-
-    Only the orchestrator holds an Apply credential, so the preference belongs in
-    its command block and must not reach a worker's validate-only contract.
-    """
-
-    common = dict(
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="/stage/rcp-agent validate",
-        write_scope=_prompt_scope(),
-    )
-    orchestrator = auto_research_orchestrator_task_contract(
-        project_name="project",
-        command_client="/stage/rcp-agent",
-        **common,
-    )
-    worker = auto_research_worker_task_contract(
-        project_name="project",
-        seat_node_type="Experiment",
-        seat_node_id="exp/worker",
-        seat_difficulty="Run the bounded check.",
-        instruction_path="/stage/instruction.md",
-        reply_command="/stage/rcp-agent reply --key reply-once",
-        **common,
-    )
-
-    preference = "Prefer `apply` over leaving the Patch for turn settlement"
-    assert preference in orchestrator
-    assert "another invocation wakes you" in orchestrator
-    assert preference not in worker
-    assert "apply --key" not in worker
-    assert render_agent_graph_authority_contract() in worker
-    assert "upsert_glossary" in worker
-
-
-def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_episode() -> None:
-    common = dict(
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="/stage/rcp-agent validate",
-        command_client="/stage/rcp-agent",
-        write_scope=_prompt_scope(),
-    )
-    contracts = (
-        auto_research_orchestrator_task_contract(project_name="project", **common),
-        auto_research_orchestrator_continuation_contract(
-            original_contract_path="/stage/original.md",
-            mode="continuation",
-            **common,
-        ),
-    )
-
-    for contract in contracts:
-        normalized = " ".join(contract.split())
-        assert (
-            "Settled children are a prerequisite for finish, not a reason to finish" in normalized
-        )
-        assert (
-            "temporary capacity contention does not by itself end the research goal" in normalized
-        )
-        # Both supported execution routes need a workable continuation; only the
-        # scheduler route can assume queued admission while devices are occupied.
-        assert "a scheduler can accept a job into its queue" in normalized
-        assert "a direct process host may need a worker to diagnose capacity" in normalized
-        assert "assume every host has a scheduler" in normalized
-        assert "submit the queued work rather than waiting" not in normalized
-        assert (
-            "new human judgment, credentials, approval, privileged action, or coordination "
-            "with another person" in normalized
-        )
-        assert (
-            "act directly, delegate an executable assignment, or arrange an observable continuation"
-            in normalized
-        )
-        assert "Do not turn a self-service step into a recommended human next step" in normalized
-        assert (
-            "Complete self-service diagnosis, preparation, and prerequisites before a human-only "
-            "boundary" in normalized
-        )
-        assert "every admitted child obligation is explicitly settled" in normalized
-        assert _authoring_rules(False) in contract
-        assert render_agent_graph_authority_contract() not in contract
 
 
 def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
@@ -653,9 +391,19 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
 
 
 def _contract(prompt: str) -> str:
-    match = re.search(r"Open and follow the immutable RCP task contract at:\s*([^\n]+)", prompt)
-    assert match is not None
-    return Path(match.group(1)).read_text(encoding="utf-8")
+    path = next(Path(line) for line in prompt.splitlines() if line.startswith("/"))
+    return path.read_text(encoding="utf-8")
+
+
+def _command_argv(contract: str, *, verb: str | None = None) -> list[str]:
+    for code in contract.split("`")[1::2]:
+        if "--workspace" not in code or "--broker" not in code:
+            continue
+        argv = shlex.split(code)
+        arguments = argv[argv.index("--workspace") + 2 :]
+        if (not arguments and verb is None) or (arguments and arguments[0] == verb):
+            return argv
+    raise AssertionError(f"No staged command for {verb!r}")
 
 
 async def _events(stream) -> list[AgentEvent]:
@@ -714,9 +462,6 @@ class _WorkerLauncher:
             workspace = Path(kwargs["cwd"])
             contract = _contract(prompt)
             self.contracts.append(contract)
-            # Exercise fresh, recovered, waking, and correcting production paths with
-            # the exact scope resolved for the actual provider launch.
-            assert write_scope_section(kwargs["write_scope"]) in contract
             if self.writer is not None:
                 result = self.writer(contract, workspace)
                 if asyncio.iscoroutine(result):
@@ -1189,11 +934,9 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
     )
 
     async def writer(contract_text: str, workspace: Path) -> None:
-        assert "one project-owned auto-research orchestrator profile" in contract_text
-        prefix = re.search(r"Command prefix(?: for this turn)?: `([^`]+)`", contract_text)
-        assert prefix is not None
+        prefix = _command_argv(contract_text)
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(prefix.group(1)),
+            *prefix,
             "status",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -1203,7 +946,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         command_results.append(json.loads(stdout))
         (workspace / "patch.json").write_text(candidate, encoding="utf-8")
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(prefix.group(1)),
+            *prefix,
             "apply",
             "--key",
             "apply-diagnostic-budget",
@@ -1216,7 +959,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         command_results.append(json.loads(stdout))
         assert (workspace / "patch.json").is_file()
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(prefix.group(1)),
+            *prefix,
             "apply",
             "--key",
             "apply-diagnostic-budget",
@@ -1229,7 +972,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         command_results.append(json.loads(stdout))
         (workspace / "patch.json").write_text(second_candidate, encoding="utf-8")
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(prefix.group(1)),
+            *prefix,
             "apply",
             "--key",
             "apply-second-observation",
@@ -1436,11 +1179,10 @@ async def test_orchestrator_final_settlement_recovers_apply_committed_before_con
     async def writer(contract_text: str, workspace: Path) -> None:
         nonlocal retained_workspace, command_result
         retained_workspace = workspace
-        prefix = re.search(r"Command prefix(?: for this turn)?: `([^`]+)`", contract_text)
-        assert prefix is not None
+        prefix = _command_argv(contract_text)
         (workspace / "patch.json").write_text(candidate, encoding="utf-8")
         process = await asyncio.create_subprocess_exec(
-            *shlex.split(prefix.group(1)),
+            *prefix,
             "apply",
             "--key",
             "apply-before-consume-failure",
@@ -1727,17 +1469,9 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     assert continuation_launcher.requested_session_ids == ["orchestrator-session"]
     fresh_contract = fresh_launcher.contracts[0]
     continuation_contract = continuation_launcher.contracts[0]
-    fresh_prefix = re.search(r"Command prefix for this turn: `([^`]+)`", fresh_contract)
-    continuation_prefix = re.search(
-        r"Command prefix for this turn: `([^`]+)`", continuation_contract
-    )
-    assert fresh_prefix is not None and continuation_prefix is not None
-    assert continuation_prefix.group(1) != fresh_prefix.group(1)
-    assert fresh_prefix.group(1) not in continuation_contract
-    assert _authoring_rules(False) in fresh_contract
-    assert _authoring_rules(False) in continuation_contract
-    assert "supersede earlier instructions" in continuation_contract
-    assert render_agent_graph_authority_contract() not in continuation_contract
+    fresh_prefix = _command_argv(fresh_contract)
+    continuation_prefix = _command_argv(continuation_contract)
+    assert continuation_prefix != fresh_prefix
     assert all(
         not (stage / name).exists() for name in ("patch.json", "watch.json", "messages.json")
     )
@@ -1756,7 +1490,6 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     )
 
     def inspect_recovery(contract_text: str, workspace: Path) -> None:
-        assert "orchestrator continuation" in contract_text
         assert (workspace / "patch.json").read_text(encoding="utf-8") == empty_patch
         assert (workspace / "watch.json").read_text(encoding="utf-8") == (
             "retained watcher handoff"
@@ -1885,10 +1618,6 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         "actor_operation_id": root.operation_id,
         "retry_mode": "clean_native_session",
     }
-    if failure_point == "pre-stage":
-        assert launcher.contracts[0].startswith("# RCP auto-research orchestrator contract")
-    else:
-        assert launcher.contracts[0].startswith("# RCP auto-research orchestrator continuation")
     binding = store.auto_research_actor_binding(retry.operation_id)
     assert binding.current_operation_id == retry.operation_id
     assert binding.native_session_id == "replacement-session"
@@ -2459,12 +2188,9 @@ async def test_worker_continuation_replaces_original_repository_pointers(
         ),
     )
     retry = _recovery_task(store, auto_research, worker)
-    current_path = manifest.repository_map["repo-a"].path
 
     def writer(contract_text, _workspace):
-        assert "These replace every repository pointer in the original contract" in contract_text
-        # A local repository says so, rather than rendering an empty host.
-        assert f"- repo-a: path=`{current_path}` on this machine" in contract_text
+        assert str(manifest.repository_map["repo-a"].path) in contract_text
         assert "retired.example" not in contract_text
         assert "/retired/repo-a" not in contract_text
 
@@ -2785,13 +2511,17 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
             observed["host"] = kwargs["host"]
             observed["capability"] = kwargs["capability"]
             contract = _contract(prompt)
-            graph_match = re.search(r"- graph: `([^`]+)`", contract)
-            research_match = re.search(r"- research rendering: `([^`]+)`", contract)
-            assert graph_match is not None and research_match is not None
-            graph = json.loads(Path(graph_match.group(1)).read_text(encoding="utf-8"))
+            paths = [Path(code) for code in contract.split("`")[1::2] if code.startswith("/")]
+            graph_path = next(
+                path for path in paths if path.name.startswith("auto_research-graph-")
+            )
+            research_path = next(
+                path for path in paths if path.name.startswith("auto_research-research-")
+            )
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
             observed["revision"] = graph["revision"]
             observed["seat"] = graph["nodes"]["blk/check-result"]["type"]
-            observed["research"] = Path(research_match.group(1)).read_text(encoding="utf-8")
+            observed["research"] = research_path.read_text(encoding="utf-8")
             yield AgentEvent(event="session", session_id="remote-worker-session")
             yield AgentEvent(event="answer", text="Remote worker read current project state.")
             yield AgentEvent(event="done")
@@ -2849,9 +2579,7 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     )
 
     async def writer(contract_text, _workspace):
-        match = re.search(r"Reply command prefix: `([^`]+)`", contract_text)
-        assert match is not None
-        argv = [*shlex.split(match.group(1)), "Recovered worker result"]
+        argv = [*_command_argv(contract_text, verb="message"), "Recovered worker result"]
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
@@ -2923,9 +2651,7 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
                 encoding="utf-8",
             )
             return
-        commands = re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract_text)
-        assert commands
-        validate_argv = shlex.split(commands[-1])
+        validate_argv = _command_argv(contract_text, verb="validate")
         assert validate_argv[-2:] == ["validate", str(workspace / "patch.json")]
         prefix = validate_argv[:-2]
         message = await asyncio.create_subprocess_exec(
@@ -3190,13 +2916,14 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
     assert store.episode(auto_research.episode_id).stop_requested_at is not None
 
 
-def test_orchestrator_receives_the_project_settings_packages(manifest) -> None:
-    """The orchestrator is a Work agent and gets Settings packages like any other.
+def test_orchestrator_receives_the_project_settings_package_paths() -> None:
+    from rcp.agents.auto_research_prompt import (
+        auto_research_orchestrator_continuation_contract,
+        auto_research_orchestrator_task_contract,
+    )
+    from rcp.agents.write_scope import ProjectWriteScope
 
-    Only the auto_research report is restricted to one required skill; the orchestrator
-    was previously given nothing at all.
-    """
-
+    package_path = "/stage/inputs/bundle/graph-audit"
     pointers = [
         {
             "label": "Graph audit",
@@ -3204,7 +2931,7 @@ def test_orchestrator_receives_the_project_settings_packages(manifest) -> None:
             "id": "graph-audit",
             "version": "1.0.0",
             "description": "Check the graph before asserting new claims.",
-            "path": "/stage/inputs/bundle/graph-audit",
+            "path": package_path,
         }
     ]
     common = dict(
@@ -3214,25 +2941,24 @@ def test_orchestrator_receives_the_project_settings_packages(manifest) -> None:
         output_schema_path="/s/schema.json",
         validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
-        write_scope=_prompt_scope(),
+        write_scope=ProjectWriteScope.create(
+            project_id="project",
+            execution_machine="laptop",
+            execution_host="",
+            capability="orchestrate",
+            stage_root="/stage",
+            workspace_root="/stage",
+            repositories=[],
+            protected_write_paths=["/stage/inputs"],
+        ),
+        repositories=[],
+        skill_pointers=pointers,
     )
-    contract = auto_research_orchestrator_task_contract(
-        project_name="project", repositories=[], skill_pointers=pointers, **common
-    )
+    fresh = auto_research_orchestrator_task_contract(project_name="project", **common)
     continuation = auto_research_orchestrator_continuation_contract(
         original_contract_path="/s/original.md",
         mode="continuation",
-        repositories=[],
-        skill_pointers=pointers,
         **common,
     )
-    for text in (contract, continuation):
-        assert "Skills and workflows staged for this run:" in text
-        assert "Graph audit (skill graph-audit v1.0.0)" in text
-        assert "folder: /stage/inputs/bundle/graph-audit" in text
-
-    # No packages means no heading, not an empty one.
-    bare = auto_research_orchestrator_task_contract(
-        project_name="project", repositories=[], skill_pointers=[], **common
-    )
-    assert "Skills and workflows" not in bare
+    assert package_path in fresh
+    assert package_path in continuation

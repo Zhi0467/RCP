@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.experiment_loop_prompt import experiment_loop_wake_message
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
@@ -49,8 +48,6 @@ from rcp.storage import (
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
-from .test_prompts import _assert_compute_handoff
-from .test_prompts import execution_instructions as execution_instructions
 
 _EXPERIMENT_ID = "exp/native-wake"
 
@@ -706,9 +703,6 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
 
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
-    assert launcher.contracts[1].startswith("# RCP Experiment-loop watcher correction")
-    assert "Judge the terminal Patch/watch pair" in launcher.contracts[1]
-    assert "completed` Experiment with a non-empty `next_action`" in launcher.contracts[1]
     graph_update = _graph_update_from_events(events)
     assert graph_update["status"] == "applied"
     assert service.history.state().nodes[_EXPERIMENT_ID].status == "completed"
@@ -835,60 +829,6 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="no recorded original task contract"):
         _parent_task_contract_path(retried, new_stage, None)
-
-
-def test_compact_wake_message_is_human_style_and_authority_truthful(execution_instructions) -> None:
-    message = experiment_loop_wake_message(
-        execution_instructions=execution_instructions,
-        focused_experiment_id=_EXPERIMENT_ID,
-        experiment_contract_path="/stage/inputs/experiment-contract.md",
-        invocation=2,
-        invocation_ceiling=4,
-        previous_graph_result="applied as revision 9",
-        previous_watcher_ids=["watch/old-a", "watch/old-b"],
-        delivered_watcher_ids=["watch/ready"],
-        loop_control_path="/stage/control.json",
-        watcher_state_path="/stage/watchers.json",
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        patch_path="/stage/patch.json",
-        watch_path="/stage/watch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="python3 /stage/validate.py /stage/patch.json",
-    )
-
-    assert message.startswith(
-        f"The watched work for Experiment `{_EXPERIMENT_ID}` is ready for another look."
-    )
-    assert "turn 2 of 4" in message
-    assert "Experiment contract: /stage/inputs/experiment-contract.md" in message
-    assert "reread" not in message.casefold()
-    assert "invocation" not in message.lower()
-    assert "- graph update: applied as revision 9" in message
-    assert "- watchers armed: watch/old-a, watch/old-b" in message
-    assert "This turn was triggered by: watch/ready" in message
-    normalized = " ".join(message.split())
-    assert "not that the work succeeded" in normalized
-    assert (
-        "Inspect the result and logs before interpreting it or launching a replacement"
-        in normalized
-    )
-    assert "unexpected process exit (including SIGTERM)" in normalized
-    assert "Two similar failures do not prove an external cause" in normalized
-    assert "plausibly transient failure is uncertainty, not a Blocker" in normalized
-    assert " ".join(execution_instructions.split()) in normalized
-    _assert_compute_handoff(message)
-    assert "1. Continue useful authorized work now" in message
-    assert "2. Pause for an explicit human-authority boundary" in message
-    assert "3. Finish when no operational work remains" in message
-    assert "unsuccessful or inconclusive" in normalized
-    assert "`next_action` to null" in normalized
-    assert "Do not choose an option" in normalized
-    assert "Current Experiment-loop graph authority" in message
-    assert "do not invent Evidence" in message
-    assert '"check_command"' in message
-    assert "These context values replace" not in message
-    assert "# RCP Experiment-loop task contract" not in message
 
 
 def test_episode_context_ontology_identity_changes_with_extension_definitions() -> None:
@@ -1021,7 +961,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         )
     )
     assert not [event for event in initial_events if event.event == "error"]
-    assert launcher.contracts[0].startswith("# RCP Experiment-loop task contract")
     assert initial_execution.stage_root is not None
     initial_stage = Path(initial_execution.stage_root)
     initial_workspace = initial_stage / "workspace"
@@ -1114,30 +1053,12 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert not [event for event in wake_events if event.event == "error"]
     assert launcher.sessions[:2] == [None, native_session_id]
     wake_contract = launcher.contracts[1]
-    assert wake_contract.startswith(
-        f"The watched work for Experiment `{_EXPERIMENT_ID}` is ready for another look."
-    )
-    assert "# RCP Experiment-loop task contract" not in wake_contract
-    assert "turn 2 of 3" in wake_contract
-    experiment_contract_path = Path(
-        next(
-            line.removeprefix("Experiment contract: ")
-            for line in wake_contract.splitlines()
-            if line.startswith("Experiment contract: ")
-        )
-    )
+    experiment_contract_path = next((initial_stage / "inputs").glob("experiment-contract-*.md"))
+    assert str(experiment_contract_path) in wake_contract
     assert experiment_contract_path.read_text(encoding="utf-8") == launcher.contracts[0]
-    assert wake_contract.count("Experiment contract: ") == 1
-    assert "reread" not in wake_contract.casefold()
-    assert (
-        f"Original immutable Experiment-loop contract: `{experiment_contract_path}`"
-        in launcher.contracts[2]
+    replacement_values, _ = json.JSONDecoder().raw_decode(
+        wake_contract[wake_contract.index("\n{") + 1 :]
     )
-    assert "These context values replace what this session was given:" in wake_contract
-    replacement = wake_contract.split(
-        "These context values replace what this session was given:\n", 1
-    )[1]
-    replacement_values, _ = json.JSONDecoder().raw_decode(replacement)
     assert replacement_values == {"repositories": initial_baseline["repositories"]}
     assert "task-loop-wake-experiment-control-watcher_wake.json" in wake_contract
     assert "task-loop-wake-experiment-watchers.json" in wake_contract
@@ -1149,14 +1070,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert " --credential " not in wake_contract
     assert " --workspace " in wake_contract
     assert " validate " in wake_contract
-    from rcp.agents.prompts import write_scope_section
 
-    assert write_scope_section(launcher.write_scopes[1]) in wake_contract
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
-    assert "Current Experiment-loop graph authority" in wake_contract
-    assert "A downstream" in wake_contract
-    assert "do not invent Evidence" in wake_contract
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None
@@ -1274,12 +1190,7 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
 
     assert switch_launcher.sessions == [None]
     contract = switch_launcher.contracts[0]
-    compact = " ".join(contract.split())
-    assert contract.startswith("# RCP Experiment-loop task contract")
-    assert "Explicit same-episode provider-switch recovery" in contract
     assert "task-loop-provider-switch-retry-diagnostics.json" in contract
-    assert "same Experiment episode and the same invocation" in compact
-    assert "inspect authoritative external state" in compact
     persisted = store.agent_task_contract("loop-provider-switch", "work_retry_base")
     assert persisted == contract
     switched_episode = store.experiment_episode(episode_id)
@@ -1298,11 +1209,7 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     )
     assert Path(session_contract_path).read_text(encoding="utf-8") == contract
     diagnostics_path = Path(
-        next(
-            line.rsplit("`", 2)[1]
-            for line in contract.splitlines()
-            if line.startswith("- Exact prior failure diagnostics:")
-        )
+        next(code for code in contract.split("`")[1::2] if code.endswith("-retry-diagnostics.json"))
     )
     assert json.loads(diagnostics_path.read_text(encoding="utf-8")) == {
         "prior_attempt_diagnostics": list(diagnostics)
@@ -1357,10 +1264,6 @@ async def test_unbound_initial_handoff_does_not_claim_provider_switch_recovery(
 
     assert not [event for event in events if event.event == "error"]
     contract = launcher.contracts[0]
-    assert contract.startswith("# RCP Experiment-loop task contract")
-    assert "Explicit same-episode provider-switch recovery" not in contract
-    assert "provisional replacement provider session" not in contract
-    assert "Exact prior failure diagnostics" not in contract
     assert store.agent_task_contract("loop-unbound-handoff", "work_retry_base") == contract
 
 

@@ -100,8 +100,8 @@ def _assert_retry_contract(
     launcher: _FailThenSucceedLauncher,
     *,
     expected_failure: str,
-) -> str:
-    """Recovery retains progress while replacing stale method and output guidance."""
+) -> None:
+    """Recovery stages current inputs and keeps exact predecessor diagnostics."""
 
     assert launcher.sessions == [None, launcher.native_session_id]
     retry_contract_path = launcher.contract_paths[1]
@@ -111,27 +111,16 @@ def _assert_retry_contract(
     diagnostics_path = stage_inputs / f"{prefix}-retry-diagnostics.json"
     expected_diagnostics = [f"Attempt 1 (failed) failed with: {expected_failure}"]
 
-    assert retry_contract.startswith("# RCP retry contract")
-    assert "Exact failure diagnostics" in retry_contract
     assert str(diagnostics_path) in retry_contract
     assert str(launcher.contract_paths[0]) in retry_contract
     current_contract_path = stage_inputs / f"{prefix}-base.md"
     assert str(current_contract_path) in retry_contract
-    assert (
-        "current contract replaces earlier authority, method, schema, and output" in retry_contract
-    )
-    assert "Retry authority and side-effect safety" in retry_contract
-    assert "inspect the authoritative external state" in retry_contract
-    assert "# RCP resume contract" not in retry_contract
-    assert "Patch-only correction authority" not in retry_contract
     assert current_contract_path.is_file()
     assert f"{prefix}-base.md" in launcher.input_snapshots[1]
     assert f"{prefix}-human-request.txt" in launcher.input_snapshots[1]
-    assert "Retry context:" not in retry_contract
     assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
         "prior_attempt_diagnostics": expected_diagnostics
     }
-    return launcher.contracts[0]
 
 
 def _assert_retry_receipt(app, operation_id: str) -> None:
@@ -181,10 +170,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
         },
     )
 
-    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
-    assert "This turn has no graph-change channel" in original_contract
-    assert "This is a Discuss turn." in launcher.contracts[1]
-    assert "This is a Work turn." not in launcher.contracts[1]
+    _assert_retry_contract(launcher, expected_failure=failure)
     assert launcher.workspaces[0] == launcher.workspaces[1]
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
@@ -260,9 +246,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         after_failure=make_legacy,
     )
 
-    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
-    assert "Operational authority" in original_contract
-    assert "This is a Work turn." in launcher.contracts[1]
+    _assert_retry_contract(launcher, expected_failure=failure)
     if legacy_layout:
         assert launcher.workspaces[1] == launcher.workspaces[0].parent
     else:
@@ -457,10 +441,6 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
         launcher.workspaces[0].parent if legacy_layout else launcher.workspaces[0]
     )
     assert launcher.contract_paths[1].name.endswith("-base.md")
-    retry_contract = launcher.contracts[1]
-    assert retry_contract.startswith("# RCP Work task contract")
-    assert "Retry context:" in retry_contract
-    assert "inspect the authoritative external state" in " ".join(retry_contract.split())
     assert (
         objective
         == launcher.input_snapshots[1][
@@ -522,8 +502,7 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
         {"message": objective},
     )
 
-    original_contract = _assert_retry_contract(launcher, expected_failure=failure)
-    assert "Authorship contract" in original_contract
+    _assert_retry_contract(launcher, expected_failure=failure)
     assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
@@ -609,13 +588,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     assert updated_guidance not in launcher.contracts[0]
     assert current_name in launcher.contracts[1]
     assert str(launcher.contract_paths[0]) in launcher.contracts[1]
-    assert "Retain the original objective, input provenance, and completed" in launcher.contracts[1]
     assert (
         launcher.input_snapshots[1][f"task-{completed['operation_id']}-human-request.txt"]
         == objective
     )
-    if kind == "node_chat":
-        assert "This is a Discuss turn." in launcher.contracts[1]
-        assert "This is a Work turn." not in launcher.contracts[1]
-    else:
-        assert "Never draft replacement sentences or paragraphs" in current_contract

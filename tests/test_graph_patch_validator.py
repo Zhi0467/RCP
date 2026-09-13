@@ -65,14 +65,12 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
 
         async def stream(self, _provider, prompt, **kwargs):
             workspace = Path(kwargs["cwd"])
-            contract_path = Path(prompt.splitlines()[1])
+            (contract_path,) = [
+                Path(line) for line in prompt.splitlines() if Path(line).is_absolute()
+            ]
             contract = contract_path.read_text(encoding="utf-8")
-            command_match = re.search(
-                r"After writing `patch\.json`, run this exact command: `([^`]+)`",
-                contract,
-            )
-            assert command_match is not None
-            command = shlex.split(command_match.group(1))
+            (command_text,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
+            command = shlex.split(command_text)
             validator_client = Path(command[1])
             assert validator_client.read_text(encoding="utf-8") == VALIDATOR_CLIENT_SOURCE
 

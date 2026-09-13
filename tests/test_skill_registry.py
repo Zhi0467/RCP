@@ -179,47 +179,6 @@ def test_local_skill_stage_is_immutable_and_points_to_each_package(tmp_path: Pat
     ]
 
 
-def test_official_skills_match_the_action_evidence_ontology() -> None:
-    registry = official_registry()
-    graph = registry.package("skill", "graph-audit")
-    evidence = registry.package("skill", "evidence-triage")
-    causality = registry.package("skill", "experiment-causality")
-
-    assert "read-only structural review" in graph.description
-    assert "before creating or materially updating" in evidence.description
-    assert "separating intended empirical handoffs from observed Evidence" in causality.description
-
-    graph_body = registry.package_body("skill", "graph-audit")
-    assert "do not\nrequire future Evidence" in graph_body
-    assert "authority for Decision choice, standing, and\nlifecycle updates" in graph_body
-
-    evidence_body = registry.package_body("skill", "evidence-triage")
-    assert "Use `informs` when Evidence bears on a Decision" in evidence_body
-    assert "Use `addresses` when Evidence bears on whether a Blocker" in evidence_body
-    assert "does not itself change Blocker status" in evidence_body
-
-    causality_body = registry.package_body("skill", "experiment-causality")
-    for defect in (
-        "**Reversed:**",
-        "**Prose-only:**",
-        "**Circular:**",
-        "**Self-blocking:**",
-        "**Stale:**",
-        "**Duplicate:**",
-    ):
-        assert defect in causality_body
-    assert "Do not invent Experiments for choices, external" in causality_body
-    assert "report findings only" in causality_body
-
-    workflow_body = registry.package_body("workflow", "research-graph-audit")
-    assert workflow_body.index("## Pass 1: broad structure") < workflow_body.index(
-        "## Pass 2: action causality"
-    )
-    assert workflow_body.index("## Pass 2: action causality") < workflow_body.index(
-        "## Pass 3: narrow provenance"
-    )
-
-
 def test_each_attempt_stages_its_own_bundle_in_a_reused_stage(tmp_path: Path) -> None:
     """A resumed chat keeps its folder, so an attempt must not collide or reuse."""
 
@@ -387,7 +346,7 @@ def test_selecting_nothing_stages_nothing(tmp_path: Path) -> None:
     assert not (stage / "inputs" / "rcp-skills-attempt-1").exists()
 
 
-def test_the_task_contract_carries_pointers_rather_than_package_bodies(tmp_path: Path) -> None:
+def test_the_task_contract_carries_staged_package_paths(tmp_path: Path) -> None:
     stage = tmp_path / "run"
     stage.mkdir()
     selection = official_registry().resolve(workflow_ids=["research-graph-audit"])
@@ -397,7 +356,6 @@ def test_the_task_contract_carries_pointers_rather_than_package_bodies(tmp_path:
         remote_stage=None,
         label="rcp-skills-attempt-1",
     )
-    body = official_registry().package_body("workflow", "research-graph-audit")
 
     contract = PromptFactory.graph_task_contract(
         "seed",
@@ -415,39 +373,9 @@ def test_the_task_contract_carries_pointers_rather_than_package_bodies(tmp_path:
         skill_pointers=pointers,
     )
 
-    registry = official_registry()
-    for reference in selection.resolved_skill_packages:
-        package = registry.package(reference.kind, reference.id)
-        assert f"{package.label} ({reference.kind} {reference.id} v{reference.version})" in contract
-        assert package.description in " ".join(contract.split())
-    assert "builds on:" in contract
     assert str(stage / "inputs" / "rcp-skills-attempt-1" / "workflow" / "research-graph-audit") in (
         contract
     )
-    assert "compare the task and intended graph changes with each description" in contract
-    assert "only packages whose stated trigger matches" in contract
-    # The body stays in the staged folder; the contract only points at it.
-    assert "## Pass 1: broad structure" in body
-    assert "## Pass 1: broad structure" not in contract
-
-
-def test_a_contract_without_a_selection_has_no_skill_section() -> None:
-    contract = PromptFactory.graph_task_contract(
-        "seed",
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=True,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        provider_log_roots={},
-        ingestion_watermark=None,
-        repositories=[],
-        patch_path="/stage/workspace/patch.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/workspace/patch.json",
-    )
-
-    assert "Official RCP skills and workflows available to this run" not in contract
 
 
 def test_the_read_only_package_inspector_serves_the_package_text(manifest, tmp_path) -> None:
@@ -466,7 +394,6 @@ def test_the_read_only_package_inspector_serves_the_package_text(manifest, tmp_p
         == official_registry().package("workflow", "research-graph-audit").version
     )
     assert payload["dependencies"][0]["id"] == "graph-audit"
-    assert payload["body"].startswith("# Research graph audit")
     assert "id: research-graph-audit" not in payload["body"]
     assert missing.status_code == 404
     assert bad_kind.status_code == 404

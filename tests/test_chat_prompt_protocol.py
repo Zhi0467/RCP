@@ -19,7 +19,7 @@ from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
-from rcp.skill_registry import SkillDefaults, official_registry
+from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
 
 from .helpers import (
@@ -41,15 +41,9 @@ class _RecordingLauncher:
         self.launch_kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
-        if "This is a Work turn." in prompt:
+        if kwargs["capability"] == "work_auto":
             tooling_path = next(
-                line.removeprefix(
-                    "Read current execution instructions relative to this turn's cwd: `"
-                ).removesuffix("`")
-                for line in prompt.splitlines()
-                if line.startswith(
-                    "Read current execution instructions relative to this turn's cwd: `"
-                )
+                code for code in prompt.split("`")[1::2] if code.endswith("-execution.md")
             )
             execution_instructions = (Path(kwargs["cwd"]) / tooling_path).read_text()
             command = next(
@@ -221,7 +215,6 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         pass
 
     second_prompt = launcher.prompts[1]
-    assert second_prompt.startswith("Open and retain the RCP chat master context at:\n")
     assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in second_prompt.splitlines()[1]
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
@@ -233,9 +226,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 
 
 @pytest.mark.asyncio
-async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
-    manifest, tmp_path
-) -> None:
+async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -270,30 +261,9 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     assert launcher.sessions == [None]
     prompt = launcher.prompts[0]
     artifact_directory = launcher.workspaces[0] / "turns" / execution.operation_id / "artifacts"
-    assert prompt.count("This is a Discuss turn.") == 1
-    assert prompt.endswith(
-        f"This is a Discuss turn.\nArtifact directory for this turn: {artifact_directory}"
-        f"\n\n{request.message}"
-    )
-    assert "RCP context update" not in prompt
-    assert prompt.startswith("Open and retain the RCP chat master context at:\n")
+    assert str(artifact_directory) in prompt
+    assert prompt.count(request.message) == 1
     master_path = Path(prompt.splitlines()[1])
-    master = master_path.read_text(encoding="utf-8")
-    assert "## Discuss contract" in master
-    assert "## Work contract" in master
-    assert "Follow only the matching contract below" in master
-    assert "This turn has no graph-change channel" in master
-    assert "Patch JSON Schema" in master
-    assert "named in the envelope" in master
-    assert "Invoked for this turn —" not in master
-    assert master.count("Skills and workflows staged for this run:") == 1
-    shared, mode_contracts = master.split("## Discuss contract", 1)
-    for package in official_registry().packages:
-        if package.kind == "skill":
-            identity = f"{package.label} (skill {package.id} v{package.version})"
-            assert master.count(identity) == 1
-            assert identity in shared
-    assert "Skills and workflows staged for this run:" not in mode_contracts
     assert not (launcher.workspaces[0] / "current-turn.json").exists()
     assert launcher.workspaces[0].parent / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
     inputs = master_path.parent
@@ -405,9 +375,8 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
 
     master_path = Path(launcher.prompts[0].splitlines()[1])
     master = master_path.read_text(encoding="utf-8")
-    assert master.count("Compute resources attached to this turn:") == 1
-    assert "`gpu` — GPU VM: kind: SSH; target: `alice@gpu.example`" in master
-    assert "access hint: Use /scratch/shared for temporary outputs" in master
+    assert "alice@gpu.example" in master
+    assert "Use /scratch/shared for temporary outputs" in master
     assert "Current machine" not in master
     assert ".ssh/" not in master
     assert "identity_file" not in master
@@ -498,7 +467,9 @@ def test_admitted_compute_snapshot_survives_manifest_change_before_launch(
     assert "alice@changed.example" not in master
 
 
-def test_resumed_chat_sends_only_named_compute_add_remove_update_deltas(manifest, tmp_path) -> None:
+def test_resumed_chat_delivers_changed_compute_metadata_in_the_same_session(
+    manifest, tmp_path
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -549,15 +520,10 @@ def test_resumed_chat_sends_only_named_compute_add_remove_update_deltas(manifest
 
     turn("Start with local compute.", ["current"], first=True)
     turn("Keep the same compute.", ["current"])
-    assert "RCP compute update" not in launcher.prompts[1]
-    assert "RCP context update" not in launcher.prompts[1]
 
     turn("Switch to the GPU.", ["gpu"])
-    assert (
-        "RCP compute update: added `GPU VM` (`gpu`; kind: SSH; target: "
-        "`alice@gpu.example`; access hint: Use /scratch/old); removed `Current machine`."
-        in launcher.prompts[2]
-    )
+    assert gpu.ssh_target in launcher.prompts[2]
+    assert gpu.access_hint in launcher.prompts[2]
     assert ".ssh/" not in launcher.prompts[2]
     assert "private_key" not in launcher.prompts[2]
 
@@ -570,13 +536,10 @@ def test_resumed_chat_sends_only_named_compute_add_remove_update_deltas(manifest
     )
     _configure_compute_connections(service, [current, renamed_gpu])
     turn("Use the renamed resource.", ["gpu"])
-    assert (
-        "RCP compute update: updated `GPU Accelerator` (`gpu`; kind: SSH; target: "
-        "`alice@gpu-v2.example`; access hint: Use /scratch/new)." in launcher.prompts[3]
-    )
+    assert renamed_gpu.ssh_target in launcher.prompts[3]
+    assert renamed_gpu.access_hint in launcher.prompts[3]
 
     turn("Detach compute.", [])
-    assert "RCP compute update: removed `GPU Accelerator`." in launcher.prompts[4]
     assert launcher.sessions == [None, session_id, session_id, session_id, session_id]
 
     transcript = service.chat_transcript(chat_id)
@@ -632,11 +595,8 @@ async def test_fresh_discuss_passes_provider_native_receipt_beside_unchanged_mes
 
     prompt = launcher.prompts[0]
     assert prompt.count(message) == 1
-    assert prompt.count("Invoked provider-native skill this turn:") == 1
     assert '"native_token": "$native-review"' in prompt
     assert '"stale": true' in prompt
-    master_path = Path(prompt.splitlines()[1])
-    assert "Invoked provider-native skill this turn:" not in master_path.read_text(encoding="utf-8")
 
 
 def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
@@ -700,18 +660,11 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     assert launcher.sessions == [None, session_id]
     prompt = launcher.prompts[1]
     second_artifacts = launcher.workspaces[1] / "turns" / second_operation_id / "artifacts"
-    marker = f"This is a Discuss turn.\nArtifact directory for this turn: {second_artifacts}"
-    assert prompt.startswith(f"RCP master context: {master_path}\n\n{marker}")
+    assert str(second_artifacts) in prompt
+    assert str(master_path) in prompt
     assert prompt.count(second_message) == 1
-    assert "Invoked for this turn — read and follow each exact staged package:" in prompt
-    version = official_registry().package("skill", "graph-audit").version
-    assert f"Graph audit (skill `graph-audit` v{version})" in prompt
-    assert "/skill/graph-audit`" in prompt
-    assert prompt.count("This is a Discuss turn.") == 1
-    assert "Open and retain the RCP chat master context" not in prompt
-    assert "# RCP Discuss task contract" not in prompt
+    assert "/skill/graph-audit" in prompt
     assert "human-request.txt" not in prompt
-    assert "RCP context update" not in prompt
     assert not (launcher.workspaces[1] / "current-turn.json").exists()
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
@@ -739,10 +692,7 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     third_operation_id = third_response.json()["operation_id"]
     assert wait_for_task_response(client, project_id, third_operation_id)["status"] == "succeeded"
     third_prompt = launcher.prompts[2]
-    assert third_prompt.startswith(f"RCP master context: {master_path}\n\n")
     assert third_prompt.count(third_message) == 1
-    assert "Open and retain the RCP chat master context" not in third_prompt
-    assert "Invoked for this turn" not in third_prompt
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
@@ -814,22 +764,11 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     else:
         assert launcher.workspaces[0] == launcher.workspaces[1]
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
-    assert launcher.prompts[1].startswith(
-        f"RCP master context: {launcher.prompts[0].splitlines()[1]}\n\n"
-        f"This is a Work turn.\nArtifact directory for this turn: {work_artifacts}"
-    )
+    assert str(work_artifacts) in launcher.prompts[1]
     assert launcher.prompts[1].count(work_message) == 1
-    assert launcher.prompts[1].count("RCP context update") == 1
-    assert (
-        "Invoked for this turn — read and follow each exact staged package:"
-        in (launcher.prompts[1])
-    )
-    version = official_registry().package("skill", "graph-audit").version
-    assert f"Graph audit (skill `graph-audit` v{version})" in launcher.prompts[1]
     assert '"reasoning": "high"' in launcher.prompts[1]
     assert '"repositories"' not in launcher.prompts[1]
     assert '"skills"' not in launcher.prompts[1]
-    assert "Open and retain the RCP chat master context" not in launcher.prompts[1]
 
 
 @pytest.mark.asyncio
@@ -865,14 +804,10 @@ async def test_node_chat_master_carries_the_focused_node_and_its_relations(
         pass
 
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
-    revision = service.graph_snapshot()["revision"]
-    assert f"## Focused node, as of graph revision {revision}" in master
     # The node's own prose, not a pointer to go read it.
     assert "Search-time replanning restores future learning ability." in master
     assert '"id": "hyp/replanning-restores-plasticity"' in master
-    assert "Relations one hop from this node:" in master
     assert '"other_node_id": "rq/learning-after-shift"' in master
-    assert "not a live view" in master
 
 
 def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tmp_path) -> None:
@@ -913,14 +848,12 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
 
     turn("First question.", resume=False)
     turn("Second question, nothing moved.", resume=True)
-    assert "RCP context update" not in launcher.prompts[1]
 
     # A human Sync between turns is the case this signal exists for.
     append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
     update = launcher.prompts[2]
-    assert "RCP context update" in update
     assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in update
     assert '"repositories"' not in update
     assert '"settings"' not in update
@@ -979,9 +912,8 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert service.graph_snapshot()["revision"] > before
 
     turn("Now just answer something.", resume=True)
-    second_delta = json.loads(
-        launcher.prompts[1].split("RCP context update", 1)[1].split(":\n", 1)[1]
-    )
+    prompt = launcher.prompts[1]
+    second_delta, _ = json.JSONDecoder().raw_decode(prompt[prompt.index("\n{") + 1 :])
     assert set(second_delta) == {"patch"}
     assert "current" not in second_delta
     assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]

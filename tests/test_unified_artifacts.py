@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 
 import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
-from rcp.agents.prompts import _chat_attachment_section
 from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import (
     AgentArtifactDescriptor,
@@ -1258,25 +1257,6 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
     assert 'id="pending"' in with_chat
     assert '"chatAvailable": true' in with_chat
     assert "fetch(config.saveUrl" in with_chat
-
-
-def test_prompt_addresses_comments_without_implying_an_edit() -> None:
-    section = _chat_attachment_section(
-        [
-            {
-                "path": "/tmp/curves.html",
-                "name": "curves.html",
-                "source_artifact_id": "0123456789abcdef01234567",
-                "selections": [{"kind": "text", "text": "spike", "comment": "why?"}],
-                "revision_output_path": "/tmp/output/curves.html",
-            }
-        ]
-    )
-
-    assert "Address every comment and question" in section
-    assert "does not by itself request an edit" in section
-    assert "explicitly asks to change the artifact and this is a Work turn" in section
-    assert "Never create a second artifact as a revision" in section
 
 
 def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:

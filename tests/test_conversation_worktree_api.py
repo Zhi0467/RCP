@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -41,11 +42,7 @@ class _ChatLauncher:
         session = kwargs.get("session_id") or str(uuid.uuid4())
         self.sessions[request.chat_id] = session
         scope = kwargs.get("write_scope")
-        contract = Path(
-            prompt.splitlines()[0].removeprefix("RCP master context: ")
-            if prompt.startswith("RCP master context: ")
-            else prompt.splitlines()[1]
-        )
+        contract = Path(next(re.finditer(r"/[^\n]+\.md", prompt)).group())
         inputs = "\n".join(path.read_text() for path in contract.parent.glob("*.md"))
         root = self.harness.repository
         binding = self.harness.store.conversation_worktree(self.harness.project_id, request.chat_id)

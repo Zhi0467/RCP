@@ -325,6 +325,12 @@ schema generation. A future unsupported generation makes an older RCP
 read-only and asks for an update. Persisted schema generation and transition
 ruleset tag are independent.
 
+Retiring a field requires handling both stored operation fields and any fields
+the in-memory adapter introduces while retiring a value. Update
+`adapt_persisted_patch_document` and the replay branch of every affected field
+rule together. Rejecting either shape halts canonical replay and leaves the
+graph read-only; historical Patch bytes remain unchanged.
+
 ## Canonical publication
 
 Local and remote publication is atomic and owned by the state workspace. Remote

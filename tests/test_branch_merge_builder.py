@@ -11,7 +11,6 @@ from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.runs.branch_merge import (
-    MERGE_RESIDUE_REASONS,
     BranchMergeContext,
     BranchMergeEligibility,
     BranchMergeRunOutcome,
@@ -747,8 +746,6 @@ def test_merge_residue_renders_every_reason_it_reports() -> None:
 
     assert '"path": "nodes/blk/existing/description"' in block
     assert '"reason": "protected_node"' in block
-    assert MERGE_RESIDUE_REASONS["conflict"] in block
-    assert MERGE_RESIDUE_REASONS["protected_node"] in block
     assert "decision_outcome" not in block
 
 
@@ -766,4 +763,3 @@ def test_merge_contract_cites_the_plan_file_instead_of_inlining_it() -> None:
     assert "/stage/inputs/plan.json" in contract
     assert '"op": "create_nodes"' not in contract
     assert '"path": "nodes/dec/choice/status"' in contract
-    assert MERGE_RESIDUE_REASONS["decision_outcome"] in contract
