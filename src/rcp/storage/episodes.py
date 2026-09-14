@@ -627,6 +627,8 @@ class EpisodeStoreMixin:
                 """
                 UPDATE episodes
                 SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                    stop_initiated_by = CASE WHEN stop_requested_at IS NULL
+                        THEN 'system:restore' ELSE stop_initiated_by END,
                     stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
                     ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
                     updated_at = ?, ended_at = COALESCE(ended_at, ?)
@@ -662,13 +664,17 @@ class EpisodeStoreMixin:
             observed_generated_tokens=int(usage["generated_tokens"]),
         )
 
-    def request_episode_stop(self, episode_id: str) -> EpisodeRecord:
+    def request_episode_stop(
+        self, episode_id: str, *, initiated_by: str | None = None
+    ) -> EpisodeRecord:
         """Persist the common Stop fence before a mode adapter settles its work."""
 
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._request_episode_stop_in_connection(connection, episode_id, now=now)
+            self._request_episode_stop_in_connection(
+                connection, episode_id, now=now, initiated_by=initiated_by
+            )
         stopped = self.episode(episode_id)
         assert stopped is not None
         return stopped
@@ -679,6 +685,7 @@ class EpisodeStoreMixin:
         episode_id: str,
         *,
         now: str,
+        initiated_by: str | None,
     ) -> EpisodeRecord:
         row = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -702,10 +709,10 @@ class EpisodeStoreMixin:
         connection.execute(
             """
             UPDATE episodes
-            SET status = 'stopping', stop_requested_at = ?, updated_at = ?
+            SET status = 'stopping', stop_requested_at = ?, stop_initiated_by = ?, updated_at = ?
             WHERE episode_id = ?
             """,
-            (now, now, episode_id),
+            (now, initiated_by, now, episode_id),
         )
         updated = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)

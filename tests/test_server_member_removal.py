@@ -314,6 +314,7 @@ def test_member_removal_presses_the_existing_episode_stop_fence(tmp_path) -> Non
     assert stopping is not None
     assert stopping.status == "stopping"
     assert stopping.stop_requested_at is not None
+    assert stopping.stop_initiated_by == "system:member_removed"
     assert store.space_user(bob.user_id).removed_at is None
 
     store.mark_episode_stop_skipped(

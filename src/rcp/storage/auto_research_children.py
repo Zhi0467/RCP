@@ -30,6 +30,7 @@ from rcp.storage.models import (
     AutoResearchFinishReceiptRecord,
     AutoResearchInboxReceiptRecord,
     AutoResearchLifecycleNoticeRecord,
+    AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeReportConflict,
@@ -42,7 +43,7 @@ class AutoResearchInboxClearTooLarge(ValueError):
 
 
 class AutoResearchInboxHarvestTooLarge(ValueError):
-    """The oldest pending notice cannot fit in a Harvest response."""
+    """The oldest pending notice or message cannot fit in a Harvest response."""
 
 
 class AutoResearchInboxNoticeUnacknowledgeable(ValueError):
@@ -54,6 +55,8 @@ def auto_research_inbox_projection(
     *,
     notice_ids: list[str],
     notices: list[AutoResearchLifecycleNoticeRecord],
+    message_ids: list[str] | None = None,
+    messages: list[AutoResearchMessageRecord] | None = None,
 ) -> tuple[dict[str, object], str]:
     """Build the one inbox projection the orchestrator sees, with its message.
 
@@ -63,7 +66,9 @@ def auto_research_inbox_projection(
     receives.
     """
 
-    count = len(notice_ids)
+    message_ids = message_ids or []
+    messages = messages or []
+    count = len(notice_ids) + len(message_ids)
     if mode == "harvest":
         result: dict[str, object] = {
             "action": "harvest",
@@ -76,25 +81,39 @@ def auto_research_inbox_projection(
                     "source_event": notice.source_event,
                     "source_attempt": notice.source_attempt,
                     "payload": notice.payload,
+                    "wake_suppressed": notice.wake_suppressed,
                     "created_at": notice.created_at,
                 }
                 for notice in notices
             ],
+            "mail": [
+                {
+                    "message_id": item.message_id,
+                    "sender_role": item.sender_role,
+                    "sender_task_id": item.sender_task_id,
+                    "human_name": item.authorized_by.display_name if item.authorized_by else None,
+                    "created_at": item.created_at,
+                    "body": item.body,
+                }
+                for item in messages
+            ],
         }
-        message = f"Harvested and acknowledged {count} lifecycle notice(s)."
+        message = f"Harvested and acknowledged {count} inbox item(s)."
     else:
         result = {
             "action": "clear",
             "count": count,
             "notice_ids": list(notice_ids),
+            "message_ids": list(message_ids),
         }
-        message = f"Cleared {count} lifecycle notice(s)."
+        message = f"Cleared {count} inbox item(s)."
     return result, message
 
 
 def _auto_research_inbox_effect_fits(
     mode: Literal["harvest", "clear"],
     notices: list[AutoResearchLifecycleNoticeRecord],
+    messages: list[AutoResearchMessageRecord] | None = None,
 ) -> bool:
     """Measure the exact successful command projection used by the effect layer."""
 
@@ -102,6 +121,8 @@ def _auto_research_inbox_effect_fits(
         mode,
         notice_ids=[notice.notice_id for notice in notices],
         notices=notices,
+        message_ids=[item.message_id for item in messages or []],
+        messages=messages,
     )
     try:
         exit_payload = json.dumps(
@@ -1008,11 +1029,13 @@ class AutoResearchChildrenStoreMixin:
         child_episode_id: str,
         *,
         diagnostic: str,
+        initiated_by: str | None = None,
     ) -> AutoResearchChildExperimentRecord:
         return self._settle_auto_research_experiment_replacement(
             child_episode_id,
             source_event="cancelled",
             diagnostic=diagnostic,
+            initiated_by=initiated_by,
         )
 
     def fail_auto_research_experiment_replacement(
@@ -1221,6 +1244,7 @@ class AutoResearchChildrenStoreMixin:
                     source_id=record.child_episode_id,
                     source_event="advanced",
                     source_attempt=1,
+                    wake_suppressed="self_caused",
                     payload={
                         "episode_id": record.child_episode_id,
                         "status": "running",
@@ -1288,8 +1312,8 @@ class AutoResearchChildrenStoreMixin:
             INSERT INTO auto_research_lifecycle_notices (
                 notice_id, episode_id, source_kind, source_id, source_event,
                 source_attempt, state, payload_json, created_at, delivered_at,
-                delivery_operation_id, acknowledged_at, acknowledged_by
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL)
+                delivery_operation_id, acknowledged_at, acknowledged_by, wake_suppressed
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL, ?)
             """,
             (
                 record.notice_id,
@@ -1300,6 +1324,7 @@ class AutoResearchChildrenStoreMixin:
                 record.source_attempt,
                 payload_json,
                 record.created_at,
+                record.wake_suppressed,
             ),
         )
         return record
@@ -1317,7 +1342,7 @@ class AutoResearchChildrenStoreMixin:
 
         task = connection.execute(
             """
-            SELECT operation_id, episode_id, attempt, native_session_id, stage_root
+            SELECT operation_id, episode_id, attempt, native_session_id, stage_root, failure_kind
             FROM graph_runs WHERE operation_id = ?
             """,
             (operation_id,),
@@ -1428,6 +1453,11 @@ class AutoResearchChildrenStoreMixin:
             source_id=source_id,
             source_event=status,
             source_attempt=attempt,
+            wake_suppressed=(
+                "provider_auth"
+                if status == "failed" and task["failure_kind"] == "provider_auth"
+                else None
+            ),
             payload=payload,
             created_at=created_at,
         )
@@ -1464,6 +1494,11 @@ class AutoResearchChildrenStoreMixin:
                 """,
                 (diagnostic, created_at, child_episode_id),
             )
+        child = connection.execute(
+            "SELECT stop_initiated_by FROM episodes WHERE episode_id = ?",
+            (child_episode_id,),
+        ).fetchone()
+        stop_initiated_by = child["stop_initiated_by"] if child is not None else None
         source_event = {
             "completed": "completed",
             "exhausted": "exhausted",
@@ -1492,6 +1527,13 @@ class AutoResearchChildrenStoreMixin:
             source_id=child_episode_id,
             source_event=source_event,
             source_attempt=1,
+            wake_suppressed=(
+                "self_caused"
+                if ending == "stopped"
+                and stop_initiated_by is not None
+                and stop_initiated_by.startswith("orchestrator:")
+                else None
+            ),
             payload=payload,
             created_at=created_at,
         )
@@ -1533,6 +1575,7 @@ class AutoResearchChildrenStoreMixin:
                 """
                 SELECT * FROM auto_research_lifecycle_notices
                 WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                AND wake_suppressed IS NULL
                 ORDER BY created_at, notice_id LIMIT ?
                 """,
                 (episode_id, max(1, min(limit, AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES))),
@@ -1558,6 +1601,7 @@ class AutoResearchChildrenStoreMixin:
                   AND episode.stop_requested_at IS NULL
                   AND notice.delivered_at IS NULL
                   AND notice.acknowledged_at IS NULL
+                  AND notice.wake_suppressed IS NULL
                   AND (? IS NULL OR episode.episode_id = ?)
                 ORDER BY episode.episode_id
                 """,
@@ -1599,6 +1643,7 @@ class AutoResearchChildrenStoreMixin:
             """
             SELECT * FROM auto_research_lifecycle_notices
             WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                AND wake_suppressed IS NULL
             ORDER BY created_at, notice_id LIMIT ?
             """,
             (episode_id, max(1, min(limit, AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES))),
@@ -1613,6 +1658,7 @@ class AutoResearchChildrenStoreMixin:
             SET state = 'delivered', delivered_at = ?, delivery_operation_id = ?
             WHERE notice_id IN ({placeholders})
               AND delivered_at IS NULL AND acknowledged_at IS NULL
+                AND wake_suppressed IS NULL
             """,
             (delivered_at, operation_id, *ids),
         )
@@ -1702,9 +1748,10 @@ class AutoResearchChildrenStoreMixin:
         effect_id: str,
         mode: Literal["harvest", "clear"],
         acknowledged_by: str,
+        delivery_operation_id: str | None = None,
         limit: int = 50,
     ) -> AutoResearchInboxReceiptRecord:
-        """Acknowledge one exact snapshot and durably bind it to a keyed effect."""
+        """Consume one bounded notice/mail snapshot and bind it to a keyed effect."""
 
         if not effect_id.strip():
             raise ValueError("a lifecycle inbox effect requires its durable id")
@@ -1728,57 +1775,32 @@ class AutoResearchChildrenStoreMixin:
                 ):
                     raise ValueError("the lifecycle inbox effect id already names another command")
                 return stored
-            self._load_auto_research_episode(connection, episode_id)
-            sql = """
+            episode = self._load_auto_research_episode(connection, episode_id)
+            rows = connection.execute(
+                """
                 SELECT * FROM auto_research_lifecycle_notices
                 WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
                 ORDER BY created_at, notice_id
-            """
-            parameters: tuple[object, ...] = (episode_id,)
-            if mode == "harvest":
-                sql += " LIMIT ?"
-                parameters = (
-                    episode_id,
-                    max(1, min(limit, AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES)),
-                )
-            rows = connection.execute(sql, parameters).fetchall()
+                """,
+                (episode_id,),
+            ).fetchall()
             pending = [self._lifecycle_notice_record(row) for row in rows]
-            clear_fits = None
-            if mode == "harvest" and pending:
-                acknowledged_first = pending[0].model_copy(
-                    update={
-                        "state": "acknowledged",
-                        "acknowledged_at": now,
-                        "acknowledged_by": acknowledged_by,
-                    }
-                )
-                if not _auto_research_inbox_effect_fits("harvest", [acknowledged_first]):
-                    clear_rows = connection.execute(
-                        """
-                        SELECT * FROM auto_research_lifecycle_notices
-                        WHERE episode_id = ?
-                          AND delivered_at IS NULL AND acknowledged_at IS NULL
-                        ORDER BY created_at, notice_id
-                        """,
-                        (episode_id,),
-                    ).fetchall()
-                    clear_snapshot = [
-                        self._lifecycle_notice_record(row).model_copy(
-                            update={
-                                "state": "acknowledged",
-                                "acknowledged_at": now,
-                                "acknowledged_by": acknowledged_by,
-                            }
-                        )
-                        for row in clear_rows
-                    ]
-                    clear_fits = _auto_research_inbox_effect_fits("clear", clear_snapshot)
-            notices = self._bounded_auto_research_inbox_snapshot(
+            mail_rows = connection.execute(
+                """
+                SELECT * FROM auto_research_messages
+                WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
+                ORDER BY created_at, message_id
+                """,
+                (episode_id, episode.root_operation_id),
+            ).fetchall()
+            mail = [self._auto_research_message_record(row) for row in mail_rows]
+            if mail and (not delivery_operation_id or not delivery_operation_id.strip()):
+                raise ValueError("mail harvest requires the consuming turn operation id")
+            notices, messages = self._bounded_auto_research_inbox_snapshot(
                 pending,
+                mail,
                 mode=mode,
-                acknowledged_at=now,
-                acknowledged_by=acknowledged_by,
-                clear_fits=clear_fits,
+                limit=limit,
             )
             self._acknowledge_lifecycle_rows(
                 connection,
@@ -1786,6 +1808,15 @@ class AutoResearchChildrenStoreMixin:
                 acknowledged_at=now,
                 acknowledged_by=acknowledged_by,
             )
+            for item in messages:
+                connection.execute(
+                    """
+                    UPDATE auto_research_messages
+                    SET delivered_at = ?, delivery_operation_id = ?
+                    WHERE message_id = ? AND delivered_at IS NULL
+                    """,
+                    (now, delivery_operation_id, item.message_id),
+                )
             acknowledged = [
                 notice.model_copy(
                     update={
@@ -1796,21 +1827,34 @@ class AutoResearchChildrenStoreMixin:
                 )
                 for notice in notices
             ]
+            delivered = [
+                item.model_copy(
+                    update={
+                        "delivered_at": now,
+                        "delivery_operation_id": delivery_operation_id,
+                    }
+                )
+                for item in messages
+            ]
             receipt = AutoResearchInboxReceiptRecord(
                 effect_id=effect_id,
                 episode_id=episode_id,
                 mode=mode,
                 notice_ids=[notice.notice_id for notice in acknowledged],
-                count=len(acknowledged),
+                message_ids=[item.message_id for item in delivered],
+                count=len(acknowledged) + len(delivered),
                 notices=acknowledged if mode == "harvest" else [],
+                messages=delivered if mode == "harvest" else [],
                 acknowledged_by=acknowledged_by,
                 created_at=now,
             )
             result_json = json.dumps(
                 {
                     "notice_ids": receipt.notice_ids,
+                    "message_ids": receipt.message_ids,
                     "count": receipt.count,
                     "notices": [notice.model_dump(mode="json") for notice in receipt.notices],
+                    "messages": [item.model_dump(mode="json") for item in receipt.messages],
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1821,75 +1865,64 @@ class AutoResearchChildrenStoreMixin:
                     effect_id, episode_id, mode, result_json, acknowledged_by, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    effect_id,
-                    episode_id,
-                    mode,
-                    result_json,
-                    acknowledged_by,
-                    now,
-                ),
+                (effect_id, episode_id, mode, result_json, acknowledged_by, now),
             )
         return receipt
 
     @staticmethod
     def _bounded_auto_research_inbox_snapshot(
         pending: list[AutoResearchLifecycleNoticeRecord],
+        mail: list[AutoResearchMessageRecord],
         *,
         mode: Literal["harvest", "clear"],
-        acknowledged_at: str,
-        acknowledged_by: str,
-        clear_fits: bool | None = None,
-    ) -> list[AutoResearchLifecycleNoticeRecord]:
-        """Choose the exact snapshot whose command response is durable.
+        limit: int,
+    ) -> tuple[list[AutoResearchLifecycleNoticeRecord], list[AutoResearchMessageRecord]]:
+        """Bound the combined response before either kind of input is consumed."""
 
-        The response ledger is smaller than the lifecycle handoff.  Selection
-        therefore happens before acknowledgment, inside the caller's immediate
-        transaction. Harvest takes an ordered bounded prefix. Clear remains
-        all-or-nothing and refuses before mutation when its compact full snapshot
-        cannot fit.
-        """
-
-        acknowledged = [
-            notice.model_copy(
-                update={
-                    "state": "acknowledged",
-                    "acknowledged_at": acknowledged_at,
-                    "acknowledged_by": acknowledged_by,
-                }
-            )
-            for notice in pending
-        ]
+        clear_fits = _auto_research_inbox_effect_fits("clear", pending, mail)
         if mode == "clear":
-            if _auto_research_inbox_effect_fits(mode, acknowledged):
-                return acknowledged
+            if clear_fits:
+                return pending, mail
             raise AutoResearchInboxClearTooLarge(
                 "Clear would exceed the durable command response limit, so no lifecycle "
-                "notices were acknowledged; run inbox --harvest with a new key before "
+                "notices or mail were consumed; run inbox --harvest with a new key before "
                 "running inbox --clear with another new key."
             )
-
-        selected: list[AutoResearchLifecycleNoticeRecord] = []
-        for notice in acknowledged:
-            candidate = [*selected, notice]
-            if not _auto_research_inbox_effect_fits(mode, candidate):
-                break
-            selected = candidate
-        if acknowledged and not selected:
-            if clear_fits is not True:
+        # A first item that cannot fit alone must remain pending, even if the
+        # other kind has smaller items. Clear can consume its id without a body.
+        first_notice_fits = not pending or _auto_research_inbox_effect_fits("harvest", pending[:1])
+        first_mail_fits = not mail or _auto_research_inbox_effect_fits("harvest", [], mail[:1])
+        if not first_notice_fits or not first_mail_fits:
+            kind = "lifecycle notice" if not first_notice_fits else "mail message"
+            if not clear_fits:
                 raise AutoResearchInboxNoticeUnacknowledgeable(
-                    "The oldest lifecycle notice cannot fit in Harvest, and the complete "
+                    f"The oldest {kind} cannot fit in Harvest, and the complete "
                     "Clear response also exceeds the durable command response limit; no "
-                    "lifecycle notices were acknowledged."
+                    "lifecycle notices or mail were consumed."
                 )
             raise AutoResearchInboxHarvestTooLarge(
-                "Harvest could not acknowledge the oldest lifecycle notice because its body "
+                f"Harvest could not acknowledge the oldest {kind} because its body "
                 "exceeds the durable command response limit; run inbox --key <new-key> "
                 "--clear to acknowledge it without returning the body."
             )
-        if not _auto_research_inbox_effect_fits(mode, selected):
+        notices: list[AutoResearchLifecycleNoticeRecord] = []
+        messages: list[AutoResearchMessageRecord] = []
+        # Merge the two ordered queues so a busy notice stream cannot starve mail.
+        items = sorted(
+            [(item.created_at, item.notice_id, "notice", item) for item in pending]
+            + [(item.created_at, item.message_id, "mail", item) for item in mail],
+            key=lambda item: item[:3],
+        )
+        bound = max(1, min(limit, AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES))
+        for _, _, kind, item in items[:bound]:
+            candidate_notices = [*notices, item] if kind == "notice" else notices
+            candidate_messages = [*messages, item] if kind == "mail" else messages
+            if not _auto_research_inbox_effect_fits(mode, candidate_notices, candidate_messages):
+                break
+            notices, messages = candidate_notices, candidate_messages
+        if not _auto_research_inbox_effect_fits(mode, notices, messages):
             raise RuntimeError("the empty lifecycle inbox response exceeds its durable limit")
-        return selected
+        return notices, messages
 
     def auto_research_lifecycle_notices(
         self,
@@ -2414,6 +2447,7 @@ class AutoResearchChildrenStoreMixin:
         *,
         source_event: Literal["cancelled", "failed"],
         diagnostic: str,
+        initiated_by: str | None = None,
     ) -> AutoResearchChildExperimentRecord:
         detail = " ".join(diagnostic.split())[:2000]
         if not detail:
@@ -2459,6 +2493,13 @@ class AutoResearchChildrenStoreMixin:
                 source_id=child_episode_id,
                 source_event=source_event,
                 source_attempt=1,
+                wake_suppressed=(
+                    "self_caused"
+                    if source_event == "cancelled"
+                    and initiated_by is not None
+                    and initiated_by.startswith("orchestrator:")
+                    else None
+                ),
                 payload=payload,
                 created_at=now,
             )
@@ -2569,6 +2610,8 @@ class AutoResearchChildrenStoreMixin:
                 "notice_ids": result["notice_ids"],
                 "count": result["count"],
                 "notices": result["notices"],
+                "message_ids": result.get("message_ids", []),
+                "messages": result.get("messages", []),
                 "acknowledged_by": row["acknowledged_by"],
                 "created_at": row["created_at"],
             }

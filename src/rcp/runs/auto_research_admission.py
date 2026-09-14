@@ -1402,13 +1402,15 @@ def resume_auto_research_child_experiment(
     )
 
 
-def stop_auto_research(tasks: BackgroundAgentTasks, episode_id: str) -> EpisodeRecord:
+def stop_auto_research(
+    tasks: BackgroundAgentTasks, episode_id: str, *, initiated_by: str | None = None
+) -> EpisodeRecord:
     """Persist Stop without cancelling the already-authorized actor turn."""
 
     before = tasks.store.episode(episode_id)
     if before is None or before.mode != "auto_research":
         raise KeyError(episode_id)
-    stopped = request_auto_research_stop(tasks.store, episode_id)
+    stopped = request_auto_research_stop(tasks.store, episode_id, initiated_by=initiated_by)
     if (
         before.stop_requested_at is None
         and stopped.stop_requested_at is not None

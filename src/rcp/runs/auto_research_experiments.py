@@ -248,11 +248,15 @@ class AutoResearchExperimentCoordinator:
         self,
         auto_research_episode_id: str,
         child_episode_id: str,
+        *,
+        operation_id: str | None = None,
     ) -> AutoResearchExperimentAction:
+        initiated_by = f"orchestrator:{operation_id}" if operation_id is not None else None
         route = self._child(auto_research_episode_id, child_episode_id)
         if route.state == "pending":
             cancelled = self.store.cancel_auto_research_experiment_replacement(
                 child_episode_id,
+                initiated_by=initiated_by,
                 diagnostic="Auto-research cancelled the pending Experiment replacement.",
             )
             return AutoResearchExperimentAction(
@@ -285,6 +289,7 @@ class AutoResearchExperimentCoordinator:
                     route.control_node_id,
                     episode_id=child.episode_id,
                     graph_target=child.graph_target,
+                    initiated_by=initiated_by,
                 )
         child = self.store.episode(child_episode_id)
         status = child.status if child is not None else "stopped"
@@ -428,6 +433,7 @@ class AutoResearchExperimentCoordinator:
             route.control_node_id,
             episode_id=predecessor.episode_id,
             graph_target=predecessor.graph_target,
+            initiated_by=f"orchestrator:{route.parent_operation_id}",
         )
 
     def _fresh_request_from_route(

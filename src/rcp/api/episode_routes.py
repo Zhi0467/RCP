@@ -223,11 +223,13 @@ def stop_episode(
     background_tasks: BackgroundTasksDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> EpisodeResponse:
-    identity_access.require_patch_capable_identity(request)
+    actor = identity_access.require_patch_capable_identity(request)
     episode = _episode_for_http(store, catalog, project_id, episode_id)
     if episode.mode == "auto_research":
         try:
-            stop_auto_research(background_tasks, episode.episode_id)
+            stop_auto_research(
+                background_tasks, episode.episode_id, initiated_by=f"human:{actor.user_id}"
+            )
             settle_auto_research_stop(store, episode.episode_id)
         except EpisodeNotRunning as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -238,6 +240,7 @@ def stop_episode(
                 episode,
                 store=store,
                 catalog=catalog,
+                initiated_by=f"human:{actor.user_id}",
             )
     else:
         raise HTTPException(status_code=409, detail="This episode cannot be stopped.")

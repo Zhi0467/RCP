@@ -503,7 +503,7 @@ class AutoResearchStoreMixin:
         notices = connection.execute(
             f"""
             SELECT notice_id, episode_id, delivered_at, delivery_operation_id,
-                   acknowledged_at
+                   acknowledged_at, wake_suppressed
             FROM auto_research_lifecycle_notices
             WHERE notice_id IN ({notice_placeholders})
             """,
@@ -514,7 +514,8 @@ class AutoResearchStoreMixin:
         if any(item["episode_id"] != record.episode_id for item in notices):
             raise ValueError("Auto-research lifecycle delivery crosses an episode")
         if any(
-            item["delivered_at"] is not None
+            item["wake_suppressed"] is not None
+            or item["delivered_at"] is not None
             or item["delivery_operation_id"] is not None
             or item["acknowledged_at"] is not None
             for item in notices
@@ -525,7 +526,7 @@ class AutoResearchStoreMixin:
             """
             SELECT notice_id FROM auto_research_lifecycle_notices
             WHERE episode_id = ? AND delivered_at IS NULL
-              AND acknowledged_at IS NULL
+              AND acknowledged_at IS NULL AND wake_suppressed IS NULL
             ORDER BY created_at, notice_id LIMIT ?
             """,
             (record.episode_id, len(lifecycle_notice_ids)),
@@ -537,6 +538,7 @@ class AutoResearchStoreMixin:
                 """
                 SELECT notice_id FROM auto_research_lifecycle_notices
                 WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                  AND wake_suppressed IS NULL
                 """,
                 (record.episode_id,),
             ).fetchall()
@@ -1354,6 +1356,8 @@ class AutoResearchStoreMixin:
                 """
                 UPDATE episodes
                 SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                    stop_initiated_by = CASE WHEN stop_requested_at IS NULL
+                        THEN 'system:restore' ELSE stop_initiated_by END,
                     stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
                     ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
                     updated_at = ?, ended_at = COALESCE(ended_at, ?)
@@ -1664,13 +1668,17 @@ class AutoResearchStoreMixin:
                 now=now,
             )
 
-    def request_auto_research_stop_and_settle_watchers(self, episode_id: str) -> EpisodeRecord:
+    def request_auto_research_stop_and_settle_watchers(
+        self, episode_id: str, *, initiated_by: str | None = None
+    ) -> EpisodeRecord:
         """Persist Auto-research Stop and retire its watchers in one transaction."""
 
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            episode = self._request_episode_stop_in_connection(connection, episode_id, now=now)
+            episode = self._request_episode_stop_in_connection(
+                connection, episode_id, now=now, initiated_by=initiated_by
+            )
             children = connection.execute(
                 """
                 SELECT child.episode_id FROM auto_research_child_experiments AS route
@@ -1682,7 +1690,7 @@ class AutoResearchStoreMixin:
             ).fetchall()
             for child in children:
                 self._request_episode_stop_in_connection(
-                    connection, str(child["episode_id"]), now=now
+                    connection, str(child["episode_id"]), now=now, initiated_by=initiated_by
                 )
             self._settle_auto_research_watchers_in_connection(
                 connection,
@@ -1903,7 +1911,9 @@ class AutoResearchStoreMixin:
         if not tasks:
             raise ValueError("the Auto-research branch is not paused with all child work settled")
         diagnostic = "The human ended this paused episode to merge its graph branch to main."
-        self._request_episode_stop_in_connection(connection, episode.episode_id, now=now)
+        self._request_episode_stop_in_connection(
+            connection, episode.episode_id, now=now, initiated_by=None
+        )
         for task in tasks:
             self._abandon_auto_research_recovery_in_connection(
                 connection, task.operation_id, diagnostic=diagnostic, now=now

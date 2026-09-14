@@ -1809,3 +1809,58 @@ def test_a_provable_legacy_exit_keeps_its_ending(exit_ending: str, expected: str
 
     assert ending == expected
     assert wrapup_state == "legacy_unavailable"
+
+
+@pytest.mark.parametrize(
+    "initiated_by", ["human:researcher", "orchestrator:turn-1", "system:member_removed", None]
+)
+def test_stop_provenance_round_trips_and_first_fence_wins(tmp_path, initiated_by) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_episode(_episode(store, "stopped"))
+    stopped = store.request_episode_stop("stopped", initiated_by=initiated_by)
+    assert stopped.stop_initiated_by == initiated_by
+    assert store.episode("stopped").stop_initiated_by == initiated_by
+    assert store.request_episode_stop("stopped", initiated_by="human:another") == stopped
+    settled = store.mark_episode_stop_skipped("stopped")
+    assert settled.stop_initiated_by == initiated_by
+
+
+def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    original = store.create_episode(_episode(store, "legacy"))
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE episodes DROP COLUMN stop_initiated_by")
+        connection.execute(
+            "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN wake_suppressed"
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 19")
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 18
+        )
+    upgraded = AppStore(path)
+    assert upgraded.episode("legacy") == original
+    assert (
+        upgraded.request_episode_stop("legacy", initiated_by="human:researcher").stop_initiated_by
+        == "human:researcher"
+    )
+    with upgraded.connection() as connection:
+        assert "wake_suppressed" in {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(auto_research_lifecycle_notices)")
+        }
+        assert (
+            connection.execute(
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 19"
+            ).fetchone()[0]
+            == "episode_stop_provenance_v1"
+        )
+
+    def unexpected_migration(*_args):
+        pytest.fail("completed provenance migration was rerun")
+
+    monkeypatch.setattr(AppStore, "_migrate_episode_stop_provenance", unexpected_migration)
+    assert AppStore(path).episode("legacy").stop_initiated_by == "human:researcher"

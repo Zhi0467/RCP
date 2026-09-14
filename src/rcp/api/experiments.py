@@ -200,6 +200,7 @@ def stop_bound_experiment_episode(
     *,
     store: AppStore,
     catalog: ProjectCatalog,
+    initiated_by: str | None = None,
 ) -> ExperimentControlState:
     """Stop one exact current loop against the graph target it actually controls."""
 
@@ -251,6 +252,7 @@ def stop_bound_experiment_episode(
             node_id,
             episode_id=episode.episode_id,
             graph_target=episode.graph_target,
+            initiated_by=initiated_by,
         )
     except EpisodeNotRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -287,7 +289,7 @@ def stop_experiment_loop(
     again changes nothing.
     """
 
-    identity_access.require_patch_capable_identity(request)
+    actor = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     target = get_graph_service(catalog, project_id, branch_id).history.graph_target
     with experiment_operation_lock(project_id):
@@ -319,6 +321,7 @@ def stop_experiment_loop(
             episode,
             store=store,
             catalog=catalog,
+            initiated_by=f"human:{actor.user_id}",
         )
     return control.model_dump(mode="json")
 

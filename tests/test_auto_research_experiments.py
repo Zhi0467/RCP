@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,14 @@ from rcp.config import Manifest, write_agent_settings
 from rcp.core.models import Experiment, Patch
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
+from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     start_auto_research,
     start_auto_research_child_experiment,
 )
+from rcp.runs.auto_research_delivery import deliver_pending_auto_research_lifecycle
 from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentCoordinator,
     AutoResearchExperimentLimitInvalid,
@@ -36,6 +39,7 @@ from rcp.storage import (
     AutoResearchExperimentAllowanceReached,
     ProjectRecord,
 )
+from rcp.storage.models import _required_timestamp
 
 from .helpers import fabricated_authorizer, wait_for_task, wait_until
 
@@ -1062,8 +1066,9 @@ def test_active_predecessor_is_gracefully_stopped_and_pending_replacement_can_ca
     assert predecessor_episode is not None
     assert predecessor_episode.stop_requested_at is not None
     assert predecessor_episode.stop_settled_at is None
+    assert predecessor_episode.stop_initiated_by == f"orchestrator:{root_id}"
 
-    cancelled = coordinator.stop(parent_id, REPLACEMENT_TO_CANCEL)
+    cancelled = coordinator.stop(parent_id, REPLACEMENT_TO_CANCEL, operation_id=root_id)
     assert cancelled.disposition == "cancelled"
     route = store.auto_research_child_experiment(REPLACEMENT_TO_CANCEL)
     assert route is not None and route.state == "cancelled"
@@ -1071,6 +1076,9 @@ def test_active_predecessor_is_gracefully_stopped_and_pending_replacement_can_ca
     assert [(item.source_kind, item.source_id, item.source_event) for item in notices] == [
         ("experiment_replacement", REPLACEMENT_TO_CANCEL, "cancelled")
     ]
+
+    assert notices[0].wake_suppressed == "self_caused"
+    assert deliver_pending_auto_research_lifecycle(background, episode_id=parent_id) is None
 
     release.set()
     wait_for_task(store, predecessor.operation_id, expect="succeeded")
@@ -1133,6 +1141,7 @@ def test_restart_reconciliation_reissues_stop_after_durable_replacement_reservat
 
     stopping = store.episode(RESTART_PREDECESSOR)
     assert stopping is not None and stopping.stop_requested_at is not None
+    assert stopping.stop_initiated_by == f"orchestrator:{root_id}"
     route = store.auto_research_child_experiment(RESTART_REPLACEMENT)
     assert route is not None and route.state == "pending"
 
@@ -1277,6 +1286,7 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
 def test_kickoff_replaces_a_live_predecessor_even_when_its_runtime_is_idle(
     manifest: Manifest,
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     service, store, background, coordinator, parent_id, root_id = _setup(
         manifest,
@@ -1318,6 +1328,32 @@ def test_kickoff_replaces_a_live_predecessor_even_when_its_runtime_is_idle(
     assert store.episode(IDLE_PREDECESSOR).status == "stopped"  # type: ignore[union-attr]
     route = store.auto_research_child_experiment(IDLE_REPLACEMENT)
     assert route is not None and route.state == "running"
+
+    stage = tmp_path / "root-stage"
+    stage.mkdir()
+    store.checkpoint_agent_task(root_id, native_session_id="root-session", stage_root=str(stage))
+    later = (
+        _required_timestamp(store.now())
+        + timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+    ).isoformat()
+    monkeypatch.setattr(store, "now", lambda: later)
+    notices = store.auto_research_lifecycle_notices(parent_id)
+    advanced = [item for item in notices if item.source_event == "advanced"]
+    assert len(advanced) == 1 and advanced[0].wake_suppressed == "self_caused"
+    assert deliver_pending_auto_research_lifecycle(background, episode_id=parent_id) is None
+    assert store.episode(IDLE_PREDECESSOR).stop_initiated_by == f"orchestrator:{root_id}"
+    wait_for_task(store, action.operation_id, expect="succeeded")
+    coordinator.stop(parent_id, IDLE_REPLACEMENT, operation_id=root_id)
+    stopped = store.episode(IDLE_REPLACEMENT)
+    assert stopped is not None and stopped.stop_initiated_by == f"orchestrator:{root_id}"
+    stopped_notices = [
+        item
+        for item in store.auto_research_lifecycle_notices(parent_id)
+        if item.source_event == "stopped"
+    ]
+    assert len(stopped_notices) == 1
+    assert stopped_notices[0].wake_suppressed == "self_caused"
+    assert deliver_pending_auto_research_lifecycle(background, episode_id=parent_id) is None
 
 
 def test_pending_replacement_waits_for_temporary_readiness_and_retries_same_intent(
@@ -1412,9 +1448,9 @@ def test_pending_replacement_waits_for_temporary_readiness_and_retries_same_inte
 
 
 def test_pending_replacement_with_corrupt_durable_intent_fails_terminally(
-    manifest: Manifest, tmp_path: Path
+    manifest: Manifest, tmp_path: Path, monkeypatch
 ) -> None:
-    _service_value, store, _background, coordinator, parent_id, root_id = _setup(
+    _service_value, store, background, coordinator, parent_id, root_id = _setup(
         manifest,
         tmp_path,
     )
@@ -1448,3 +1484,23 @@ def test_pending_replacement_with_corrupt_durable_intent_fails_terminally(
     assert route is not None and route.state == "cancelled"
     assert route.terminal_diagnostic is not None
     assert "invalid goal" in route.terminal_diagnostic
+    notices = store.pending_auto_research_lifecycle_notices(parent_id)
+    assert len(notices) == 1
+    assert notices[0].source_event == "failed"
+    assert notices[0].wake_suppressed is None
+    stage = tmp_path / "root-stage"
+    stage.mkdir()
+    store.checkpoint_agent_task(root_id, native_session_id="root-session", stage_root=str(stage))
+    later = (
+        _required_timestamp(store.now())
+        + timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+    ).isoformat()
+    monkeypatch.setattr(store, "now", lambda: later)
+    before = store.episode_budget_meter(parent_id).invocations_used
+    wake_id = deliver_pending_auto_research_lifecycle(background, episode_id=parent_id)
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="succeeded")
+    assert store.episode_budget_meter(parent_id).invocations_used == before + 1
+    assert [item.notice_id for item in store.auto_research_lifecycle_delivery(wake_id)] == [
+        notices[0].notice_id
+    ]

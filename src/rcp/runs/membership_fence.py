@@ -97,20 +97,21 @@ def _fence_one(
 ) -> None:
     episode_id = episode.episode_id
     if episode.mode == "auto_research":
-        stop_auto_research(background_tasks, episode_id)
+        stop_auto_research(background_tasks, episode_id, initiated_by="system:member_removed")
         settle_auto_research_stop(store, episode_id, diagnostic=diagnostic)
         return
     node_id = _experiment_control_node(store, project_id, episode_id)
     if node_id is None:
         # Its Stop is still durable: the episode-level request is what fences
         # new admissions, and the loop reads it before claiming a wake.
-        store.request_episode_stop(episode_id)
+        store.request_episode_stop(episode_id, initiated_by="system:member_removed")
         return
     store.request_experiment_loop_stop(
         project_id,
         node_id,
         episode_id=episode.episode_id,
         graph_target=episode.graph_target,
+        initiated_by="system:member_removed",
     )
 
 

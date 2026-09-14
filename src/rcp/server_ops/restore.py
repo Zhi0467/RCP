@@ -86,6 +86,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # a fresh install and an installation that upgraded in place.
         "b35f70af4a53d4bac03d7af45eca7ccb9ec2343460cae1b4810250979ab6077b",
         "2342bd789302cab58123ce9cfec4c39a2e2a92ac86ff7d8839327afac8d3ab8b",
+        # Episode Stop provenance and lifecycle wake suppression, fresh and upgraded.
+        "cebd2eeb1227eea61c56d9fc96c953e60a12902273ef79a3be76014cbfea1655",
+        "54df9d9d1875cced1d511ebe2586df022959ae438a7c620e4eb3fe789a7aa429",
     }
 )
 

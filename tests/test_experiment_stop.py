@@ -604,6 +604,9 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
 
     first = loop.stop()
     episode_after_first = loop.store.experiment_episode(loop.episode_id)
+    assert loop.store.episode(loop.episode_id).stop_initiated_by == (
+        f"human:{loop.store.local_owner.user_id}"
+    )
     watcher_after_first = loop.store.watcher("finished-unclaimed")
     tasks_after_first = loop.loop_task_ids()
 

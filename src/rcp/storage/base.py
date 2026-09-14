@@ -53,6 +53,7 @@ class AppStoreBase:
         (16, "agent_task_failure_kind_v1"),
         (17, "episode_report_titles_v1"),
         (18, "provider_login_states_v1"),
+        (19, "episode_stop_provenance_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -545,6 +546,12 @@ class AppStoreBase:
             version=18,
             name="provider_login_states_v1",
             migration=self._migrate_provider_login_states,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=19,
+            name="episode_stop_provenance_v1",
+            migration=self._migrate_episode_stop_provenance,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1983,6 +1990,7 @@ class AppStoreBase:
         self._migrate_team_session_ids(connection)
         self._ensure_column(connection, "episode_reports", "display_title", "TEXT")
         self._migrate_provider_login_states(connection)
+        self._migrate_episode_stop_provenance(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2001,6 +2009,16 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_episode_stop_provenance(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "episodes", "stop_initiated_by", "TEXT")
+        cls._ensure_column(
+            connection,
+            "auto_research_lifecycle_notices",
+            "wake_suppressed",
+            "TEXT CHECK (wake_suppressed IN ('self_caused', 'provider_auth'))",
+        )
 
     @staticmethod
     def _migrate_provider_login_states(connection: sqlite3.Connection) -> None:

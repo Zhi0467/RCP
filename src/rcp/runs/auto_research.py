@@ -255,11 +255,15 @@ def auto_research_failure_signal(
     )
 
 
-def request_auto_research_stop(store: AppStore, episode_id: str) -> EpisodeRecord:
+def request_auto_research_stop(
+    store: AppStore, episode_id: str, *, initiated_by: str | None = None
+) -> EpisodeRecord:
     """Persist Stop and retain every Auto watcher as one atomic boundary."""
 
     _auto_research_episode(store, episode_id)
-    return store.request_auto_research_stop_and_settle_watchers(episode_id)
+    return store.request_auto_research_stop_and_settle_watchers(
+        episode_id, initiated_by=initiated_by
+    )
 
 
 def settle_auto_research_stop(

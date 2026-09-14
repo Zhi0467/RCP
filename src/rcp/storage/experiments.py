@@ -2224,6 +2224,7 @@ class ExperimentStoreMixin:
         project_id: str,
         control_node_id: str,
         *,
+        initiated_by: str | None = None,
         episode_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
     ) -> ExperimentEpisodeRecord | None:
@@ -2248,7 +2249,7 @@ class ExperimentStoreMixin:
         if selected is None:
             return None
         selected_episode_id, selected_target = selected
-        self.request_episode_stop(selected_episode_id)
+        self.request_episode_stop(selected_episode_id, initiated_by=initiated_by)
         return self.settle_experiment_loop_stop(
             project_id,
             control_node_id,

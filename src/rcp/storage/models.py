@@ -2330,6 +2330,7 @@ class EpisodeRecord(BaseModel):
     invocations_used: int = Field(default=0, ge=0)
     authorized_by: AuthorizedHuman | None = None
     stop_requested_at: str | None = None
+    stop_initiated_by: str | None = None
     stop_settled_at: str | None = None
     ending: EpisodeEnding | None = None
     ending_diagnostic: str | None = None
@@ -2681,6 +2682,7 @@ class AutoResearchLifecycleNoticeRecord(BaseModel):
     source_event: str
     source_attempt: int = Field(default=1, ge=1)
     state: AutoResearchLifecycleNoticeState = "pending"
+    wake_suppressed: Literal["self_caused", "provider_auth"] | None = None
     payload: dict[str, object]
     created_at: str
     delivered_at: str | None = None
@@ -2706,8 +2708,38 @@ class AutoResearchLifecycleNoticeRecord(BaseModel):
         return self
 
 
+class AutoResearchMessageRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    episode_id: str
+    sender_role: AutoResearchMessageRole
+    sender_task_id: str | None = None
+    authorized_by: AuthorizedHuman | None = None
+    recipient_task_id: str
+    control_node_id: str | None = None
+    body: str = Field(min_length=1, max_length=16_000)
+    created_at: str
+    delivered_at: str | None = None
+    delivery_operation_id: str | None = None
+
+    @field_validator("body")
+    @classmethod
+    def message_body_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Auto-research message body must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
+        if self.sender_role != "human" and self.authorized_by is not None:
+            raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
+        return self
+
+
 class AutoResearchInboxReceiptRecord(BaseModel):
-    """The exact lifecycle-notice snapshot acknowledged by one keyed inbox effect."""
+    """The exact notice and mail snapshot consumed by one keyed inbox effect."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2715,6 +2747,8 @@ class AutoResearchInboxReceiptRecord(BaseModel):
     episode_id: str
     mode: AutoResearchInboxReceiptMode
     notice_ids: list[str]
+    message_ids: list[str] = Field(default_factory=list)
+    messages: list[AutoResearchMessageRecord] = Field(default_factory=list)
     count: int = Field(ge=0)
     notices: list[AutoResearchLifecycleNoticeRecord] = Field(default_factory=list)
     acknowledged_by: str
@@ -2722,12 +2756,21 @@ class AutoResearchInboxReceiptRecord(BaseModel):
 
     @model_validator(mode="after")
     def result_matches_mode(self) -> AutoResearchInboxReceiptRecord:
-        if self.count != len(self.notice_ids) or len(set(self.notice_ids)) != self.count:
-            raise ValueError("an inbox receipt count must match its unique notice ids")
-        if self.mode == "clear" and self.notices:
-            raise ValueError("a clear receipt must not retain notice bodies")
+        if (
+            self.count != len(self.notice_ids) + len(self.message_ids)
+            or len(set(self.notice_ids)) != len(self.notice_ids)
+            or len(set(self.message_ids)) != len(self.message_ids)
+        ):
+            raise ValueError("an inbox receipt count must match its unique notice and message ids")
+        if self.mode == "clear" and (self.notices or self.messages):
+            raise ValueError("a clear receipt must not retain notice or message bodies")
         if self.mode == "harvest" and [item.notice_id for item in self.notices] != self.notice_ids:
             raise ValueError("a harvest receipt body must match its notice ids in order")
+        if (
+            self.mode == "harvest"
+            and [item.message_id for item in self.messages] != self.message_ids
+        ):
+            raise ValueError("a harvest receipt body must match its message ids in order")
         return self
 
 
@@ -2848,36 +2891,6 @@ class AutoResearchRecoveryRecord(BaseModel):
     admitted_operation_id: str | None = None
     created_at: str
     updated_at: str
-
-
-class AutoResearchMessageRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    message_id: str
-    episode_id: str
-    sender_role: AutoResearchMessageRole
-    sender_task_id: str | None = None
-    authorized_by: AuthorizedHuman | None = None
-    recipient_task_id: str
-    control_node_id: str | None = None
-    body: str = Field(min_length=1, max_length=16_000)
-    created_at: str
-    delivered_at: str | None = None
-    delivery_operation_id: str | None = None
-
-    @field_validator("body")
-    @classmethod
-    def message_body_is_not_blank(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("Auto-research message body must not be blank")
-        return stripped
-
-    @model_validator(mode="after")
-    def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
-        if self.sender_role != "human" and self.authorized_by is not None:
-            raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
-        return self
 
 
 class AutoResearchActorBinding(BaseModel):
