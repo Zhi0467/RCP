@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
+from rcp.api.episodes import episode_on_branch
 from rcp.background import AgentTaskExecution
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import RunRequest
@@ -160,6 +161,12 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(manifest
     assert notices[0].payload["continues_episode_id"] == original.episode_id
     chain = store.episode_chain(original.episode_id)
     assert [member.episode_id for member in chain] == [original.episode_id, continuation_id]
+    # Child routes moved to the continuation still belong to the branch: the
+    # consumers that once required the root's id accept any chain member.
+    assert episode_on_branch(store, continuation_id, original.episode_id)
+    assert episode_on_branch(store, original.episode_id, original.episode_id)
+    assert not episode_on_branch(store, original.episode_id, continuation_id)
+    assert not episode_on_branch(store, None, original.episode_id)
 
     # Once the newest member alone overflows the response, the source is not
     # hydrated at all and the response says it is truncated.

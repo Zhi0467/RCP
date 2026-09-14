@@ -1440,10 +1440,12 @@ export function ExecutionView({
 
   function renderEpisodeCard(episode: Episode, initiallyExpanded: boolean) {
     if (episode.mode === "auto_research") {
+      // A chain is one card, so children of every member are listed on it.
+      const chain = episodeChain(episodeRecords, episode);
       return (
         <AutoResearchEpisodeCard
           episode={episode}
-          chain={episodeChain(episodeRecords, episode)}
+          chain={chain}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={
@@ -1453,7 +1455,9 @@ export function ExecutionView({
           }
           busyAction={episodeAction}
           taskActionId={taskActionId}
-          childExperiments={childExperimentsByParent.get(episode.episode_id) ?? []}
+          childExperiments={chain.flatMap(
+            (member) => childExperimentsByParent.get(member.episode_id) ?? [],
+          )}
           onOpenExperimentEntry={(entry) => {
             onSelectExperiment(entry.node.id);
             onOpenExperimentEntry(entry);

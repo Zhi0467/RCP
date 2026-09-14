@@ -541,6 +541,24 @@ def serialize_episodes(
     ]
 
 
+def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -> bool:
+    """Whether ``episode_id`` names a member of the branch's continuation chain.
+
+    A branch keeps its chain root's id while child routes and Work allocations
+    belong to whichever member owns them now, so ownership is chain membership,
+    not identity with the root.
+    """
+
+    if episode_id is None:
+        return False
+    member = store.episode(episode_id)
+    return (
+        member is not None
+        and member.graph_target.kind == "branch"
+        and member.graph_target.branch_id == branch_id
+    )
+
+
 def _operational_tasks(
     store: AppStore, episode: EpisodeRecord, *, newest: int | None = None
 ) -> list[AgentTaskRecord]:

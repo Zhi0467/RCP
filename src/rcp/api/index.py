@@ -22,6 +22,7 @@ from rcp.api.dependencies import (
 from rcp.api.episode_branches import graph_branch_summary
 from rcp.api.episodes import (
     EpisodeResponse,
+    episode_on_branch,
     serialize_episode,
     space_auto_research_episode_projection,
 )
@@ -380,7 +381,9 @@ def _experiment_episode_entries(
                     and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
                     for watcher in active_graph_watchers
                 )
-                if target.kind == "branch" and parent_episode_id != target.branch_id:
+                if target.kind == "branch" and not episode_on_branch(
+                    store, parent_episode_id, target.branch_id
+                ):
                     raise ValueError(
                         "Branch-target Experiment lost its Auto-research parent identity."
                     )
@@ -523,7 +526,9 @@ def space_runs(
                 or route.control_node_id != episode.control_node_id
                 or (
                     episode.graph_target.kind == "branch"
-                    and route.auto_research_episode_id != episode.graph_target.branch_id
+                    and not episode_on_branch(
+                        store, route.auto_research_episode_id, episode.graph_target.branch_id
+                    )
                 )
             ):
                 raise ValueError("Archived Experiment route does not identify its durable episode.")

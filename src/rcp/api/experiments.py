@@ -17,7 +17,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
-from rcp.api.episodes import _episode_for_http
+from rcp.api.episodes import _episode_for_http, episode_on_branch
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
@@ -232,7 +232,9 @@ def stop_bound_experiment_episode(
         raise HTTPException(status_code=404, detail="Experiment not found")
     if episode.graph_target.kind == "branch":
         route = store.auto_research_child_experiment(episode.episode_id)
-        if route is not None and route.auto_research_episode_id != episode.graph_target.branch_id:
+        if route is not None and not episode_on_branch(
+            store, route.auto_research_episode_id, episode.graph_target.branch_id
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="The branch Experiment lost its Auto-research parent binding.",
