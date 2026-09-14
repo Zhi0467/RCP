@@ -13,6 +13,7 @@ from rcp.api.episodes import episode_on_branch
 from rcp.background import AgentTaskExecution
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import RunRequest
+from rcp.transport import StateUnavailable
 
 from .helpers import create_named_app, wait_for_task
 from .test_episode_api import _sse, create_terminal_auto_episode
@@ -39,7 +40,9 @@ def _session_resuming_stream(
     return stream
 
 
-def test_continue_resumes_an_ended_auto_research_episode_in_its_session(manifest, tmp_path) -> None:
+def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
+    manifest, tmp_path, monkeypatch
+) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -118,6 +121,23 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(manifest
 
         continuation_root = wait_for_task(store, continuation_root_id, expect="succeeded")
         assert seen == [(original_root.native_session_id, original_root.stage_root)]
+
+        # A lost response is replayed even while the project cannot take a write.
+        def unavailable(state=None):
+            # Only the explicit admission check is refused; state passthrough stays coherent.
+            if state is None:
+                raise StateUnavailable("the canonical state is read-only right now")
+            return state
+
+        monkeypatch.setattr(
+            app.state.catalog.open(project_id).history, "require_writable", unavailable
+        )
+        replay_read_only = client.post(
+            f"{base}/continue", json={"invocation_ceiling": 4, "request_id": request_id}
+        )
+        assert replay_read_only.status_code == 200, replay_read_only.text
+        assert replay_read_only.json()["episode_id"] == continuation_id
+        monkeypatch.undo()
 
         old_after = next(
             item

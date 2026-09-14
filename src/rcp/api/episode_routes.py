@@ -355,8 +355,14 @@ def continue_episode(
     if source.status not in {"completed", "failed", "needs_action", "stopped"}:
         raise HTTPException(status_code=409, detail="Only an ended episode can be continued.")
     existing = store.episode_continuation(source.episode_id)
-    if existing is not None and existing.continuation_request_id != body.request_id:
-        raise HTTPException(status_code=409, detail="This episode has already been continued.")
+    if existing is not None:
+        if existing.continuation_request_id != body.request_id:
+            raise HTTPException(status_code=409, detail="This episode has already been continued.")
+        # A committed continuation is replayed as is; no fresh write is admitted.
+        replayed = serialize_episode(
+            store, project_id, existing, branch_summary=_branch_summary(store, catalog)
+        )
+        return JSONResponse(status_code=200, content=replayed.model_dump(mode="json"))
     service = get_project_service(catalog, project_id)
     try:
         service.history.require_writable()
@@ -383,15 +389,12 @@ def continue_episode(
             )
     except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    response = serialize_episode(
+    return serialize_episode(
         store,
         project_id,
         continuation,
         branch_summary=_branch_summary(store, catalog),
     )
-    if existing is not None:
-        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
-    return response
 
 
 @router.get(
