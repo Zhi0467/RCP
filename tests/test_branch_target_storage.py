@@ -358,20 +358,16 @@ def test_completed_watcher_delivery_groups_do_not_cross_graph_targets(tmp_path: 
     }
 
 
-def test_branch_merge_task_requires_ended_quiescent_branch_and_exact_authority(
+def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
     episode, root = _create_auto_episode(store)
 
-    with pytest.raises(ValueError, match="not paused with all child work settled"):
+    # The queued orchestrator turn is a live writer; the episode's ending is not a condition.
+    with pytest.raises(ValueError, match="active writer"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-active"))
-
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    with pytest.raises(ValueError, match="not paused with all child work settled"):
-        store.create_branch_merge_task(_merge_task(store, episode, "merge-not-ended"))
-
-    store.mark_episode_stop_skipped(episode.episode_id)
 
     with pytest.raises(ValueError, match="visible attributed branch root"):
         store.create_branch_merge_task(
@@ -451,13 +447,15 @@ def test_ordinary_branch_recovery_settles_and_merge_fences_new_chat(tmp_path):
     previous = store.create_agent_task(_ordinary_branch_chat(store, episode, status="paused"))
     assert previous.episode_id is None
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    store.mark_episode_stop_skipped(episode.episode_id)
-    with pytest.raises(ValueError, match="active writer"):
-        store.create_branch_merge_task(_merge_task(store, episode, "merge-before-recovery"))
+    # The paused chat is not writing; its queued recovery turn is, and it names itself.
     recovered = store.create_agent_task(
-        _ordinary_branch_chat(store, episode, parent=previous), continuation_cause="retry"
+        _ordinary_branch_chat(store, episode, parent=previous, status="queued"),
+        continuation_cause="retry",
     )
     assert recovered.episode_id is None
+    with pytest.raises(ValueError, match="active writer"):
+        store.create_branch_merge_task(_merge_task(store, episode, "merge-during-recovery"))
+    store.complete_agent_task(recovered.operation_id, applied_revision=None, result={})
     assert store.unsettled_graph_target_tasks(episode.project_id, episode.graph_target) == []
     merge = store.create_branch_merge_task(_merge_task(store, episode, "merge-after-recovery"))
     with pytest.raises(ValueError, match="being merged"):
