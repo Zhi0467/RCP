@@ -1761,14 +1761,23 @@ class BackgroundAgentTasks:
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
         if kind == "provider_auth" and provider:
+            host = execution.stage_host or ""
             record_provider_failure(
                 self.store,
                 provider,
-                execution.stage_host or "",
+                host,
                 generation=execution.login_generation,
                 evidence=error,
                 source="turn",
             )
+            state = self.store.provider_login_state(provider, host)
+            if state.state == "signed_in" and state.generation > execution.login_generation:
+                # The startup gate is released once the provider speaks, so a member
+                # can verify the account before this turn reports the old login's
+                # death. The store already ignored that stale failure; the task must
+                # not be parked behind a sign-in nobody needs to repeat. It fails as
+                # an ordinary provider error and recovery retries it.
+                kind = None
         return kind
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:

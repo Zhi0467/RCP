@@ -2996,7 +2996,9 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     task = _admitted_launch_task(store, operation_id="late-dead-login")
     tasks.launch_admitted(task.operation_id)
     finished = wait_for_task(store, task.operation_id, expect="failed")
-    assert finished.failure_kind == "provider_auth"
+    # The account was repaired after this turn captured its generation, so the
+    # stale failure neither fences the login nor parks the task behind sign-in.
+    assert finished.failure_kind is None
     state = store.provider_login_state("codex", "")
     assert state.state == "signed_in"
     assert state.generation == 1
