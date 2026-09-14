@@ -16,6 +16,9 @@ from rcp.transfer.records import (
     TransferEpisodeArchiveRecord,
     TransferEpisodeInvocation,
     TransferEpisodeRecord,
+    TransferEpisodeReport,
+    TransferEpisodeReportAttempt,
+    TransferEpisodeReportRequestHistory,
     TransferEpisodeWrapup,
     TransferExperimentEpisodeHistory,
     TransferJsonDocument,
@@ -24,6 +27,7 @@ from rcp.transfer.records import (
     TransferTaskEvent,
     TransferTaskOutput,
     TransferTaskReceipt,
+    TransferTaskRecord,
     TransferTaskUsage,
     TransferWatcherRecord,
 )
@@ -35,7 +39,7 @@ def _json(value: object) -> TransferJsonDocument:
     return TransferJsonDocument.capture(value)  # type: ignore[arg-type]
 
 
-def _rich_capture(fixture: dict[str, object]):
+def _rich_capture(fixture: dict[str, object], *, with_report: bool = False):
     archive_root = fixture["archive_root"]
     assert isinstance(archive_root, Path)
     operational = parse_transfer_project_file_payload(
@@ -165,10 +169,68 @@ def _rich_capture(fixture: dict[str, object]):
         completed_at=now,
         consecutive_error_count=0,
     )
+    tasks = (task,)
+    if with_report:
+        report_task = TransferTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            kind="episode_report",
+            status="succeeded",
+            request=TransferEpisodeReportRequestHistory(
+                episode_id=episode_id, provider="codex", model="test-model", reasoning="medium"
+            ),
+            attempt=1,
+            episode_id=episode_id,
+            parent_operation_id=task.operation_id,
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            status_message="Report ready",
+            visible=False,
+        )
+        attempt = TransferEpisodeReportAttempt(
+            attempt_id=str(uuid.uuid4()),
+            attempt_number=1,
+            allocation_operation_id=report_task.operation_id,
+            status="succeeded",
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+        )
+        report_html = "<title>Retrieval remains stable</title><svg><title>Timeline</title></svg>"
+        episode = episode.model_copy(
+            update={
+                "status": "completed",
+                "ending": "completed",
+                "wrapup_state": "ready",
+                "report_attempts_used": 1,
+                "report_attempts": (attempt,),
+                "wrapup": TransferEpisodeWrapup(
+                    ending="completed",
+                    partial=False,
+                    concluding_operation_id=task.operation_id,
+                    allocation_operation_id=report_task.operation_id,
+                    receipt=_json({"ending": "completed"}),
+                    state="ready",
+                    created_at=now,
+                    updated_at=now,
+                    finished_at=now,
+                ),
+                "report": TransferEpisodeReport(
+                    report_id=str(uuid.uuid4()),
+                    attempt_id=attempt.attempt_id,
+                    allocation_operation_id=report_task.operation_id,
+                    ending="completed",
+                    sha256=hashlib.sha256(report_html.encode()).hexdigest(),
+                    html=report_html,
+                    created_at=now,
+                ),
+            }
+        )
+        tasks = (*tasks, report_task)
     records = operational.records.model_copy(
         update={
             "schema_version": 2,
-            "tasks": (task,),
+            "tasks": tasks,
             "watchers": (watcher,),
             "episodes": (episode,),
         }
@@ -177,16 +239,18 @@ def _rich_capture(fixture: dict[str, object]):
 
 
 @pytest.mark.parametrize("record_schema_version", [1, 2])
+@pytest.mark.parametrize("with_report", [False, True])
 def test_storage_import_inserts_full_inert_history_and_receipt(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     record_schema_version: int,
+    with_report: bool,
 ) -> None:
     fixture = _archive_fixture(
         manifest, tmp_path, monkeypatch, include_episode_archive=record_schema_version == 2
     )
-    capture = _rich_capture(fixture)
+    capture = _rich_capture(fixture, with_report=with_report)
     payload = transfer_project_file_payload(capture)
     if record_schema_version == 1:
         document = json.loads(payload)
@@ -228,6 +292,20 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     assert len(receipt.receipt_id_map) == 1
     assert target.project(capture.project_id) is None
     episode = capture.records.episodes[0]
+    if with_report:
+        assert episode.report is not None
+        stored_report = target.episode_report(episode.episode_id)
+        assert stored_report is not None
+        assert stored_report.html == episode.report.html
+        assert stored_report.sha256 == episode.report.sha256
+        assert target.project_episode_report_summaries(capture.project_id)[0].display_title == (
+            "Retrieval remains stable"
+        )
+        with target.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episode_reports WHERE episode_id = ?", (episode.episode_id,)
+            ).fetchone()
+        assert target._transfer_episode_report(row) == episode.report
     assert target.episode_archive_states(capture.project_id)[episode.episode_id].archived == (
         record_schema_version == 2
     )

@@ -4,9 +4,11 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 
 import pytest
 
+import rcp.storage.base as storage_base_module
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.providers import ProviderUsage
@@ -658,7 +660,7 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
     first = store.allocate_episode_report_attempt("episode")
     store.record_episode_report_attempt_error(first.attempt_id, "transient")
     second = store.allocate_episode_report_attempt("episode")
-    html = "<html><body><figure>Result</figure></body></html>"
+    html = "<html><title>Adaptation preserves recall</title><body><figure>Result</figure></body></html>"
     report = EpisodeReportRecord(
         report_id="report",
         episode_id="episode",
@@ -677,11 +679,85 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
     assert episode.wrapup_state == "ready"
     assert stored == report
     assert store.episode_report_by_id("report") == report
+    assert store.project_episode_report_summaries("project")[0].display_title == (
+        "Adaptation preserves recall"
+    )
+    assert store.finish_episode_report_ready(second.attempt_id, report) == (episode, report)
     with pytest.raises(EpisodeReportConflict, match="immutable"):
         store.finish_episode_report_ready(
             second.attempt_id,
             report.model_copy(update={"report_id": "different"}),
         )
+
+
+def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    reports = []
+    for index, html in enumerate(
+        [
+            "<title>Reset versus stream</title><svg><title>Chart title</title></svg>",
+            "<svg><title>Chart title only</title></svg>",
+        ]
+    ):
+        episode_id = f"episode-{index}"
+        _start_wrapping(store, episode_id)
+        attempt = store.allocate_episode_report_attempt(episode_id)
+        report = EpisodeReportRecord(
+            report_id=f"report-{index}",
+            episode_id=episode_id,
+            attempt_id=attempt.attempt_id,
+            allocation_operation_id=attempt.allocation_operation_id,
+            ending="completed",
+            sha256=hashlib.sha256(html.encode()).hexdigest(),
+            html=html,
+            created_at=store.now(),
+        )
+        store.finish_episode_report_ready(attempt.attempt_id, report)
+        reports.append(report)
+
+    # Restore the immediately preceding schema, retaining its original report bytes.
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN display_title")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 17")
+    upgraded = AppStore(path)
+    assert [upgraded.episode_report(report.episode_id) for report in reports] == reports
+    titles = {
+        summary.report_id: summary.display_title
+        for summary in upgraded.project_episode_report_summaries("project")
+    }
+    assert titles == {"report-0": "Reset versus stream", "report-1": None}
+
+    def unexpected_extraction(_html):
+        pytest.fail("existing report titles were reparsed")
+
+    monkeypatch.setattr(storage_base_module, "html_document_title", unexpected_extraction)
+    before = path.read_bytes()
+    reopened = AppStore(path)
+    assert path.read_bytes() == before
+    original_connection = reopened.connection
+
+    @contextmanager
+    def metadata_connection():
+        with original_connection() as connection:
+            connection.set_authorizer(
+                lambda action, table, column, *_: (
+                    sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ
+                    and table == "episode_reports"
+                    and column == "html"
+                    else sqlite3.SQLITE_OK
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(reopened, "connection", metadata_connection)
+    assert {
+        summary.report_id: summary.display_title
+        for summary in reopened.project_episode_report_summaries("project")
+    } == titles
 
 
 def test_wrapup_and_current_attempt_are_restart_idempotent(tmp_path) -> None:

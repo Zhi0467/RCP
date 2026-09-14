@@ -2,7 +2,7 @@
 id: episode-report
 kind: skill
 label: Episode report
-version: 1.1.0
+version: 1.2.0
 description: Create the required durable visual HTML wrap-up for an RCP episode, explaining its work, evidence, limits, ending, and next human decision without changing project or graph state.
 dependencies:
 ---
@@ -12,6 +12,12 @@ dependencies:
 Produce one self-contained, valid HTML report at the exact output path in the
 episode wrap-up instruction. This is a retrospective for a researcher taking
 over from the episode, not another operational research turn.
+
+Give the HTML document a concise `<title>` naming the research subject and its
+main finding or unresolved outcome. RCP uses this title on the artifact card,
+so it must make sense without opening the report. For example, “Compaction
+fidelity passes retrieval checks” or “Reset–stream comparison awaits complete
+measurements.” Keep internal identifiers out of the title.
 
 Start with the research outcome in plain language: what question was pursued,
 what changed, what evidence supports that change, and what the human needs to

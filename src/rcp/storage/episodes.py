@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 
+from rcp.artifacts import html_document_title
 from rcp.core.models import AuthorizedHuman
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
@@ -1795,8 +1796,8 @@ class EpisodeStoreMixin:
                 """
                 INSERT INTO episode_reports (
                     report_id, episode_id, attempt_id, allocation_operation_id, ending,
-                    sha256, html, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, html, created_at, display_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report.report_id,
@@ -1807,6 +1808,7 @@ class EpisodeStoreMixin:
                     report.sha256,
                     report.html,
                     report.created_at,
+                    html_document_title(report.html),
                 ),
             )
             connection.execute(
@@ -1862,11 +1864,9 @@ class EpisodeStoreMixin:
             rows = connection.execute(
                 """
                 SELECT report.report_id, report.episode_id, report.created_at, episode.mode,
-                       episode.control_node_id,
-                       json_extract(root.request_json, '$.instruction') AS instruction
+                       report.display_title
                 FROM episode_reports AS report
                 JOIN episodes AS episode ON episode.episode_id = report.episode_id
-                LEFT JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
                 WHERE episode.project_id = ?
                 ORDER BY report.created_at DESC, report.report_id
                 """,
@@ -2140,7 +2140,9 @@ class EpisodeStoreMixin:
 
     @staticmethod
     def _episode_report_record(row: sqlite3.Row) -> EpisodeReportRecord:
-        return EpisodeReportRecord.model_validate(dict(row))
+        data = dict(row)
+        data.pop("display_title", None)
+        return EpisodeReportRecord.model_validate(data)
 
     @staticmethod
     def _episode_wrapup_record(row: sqlite3.Row) -> EpisodeWrapupRecord:

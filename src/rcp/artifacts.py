@@ -21,7 +21,7 @@ from rcp.artifact_replace import (
     recover_regular_file_replacement_in_open_directory,
     replace_regular_file_in_open_directory,
 )
-from rcp.limits import ARTIFACT_CHAT_OPEN_TIMEOUT_MS
+from rcp.limits import ARTIFACT_CHAT_OPEN_TIMEOUT_MS, ARTIFACT_DISPLAY_TITLE_MAX_CHARS
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -76,6 +76,43 @@ class ResultViewDescriptor(BaseModel):
     kept_filename: str | None = None
     kept_at: str | None = None
     can_revise: bool
+
+
+class _HTMLDocumentTitleParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.excluded_depth = 0
+        self.in_title = False
+        self.found_title = False
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"svg", "math", "template"}:
+            self.excluded_depth += 1
+        elif tag == "title" and not self.excluded_depth and not self.found_title:
+            self.in_title = True
+            self.found_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"svg", "math", "template"}:
+            self.excluded_depth = max(0, self.excluded_depth - 1)
+        elif tag == "title":
+            self.in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_title:
+            self.parts.append(data)
+
+
+def html_document_title(document: str) -> str | None:
+    """Read the first HTML title, excluding foreign and inert title elements."""
+    parser = _HTMLDocumentTitleParser()
+    parser.feed(document)
+    parser.close()
+    title = " ".join("".join(parser.parts).split())
+    if len(title) > ARTIFACT_DISPLAY_TITLE_MAX_CHARS:
+        title = title[: ARTIFACT_DISPLAY_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return title or None
 
 
 def validate_result_view_id(value: str) -> str:

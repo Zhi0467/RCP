@@ -165,11 +165,10 @@ def saved_artifacts(
     for report in reports:
         origin = report_origins.get(report.episode_id)
         label = "Experiment" if report.mode == "experiment_loop" else "Auto-research"
-        subject = report.control_node_id or report.instruction
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
-                name=f"{label} report: {subject[:160]}" if subject else f"{label} report",
+                name=report.display_title or f"{label} report",
                 kind="report",
                 created_at=report.created_at,
                 episode_id=report.episode_id,

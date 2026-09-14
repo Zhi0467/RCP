@@ -162,7 +162,10 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None):
     )
     assert admission.task is not None
     attempt = store.allocate_episode_report_attempt(episode_id)
-    html = "<!doctype html><h1>Saved episode comparison</h1>"
+    html = (
+        "<!doctype html><title>Reset versus stream · Partial episode report</title>"
+        "<h1>Saved episode comparison</h1><svg><title>Timeline</title></svg>"
+    )
     report = EpisodeReportRecord(
         report_id=str(uuid.uuid4()),
         episode_id=episode_id,
@@ -188,7 +191,10 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         app.state.catalog.open(project_id).history,
         project_id,
         episode_id="saved-report",
-        report_html="<!doctype html><h1>Durable episode report</h1>",
+        report_html=(
+            "<!doctype html><title>Compaction fidelity passes retrieval checks</title>"
+            "<h1>Durable episode report</h1>"
+        ),
     )
     assert report is not None
     old = (datetime.now(UTC) - timedelta(days=100)).isoformat()
@@ -240,7 +246,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert retained_report["created_at"] == report.created_at
         assert retained_report["source_chat_href"] is None
         assert store.project_episode_report_summaries(str(uuid.uuid4())) == []
-        assert "Trace the strongest evidence" in retained_report["name"]
+        assert retained_report["name"] == "Compaction fidelity passes retrieval checks"
         assert client.get(retained_report["viewer_url"]).status_code == 200
         assert (
             client.post(
@@ -346,6 +352,7 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
         response = client.get(f"/api/projects/{project_id}/artifacts")
     assert response.status_code == 200, response.text
     entry = next(entry for entry in response.json() if entry["id"] == f"report:{report.report_id}")
+    assert entry["name"] == "Reset versus stream · Partial episode report"
     assert client.get(entry["viewer_url"]).status_code == 200
     if branch_owned:
         query = parse_qs(urlsplit(entry["source_chat_href"].removeprefix("#")).query)
