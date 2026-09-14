@@ -2689,6 +2689,9 @@ class AutoResearchLifecycleNoticeRecord(BaseModel):
     delivery_operation_id: str | None = None
     acknowledged_at: str | None = None
     acknowledged_by: str | None = None
+    #: The turn whose in-turn harvest consumed this notice; `acknowledged_by` is
+    #: the stable actor, which is not the same turn once the orchestrator wakes.
+    acknowledged_operation_id: str | None = None
 
     @model_validator(mode="after")
     def delivery_state_is_coherent(self) -> AutoResearchLifecycleNoticeRecord:

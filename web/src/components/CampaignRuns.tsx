@@ -80,6 +80,10 @@ export function AutoResearchEpisodeCard({
   const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [timelineError, setTimelineError] = useState<string | null>(null);
+  // Turn progress updates task rows without touching the episode's own timestamp.
+  const taskSignature = episode.tasks
+    .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+    .join("|");
   const projection = useMemo(
     () =>
       episodeProjection(
@@ -120,7 +124,7 @@ export function AutoResearchEpisodeCard({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, episode.episode_id, episode.updated_at, expanded, timelineRefresh]);
+  }, [apiBase, episode.episode_id, episode.updated_at, expanded, taskSignature, timelineRefresh]);
 
   useEffect(() => {
     if (initiallyExpanded) setExpanded(true);

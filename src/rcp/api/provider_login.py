@@ -244,21 +244,12 @@ def _resume_account(request: Request, provider: str, host: str) -> dict[str, int
         )
     for group in store.completed_watcher_groups():
         first = group[0]
-        manifest = _project_manifest(store.project(first.project_id))
-        if manifest is None or first.continuation.provider != provider:
+        # The watcher froze its account when it was armed; the manifest alias it
+        # carries may since have been removed or repointed.
+        if first.continuation.provider != provider or (first.execution_host or "") != host:
             continue
-        try:
-            group_host = provider_login_host(manifest, first.continuation.run_on)
-        except (OSError, ValueError):
-            logging.getLogger(__name__).warning(
-                "Provider login resume skipped an unavailable watcher execution target."
-            )
-            continue
-        if group_host == host:
-            get_watcher_delivery(request).deliver_watcher_group(group)
-            counts["watchers"] += int(
-                all(store.watcher(item.watcher_id).notified for item in group)
-            )
+        get_watcher_delivery(request).deliver_watcher_group(group)
+        counts["watchers"] += int(all(store.watcher(item.watcher_id).notified for item in group))
     return counts
 
 

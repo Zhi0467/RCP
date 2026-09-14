@@ -244,7 +244,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             notice.created_at,
             f"{notice.source_kind} {notice.source_event}".replace("_", " ").capitalize(),
             parent_event_id=task_event(notice.delivery_operation_id)
-            or task_event(notice.acknowledged_by),
+            or task_event(notice.acknowledged_operation_id),
             status=notice.state,
             cause=cause,
             links=EpisodeTimelineLinks(notice_id=notice.notice_id, episode_id=episode.episode_id),

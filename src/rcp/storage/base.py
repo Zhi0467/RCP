@@ -54,6 +54,7 @@ class AppStoreBase:
         (17, "episode_report_titles_v1"),
         (18, "provider_login_states_v1"),
         (19, "episode_stop_provenance_v1"),
+        (20, "lifecycle_notice_acknowledging_turn_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -552,6 +553,12 @@ class AppStoreBase:
             version=19,
             name="episode_stop_provenance_v1",
             migration=self._migrate_episode_stop_provenance,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=20,
+            name="lifecycle_notice_acknowledging_turn_v1",
+            migration=self._migrate_lifecycle_notice_acknowledging_turn,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1991,6 +1998,7 @@ class AppStoreBase:
         self._ensure_column(connection, "episode_reports", "display_title", "TEXT")
         self._migrate_provider_login_states(connection)
         self._migrate_episode_stop_provenance(connection)
+        self._migrate_lifecycle_notice_acknowledging_turn(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2018,6 +2026,12 @@ class AppStoreBase:
             "auto_research_lifecycle_notices",
             "wake_suppressed",
             "TEXT CHECK (wake_suppressed IN ('self_caused', 'provider_auth'))",
+        )
+
+    @classmethod
+    def _migrate_lifecycle_notice_acknowledging_turn(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "auto_research_lifecycle_notices", "acknowledged_operation_id", "TEXT"
         )
 
     @staticmethod

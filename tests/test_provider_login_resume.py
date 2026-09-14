@@ -313,7 +313,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     assert len(store.episode_tasks(roots[1].episode_id)) == 1
 
 
-def test_verify_skips_watcher_with_removed_alias(manifest, tmp_path, monkeypatch, caplog):
+def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, monkeypatch):
     from .test_auto_research_delivery import _arm_completed_graph_condition
     from .test_provider_login_admission import _idle_root
 
@@ -323,14 +323,22 @@ def test_verify_skips_watcher_with_removed_alias(manifest, tmp_path, monkeypatch
         store.project("project").model_copy(update={"locator": str(manifest.path)})
     )
     watcher = _arm_completed_graph_condition(store, episode, root)
+    # The alias is gone from the manifest, but the watcher froze the local account.
     stale = watcher.model_copy(
         update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed-alias"})}
     )
-    monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale]])
+    # Frozen to another account: the verified local login must not touch it.
+    elsewhere = watcher.model_copy(
+        update={"watcher_id": "elsewhere", "execution_host": "other.example"}
+    )
+    monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale], [elsewhere]])
+    delivered = []
+    monkeypatch.setattr(
+        provider_login,
+        "get_watcher_delivery",
+        lambda _: SimpleNamespace(deliver_watcher_group=lambda group: delivered.append(group)),
+    )
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["watchers"] == 0
-    assert store.watcher(watcher.watcher_id).notified is False
-    warnings = [record for record in caplog.records if "watcher execution target" in record.message]
-    assert len(warnings) == 1
+    assert [group[0].watcher_id for group in delivered] == [watcher.watcher_id]

@@ -370,13 +370,20 @@ def test_harvested_notice_and_suppressed_wake_provenance(manifest, tmp_path):
     prefix = episode.episode_id
     with store.connection() as connection:
         connection.execute(
-            "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='acknowledged', acknowledged_at=?, acknowledged_by=?, wake_suppressed='self_caused' WHERE notice_id=?",
-            (episode.updated_at, f"{prefix}-root", f"{prefix}-notice-0"),
+            "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='acknowledged', acknowledged_at=?, acknowledged_by=?, acknowledged_operation_id=?, wake_suppressed='self_caused' WHERE notice_id=?",
+            (episode.updated_at, f"{prefix}-root", f"{prefix}-wake", f"{prefix}-notice-0"),
+        )
+        # A notice harvested before the consuming turn was recorded has no proven parent.
+        connection.execute(
+            "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='acknowledged', acknowledged_at=?, acknowledged_by=? WHERE notice_id=?",
+            (episode.updated_at, f"{prefix}-root", f"{prefix}-notice-1"),
         )
         connection.execute("DELETE FROM auto_research_recoveries WHERE episode_id=?", (prefix,))
     events = {event.event_id: event for event in build_episode_timeline(store, episode).events}
     notice = events[f"notice:{prefix}-notice-0"]
-    assert notice.parent_event_id == f"turn:{prefix}-root"
+    # The harvesting turn, not the stable actor id that `acknowledged_by` carries.
+    assert notice.parent_event_id == f"wake:{prefix}-wake"
+    assert events[f"notice:{prefix}-notice-1"].parent_event_id is None
     assert notice.cause == "completed; wake_suppressed=self_caused"
     assert notice.provenance == "recorded"
     assert events[f"turn:{prefix}-worker"].links.control_node_id == "exp/timeline"

@@ -2547,3 +2547,28 @@ def test_provider_auth_task_notice_is_suppressed(tmp_path, child_kind) -> None:
     assert notices[0].payload["status"] == "failed"
     assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == []
     assert store.pending_auto_research_lifecycle_episode_ids(parent.episode_id) == []
+
+
+def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store, ceiling=2)
+    for notice_id, suppressed in (("self-caused", "self_caused"), ("ordinary", None)):
+        store.record_auto_research_lifecycle_notice(
+            AutoResearchLifecycleNoticeRecord(
+                notice_id=notice_id,
+                episode_id=parent.episode_id,
+                source_kind="experiment_episode",
+                source_id=f"child-{notice_id}",
+                source_event="stopped",
+                wake_suppressed=suppressed,
+                payload={},
+                created_at=store.now(),
+            )
+        )
+
+    blockers = store.auto_research_finish_blockers(parent.episode_id)
+
+    # The orchestrator caused the stop itself; the notice is history it still
+    # sees through the harvest, never an obligation that refuses its Finish.
+    assert [(item.kind, item.blocker_id) for item in blockers] == [("lifecycle_notice", "ordinary")]

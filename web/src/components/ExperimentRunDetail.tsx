@@ -133,7 +133,15 @@ export function ExperimentRunDetail({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, episode?.episode_id, episode?.updated_at]);
+    // Turn progress updates the task row without touching the episode's own timestamp.
+  }, [
+    apiBase,
+    episode?.episode_id,
+    episode?.updated_at,
+    currentTask?.operation_id,
+    currentTask?.status,
+    currentTask?.updated_at,
+  ]);
   const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??

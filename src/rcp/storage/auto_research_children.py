@@ -1807,6 +1807,7 @@ class AutoResearchChildrenStoreMixin:
                 notices,
                 acknowledged_at=now,
                 acknowledged_by=acknowledged_by,
+                acknowledged_operation_id=delivery_operation_id or None,
             )
             for item in messages:
                 connection.execute(
@@ -1823,6 +1824,7 @@ class AutoResearchChildrenStoreMixin:
                         "state": "acknowledged",
                         "acknowledged_at": now,
                         "acknowledged_by": acknowledged_by,
+                        "acknowledged_operation_id": delivery_operation_id or None,
                     }
                 )
                 for notice in notices
@@ -2305,6 +2307,7 @@ class AutoResearchChildrenStoreMixin:
             """
             SELECT notice_id, state FROM auto_research_lifecycle_notices
             WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+              AND wake_suppressed IS NULL
             ORDER BY created_at, notice_id
             """,
             (episode_id,),
@@ -2529,6 +2532,7 @@ class AutoResearchChildrenStoreMixin:
         *,
         acknowledged_at: str,
         acknowledged_by: str,
+        acknowledged_operation_id: str | None = None,
     ) -> None:
         if not notices:
             return
@@ -2537,10 +2541,11 @@ class AutoResearchChildrenStoreMixin:
         connection.execute(
             f"""
             UPDATE auto_research_lifecycle_notices
-            SET state = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
+            SET state = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?,
+                acknowledged_operation_id = ?
             WHERE notice_id IN ({placeholders}) AND acknowledged_at IS NULL
             """,
-            (acknowledged_at, acknowledged_by, *ids),
+            (acknowledged_at, acknowledged_by, acknowledged_operation_id, *ids),
         )
 
     @staticmethod
