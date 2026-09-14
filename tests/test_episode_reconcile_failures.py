@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import sqlite3
@@ -203,14 +204,53 @@ def test_unclassified_defect_count_survives_reconciler_restart(tmp_path, monkeyp
     launch.assert_not_called()
 
 
-def test_transient_errors_are_never_settled_by_repetition(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "transient",
+    [
+        sqlite3.OperationalError("database is locked"),
+        sqlite3.OperationalError("database table is busy"),
+        ConnectionResetError(errno.ECONNRESET, "peer reset"),
+        OSError(errno.EHOSTUNREACH, "no route to host"),
+        TimeoutError("ssh timed out"),
+    ],
+)
+def test_transient_errors_are_never_settled_by_repetition(tmp_path, monkeypatch, transient):
     store, signal, owner, _ = _ending(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        store, "episode_wrapup", Mock(side_effect=sqlite3.OperationalError("locked"))
-    )
+    monkeypatch.setattr(store, "episode_wrapup", Mock(side_effect=transient))
     for _ in range(5):
         assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
     assert store.episode(signal.episode_id).status == "wrapping_up"
+
+
+@pytest.mark.parametrize(
+    "permanent",
+    [
+        sqlite3.OperationalError("attempt to write a readonly database"),
+        sqlite3.OperationalError("no such table: episode_wrapups"),
+        PermissionError(errno.EACCES, "stage is not writable"),
+        FileNotFoundError(errno.ENOENT, "stage root is gone"),
+    ],
+)
+def test_permanent_errors_sharing_a_transient_base_class_settle_after_repeats(
+    tmp_path, monkeypatch, permanent
+):
+    """`OSError` and `OperationalError` also cover read-only, missing, and refused.
+
+    Those never come back on their own, so they take the bounded path instead of
+    keeping the episode in `wrapping_up` forever.
+    """
+
+    store, signal, owner, launch = _ending(tmp_path, monkeypatch)
+    monkeypatch.setattr(store, "episode_wrapup", Mock(side_effect=permanent))
+    for _ in range(2):
+        assert not owner.reconcile_auto_research_wrapup(signal, source="poll", operation_id="root")
+        assert store.episode(signal.episode_id).status == "wrapping_up"
+    assert not owner.reconcile_auto_research_wrapup(signal, source="poll", operation_id="root")
+    settled = store.episode(signal.episode_id)
+    assert settled.status == "needs_action"
+    assert settled.wrapup_state == "failed"
+    assert settled.wrapup_error == str(permanent)
+    launch.assert_not_called()
 
 
 def test_repeated_launch_failures_settle_the_allocation_as_unlaunchable(tmp_path, monkeypatch):

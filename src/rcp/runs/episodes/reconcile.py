@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import logging
 import sqlite3
 from contextlib import suppress
@@ -45,6 +46,7 @@ from rcp.storage import (
     EpisodeWrapupRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.transport.state import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -58,13 +60,41 @@ _PERMANENT_ADMISSION_ERRORS: tuple[type[Exception], ...] = (
     EpisodeReportConflict,
     EpisodeNotRunning,
 )
-# These name a resource that can come back: a database lock, a socket, a
-# host. They are retried on every poll without bound.
-_TRANSIENT_ADMISSION_ERRORS: tuple[type[Exception], ...] = (
-    sqlite3.OperationalError,
-    OSError,
-    TimeoutError,
+# A failure that names a resource which can come back, a held database lock,
+# a socket, a host, is retried on every poll without bound. Anything else that
+# merely shares those base classes (a read-only database, a missing file, a
+# permission refusal) is a defect and takes the bounded path below.
+_TRANSIENT_SQLITE_ERRORCODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+_TRANSIENT_SQLITE_MESSAGES = ("locked", "busy")
+_TRANSIENT_OS_ERRNOS = frozenset(
+    {
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.EINTR,
+        errno.ETIMEDOUT,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+        errno.ENETDOWN,
+    }
 )
+
+
+def _failure_is_transient(exc: Exception) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        code = getattr(exc, "sqlite_errorcode", None)
+        if code is not None:
+            return code in _TRANSIENT_SQLITE_ERRORCODES
+        message = str(exc).lower()
+        return any(word in message for word in _TRANSIENT_SQLITE_MESSAGES)
+    if isinstance(exc, TimeoutError | ConnectionError | StateUnavailable):
+        return True
+    if isinstance(exc, OSError):
+        return exc.errno in _TRANSIENT_OS_ERRNOS
+    return False
+
+
 # Any other exception is a programming error or a shape nobody classified. It
 # is retried a few times in case it was incidental, then settled like a
 # permanent defect, because repeating it forever is the incident this module
@@ -213,7 +243,7 @@ class EpisodeReconciler:
 
         if phase == "admission" and isinstance(exc, _PERMANENT_ADMISSION_ERRORS):
             return True
-        if isinstance(exc, _TRANSIENT_ADMISSION_ERRORS):
+        if _failure_is_transient(exc):
             return False
         operation_id = self._reconciling_operation(episode_id, operation_id)
         if operation_id is None:
