@@ -11,7 +11,7 @@ import signal
 import stat
 import subprocess
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -45,6 +45,7 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
+from rcp.storage.models import ProviderLoginStateRecord
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
 
@@ -382,7 +383,10 @@ class AgentLauncher:
     _MAX_EVENT_BYTES = 16 * 1024 * 1024
     _MAX_STDERR_BYTES = 1024 * 1024
 
-    def __init__(self) -> None:
+    def __init__(
+        self, login_state: Callable[[str, str], ProviderLoginStateRecord] | None = None
+    ) -> None:
+        self.login_state = login_state
         self._readiness_lock = threading.Lock()
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
@@ -390,6 +394,22 @@ class AgentLauncher:
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
+
+    def _login_refusal(self, provider: str, host: str) -> str | None:
+        state = self.login_state(provider, host) if self.login_state is not None else None
+        if state is None or state.state != "signed_out":
+            return None
+        return (
+            f"{profile_for(provider).label} was signed out at {state.changed_at}: "
+            f"{state.detail or 'The provider rejected its login'}. "
+            "Sign in on the machine, then use Verify sign-in."
+        )
+
+    def _with_login_state(self, readiness: ProviderReadiness, host: str) -> ProviderReadiness:
+        reason = self._login_refusal(readiness.provider, host)
+        if reason is not None:
+            return readiness.model_copy(update={"authenticated": False, "reason": reason})
+        return readiness
 
     def readiness(
         self,
@@ -410,7 +430,7 @@ class AgentLauncher:
         key = (provider, host, binary)
         with self._readiness_lock:
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
-                return cached.model_copy(deep=True)
+                return self._with_login_state(cached.model_copy(deep=True), host)
             forced_key = (*key, True)
             probe_key = forced_key if refresh else (*key, False)
             # An ordinary caller can use a forced probe already in flight. A
@@ -432,7 +452,7 @@ class AgentLauncher:
             if probe.error is not None:
                 raise probe.error
             assert probe.result is not None
-            return probe.result.model_copy(deep=True)
+            return self._with_login_state(probe.result.model_copy(deep=True), host)
 
         try:
             result = self._readiness_uncached(provider, host=host, binary=binary)
@@ -451,7 +471,7 @@ class AgentLauncher:
             probe.result = result.model_copy(deep=True)
             self._readiness_probes.pop(probe_key, None)
             probe.completed.set()
-        return result
+        return self._with_login_state(result, host)
 
     def cached_readiness(
         self,
@@ -464,7 +484,9 @@ class AgentLauncher:
 
         with self._readiness_lock:
             cached = self._readiness_cache.get((provider, host, binary))
-        return None if cached is None else cached.model_copy(deep=True)
+        return (
+            None if cached is None else self._with_login_state(cached.model_copy(deep=True), host)
+        )
 
     def invalidate_readiness(
         self,
@@ -586,6 +608,9 @@ class AgentLauncher:
             )
             auth = self._probe(host, profile.auth_command(candidate))
             authenticated = profile.is_authenticated(auth)
+            login_reason = self._login_refusal(provider, host)
+            if login_reason is not None:
+                authenticated = False
             # Enumerate only once the CLI is known to answer. An unauthenticated
             # catalog probe just costs a subprocess to learn what auth already said.
             catalog_command = profile.catalog_command(candidate) if authenticated else None
@@ -619,7 +644,8 @@ class AgentLauncher:
             version=version,
             binary_path=candidate,
             path_state="resolved" if configured else "unconfigured",
-            reason=(
+            reason=login_reason
+            or (
                 f"{provider} was found at {candidate}; using the discovered path until a saved path is provided."
                 if authenticated and not configured
                 else (
@@ -1271,6 +1297,7 @@ class AgentLauncher:
         command: list[str],
         *,
         login_shell: bool = True,
+        timeout: float = 10,
     ) -> subprocess.CompletedProcess[str]:
         arguments = command
         if host:
@@ -1284,7 +1311,7 @@ class AgentLauncher:
                 capture_output=True,
                 text=True,
                 input="",
-                timeout=10,
+                timeout=timeout,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

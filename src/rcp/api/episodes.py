@@ -396,7 +396,20 @@ def serialize_episode(
         episode.mode == "auto_research"
         and episode.status == "needs_action"
         and episode.ending == "exhausted"
-        and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
+        and (
+            episode.wrapup_state in _TERMINAL_WRAPUP_STATES or episode.wrapup_state == "not_started"
+        )
+    )
+    wrapup = (
+        store.episode_wrapup(episode.episode_id)
+        if episode.wrapup_state in {"pending", "running"}
+        else None
+    )
+    report_login_blocked = (
+        wrapup is not None
+        and wrapup.provider is not None
+        and store.provider_login_state(wrapup.provider, wrapup.execution_host or "").state
+        == "signed_out"
     )
     health, next_step, task_control, blocked_reason = _episode_projection(
         episode,
@@ -405,6 +418,7 @@ def serialize_episode(
         recovery=recovery,
         has_report=report is not None,
         can_reauthorize=reauthorizable,
+        report_login_blocked=report_login_blocked,
     )
     return EpisodeResponse(
         episode_id=episode.episode_id,
@@ -556,6 +570,7 @@ def _episode_projection(
     recovery: _RecoveryProjection | None,
     has_report: bool,
     can_reauthorize: bool,
+    report_login_blocked: bool = False,
 ) -> tuple[
     EpisodeHealth,
     EpisodeRecommendationKind,
@@ -567,6 +582,8 @@ def _episode_projection(
     task = next((item for item in tasks if item.operation_id == control_task_id), None)
     if episode.ending == "stopped" or (episode.ending is None and episode.status == "stopped"):
         return "stopped", "none", None, None
+    if report_login_blocked and episode.wrapup_state in {"pending", "running"}:
+        return "wrapping_up", "wait", None, "sign_in"
     if episode.status == "wrapping_up" or episode.wrapup_state in {"pending", "running"}:
         return "wrapping_up", "wait", None, None
     if episode.ending == "completed" or (episode.ending is None and episode.status == "completed"):
@@ -856,7 +873,9 @@ def space_auto_research_episode_projection(
     can_reauthorize = (
         episode.status == "needs_action"
         and episode.ending == "exhausted"
-        and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
+        and (
+            episode.wrapup_state in _TERMINAL_WRAPUP_STATES or episode.wrapup_state == "not_started"
+        )
     )
     health, _recommendation, _task_control, _blocked_reason = _episode_projection(
         episode,

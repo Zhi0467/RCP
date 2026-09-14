@@ -1299,7 +1299,7 @@ class EpisodeStoreMixin:
         self,
         episode_id: str,
     ) -> AgentTaskRecord:
-        """Requeue only the same hidden allocation interrupted or paused at restart."""
+        """Requeue the same hidden allocation after interruption or verified sign-in."""
 
         now = self.now()
         with self.connection() as connection:
@@ -1333,13 +1333,18 @@ class EpisodeStoreMixin:
                 raise EpisodeReportConflict("the hidden report allocation lost its restart fence")
             if task_row["status"] == "queued":
                 return self._agent_task_record(task_row)
-            if task_row["status"] not in {"interrupted", "paused"}:
+            login_failure = (
+                task_row["status"] == "failed" and task_row["failure_kind"] == "provider_auth"
+            )
+            if task_row["status"] not in {"interrupted", "paused"} and not login_failure:
                 raise EpisodeNotRunning(
-                    "only an interrupted or shutdown-paused report allocation may be requeued"
+                    "only an interrupted, shutdown-paused, or login-blocked report may be requeued"
                 )
             prior_status = str(task_row["status"])
             diagnostic = (
-                "The report provider call was interrupted by an RCP restart."
+                "The report spent all three attempts before sign-in was verified."
+                if login_failure
+                else "The report provider call was interrupted by an RCP restart."
                 if prior_status == "interrupted"
                 else "The report provider call was paused during RCP shutdown."
             )
@@ -1354,16 +1359,17 @@ class EpisodeStoreMixin:
             if int(episode.report_attempts_used) >= _REPORT_ATTEMPT_LIMIT and (
                 current is None or current["status"] != "queued"
             ):
-                if current is None or current["status"] != "running":
+                if not login_failure and (current is None or current["status"] != "running"):
                     raise EpisodeNotRunning("the episode has spent all report attempts")
-                connection.execute(
-                    """
-                    UPDATE episode_report_attempts
-                    SET status = 'failed', error = ?, updated_at = ?, finished_at = ?
-                    WHERE attempt_id = ?
-                    """,
-                    (diagnostic, now, now, current["attempt_id"]),
-                )
+                if current is not None and current["status"] == "running":
+                    connection.execute(
+                        """
+                        UPDATE episode_report_attempts
+                        SET status = 'failed', error = ?, updated_at = ?, finished_at = ?
+                        WHERE attempt_id = ?
+                        """,
+                        (diagnostic, now, now, current["attempt_id"]),
+                    )
                 final_status = self._status_for_ending(str(episode.ending))
                 connection.execute(
                     """
@@ -1417,7 +1423,7 @@ class EpisodeStoreMixin:
                 """
                 UPDATE graph_runs
                 SET status = 'queued', status_message = 'Wrapping up visualization and report',
-                    error = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
+                    error = NULL, failure_kind = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
                     last_activity_at = NULL, phase = 'queued', write_scope_fingerprint = NULL
                 WHERE operation_id = ? AND status = ?
                 """,
@@ -1650,10 +1656,14 @@ class EpisodeStoreMixin:
         self,
         attempt_id: str,
         error: str,
+        *,
+        provider_auth: bool = False,
     ) -> tuple[EpisodeRecord, EpisodeReportAttemptRecord]:
-        """Record a retryable error; the third error closes wrap-up automatically."""
+        """Count the attempt, parking authentication failures until verification."""
 
-        return self._finish_episode_report_attempt_error(attempt_id, error, force_final=False)
+        return self._finish_episode_report_attempt_error(
+            attempt_id, error, force_final=False, provider_auth=provider_auth
+        )
 
     def finish_episode_report_error(
         self,
@@ -1670,6 +1680,7 @@ class EpisodeStoreMixin:
         error: str,
         *,
         force_final: bool,
+        provider_auth: bool = False,
     ) -> tuple[EpisodeRecord, EpisodeReportAttemptRecord]:
         if not error.strip():
             raise ValueError("a report attempt error must explain the failure")
@@ -1693,7 +1704,19 @@ class EpisodeStoreMixin:
                     """,
                     (error, now, now, attempt_id),
                 )
-            final = force_final or int(row["attempt_number"]) >= _REPORT_ATTEMPT_LIMIT
+            if provider_auth:
+                connection.execute(
+                    """
+                    UPDATE graph_runs
+                    SET status = 'failed', failure_kind = 'provider_auth', error = ?,
+                        status_message = ?, updated_at = ?, finished_at = ?, phase = 'failed'
+                    WHERE operation_id = ?
+                    """,
+                    (error, error, now, now, row["allocation_operation_id"]),
+                )
+            final = not provider_auth and (
+                force_final or int(row["attempt_number"]) >= _REPORT_ATTEMPT_LIMIT
+            )
             if final:
                 episode_row = connection.execute(
                     "SELECT ending FROM episodes WHERE episode_id = ?", (episode_id,)

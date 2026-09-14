@@ -933,3 +933,138 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     await liveServer.close();
   }
 });
+
+test("the login notice names each signed-out account once and offers verification", async () => {
+  const { ProviderLoginNotice } = await server.ssrLoadModule(
+    "/src/components/ProviderLoginNotice.tsx",
+  );
+  const states = [
+    {
+      provider: "codex",
+      host: "",
+      state: "signed_out",
+      generation: 0,
+      changed_at: "2026-09-14T00:00:00Z",
+      detail: "Please sign in again",
+    },
+    {
+      provider: "claude",
+      host: "remote.example",
+      state: "signed_in",
+      generation: 1,
+      changed_at: "2026-09-14T00:00:00Z",
+      detail: null,
+    },
+  ];
+  const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
+  assert.match(html, /Codex on local is signed out since/);
+  assert.match(html, /Please sign in again/);
+  assert.match(html, /Sign in on the machine, then verify/);
+  assert.equal((html.match(/Verify sign-in/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /remote.example/);
+});
+
+test("a served login notice parks verification, shows failure, then clears after success", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("console", (message) => {
+      if (message.type() === "error" && !message.text().includes("409"))
+        errors.push(message.text());
+    });
+    let finishProbe;
+    let requests = 0;
+    await page.route("**/api/providers/codex/logins/verify", async (route) => {
+      requests += 1;
+      assert.deepEqual(route.request().postDataJSON(), { host: "" });
+      await new Promise((resolve) => {
+        finishProbe = resolve;
+      });
+      await route.fulfill(
+        requests === 1
+          ? { status: 409, json: { detail: "Please sign in again" } }
+          : { json: { state: { state: "signed_in", generation: 1 }, resumed: {} } },
+      );
+    });
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
+    );
+    await page.getByRole("button", { name: "Verify sign-in" }).click();
+    assert.equal(await page.getByRole("button", { name: "Verifying…" }).isDisabled(), true);
+    finishProbe();
+    await page.getByRole("alert").waitFor();
+    assert.equal(await page.getByRole("alert").textContent(), "Please sign in again");
+    await page.getByRole("button", { name: "Verify sign-in" }).click();
+    await page.getByRole("button", { name: "Verifying…" }).waitFor();
+    finishProbe();
+    await page.getByRole("status").waitFor({ state: "detached" });
+    assert.equal(requests, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
+});
+
+test("an open space landing refreshes login notices with its Runs poll", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    let states = [];
+    let requests = 0;
+    await page.route("**/api/providers/logins", (route) => {
+      requests += 1;
+      return route.fulfill({ json: states });
+    });
+    await page.route("**/api/team/connections", (route) => route.fulfill({ json: [] }));
+    const firstLoad = page.waitForResponse("**/api/providers/logins");
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/appearance.html`,
+    );
+    await firstLoad;
+    assert.equal(await page.getByRole("button", { name: "Verify sign-in" }).count(), 0);
+    states = [
+      {
+        provider: "codex",
+        host: "",
+        state: "signed_out",
+        generation: 0,
+        changed_at: "2026-09-14T00:00:00Z",
+        detail: "Please sign in again",
+      },
+    ];
+    await page.evaluate(() => window.refreshSpaceRuns());
+    await page.getByRole("button", { name: "Verify sign-in" }).waitFor();
+    const timestamp = page.locator(".provider-login-notice time");
+    assert.equal(await timestamp.getAttribute("datetime"), states[0].changed_at);
+    assert.notEqual(await timestamp.textContent(), states[0].changed_at);
+    assert.equal(requests, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
+});

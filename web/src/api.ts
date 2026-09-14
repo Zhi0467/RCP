@@ -14,6 +14,7 @@ import type {
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
+  ProviderLoginState,
   ServerStatus,
   SpaceRunIndexEntry,
   SpaceUserSummary,
@@ -277,6 +278,7 @@ export function loadProjectReadiness(
   Pick<
     ProjectSnapshot,
     | "compute_status"
+    | "provider_logins"
     | "provider_readiness"
     | "providers"
     | "provider_skill_inventories"
@@ -427,4 +429,21 @@ export function probeMachineCompute(apiBase: string, alias: string): Promise<Com
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
+}
+
+export function loadProviderLogins(): Promise<ProviderLoginState[]> {
+  return api("/api/providers/logins");
+}
+
+export function verifyProviderLogin(
+  provider: string,
+  host: string,
+): Promise<{
+  state: ProviderLoginState;
+  resumed: Record<string, number>;
+}> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
 }

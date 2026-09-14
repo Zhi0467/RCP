@@ -53,6 +53,9 @@ class _ReportLauncher:
 
         if outcome == "raise":
             raise OSError("provider launch failed")
+        if outcome == "auth":
+            yield AgentEvent(event="error", text="refresh_token_reused")
+            return
         if outcome == "error":
             yield AgentEvent(event="session", session_id="native-session")
             yield AgentEvent(event="error", text="provider temporarily failed")
@@ -287,6 +290,7 @@ def _setup_report(
         stage_host=None,
         stage_root=str(stage),
         visible=False,
+        authorized_by=store.episode("episode").authorized_by,
     )
     store.begin_episode_wrapup("episode", wrapup, hidden)
     execution = AgentTaskExecution(
@@ -821,3 +825,133 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 0
     assert store.episode_report("episode") is not None
+
+
+@pytest.mark.asyncio
+async def test_report_login_failure_marks_account_and_parks_without_retry(manifest, tmp_path):
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+
+    class LoginFailureLauncher:
+        calls = 0
+
+        async def stream(self, _provider, _prompt, **_kwargs):
+            self.calls += 1
+            yield AgentEvent(event="error", text="refresh_token_reused")
+
+    launcher = LoginFailureLauncher()
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert launcher.calls == 1
+    assert [event.event for event in events] == ["error"]
+    assert "signed in again" in events[0].text
+    state = store.provider_login_state(request.provider, request.execution_host)
+    assert state.state == "signed_out"
+    assert state.source == "report"
+    assert state.generation == execution.login_generation == 1
+    hidden = store.agent_task("report-allocation")
+    assert hidden.status == "failed"
+    assert hidden.failure_kind == "provider_auth"
+    episode = store.episode(request.episode_id)
+    assert episode.wrapup_state == "pending"
+    assert episode.report_attempts_used == 1
+
+
+def test_signed_out_report_allocation_stays_queued_and_pending(manifest, tmp_path):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.episodes.report import start_episode_report
+
+    _service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="report")
+    tasks = BackgroundAgentTasks(store, None)
+    before = store.episode(request.episode_id)
+    with store.connection() as connection:
+        count = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    assert start_episode_report(tasks, request.episode_id) is None
+    after = store.episode(request.episode_id)
+    assert after.wrapup_state == "pending"
+    assert after.invocations_used == before.invocations_used
+    assert after.report_attempts_used == before.report_attempts_used
+    assert store.agent_task("report-allocation").status == "queued"
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == count
+
+
+def test_third_report_auth_failure_is_counted_and_parked(manifest, tmp_path):
+    _service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
+    for _ in range(2):
+        attempt = store.allocate_episode_report_attempt(request.episode_id)
+        store.mark_episode_report_attempt_running(attempt.attempt_id)
+        store.record_episode_report_attempt_error(attempt.attempt_id, "invalid report")
+    attempt = store.allocate_episode_report_attempt(request.episode_id)
+    store.mark_episode_report_attempt_running(attempt.attempt_id)
+    episode, failed = store.record_episode_report_attempt_error(
+        attempt.attempt_id, "refresh_token_reused", provider_auth=True
+    )
+    assert failed.status == "failed"
+    assert episode.report_attempts_used == 3
+    assert episode.wrapup_state == "pending"
+    assert episode.status == "wrapping_up"
+
+
+def test_parked_report_resumes_same_allocation_after_verify(manifest, tmp_path):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.episodes.report import start_episode_report
+
+    from .helpers import wait_for_task, wait_until
+
+    service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
+    launcher = _ReportLauncher(["auth", "valid"])
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_episode_report_run(service, launcher, request, execution):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    first = start_episode_report(tasks, request.episode_id)
+    assert first is not None
+    wait_for_task(store, first.operation_id, expect="failed")
+    wait_until(lambda: first.operation_id not in tasks._workers)
+    assert store.episode(request.episode_id).wrapup_state == "pending"
+    assert store.agent_task(first.operation_id).failure_kind == "provider_auth"
+    assert start_episode_report(tasks, request.episode_id) is None
+    assert launcher.calls == 1
+    with store.connection() as connection:
+        task_count = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+    restarted = start_episode_report(tasks, request.episode_id)
+    assert restarted.operation_id == first.operation_id
+    wait_for_task(store, restarted.operation_id, expect="succeeded")
+    assert launcher.calls == 2
+    assert store.episode(request.episode_id).wrapup_state == "ready"
+    assert store.episode(request.episode_id).report_attempts_used == 2
+    assert store.agent_task(restarted.operation_id).failure_kind is None
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+    assert start_episode_report(tasks, request.episode_id) is None
+
+
+def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest, tmp_path):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.episodes.report import start_episode_report
+
+    _service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
+    for number in range(3):
+        attempt = store.allocate_episode_report_attempt(request.episode_id)
+        store.mark_episode_report_attempt_running(attempt.attempt_id)
+        store.record_episode_report_attempt_error(
+            attempt.attempt_id,
+            "refresh_token_reused" if number == 2 else "invalid report",
+            provider_auth=number == 2,
+        )
+    store.mark_provider_login_failed(
+        "codex", "", generation=0, detail="refresh_token_reused", source="report"
+    )
+    tasks = BackgroundAgentTasks(store, None)
+    assert start_episode_report(tasks, request.episode_id) is None
+    assert store.episode(request.episode_id).wrapup_state == "pending"
+    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+    assert start_episode_report(tasks, request.episode_id) is None
+    episode = store.episode(request.episode_id)
+    assert episode.wrapup_state == "failed"
+    assert episode.status == "completed"
+    assert episode.report_attempts_used == 3

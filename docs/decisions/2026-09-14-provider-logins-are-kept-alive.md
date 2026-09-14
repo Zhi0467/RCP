@@ -46,10 +46,12 @@ does not need.
   account's credential store and injects as `CLAUDE_CODE_OAUTH_TOKEN` into every
   Claude process it starts, on every machine, through one environment builder.
   A static token rotates nothing.
-- **Sign-in happens in the RCP UI.** Codex through `codex login --device-auth`
-  run as the execution account with the code and URL shown; Claude by pasting
-  the token. Any team member may do it; RCP has owners and members and no admin.
-  A sign-in counts only after one minimal real request succeeds.
+- **Sign-in and sign-out happen in the RCP UI.** Codex through `codex login
+  --device-auth` run as the execution account with the code and URL shown;
+  Claude by pasting the token. Sign-out runs `codex logout` or deletes the
+  stored Claude token and fences admission the same way a failed login does.
+  Any team member may do either; RCP has owners and members and no admin. A
+  sign-in counts only after one minimal real request succeeds.
 - **The shared owner is a separate design track**, gated on the protocol
   carrying per-thread permissions, a per-turn command authority that does not
   rest on process ancestry, remote attachment, and interrupt semantics.

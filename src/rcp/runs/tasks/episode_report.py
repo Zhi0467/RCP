@@ -16,7 +16,7 @@ from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import validate_artifact_bytes
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
-from rcp.providers import AgentCapability, ProviderId
+from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -248,6 +248,36 @@ async def stream_episode_report_run(
             except (OSError, RuntimeError, StateUnavailable, ValueError) as exc:
                 outcome.failed = True
                 provider_errors.append(" ".join(str(exc).split())[:1000])
+
+            auth_error = next(
+                (
+                    error
+                    for error in provider_errors
+                    if profile_for(request.provider).credential_failure(error)
+                ),
+                None,
+            )
+            if auth_error is not None:
+                execution.store.mark_provider_login_failed(
+                    request.provider,
+                    stage.execution_host,
+                    generation=execution.login_generation,
+                    detail=auth_error,
+                    source="report",
+                )
+                execution.store.record_episode_report_attempt_error(
+                    attempt.attempt_id, auth_error, provider_auth=True
+                )
+                yield _sse(
+                    AgentEvent(
+                        event="error",
+                        text=(
+                            f"{profile_for(request.provider).label} must be signed in again. "
+                            "Sign in on the machine, then use Verify sign-in."
+                        ),
+                    )
+                )
+                return
 
             if outcome.session_id != turn.wrapup.native_session_id:
                 diagnostic = (

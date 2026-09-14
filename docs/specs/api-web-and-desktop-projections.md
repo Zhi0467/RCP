@@ -656,8 +656,30 @@ foldable lists, ordered **Experiment loop** then **Auto-research**. Seed/Refresh
 remain in project History; Blocker judgment remains in Inbox.
 
 Experiment and Auto-research parents each expose one backend-decided health and
-one separately labelled **Recommended next step**. Task status, phase, workers,
-and diagnostics remain supporting history rather than competing primary states.
+one separately labelled **Recommended next step**. Health, recommendation, and
+`blocked_reason` come from one exhaustive table in the episode projection,
+evaluated in precedence order: an episode with an ending is never `active`; a
+`wrapping_up` status or a pending or running wrap-up reads `wrapping_up`; an
+exhausted or human-pause ending reads `needs_action` with
+`blocked_reason=reauthorize`; a failed control task whose failure kind is a
+revoked login reads `needs_action` with `blocked_reason=sign_in` beside its
+recovery control. `blocked_reason` names the one human action that clears a
+block and is `null` otherwise; the card renders it as one lead sentence before
+the recommendation. A wrap-up state of `not_started` on a settled episode means
+the ending had no report to generate and reads like a skipped report. A
+wrap-up whose report account is signed out reads `wrapping_up` with
+`blocked_reason=sign_in`.
+
+Provider login state is published at `GET /api/providers/logins` (every
+machine account) and inside each project's readiness snapshot as
+`provider_logins` (the accounts that project uses). While any account is
+`signed_out`, the project Runs view and the space landing render one
+`ProviderLoginNotice` per account naming the provider, machine, time, bounded
+diagnostic, and a **Verify sign-in** control; the Experiment board's
+`reauthenticate_provider` copy points at it. Verify is available to any
+signed-in member and records that member. Task
+status, phase, workers, and diagnostics remain supporting history rather than
+competing primary states.
 For a terminal Experiment episode, the owning node's human-authored closed status
 is authoritative: the run is Completed and fresh-start control is absent until
 the node is edited back to a nonterminal status. A control is absent unless

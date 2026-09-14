@@ -1527,6 +1527,7 @@ class ProjectService:
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
                 "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
+                "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
                 "providers": {},
@@ -1595,6 +1596,22 @@ class ProjectService:
         }
 
     @staticmethod
+    def provider_logins_for(manifest: Manifest, launcher: AgentLauncher) -> list[dict[str, object]]:
+        login_state = launcher.login_state
+        if login_state is None:
+            return []
+        return [
+            login_state(provider, host).model_dump(mode="json")
+            for provider, host in sorted(
+                {
+                    (provider, machine.host)
+                    for machine in manifest.machines
+                    for provider in PROVIDER_IDS
+                }
+            )
+        ]
+
+    @staticmethod
     def readiness_for(
         manifest: Manifest,
         launcher: AgentLauncher,
@@ -1642,6 +1659,7 @@ class ProjectService:
                 readiness_by_machine[alias][provider] = probe.result()
         coach_machine = manifest.agent_profile("paper_coach").run_on
         return {
+            "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
             "providers": readiness_by_machine[coach_machine],
         }

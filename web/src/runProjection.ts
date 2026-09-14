@@ -113,6 +113,31 @@ export function authorizedInvocationCount(input: string): number | null {
 }
 
 /** Map the server's recommendation to presentation copy without re-deciding it. */
+/**
+ * One lead sentence naming what blocks the episode, before the recommendation.
+ * Twin of `blockedReasonLead` in `campaigns.ts`; the node test runner cannot
+ * resolve an extensionless runtime import between these two modules.
+ */
+function blockedReasonLead(
+  reason: "sign_in" | "reauthorize" | null | undefined,
+  ending: string | null,
+  label: string,
+): string {
+  if (reason === "sign_in") {
+    return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  }
+  if (reason === "reauthorize") {
+    const lead =
+      ending === "human_pause"
+        ? "The episode paused for human authority."
+        : ending === "exhausted"
+          ? "The authorized turns are spent."
+          : "More authorized turns are needed.";
+    return `${lead} ${label}`;
+  }
+  return label;
+}
+
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const step = run.control.recommendation;
   const labels: Record<ExperimentRecommendedStep, string> = {
@@ -130,7 +155,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
       ? "Resume this episode, or switch provider"
       : "Resume this episode",
     retry: "Retry this episode, or switch provider",
-    reauthenticate_provider: `Sign in to ${run.control.operational?.session?.provider ?? "the provider"} again, then retry`,
+    reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
     keep_loop: "Keep loop running; check now if needed",
     start_episode:
       run.health === "paused_at_limit"
@@ -155,11 +180,9 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
   return {
     step,
     label:
-      blockedReason === "sign_in" && step !== "reauthenticate_provider"
-        ? `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`
-        : blockedReason === "reauthorize"
-          ? `The authorized turns are spent. ${label}`
-          : label,
+      blockedReason === "sign_in" && step === "reauthenticate_provider"
+        ? label
+        : blockedReasonLead(blockedReason, run.control.episode?.ending ?? null, label),
   };
 }
 

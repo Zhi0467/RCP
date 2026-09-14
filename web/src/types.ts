@@ -2527,6 +2527,7 @@ export interface ProjectSnapshot {
     string,
     Partial<Record<ProviderId, ProviderSkillInventory | null>>
   >;
+  provider_logins?: ProviderLoginState[];
   provider_readiness: Record<string, Record<ProviderId, ProviderReadiness>>;
   providers: Record<ProviderId, ProviderReadiness>;
   cache_metrics: ProjectCacheMetrics;
@@ -2733,4 +2734,15 @@ export interface ProjectArtifact {
   viewer_url: string;
   can_open: boolean;
   unavailable_reason: string | null;
+}
+
+export interface ProviderLoginState {
+  provider: string;
+  host: string;
+  state: "signed_in" | "signed_out";
+  generation: number;
+  detail: string | null;
+  source: string | null;
+  changed_at: string;
+  changed_by: string | null;
 }

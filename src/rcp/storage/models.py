@@ -3638,7 +3638,23 @@ def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
     return data
 
 
+class ProviderLoginStateRecord(BaseModel):
+    """Whether one machine account's shared provider login is known to be alive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    host: str
+    state: Literal["signed_in", "signed_out"] = "signed_in"
+    generation: int = 0
+    detail: str | None = None
+    source: Literal["turn", "report", "probe", "verify"] | None = None
+    changed_at: str = ""
+    changed_by: str | None = None
+
+
 __all__ = [
+    "ProviderLoginStateRecord",
     "ArtifactRevisionCandidateRecord",
     "ArtifactRevisionCandidateStatus",
     "ArtifactRevisionConflict",

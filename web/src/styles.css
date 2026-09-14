@@ -11863,12 +11863,26 @@ details[open] > .view-disclosure-summary > svg:last-child {
   box-shadow: 0 0 0 3px var(--cobalt-soft);
 }
 .campaign-dialog-error,
-.campaign-run-error {
+.campaign-run-error,
+.provider-login-notice {
   background: var(--red-soft);
   border-top: 1px solid color-mix(in srgb, var(--red) 32%, var(--line));
   color: var(--red);
   font-size: 11px;
   padding: 10px 24px;
+}
+.provider-login-notice {
+  border: 1px solid color-mix(in srgb, var(--red) 32%, var(--line));
+  border-radius: 5px;
+  display: grid;
+  font-size: 13px;
+  gap: 8px;
+  justify-items: start;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.provider-login-notice p {
+  margin: 0;
 }
 .campaign-run-note {
   border-top: 1px solid var(--line);

@@ -1217,6 +1217,36 @@ class AutoResearchStoreMixin:
         assert stored is not None
         return self._auto_research_recovery_record(stored)
 
+    def blocked_provider_auth_recoveries(self) -> list[AutoResearchRecoveryRecord]:
+        with self.connection() as connection:
+            rows = connection.execute("""
+                SELECT recovery.* FROM auto_research_recoveries AS recovery
+                JOIN episodes AS episode USING (episode_id)
+                WHERE recovery.status = 'blocked' AND recovery.failure_kind = 'provider_auth'
+                  AND episode.status = 'running'
+            """).fetchall()
+        return [self._auto_research_recovery_record(row) for row in rows]
+
+    def release_provider_auth_recoveries(self, tasks: list[tuple[str, str]]) -> list[str]:
+        released = []
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for episode_id, operation_id in tasks:
+                rows = connection.execute(
+                    """
+                    UPDATE auto_research_recoveries
+                    SET status = 'pending', retry_mode = 'exact', next_attempt_at = ?, updated_at = ?
+                    WHERE episode_id = ? AND operation_id = ?
+                      AND status = 'blocked' AND failure_kind = 'provider_auth'
+                      AND EXISTS (SELECT 1 FROM episodes WHERE episode_id = ? AND status = 'running')
+                    RETURNING recovery_id
+                """,
+                    (now, now, episode_id, operation_id, episode_id),
+                ).fetchall()
+                released.extend(row[0] for row in rows)
+        return released
+
     def due_auto_research_recoveries(
         self, *, as_of: str | None = None
     ) -> list[AutoResearchRecoveryRecord]:

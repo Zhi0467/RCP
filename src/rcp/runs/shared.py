@@ -721,6 +721,10 @@ async def _stream_agent_events(
             outcome.failed = True
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
+    if execution is not None:
+        execution.login_generation = execution.store.provider_login_state(
+            request.provider, execution_host
+        ).generation
     async with aclosing(
         launcher.stream(
             request.provider,

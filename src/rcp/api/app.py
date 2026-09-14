@@ -59,6 +59,7 @@ from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
+from rcp.api.provider_login import router as provider_login_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
 from rcp.api.sync import router as sync_router
@@ -620,7 +621,11 @@ def create_app(
     )
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
-    launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
+    launcher = (
+        AcceptanceAgentLauncher()
+        if acceptance_agent
+        else AgentLauncher(login_state=store.provider_login_state)
+    )
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
             store,
@@ -1825,6 +1830,7 @@ def create_app(
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
 
+    app.include_router(provider_login_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(team_router)

@@ -2961,3 +2961,42 @@ def test_a_refused_reattempt_keeps_the_remaining_waits(tmp_path: Path, monkeypat
 
     assert scheduled[:2] == [0, 1]
     assert store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry_failed")
+
+
+def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
+    store = _store(tmp_path)
+    observed = []
+
+    async def stream(_project, _kind, _request, execution):
+        execution.login_generation = store.provider_login_state("codex", "").generation
+        yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
+
+    def settled(_project, _kind, _request, _execution):
+        observed.append(store.provider_login_state("codex", "").state)
+
+    tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
+    task = _admitted_launch_task(store, operation_id="dead-login")
+    tasks.launch_admitted(task.operation_id)
+    finished = wait_for_task(store, task.operation_id, expect="failed")
+    wait_until(lambda: bool(observed))
+    assert finished.failure_kind == "provider_auth"
+    assert store.provider_login_state("codex", "").source == "turn"
+    assert observed == ["signed_out"]
+
+
+def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
+    store = _store(tmp_path)
+
+    async def stream(_project, _kind, _request, execution):
+        execution.login_generation = store.provider_login_state("codex", "").generation
+        store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+        yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="late-dead-login")
+    tasks.launch_admitted(task.operation_id)
+    finished = wait_for_task(store, task.operation_id, expect="failed")
+    assert finished.failure_kind == "provider_auth"
+    state = store.provider_login_state("codex", "")
+    assert state.state == "signed_in"
+    assert state.generation == 1

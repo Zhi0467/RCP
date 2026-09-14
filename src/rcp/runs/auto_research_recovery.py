@@ -7,6 +7,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_failure_signal,
 )
+from rcp.runs.provider_login import project_provider_login_block
 from rcp.storage import EpisodeRecord
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class AutoResearchSettlement(Protocol):
 
 AutoResearchRecoveryFailure = Literal[
     "provider",
+    "provider_auth",
     "network",
     "rate_limit",
     "session_limit",
@@ -104,6 +106,7 @@ def reconcile_due_auto_research_recoveries(
     background: BackgroundAgentTasks,
     *,
     as_of: str | None = None,
+    operation_ids: set[str] | None = None,
 ) -> int:
     """Attempt every due durable recovery once; callers provide the process heartbeat."""
 
@@ -111,6 +114,13 @@ def reconcile_due_auto_research_recoveries(
     reconciled = 0
     for recovery in store.due_auto_research_recoveries(as_of=as_of):
         if recovery.status != "pending":
+            continue
+        if operation_ids is not None and recovery.operation_id not in operation_ids:
+            continue
+        task = store.agent_task(recovery.operation_id)
+        if task is not None and project_provider_login_block(
+            store, task.project_id, task.request.get("provider"), task.request.get("run_on")
+        ):
             continue
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
@@ -178,7 +188,10 @@ def _recoverable_failure(
     store,
     operation_id: str,
     request: AutoResearchRunRequest,
-) -> tuple[AutoResearchRecoveryFailure, Literal["exact", "clean"]]:
+) -> tuple[AutoResearchRecoveryFailure, Literal["exact", "clean", "blocked"]]:
+    task = store.agent_task(operation_id)
+    if task is not None and task.failure_kind == "provider_auth":
+        return "provider_auth", "blocked"
     receipts = store.agent_task_receipts(operation_id)
     if any(
         receipt.category == "continuation_context_unavailable"

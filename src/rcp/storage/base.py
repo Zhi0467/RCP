@@ -52,6 +52,7 @@ class AppStoreBase:
         (15, "team_device_pairings_v1"),
         (16, "agent_task_failure_kind_v1"),
         (17, "episode_report_titles_v1"),
+        (18, "provider_login_states_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -538,6 +539,12 @@ class AppStoreBase:
             version=17,
             name="episode_report_titles_v1",
             migration=self._migrate_episode_report_titles,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=18,
+            name="provider_login_states_v1",
+            migration=self._migrate_provider_login_states,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1975,6 +1982,7 @@ class AppStoreBase:
         self._migrate_team_device_pairings(connection)
         self._migrate_team_session_ids(connection)
         self._ensure_column(connection, "episode_reports", "display_title", "TEXT")
+        self._migrate_provider_login_states(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1993,6 +2001,22 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_provider_login_states(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS provider_login_states (
+                provider TEXT NOT NULL,
+                host TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('signed_in', 'signed_out')),
+                generation INTEGER NOT NULL,
+                detail TEXT,
+                source TEXT,
+                changed_at TEXT NOT NULL,
+                changed_by TEXT,
+                PRIMARY KEY (provider, host)
+            )
+        """)
 
     @classmethod
     def _migrate_episode_report_titles(cls, connection: sqlite3.Connection) -> None:

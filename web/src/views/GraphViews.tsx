@@ -1,3 +1,4 @@
+import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
 import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
@@ -82,6 +83,7 @@ import {
   type ExperimentRouteIdentity,
 } from "../experimentBoard";
 import type {
+  ProviderLoginState,
   AgentTask,
   Edge,
   Episode,
@@ -1098,6 +1100,8 @@ interface ExecutionProps {
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
   providerLabels?: Record<string, string>;
+  providerLogins?: ProviderLoginState[];
+  onProviderLoginVerified?: () => void;
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
@@ -1141,6 +1145,8 @@ export function ExecutionView({
   taskActionId,
   selectedExperimentConversation,
   providerLabels = {},
+  providerLogins = [],
+  onProviderLoginVerified,
   mutationsDisabled = false,
   experimentStartsDisabled = false,
   onInspectTask,
@@ -1330,6 +1336,7 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
+      <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
       <div className="runs-view-controls">
         <label className="show-archived-runs">
           <input

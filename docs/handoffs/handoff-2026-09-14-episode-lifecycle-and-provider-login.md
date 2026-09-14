@@ -3,8 +3,8 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Slice 1 is implemented on this branch; slices 2
-to 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
+two further protocol spikes. Slices 1 and 2 are implemented on this branch;
+slices 3 to 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
 commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
 branch. None is optional.
 
@@ -189,9 +189,11 @@ Failure policy by phase:
   `blocked_reason=sign_in`; it resumes after a verified sign-in and spends no
   report attempt.
 - **Transient unavailability** (database lock, canonical repository lock, SSH
-  to the stage host, any exception not classified as permanent): retried on the
-  next poll; the diagnostic receipt on the reconciling operation stays as today;
-  it never becomes terminal on its own.
+  to the stage host): retried on the next poll without bound; the diagnostic
+  receipt on the reconciling operation stays as today. An exception that is
+  neither classified permanent nor transient is retried three times per
+  process, then settled as a permanent defect, because repeating an
+  unclassified deterministic failure forever is the incident itself.
 
 One warning line is logged per process for each episode and failure kind and
 none on repeats. The journal route was inspected: the service configures no
@@ -237,7 +239,13 @@ or the node (Experiment). In one transaction it creates the continuation episode
 with a fresh id, `continues_episode_id` set to the source, the source's graph
 target and `graph_base_head`, ceiling N, its own authorizer snapshot, and
 `status=running`; carries the source's child routes and their pending watcher
-completions over to the continuation; records a `reauthorized` lifecycle notice
+completions over to the continuation; the branch keeps the source episode's id
+as its `branch_id`, so `EpisodeRecord.lifecycle_is_coherent`, `owns_graph_branch`
+in the API, `graph_branch_summary`, branch chats, and merge admission stop
+assuming `branch_id == episode_id` and instead resolve a branch to the newest
+episode of its chain (`continues_episode_id` walk) wherever they need the
+current writer, while the branch's history and Patch log stay under the source
+id; records a `reauthorized` lifecycle notice
 naming N; and admits the first turn as the orchestrator's `thread/resume` of the
 source's exact native session, which spends invocation 1 of N. Experiment loops
 continue the same node with the same session through the existing Run path,
@@ -300,6 +308,14 @@ from that environment so the token is the credential in use. Expiry is unknown
 from the token itself; RCP shows the paste date, warns eleven months after it as
 an estimate, and treats a classified login failure as the truth. The credential
 gate keeps covering Claude for the probes that still read its own login.
+
+Sign-out from the UI: `POST /api/providers/{provider}/logins/sign-out` runs
+`codex logout` as the execution account, or deletes the stored Claude token,
+then marks the account `signed_out` with a new generation, `source="sign_out"`,
+and the acting member; admission is fenced exactly as for a failed login. At
+service start, a Claude account whose durable state is `signed_in` but whose
+token file is absent (a restore onto a machine without the excluded provider
+directory) is marked `signed_out` with `source="restore"` before any launch.
 
 Sign-in from the UI: for Codex, RCP runs `codex login --device-auth` as the
 execution account, parses the user code and verification URL from its output,
@@ -573,9 +589,11 @@ On codex 0.154.0, in a logged-out scratch `CODEX_HOME`, 2026-09-14:
 - The copied production branch merges to main while its episode is
   `wrapping_up`, and a branch with a running writer is refused with the writer
   named.
-- Mail arriving mid-turn is read by that turn and causes no wake; a
-  self-requested stop or replacement causes no wake; a child login failure
-  causes no wake and does not block mail.
+- Mail that arrives before a running turn's last inbox harvest is read by that
+  turn and causes no wake; mail that arrives after the last harvest waits for
+  the next wake, which is why the prompt tells the orchestrator to harvest once
+  more before finishing. A self-requested stop or replacement causes no wake; a
+  child login failure causes no wake and does not block mail.
 - The Runs card shows the timeline for the production copy with six wakes
   labelled by cause and five retries nested under their turns, and the Turns and
   Mail sections are gone.

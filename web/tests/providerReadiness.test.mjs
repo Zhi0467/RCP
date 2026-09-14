@@ -161,7 +161,18 @@ const probedProfiles = {
     run_on: "local",
   },
 };
+const providerLogins = [
+  {
+    provider: "codex",
+    host: "",
+    state: "signed_out",
+    generation: 0,
+    changed_at: "2026-09-14T00:00:00Z",
+    detail: "Please sign in again",
+  },
+];
 const readinessResponse = {
+  provider_logins: providerLogins,
   compute_status: probedCompute,
   provider_readiness: probedProviders,
   providers: probedProviders.local,
@@ -210,6 +221,7 @@ test("a compute-settings save drops the matrix without dropping provider readine
   // The effective profiles travel with the provider slice: a refresh that moves
   // the catalog head re-exports the model each unnamed profile now resolves to.
   assert.deepEqual(await probe.applied, {
+    provider_logins: providerLogins,
     provider_readiness: probedProviders,
     providers: probedProviders.local,
     provider_skill_inventories: {},
@@ -273,4 +285,12 @@ test("the provider re-check consumes the visible App-owned rejection", async () 
   await settleReadinessRefresh(async () => {
     throw new Error("shown through readinessError");
   });
+});
+
+test("a fresh cached readiness response replaces another project's shared login failure", async () => {
+  const generations = new Map();
+  const probe = deferredReadiness(generations, "project");
+  probe.complete(readinessResponse);
+  const current = { provider_logins: [], ...(await probe.applied) };
+  assert.deepEqual(current.provider_logins, providerLogins);
 });

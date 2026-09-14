@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.core.models import AuthorizedHuman
 from rcp.runs.auto_research_admission import start_auto_research_child_work_watcher_wake
+from rcp.runs.provider_login import ProviderSignedOut, project_provider_login_block
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import RunRequest
 from rcp.storage import (
@@ -96,7 +97,7 @@ def start_watcher_notification(
                         watcher_ids,
                         request=request,
                     )
-                except (EpisodeInvocationCeilingReached, EpisodeNotRunning):
+                except (EpisodeInvocationCeilingReached, EpisodeNotRunning, ProviderSignedOut):
                     return
 
         if admission_fence is not None:
@@ -182,6 +183,10 @@ def start_watcher_notification(
         nonlocal started
         with tasks._watcher_delivery_lock:
             if not tasks._accepting_watcher_deliveries:
+                return
+            if project_provider_login_block(
+                tasks.store, project_id, request.provider, request.run_on
+            ):
                 return
             if experiment_reauthorization:
                 stored = tasks.store.create_experiment_episode_with_invocation(

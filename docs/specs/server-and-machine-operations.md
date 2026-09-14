@@ -56,9 +56,11 @@ checkouts and project keys, and service-owned checkpoint payloads. Root owns
 operation and adoption journals, restore preparation receipts, and bounded logs.
 Provider-native state stays in each provider's normal per-account home path
 (currently `/home/rcp/.codex` and `/home/rcp/.claude`), and SSH state stays in
-`/home/rcp/.ssh`; RCP does not relocate or manage provider authentication. A
-later provider retains its own native path rather than joining an RCP credential
-store. The root-entered `server provider update <codex|claude>` command is a
+`/home/rcp/.ssh`; RCP does not relocate provider credentials. It records each
+machine account's login state from real provider results, refuses new provider
+work while an account is signed out, and verifies a sign-in with one real
+request from the product. A later provider retains its own native path rather
+than joining an RCP credential store. The root-entered `server provider update <codex|claude>` command is a
 bounded operator wrapper around the provider's native update under `rcp`; it
 does not take ownership of provider releases or credentials. The installed
 service and root-to-service subprocess environment put `/home/rcp/.local/bin`

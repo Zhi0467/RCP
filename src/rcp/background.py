@@ -54,6 +54,7 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
+from rcp.runs.provider_login import require_project_provider_login
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -205,6 +206,7 @@ class AgentTaskExecution:
     store: AppStore
     control: AgentProcessControl
     runtime_id: str = ""
+    login_generation: int = 0
     stage_host: str | None = None
     stage_root: str | None = None
     write_scope_fingerprint: str | None = None
@@ -1107,6 +1109,9 @@ class BackgroundAgentTasks:
                 raise ValueError("Auto-research wake admission returned another task lineage.")
         elif isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
             if request.trigger == "experiment_run" and parent is None:
+                require_project_provider_login(
+                    self.store, project_id, request.provider, request.run_on
+                )
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
                     request.watcher_ids,
@@ -1698,13 +1703,22 @@ class BackgroundAgentTasks:
             with suppress(ValueError, KeyError):
                 profile = profile_for(provider)
         exit = self.store.agent_task_provider_exit(operation_id)
-        return classify_agent_failure(
+        kind = classify_agent_failure(
             error=error,
             return_code=exit.return_code if exit is not None else None,
             host=execution.stage_host or "",
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
+        if kind == "provider_auth" and provider:
+            self.store.mark_provider_login_failed(
+                provider,
+                execution.stage_host or "",
+                generation=execution.login_generation,
+                detail=error,
+                source="turn",
+            )
+        return kind
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.

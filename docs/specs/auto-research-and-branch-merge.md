@@ -246,8 +246,10 @@ repeating an uncertain submission.
 
 At budget exhaustion or non-Stop ending, admitted children settle, the parent
 fences new work, and the common visual report resumes the exact branch-bound
-session with one immutable receipt. Human Stop uses the common graceful fence
-and skips the report. Reauthorization always creates a new episode, native
+session with one immutable receipt. The receipt compacts to its storage bound
+and never blocks settlement; a permanent admission defect settles the episode
+with a visible nonblocking report error instead of leaving it in `wrapping_up`.
+Human Stop uses the common graceful fence and skips the report. Reauthorization always creates a new episode, native
 session, and branch; it never reopens an exhausted parent.
 
 Parent settlement and report launch, including restart of an allocated report,

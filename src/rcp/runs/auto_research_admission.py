@@ -35,6 +35,7 @@ from rcp.runs.auto_research import (
     pending_auto_research_mail as _episode_pending_mail,
 )
 from rcp.runs.experiment_admission import experiment_start_message
+from rcp.runs.provider_login import require_project_provider_login
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
 from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -179,6 +180,9 @@ def reserve_auto_research(
         last_activity_at=now,
         authorized_by=authorized_by,
         dispatch_authority=dispatch_authority,
+    )
+    require_project_provider_login(
+        tasks.store, project_id, run_request.provider, run_request.run_on
     )
     stored_episode, stored_task = tasks.store.create_auto_research_episode_with_root_task(
         episode,
@@ -431,6 +435,9 @@ def start_auto_research_turn(
         raise ValueError("Only an Auto-research message wake may claim a mail batch.")
     elif wake_admission is not None:
         raise ValueError("Only an Auto-research watcher wake may use wake admission.")
+    require_project_provider_login(
+        tasks.store, episode.project_id, request.provider, request.run_on
+    )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
         episode.project_id,
@@ -746,6 +753,9 @@ def start_auto_research_child_work(
         created_at=now,
         updated_at=now,
     )
+    require_project_provider_login(
+        tasks.store, episode.project_id, request.provider, request.run_on
+    )
     _, stored = tasks.store.create_auto_research_child_work(
         route,
         task,
@@ -954,6 +964,9 @@ def _start_auto_research_child_work_wake(
         last_activity_at=now,
         authorized_by=episode.authorized_by,
         dispatch_authority=dispatch_authority,
+    )
+    require_project_provider_login(
+        tasks.store, episode.project_id, request.provider, request.run_on
     )
     if continuation == "watcher_wake":
         stored = tasks.store.create_auto_research_child_work_watcher_wake_task(
@@ -1226,6 +1239,7 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
+    require_project_provider_login(tasks.store, route.project_id, request.provider, request.run_on)
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,
@@ -1449,6 +1463,9 @@ def retry_auto_research_task(
         raise ValueError(
             "Auto-research recovery cannot change its pinned " + ", ".join(changed) + "."
         )
+    require_project_provider_login(
+        tasks.store, previous.project_id, original.provider, original.run_on
+    )
     session_limit = tasks._failure_is_session_limit(previous)
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
     owned_checkpoint = bool(

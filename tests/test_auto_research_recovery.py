@@ -4,6 +4,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -627,14 +629,8 @@ def test_a_vanished_session_retries_clean_rather_than_resuming_it(tmp_path: Path
     assert recovery.retry_mode == "clean"
 
 
-def test_a_revoked_login_is_named_but_still_recovered(tmp_path: Path) -> None:
-    """The classification says what happened; it must not remove the way back.
-
-    Recovery is bounded and spaced, so spending it is also what lets a human's
-    sign-in be picked up without anyone touching the episode. Withholding it on
-    a failure kind that never changes would leave the episode running with no
-    recovery pending and nothing that could ever release it.
-    """
+def test_a_revoked_login_is_parked_until_verified(tmp_path: Path) -> None:
+    """The way back is a verified sign-in, never a spaced automatic retry."""
 
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
@@ -661,4 +657,51 @@ def test_a_revoked_login_is_named_but_still_recovered(tmp_path: Path) -> None:
         lambda: store.auto_research_recovery("task:root"),
         detail="settlement never scheduled the recovery",
     )
+    assert recovery.status == "blocked"
+    assert recovery.next_attempt_at is None
+    assert reconcile_due_auto_research_recoveries(tasks) == 0
+    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+    assert store.release_provider_auth_recoveries([(recovery.episode_id, root.operation_id)]) == [
+        recovery.recovery_id
+    ]
+    assert store.release_provider_auth_recoveries([(recovery.episode_id, root.operation_id)]) == []
+    calls = []
+    original_retry = tasks.retry
+
+    def retry(operation_id):
+        calls.append(operation_id)
+        return original_retry(operation_id)
+
+    tasks.retry = retry
+    assert reconcile_due_auto_research_recoveries(tasks) == 1
+    assert reconcile_due_auto_research_recoveries(tasks) == 0
+    assert calls == [root.operation_id]
+
+
+def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
+    store = _store(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="saved-session"))
+        yield _sse(AgentEvent(event="error", text="Temporary provider failure"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks, provider="codex")
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
     assert recovery.status == "pending"
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    with store.connection() as connection:
+        before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    budget = store.episode(root.episode_id).invocations_used
+    with pytest.raises(ValueError, match="signed out"):
+        tasks.retry(root.operation_id)
+    assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 0
+    assert store.auto_research_recovery(recovery.recovery_id) == recovery
+    assert store.episode(root.episode_id).invocations_used == budget
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before

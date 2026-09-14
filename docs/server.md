@@ -311,9 +311,12 @@ Both status commands read the stored credential and report the auth mode. Neithe
 contacts the provider, so they prove a credential exists under `/home/rcp` and
 nothing about whether it still works. A login can be present and dead at once: a
 rotating refresh token that was already spent leaves a complete file on disk.
-The symptom is a task failing with `401` while the status command reports
-success, and the remedy is rerunning the login command above. RCP checks the
-same provider-reported status and inherits the same limit.
+RCP does not trust these status commands. When a real provider process reports a
+dead login, RCP marks that machine account signed out, refuses to start new
+provider work on it, shows one notice on every project's Runs view and on the
+space landing, and offers **Verify sign-in**. Rerun the login command above,
+then click **Verify sign-in**; it runs one minimal real request as `rcp` and,
+when that succeeds, resumes the work the dead login had parked.
 
 The login commands may be rerun safely if the SSH connection closes before the
 browser flow finishes. Never paste a provider token, returned login code, or a

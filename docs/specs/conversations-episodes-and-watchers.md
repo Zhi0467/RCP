@@ -510,6 +510,15 @@ one, and it never leaves the episode on a live wrap-up status.
 Report generation resumes the exact episode session and stage with only the
 durable ending, the official report-skill/output pointer, and one compact
 immutable mode receipt. It never rebuilds or resends the graph or transcript.
+The mode receipt compacts in a fixed order until its stored envelope fits the
+receipt size bound, measured with the storage encoder, so size never fails
+admission. A wrap-up the reconciler cannot admit because of a permanent defect
+(a validation error, an inconsistent ledger, a conflicting fence) is recorded
+once as a failed wrap-up with the defect as its report error, and the episode
+settles to its ending's terminal status; a transient failure (a lock, an
+unreachable host) is retried on the next poll. Once a wrap-up row exists,
+reconciliation reuses it and never rebuilds the receipt. One warning is logged
+per process for each episode and failure kind.
 The hidden allocation permits at most three provider turns total, clears the
 exact output before each attempt, and spends no operational unit.
 

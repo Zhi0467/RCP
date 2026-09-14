@@ -541,10 +541,45 @@ account.
 RCP does not perform provider login, store provider credentials, switch accounts,
 refresh tokens, or create alternate provider homes. The operator uses each
 provider's own login command directly as the target execution account. RCP's
-server CLI checks executable, version, provider-reported authentication status,
+server CLI checks executable, version, the account's durable login state,
 configured runtime, explicit model catalog entry, reasoning effort, and the
 provider-owned minimum version for that profile through the same launch
-abstraction used by tasks. A catalog failure cannot approve an explicitly saved
+abstraction used by tasks. The provider's own status command is a presence
+check, not a liveness check, and is never proof of a login.
+
+### Login state and failure
+
+RCP keeps one durable login state per `(provider, host)` machine account,
+`signed_in` or `signed_out`, with a generation number. A provider process whose
+own diagnostic matches the provider profile's revoked-login signatures (for
+Codex: `token_revoked`, `refresh_token_invalidated`, `refresh_token_reused`,
+"refresh token was revoked", "refresh token was already used", "your session has
+ended"; Claude declares none until one is observed) is classified
+`provider_auth` on every path: a turn, a wake, a worker, an automatic recovery,
+the hidden report attempt, and the readiness probes. The classification marks
+the account `signed_out` with the generation the launch captured; a late
+failure carrying an older generation never re-marks an account repaired since.
+
+While an account is `signed_out`, every paid admission for it (an Auto-research
+turn, wake, child Work, child Experiment, or report attempt; an Experiment-loop
+turn or Retry) is refused before a task is created or budget debited. Human and
+API paths receive the refusal text; reconcilers leave the durable input pending
+(notices, mail, watcher completions, the report allocation). An Auto-research
+recovery for a `provider_auth` failure is created `blocked` and is never claimed
+until the account is verified. Readiness reads the durable state, so the Retry
+preflight, the project readiness snapshot, and the server readiness coordinator
+report a signed-out account truthfully.
+
+**Verify** (`POST /api/providers/{provider}/logins/verify`) runs one minimal
+authenticated request as the execution account under the credential gate, using
+the profile's `login_probe_command`. Success marks `signed_in`, bumps the
+generation, invalidates readiness, and resumes the parked work once: blocked
+recoveries are released and claimed, pending lifecycle, mail, and watcher
+inputs are delivered, pending wrap-ups restart, and one Experiment-loop turn
+that failed with `provider_auth` is retried through its exact path. Failure
+keeps `signed_out` and records the probe's bounded diagnostic. Any signed-in
+member may verify; the acting member is recorded. Nothing on other providers or
+machines is touched. A catalog failure cannot approve an explicitly saved
 model, and an unexpected implementation error fails the command rather than
 being relabelled as a missing install. The later provider call uses the same
 native authentication and version rule. A failed check names the provider,

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import classify_terminal_error
+from rcp.runs.provider_login import require_project_provider_login
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import AgentTaskRequest, skill_update
 from rcp.service import RunRequest
@@ -182,6 +183,9 @@ def retry_experiment_loop(
         if value is not None
     }
     request = RunRequest.model_validate({**baseline, **requested_config})
+    require_project_provider_login(
+        tasks.store, previous.project_id, request.provider, request.run_on
+    )
     config_changed = any(
         requested_config.get(field, baseline.get(field)) != baseline.get(field)
         for field in requested_config
@@ -356,6 +360,9 @@ def preflight_experiment_episode_recovery(
     original = request or tasks._request_from_record(record)
     if not isinstance(original, RunRequest) or original.patch_kind != "experiment_loop":
         return
+    require_project_provider_login(
+        tasks.store, record.project_id, original.provider, original.run_on
+    )
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)
     if problem is None:
         if record.stage_host and record.stage_root:

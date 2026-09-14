@@ -659,6 +659,16 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
             ("stopped", "none", None, None),
             id="stopped-wins",
         ),
+        *[
+            pytest.param(
+                {"wrapup_state": state, "report_login_blocked": True},
+                {},
+                False,
+                ("wrapping_up", "wait", None, "sign_in"),
+                id=f"report-{state}-signed-out",
+            )
+            for state in ["pending", "running"]
+        ],
         pytest.param(
             {"wrapup_state": "pending"},
             {},
@@ -826,6 +836,7 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
         recovery=SimpleNamespace(status="pending") if recovering else None,
         has_report=record.wrapup_state == "ready",
         can_reauthorize=False,
+        report_login_blocked=episode_fields.get("report_login_blocked", False),
     )
     assert result == expected
     if record.ending is not None:
@@ -906,3 +917,38 @@ def test_exhausted_serialization_carries_reauthorization_and_report_error(
         "reauthorize",
     )
     assert response.wrapup_error == ended.wrapup_error
+
+
+def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "signed-out-report")
+    _begin_report(store, episode, root, ending="completed")
+    store.mark_provider_login_failed(
+        "codex", "", generation=0, detail="Sign in again.", source="report"
+    )
+    response = serialize_episode(
+        store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
+    )
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "wrapping_up",
+        "wait",
+        "sign_in",
+    )
+
+
+def test_project_readiness_includes_only_its_machine_account_logins(manifest, tmp_path) -> None:
+    from rcp.agents import AgentLauncher
+    from rcp.service import ProjectService
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.mark_provider_login_failed("codex", "", generation=0, detail="Sign in", source="turn")
+    store.mark_provider_login_failed(
+        "codex", "other.example", generation=0, detail="Sign in", source="turn"
+    )
+    states = ProjectService.provider_logins_for(manifest, AgentLauncher(store.provider_login_state))
+    assert {(state["provider"], state["host"]) for state in states} == {
+        ("codex", ""),
+        ("claude", ""),
+    }
+    assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"

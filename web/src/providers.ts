@@ -1,4 +1,5 @@
 import type { ModelChoice, ProviderReadiness } from "./types";
+import type { ProviderLoginState } from "./types";
 
 /**
  * Turning the backend provider registry into select options.
@@ -113,4 +114,20 @@ export function modelChange(
   // The catalog's default is trusted only when the model's own list contains it.
   const fallback = models.find((item) => item.id === model)?.default_reasoning ?? "";
   return { model, reasoning: accepted.includes(fallback) ? fallback : accepted[0] };
+}
+
+/**
+ * Overlay the live account states on the project's own account list. The
+ * project snapshot says which accounts this project uses; the live list says
+ * what each is now. Nothing outside the project's accounts is shown.
+ */
+export function mergeProviderLogins(
+  projectLogins: ProviderLoginState[],
+  live: ProviderLoginState[] | null,
+): ProviderLoginState[] {
+  if (!live) return projectLogins;
+  return projectLogins.map(
+    (entry) =>
+      live.find((state) => state.provider === entry.provider && state.host === entry.host) ?? entry,
+  );
 }

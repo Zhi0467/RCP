@@ -454,6 +454,10 @@ class ProviderProfile:
                     minimum=minimum,
                 )
 
+    def login_probe_command(self, binary: str) -> list[str] | None:
+        """One real authenticated request; status output is not proof of sign-in."""
+        return None
+
     def work_like_probe_command(self, binary: str) -> list[str] | None:
         """Zero-model-call startup check; the caller must supply empty stdin."""
         return None
@@ -648,17 +652,35 @@ class CodexProfile(ProviderProfile):
     def credential_failure(self, stderr: str) -> bool:
         # Observed from a real run on 2026-09-12: `codex login status` still
         # reported a healthy login while every turn died on these. The run's
-        # own diagnostic is the only trustworthy signal.
+        # own diagnostic is the only trustworthy signal. On the same date a shared
+        # login died between turns with refresh_token_reused / already-used text.
         reported = stderr.lower()
         return any(
             signature in reported
             for signature in (
+                "refresh_token_reused",
+                "refresh token was already used",
                 "token_revoked",
                 "refresh_token_invalidated",
                 "refresh token was revoked",
                 "your session has ended. please log in again",
             )
         )
+
+    def login_probe_command(self, binary: str) -> list[str]:
+        # Flags probed with codex-cli 0.154.0 on 2026-09-14.
+        return [
+            binary,
+            "exec",
+            "--ignore-user-config",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--model",
+            "gpt-5.6-luna",
+            "Reply with OK only. Do not use tools.",
+        ]
 
     def catalog_command(self, binary: str) -> list[str] | None:
         return [binary, "debug", "models"]
@@ -879,6 +901,7 @@ _CLAUDE_MODELS = tuple(
 
 
 class ClaudeProfile(ProviderProfile):
+    # No credential failure signatures have been observed for Claude.
     id = "claude"
     label = "Claude"
     usage_profile = "claude.query.v1"
@@ -953,6 +976,23 @@ class ClaudeProfile(ProviderProfile):
             f"Claude ignored the requested reasoning effort {requested_reasoning!r} "
             "and ran at its own default."
         )
+
+    def login_probe_command(self, binary: str) -> list[str]:
+        # Flags probed with Claude Code 2.1.270 on 2026-09-14.
+        return [
+            binary,
+            "--print",
+            "--model",
+            "haiku",
+            "--output-format",
+            "text",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "Reply with OK only.",
+        ]
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         return [

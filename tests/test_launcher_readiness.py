@@ -218,3 +218,20 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
         )
     )
     _require_auto_research_retry_target_ready(service, request)
+
+
+def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "login.sqlite3")
+    launcher = AgentLauncher(login_state=store.provider_login_state)
+    binary = _claude_binary(tmp_path, work_ready=True)
+    assert launcher.readiness("claude", binary=str(binary)).authenticated
+    store.mark_provider_login_failed(
+        "claude", "", generation=0, detail="observed provider failure", source="turn"
+    )
+    readiness = launcher.readiness("claude", binary=str(binary))
+    assert not readiness.authenticated
+    assert "Verify sign-in" in readiness.reason
+    assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
+    assert not launcher.cached_readiness("claude", binary=str(binary)).authenticated

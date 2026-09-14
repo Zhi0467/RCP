@@ -43,6 +43,7 @@ import {
   useState,
 } from "react";
 import { isActiveTask } from "./agentTasks";
+import { mergeProviderLogins } from "./providers";
 import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
@@ -59,6 +60,7 @@ import {
   ApiError,
   loadEpisodes,
   loadProjectReadiness,
+  loadProviderLogins,
   mergeEpisodeToMain,
   reauthorizeEpisode,
   sendEpisodeMessage,
@@ -209,6 +211,7 @@ import type {
   ProjectCard,
   ProjectInvitation,
   ProjectSnapshot,
+  ProviderLoginState,
   ProjectTransitionResponse,
   TransitionPreviewResponse,
   TransitionTriggerManifest,
@@ -323,6 +326,7 @@ export function projectReadinessUpdate(
     ...(applies.compute ? { compute_status: readiness.compute_status } : {}),
     ...(applies.provider
       ? {
+          provider_logins: readiness.provider_logins,
           provider_readiness: readiness.provider_readiness,
           providers: readiness.providers,
           provider_skill_inventories: readiness.provider_skill_inventories,
@@ -998,36 +1002,6 @@ export default function App() {
   );
   const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
   const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
-  useEffect(() => {
-    if (!projectId || !projectRunsNeedsExperimentIndex(projectId, view)) return;
-    let stopped = false;
-    let timer = 0;
-    const schedule = () => {
-      timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
-    };
-    const poll = async () => {
-      if (stopped) return;
-      if (document.visibilityState === "hidden") {
-        schedule();
-        return;
-      }
-      try {
-        await refreshProjectExperimentLoops(projectId);
-      } catch (error) {
-        if (!stopped) {
-          reportErrorNotice(
-            `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-      if (!stopped) schedule();
-    };
-    void poll();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [projectId, refreshProjectExperimentLoops, reportErrorNotice, view]);
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
@@ -1809,6 +1783,48 @@ export default function App() {
     },
     [apiBase, isActiveProject, projectId, updateProject],
   );
+
+  // The Runs view overlays the live machine-account login states on the
+  // project's own account list. One small read per poll; the readiness
+  // snapshot is not re-requested for it.
+  const [liveProviderLogins, setLiveProviderLogins] = useState<ProviderLoginState[] | null>(null);
+  const refreshProviderLogins = useCallback(async () => {
+    setLiveProviderLogins(await loadProviderLogins());
+  }, []);
+  const runsProviderLogins = useMemo(
+    () => mergeProviderLogins(project?.provider_logins ?? [], liveProviderLogins),
+    [project?.provider_logins, liveProviderLogins],
+  );
+  useEffect(() => {
+    if (!projectId || !projectRunsNeedsExperimentIndex(projectId, view)) return;
+    let stopped = false;
+    let timer = 0;
+    const schedule = () => {
+      timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+    };
+    const poll = async () => {
+      if (stopped) return;
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      try {
+        await Promise.all([refreshProjectExperimentLoops(projectId), refreshProviderLogins()]);
+      } catch (error) {
+        if (!stopped) {
+          reportErrorNotice(
+            `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      if (!stopped) schedule();
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, refreshProjectExperimentLoops, refreshProviderLogins, reportErrorNotice, view]);
 
   const refreshReadiness = useCallback(async () => {
     await requestProjectReadiness(true);
@@ -4504,6 +4520,8 @@ export default function App() {
           {view === "execution" && (
             <div className="combined-runs-view">
               <ExecutionView
+                providerLogins={runsProviderLogins}
+                onProviderLoginVerified={() => void refreshProviderLogins()}
                 graph={presentedGraph}
                 episodes={episodes}
                 episodeMessages={episodeMessages}
