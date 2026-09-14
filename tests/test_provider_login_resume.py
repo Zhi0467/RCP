@@ -40,16 +40,9 @@ def _resume_app(store, background, monkeypatch):
         patch.setattr(app_module, "BackgroundAgentTasks", lambda *_, **__: background)
         composed = app_module.create_app(data_dir=store.path.parent / "resume-app")
     background.on_task_settled = callback
-    monkeypatch.setattr(
-        provider_login,
-        "get_episode_reconciliation",
-        lambda _: composed.state.services.episode_reconciliation,
-    )
-    monkeypatch.setattr(
-        provider_login, "get_watcher_delivery", lambda _: composed.state.services.watcher_delivery
-    )
     app = FastAPI()
     app.include_router(provider_login.router)
+    app.state.services = composed.state.services
     return app
 
 
@@ -75,6 +68,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         else:
             yield _sse(AgentEvent(event="done"))
 
+    ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
+        "claude", "", "test-token", member_id="member", now=store.now()
+    )
     background = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(background)
     roots = []
@@ -86,7 +82,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
                 invocation_ceiling=4,
                 run_truth_scope=["repo"],
                 provider=provider,
-                run_on="removed-alias",
+                run_on="laptop",
             ),
             authorized_by=fabricated_authorizer(),
             graph_base_head=GraphHeadRef(revision=0),
@@ -124,13 +120,14 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         "get_identity_access",
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
     )
-    monkeypatch.setattr(provider_login, "get_background_tasks", lambda _: background)
     app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    runner = ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
+    runner.resume_account = app.state.services.provider_sign_ins.resume_account
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
 
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
@@ -168,13 +165,14 @@ def _verify_client(store, background, monkeypatch):
         "get_identity_access",
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
     )
-    monkeypatch.setattr(provider_login, "get_background_tasks", lambda _: background)
     app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    runner = ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
+    runner.resume_account = app.state.services.provider_sign_ins.resume_account
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     return TestClient(app)
 
 
@@ -315,6 +313,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         else:
             yield _sse(AgentEvent(event="done"))
 
+    original_manifest = manifest.path.read_text()
+    if run_on == "removed-alias":
+        manifest.path.write_text(original_manifest.replace("laptop", "removed-alias"))
     background = BackgroundAgentTasks(store, stream)
     roots = []
     for index in range(2):
@@ -333,6 +334,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         )
         roots.append(wait_for_task(store, task.operation_id, expect="failed"))
         wait_until(lambda operation_id=task.operation_id: operation_id not in background._workers)
+    manifest.path.write_text(original_manifest)
     store.checkpoint_agent_task(
         roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
     )
@@ -373,9 +375,9 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
     client = _verify_client(store, background, monkeypatch)
     delivered = []
     monkeypatch.setattr(
-        provider_login,
-        "get_watcher_delivery",
-        lambda _: SimpleNamespace(deliver_watcher_group=lambda group: delivered.append(group)),
+        client.app.state.services.watcher_delivery,
+        "deliver_watcher_group",
+        lambda group: delivered.append(group),
     )
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text

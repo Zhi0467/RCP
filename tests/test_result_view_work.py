@@ -15,7 +15,13 @@ from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
+from .helpers import (
+    append_fixture_patch,
+    authorized_human,
+    seed_patch,
+    store_test_claude_token,
+    wait_for_task,
+)
 from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/result-view"
@@ -888,6 +894,7 @@ def test_background_retry_recovers_without_reauthoring_an_already_bound_create(
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
     store = app.state.background_tasks.store
+    store_test_claude_token(store)
     append_fixture_patch(service, seed_patch())
     append_fixture_patch(service, _experiment_patch())
     project_id = app.state.default_project_id

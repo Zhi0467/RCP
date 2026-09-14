@@ -35,8 +35,7 @@ function AccountNotice({
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (verified) return null;
-  const provider =
-    state.provider === "codex" ? "Codex" : state.provider === "claude" ? "Claude" : state.provider;
+  const provider = state.label ?? state.provider;
   async function verify() {
     setPending(true);
     setError(null);

@@ -448,22 +448,28 @@ export function loadProviderLogins(): Promise<ProviderLoginAccount[]> {
   return api("/api/providers/logins");
 }
 
-export function startCodexSignIn(host: string): Promise<ProviderSignInStatus> {
-  return api("/api/providers/codex/logins/sign-in", {
+export function startProviderSignIn(provider: string, host: string): Promise<ProviderSignInStatus> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-in`, {
     method: "POST",
     body: JSON.stringify({ host }),
   });
 }
 
-export function codexSignInStatus(loginId: string): Promise<ProviderSignInStatus> {
-  return api(`/api/providers/codex/logins/sign-in/${encodeURIComponent(loginId)}`);
+export function providerSignInStatus(
+  provider: string,
+  loginId: string,
+): Promise<ProviderSignInStatus> {
+  return api(
+    `/api/providers/${encodeURIComponent(provider)}/logins/sign-in/${encodeURIComponent(loginId)}`,
+  );
 }
 
-export function saveClaudeToken(
+export function saveProviderToken(
+  provider: string,
   host: string,
   token: string,
 ): Promise<{ state: ProviderLoginState; resumed: ProviderResumeSummary }> {
-  return api("/api/providers/claude/logins/token", {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/token`, {
     method: "POST",
     body: JSON.stringify({ host, token }),
   });

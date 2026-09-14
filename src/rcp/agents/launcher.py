@@ -372,6 +372,24 @@ class AgentProcessControl:
             return False
 
 
+class ProviderAccountLifecycle(Protocol):
+    """Account policy supplied by the shared login owner."""
+
+    def refusal(self, provider: str, host: str) -> str | None: ...
+
+    def account_state(self, provider: str, host: str) -> ProviderLoginStateRecord: ...
+
+    def observe_failure(
+        self,
+        provider: str,
+        host: str,
+        *,
+        generation: int,
+        evidence: str,
+        source: Literal["turn", "report", "probe"],
+    ) -> bool: ...
+
+
 class ProviderReadinessSnapshots(Protocol):
     """The durable readiness answers the launcher reuses; `AppStore` implements it."""
 
@@ -432,6 +450,7 @@ class AgentLauncher:
         readiness_snapshots: ProviderReadinessSnapshots | None = None,
     ) -> None:
         self.login_state = login_state
+        self.account_lifecycle: ProviderAccountLifecycle | None = None
         #: Where a Claude setup token lives; None means every provider inherits
         #: RCP's own environment, as before a token was ever pasted.
         self.credentials = credentials
@@ -451,17 +470,29 @@ class AgentLauncher:
 
         if self.credentials is None:
             return ProviderProcessEnvironment()
-        return self.credentials.process_environment(provider, host)
+        return profile_for(provider).authentication.process_environment(self.credentials, host)
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
+        if self.account_lifecycle is not None:
+            return self.account_lifecycle.refusal(provider, host)
         state = self.login_state(provider, host) if self.login_state is not None else None
         if state is None or state.state != "signed_out":
             return None
         return (
             f"{profile_for(provider).label} was signed out at {state.changed_at}: "
             f"{state.detail or 'The provider rejected its login'}. "
-            "Sign in on the machine, then use Verify sign-in."
+            "Open Settings, Provider logins to sign in and verify."
         )
+
+    def _observe_probe_failure(
+        self, provider: str, host: str, result: subprocess.CompletedProcess[str], generation: int
+    ) -> bool:
+        evidence = profile_for(provider).probe_failure_evidence(result)
+        if self.account_lifecycle is not None:
+            return self.account_lifecycle.observe_failure(
+                provider, host, generation=generation, evidence=evidence, source="probe"
+            )
+        return profile_for(provider).credential_failure(evidence)
 
     def _with_login_state(self, readiness: ProviderReadiness, host: str) -> ProviderReadiness:
         reason = self._login_refusal(readiness.provider, host)
@@ -645,10 +676,13 @@ class AgentLauncher:
                 path_state="unconfigured",
                 reason=reason,
             )
-        # `--version` reads no credential. It runs outside the gate and decides
-        # whether the stored, credential-touching answer below is still current.
-        environment = self.process_environment(provider, host)
-        version_result = self._probe(host, [candidate, "--version"], environment=environment)
+        # `--version` needs no model request. Prepare its provider environment
+        # under the account gate too, then reuse unchanged credential-touching answers.
+        with self.credential_gate.hold_blocking(provider, host):
+            version_environment = self.process_environment(provider, host)
+            version_result = self._probe(
+                host, [candidate, "--version"], environment=version_environment
+            )
         if host and version_result.returncode == 255:
             return ProviderReadiness(
                 provider=provider,
@@ -675,11 +709,18 @@ class AgentLauncher:
         # does. One hold covers the sequence rather than handing the credential
         # back between probes that belong to a single readiness answer.
         with self.credential_gate.hold_blocking(provider, host):
-            auth = self._probe(host, profile.auth_command(candidate), environment=environment)
-            authenticated = profile.is_authenticated(auth)
             login_reason = self._login_refusal(provider, host)
-            if login_reason is not None:
-                authenticated = False
+            generation = self.login_state(provider, host).generation if self.login_state else 0
+            environment = self.process_environment(provider, host)
+            authenticated = False
+            if login_reason is None:
+                auth = self._probe(host, profile.auth_command(candidate), environment=environment)
+                authenticated = profile.is_authenticated(auth)
+                if self._observe_probe_failure(provider, host, auth, generation):
+                    authenticated = False
+                    login_reason = (
+                        self._login_refusal(provider, host) or "Provider sign-in is required."
+                    )
             # Enumerate only once the CLI is known to answer. An unauthenticated
             # catalog probe just costs a subprocess to learn what auth already said.
             catalog_command = profile.catalog_command(candidate) if authenticated else None
@@ -688,12 +729,26 @@ class AgentLauncher:
                 if catalog_command
                 else None
             )
+            if catalog is not None and self._observe_probe_failure(
+                provider, host, catalog, generation
+            ):
+                authenticated = False
+                login_reason = (
+                    self._login_refusal(provider, host) or "Provider sign-in is required."
+                )
             work_like_available = None
             work_like_reason = None
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
                 work_probe = self._probe(host, work_command, environment=environment)
-                if work_probe.returncode == 255:
+                if self._observe_probe_failure(provider, host, work_probe, generation):
+                    authenticated = False
+                    work_like_available = False
+                    login_reason = (
+                        self._login_refusal(provider, host) or "Provider sign-in is required."
+                    )
+                    work_like_reason = login_reason
+                elif work_probe.returncode == 255:
                     where = f" on {host}" if host else ""
                     work_like_reason = (
                         f"{profile.label} Work readiness could not be checked{where}: "
@@ -980,25 +1035,6 @@ class AgentLauncher:
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
-        environment = self.process_environment(provider, host)
-        local_cwd: str | None = str(cwd)
-        if host:
-            command = ssh_arguments(
-                host,
-                self._remote_login_command(
-                    command,
-                    pid_file=remote_pid_file,
-                    cwd=cwd,
-                    prefix=environment.remote_prefix,
-                ),
-                # This turn is the longest-lived call of its run, so it holds
-                # the run's own master rather than whichever short probe
-                # happened to open the host first.
-                partition=transport_partition,
-            )
-            local_cwd = None
-            if control is not None and remote_pid_file:
-                control.configure_remote_termination(host, remote_pid_file)
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
@@ -1016,6 +1052,31 @@ class AgentLauncher:
             except BaseException:
                 credential_hold.release()
                 raise
+        try:
+            if reason := self._login_refusal(provider, host):
+                raise ValueError(reason)
+            environment = self.process_environment(provider, host)
+            local_cwd: str | None = str(cwd)
+            if host:
+                command = ssh_arguments(
+                    host,
+                    self._remote_login_command(
+                        command,
+                        pid_file=remote_pid_file,
+                        cwd=cwd,
+                        prefix=environment.remote_prefix,
+                    ),
+                    # This turn is the longest-lived call of its run, so it holds
+                    # the run's own master rather than whichever short probe
+                    # happened to open the host first.
+                    partition=transport_partition,
+                )
+                local_cwd = None
+                if control is not None and remote_pid_file:
+                    control.configure_remote_termination(host, remote_pid_file)
+        except BaseException:
+            credential_hold.release()
+            raise
         # Declared only once this turn is certain to launch. Announcing a remote
         # pass and then pausing would leave a live pass nothing ever closes.
         if host and remote_pid_file:

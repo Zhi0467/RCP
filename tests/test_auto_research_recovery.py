@@ -25,7 +25,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.storage import AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task, wait_until
+from .helpers import fabricated_authorizer, wait_for_task, wait_until, write_local_test_manifest
 
 
 def _sse(event: AgentEvent) -> str:
@@ -37,7 +37,7 @@ def _store(tmp_path: Path) -> AppStore:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -47,7 +47,7 @@ def _store(tmp_path: Path) -> AppStore:
     return store
 
 
-def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root", provider: str | None = None):
+def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root", provider: str = "codex"):
     episode, root = start_auto_research(
         tasks,
         "project",
@@ -301,6 +301,7 @@ def test_worker_failure_never_becomes_auto_research_verdict(tmp_path: Path) -> N
         tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
+            provider="codex",
             episode_id=auto_research.episode_id,
             role="worker",
             control_node_id="exp/check",

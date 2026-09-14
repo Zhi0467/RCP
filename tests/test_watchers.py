@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import shlex
 import signal
@@ -1168,8 +1169,11 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
 
         monkeypatch.setattr("rcp.watchers.ssh_arguments", ssh_bridge)
     child_pid_path = tmp_path / "check-child.pid"
+    child_lock_path = tmp_path / "check-child.lock"
     child_code = (
-        "import os, time; from pathlib import Path; "
+        "import fcntl, os, time; from pathlib import Path; "
+        f"lease = open({str(child_lock_path)!r}, 'w'); "
+        "fcntl.flock(lease, fcntl.LOCK_EX); "
         f"Path({str(child_pid_path)!r}).write_text(str(os.getpid())); time.sleep(60)"
     )
     check_command = shlex.join([sys.executable, "-c", child_code]) + " & wait"
@@ -1188,13 +1192,14 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
             child_pid = int(child_pid_path.read_text())
 
             def child_stopped():
-                status = subprocess.run(
-                    ["ps", "-p", str(child_pid), "-o", "stat="],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                ).stdout.strip()
-                return not status or status.startswith("Z")
+                # Process exit releases the lease even if the OS has not reaped
+                # its zombie yet; no process-list permission is needed.
+                with child_lock_path.open("a") as lease:
+                    try:
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return False
+                    return True
 
             wait_until(child_stopped, detail="the timed-out check left its child running")
             assert observed.poll() is None

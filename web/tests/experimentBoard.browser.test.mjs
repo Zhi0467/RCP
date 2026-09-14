@@ -19,6 +19,38 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
     const page = await browser.newPage();
     const exactHash =
       "#/projects/project-one?view=runs&experiment=experiment%2Fbranch-child&episode=child-experiment-episode&target=branch&branch=auto-research-parent&parent=auto-research-parent";
+    // The parent card's Timeline is the only projection that links to the child;
+    // the retired Turns list is gone. Serve the typed events the app would fetch.
+    await page.route("**/api/projects/**/timeline", (route) =>
+      route.fulfill({
+        json: {
+          episode_id: "auto-research-parent",
+          mode: "auto_research",
+          truncated: false,
+          events: [
+            {
+              event_id: "child:one",
+              kind: "child",
+              at: "2026-09-14T10:01:00Z",
+              actor: { kind: "child", id: null, label: "child", member: null },
+              parent_event_id: null,
+              title: "Reproduce the baseline",
+              detail: null,
+              status: "running",
+              cause: null,
+              links: {
+                task_id: null,
+                message_id: null,
+                notice_id: null,
+                episode_id: "child-experiment-episode",
+                control_node_id: "experiment/branch-child",
+              },
+              provenance: "recorded",
+            },
+          ],
+        },
+      }),
+    );
     await page.goto(
       `http://127.0.0.1:${address.port}/tests/fixtures/indexedExperimentReopen.html${exactHash}`,
     );
@@ -52,7 +84,7 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
     assert.equal(await page.getByText("Selected child transcript").count(), 0);
 
     await page
-      .getByRole("region", { name: "Episode turns" })
+      .getByRole("region", { name: "Episode timeline" })
       .getByRole("link", { name: /Reproduce the baseline/ })
       .click();
 

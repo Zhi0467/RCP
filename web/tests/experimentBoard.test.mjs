@@ -23,6 +23,7 @@ const {
   projectHashAfterViewChange,
   projectRunsNeedsExperimentIndex,
 } = await server.ssrLoadModule("/src/experimentBoard.ts");
+const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
@@ -288,7 +289,7 @@ test("project Runs polls the Experiment index before a branch child is selected"
   assert.equal(projectRunsNeedsExperimentIndex(null, "execution"), false);
 });
 
-test("project Runs shows a dispatched child as a nested turn and its own run card", () => {
+test("project Runs keeps the dispatched child card while timeline owns turn history", () => {
   const parentEpisodeId = "auto-research-parent";
   const childTask = withTaskAnswers({
     operation_id: "child-agent-turn",
@@ -487,26 +488,62 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
 
   // Both the parent and its dispatched child are active, so both are in flight.
   assert.match(html, /In progress<\/h2><span>2<\/span>/);
-  assert.match(html, /campaign-task depth-1/);
-  assert.match(html, /campaign-task-role experiment">Experiment/);
-  const parentBeforeIndex = html.indexOf("Parent turn before child.");
-  const nestedChildIndex = html.indexOf("Reproduce the baseline", parentBeforeIndex);
-  const parentAfterIndex = html.indexOf("Parent wake after child.");
-  assert.ok(parentBeforeIndex >= 0);
-  assert.ok(parentBeforeIndex < nestedChildIndex);
-  assert.ok(nestedChildIndex < parentAfterIndex);
-  assert.match(html, /Turns<\/h3><span>3<\/span>/);
-  assert.match(html, /campaign-task depth-1[\s\S]*?<strong>Reproduce the baseline<\/strong>/);
-  assert.doesNotMatch(html, /campaign-task-copy"><strong>Reproduce the baseline<\/strong><span>/);
-  assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
-  assert.match(
-    html,
-    /href="#\/projects\/project-one\?view=runs&amp;experiment=experiment%2Fbranch-child&amp;episode=child-experiment-episode&amp;target=branch&amp;branch=auto-research-parent&amp;parent=auto-research-parent"/,
+  // The typed timeline loads through its own endpoint after mount. SSR keeps
+  // the child run card and must not recreate the retired Turns projection.
+  assert.doesNotMatch(html, /campaign-task depth-1/);
+  assert.doesNotMatch(html, /Turns<\/h3>/);
+  const timelineEvent = (id, kind, minute, parent, title) => ({
+    event_id: id,
+    kind,
+    at: `2026-09-14T10:0${minute}:00Z`,
+    actor: {
+      kind: kind === "child" ? "child" : "orchestrator",
+      id: null,
+      label: kind,
+      member: null,
+    },
+    parent_event_id: parent,
+    title,
+    detail: null,
+    status: "running",
+    cause: null,
+    links: {
+      task_id: kind === "turn" ? id : null,
+      message_id: null,
+      notice_id: null,
+      episode_id: kind === "child" ? "child-experiment-episode" : "auto-research-parent",
+      control_node_id: kind === "child" ? "experiment/branch-child" : null,
+    },
+    provenance: "recorded",
+  });
+  const timeline = renderToStaticMarkup(
+    React.createElement(EpisodeTimeline, {
+      events: [
+        timelineEvent("turn:before", "turn", 0, null, "Parent turn before child."),
+        timelineEvent("child:one", "child", 1, "turn:before", "Reproduce the baseline"),
+        timelineEvent("turn:after", "turn", 2, null, "Parent wake after child."),
+      ],
+      apiBase: "/api/projects/project-one",
+      episodeId: "auto-research-parent",
+      graphTarget: { kind: "branch", branch_id: "auto-research-parent" },
+      onInspectTask() {},
+    }),
   );
+  assert.match(timeline, /<h3>Timeline<\/h3>/);
+  assert.match(timeline, /episode-timeline-children[\s\S]*Reproduce the baseline/);
+  assert.ok(
+    timeline.indexOf("Parent turn before child.") < timeline.indexOf("Reproduce the baseline"),
+  );
+  assert.ok(
+    timeline.indexOf("Reproduce the baseline") < timeline.indexOf("Parent wake after child."),
+  );
+  assert.match(timeline, /episode=child-experiment-episode/);
+  assert.match(timeline, /branch=auto-research-parent/);
+
+  assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(html, /1 \/ 5 invocations/);
   assert.match(html, /Wait for the active Experiment turn/);
-  assert.match(html, /<h3>Current turn<\/h3><span>1<\/span>/);
-  assert.match(html, /campaign-task-role worker">Agent/);
+  assert.doesNotMatch(html, /<h3>Current turn<\/h3>/);
   assert.match(html, /The owning Auto-research episode is watching this Experiment/);
   assert.match(html, /Stop loop/);
   assert.doesNotMatch(html, /Start episode/);

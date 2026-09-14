@@ -13,10 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.episode_report_prompt import episode_report_task_contract
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import validate_artifact_bytes
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
+from rcp.runs.provider_sign_in import account_login_refusal, record_provider_failure
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -150,6 +152,19 @@ async def stream_episode_report_run(
         inputs_path = _inputs_path(stage)
 
         while True:
+            if reason := account_login_refusal(
+                execution.store,
+                ProviderCredentialStore.for_data_dir(execution.store.path.parent),
+                request.provider,
+                stage.execution_host,
+            ):
+                # The hidden allocation is durable; a credential block spends no
+                # new report attempt and leaves its existing wrap-up for recovery.
+                execution.store.fail_agent_task(
+                    execution.operation_id, reason, failure_kind="provider_auth"
+                )
+                yield _sse(AgentEvent(event="error", text=reason))
+                return
             attempt_number = (
                 attempt.attempt_number
                 if attempt is not None
@@ -258,11 +273,12 @@ async def stream_episode_report_run(
                 None,
             )
             if auth_error is not None:
-                execution.store.mark_provider_login_failed(
+                record_provider_failure(
+                    execution.store,
                     request.provider,
                     stage.execution_host,
                     generation=execution.login_generation,
-                    detail=auth_error,
+                    evidence=auth_error,
                     source="report",
                 )
                 execution.store.record_episode_report_attempt_error(

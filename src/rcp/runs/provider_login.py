@@ -7,8 +7,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from rcp.config import Manifest, load_manifest
-from rcp.providers import profile_for
-from rcp.storage import AppStore, ProviderLoginStateRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -26,64 +24,6 @@ def provider_login_host(manifest: Manifest, run_on: str | None) -> str:
     if machine is None:
         raise ValueError(f"unknown execution machine: {run_on}")
     return machine.host or ""
-
-
-def provider_login_refusal(state: ProviderLoginStateRecord) -> str:
-    return (
-        f"{profile_for(state.provider).label} was signed out at {state.changed_at}: "
-        f"{state.detail or 'The provider rejected its login'}. "
-        "Sign in on the machine, then use Verify sign-in."
-    )
-
-
-def provider_login_block(
-    store: AppStore,
-    manifest: Manifest,
-    provider: str,
-    run_on: str | None,
-) -> str | None:
-    state = store.provider_login_state(provider, provider_login_host(manifest, run_on))
-    return provider_login_refusal(state) if state.state == "signed_out" else None
-
-
-def require_provider_login(
-    store: AppStore,
-    manifest: Manifest,
-    provider: str,
-    run_on: str | None,
-) -> None:
-    if problem := provider_login_block(store, manifest, provider, run_on):
-        raise ProviderSignedOut(problem)
-
-
-def project_provider_login_block(
-    store: AppStore,
-    project_id: str,
-    provider: str | None,
-    run_on: str | None,
-) -> str | None:
-    # No manifest read is necessary if this provider has no blocked account.
-    if not any(
-        s.provider == provider and s.state == "signed_out" for s in store.provider_login_states()
-    ):
-        return None
-    if run_on in {None, "local"}:
-        state = store.provider_login_state(provider, "")
-        return provider_login_refusal(state) if state.state == "signed_out" else None
-    project = store.project(project_id)
-    if project is None:
-        raise KeyError(project_id)
-    return provider_login_block(store, load_manifest(project.locator), provider, run_on)
-
-
-def require_project_provider_login(
-    store: AppStore,
-    project_id: str,
-    provider: str | None,
-    run_on: str | None,
-) -> None:
-    if problem := project_provider_login_block(store, project_id, provider, run_on):
-        raise ProviderSignedOut(problem)
 
 
 def release_provider_auth_recoveries(

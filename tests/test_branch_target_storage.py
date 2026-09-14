@@ -24,7 +24,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, write_local_test_manifest
 from .test_background import _done_stream
 
 
@@ -33,7 +33,7 @@ def _store(tmp_path: Path) -> AppStore:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator=str(tmp_path / "research.yaml"),
+            locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
             state_location=str(tmp_path / ".research"),
             state_remote=False,

@@ -23,6 +23,10 @@ _REPORT_SKILL_ID = "episode-report"
 _REPORT_OUTPUT_NAME = "episode-report.html"
 
 
+class EpisodeReportAdmissionInvalid(ValueError):
+    """The frozen ending or continuation cannot admit a report on a later poll."""
+
+
 class EpisodeWrapupSpec(BaseModel):
     """Mode-owned ending facts handed to the shared report admission seam."""
 
@@ -95,10 +99,12 @@ def begin_episode_report_wrapup(
     """
 
     if spec.ending == "stopped":
-        raise ValueError("Stop skips report generation instead of entering wrap-up.")
+        raise EpisodeReportAdmissionInvalid(
+            "Stop skips report generation instead of entering wrap-up."
+        )
     episode = store.episode(spec.episode_id)
     if episode is None:
-        raise KeyError(spec.episode_id)
+        raise EpisodeReportAdmissionInvalid(f"Episode {spec.episode_id} no longer exists.")
     if store.episode_wrapup(spec.episode_id) is None and _never_bound_a_session(
         store.agent_task(spec.continuation_operation_id)
     ):
@@ -137,7 +143,9 @@ def begin_episode_report_wrapup(
             or existing.receipt_json != receipt_json
             or existing.receipt_sha256 != receipt_sha256
         ):
-            raise ValueError("The episode already has a different immutable wrap-up fence.")
+            raise EpisodeReportAdmissionInvalid(
+                "The episode already has a different immutable wrap-up fence."
+            )
         return existing_episode_report_admission(store, episode, existing)
 
     continuation = store.agent_task(spec.continuation_operation_id)

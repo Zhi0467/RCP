@@ -73,6 +73,7 @@ from .helpers import (
     fabricated_authorizer,
     seated_on_every_project,
     wait_for_task,
+    write_local_test_manifest,
 )
 
 
@@ -213,7 +214,7 @@ def _setup_auto_research(
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,

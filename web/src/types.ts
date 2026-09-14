@@ -2775,6 +2775,7 @@ export interface ProjectArtifact {
 
 export interface ProviderLoginState {
   provider: string;
+  label?: string;
   host: string;
   state: "signed_in" | "signed_out";
   generation: number;
@@ -2784,18 +2785,18 @@ export interface ProviderLoginState {
   changed_by: string | null;
 }
 
-/** What the UI may know about a stored Claude setup token: never the token. */
-export interface ClaudeTokenSummary {
+/** What the UI may know about a stored credential: never the token. */
+export interface ProviderCredentialSummary {
   pasted_at: string;
   pasted_by: string;
   verified_at: string | null;
-  estimated_expiry_at: string;
+  estimated_expiry_at: string | null;
 }
 
-/** One Codex device-code sign-in as it runs. */
+/** One device-code sign-in as it runs. */
 export interface ProviderSignInStatus {
   login_id: string;
-  provider: "codex";
+  provider: string;
   host: string;
   state: "pending" | "succeeded" | "failed";
   user_code: string | null;
@@ -2809,8 +2810,11 @@ export interface ProviderSignInStatus {
 
 /** One `(provider, execution account)` pair every project on this server may launch on. */
 export interface ProviderLoginAccount extends ProviderLoginState {
+  label: string;
+  sign_in_methods: string[];
+  token_instructions: string | null;
   machines: string[];
-  token: ClaudeTokenSummary | null;
+  token: ProviderCredentialSummary | null;
   sign_in: ProviderSignInStatus | null;
 }
 

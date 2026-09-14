@@ -73,6 +73,10 @@ class ProviderLoginStoreMixin:
                 }
             )
             self._write_provider_login_state(connection, record)
+            connection.execute(
+                "DELETE FROM provider_readiness_snapshots WHERE provider = ? AND host = ?",
+                (provider, host),
+            )
         return record
 
     def mark_provider_login_verified(

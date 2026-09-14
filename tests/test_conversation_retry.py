@@ -20,6 +20,7 @@ from .helpers import (
     append_fixture_patch,
     refresh_patch,
     seed_patch,
+    store_test_claude_token,
     wait_for_task_response,
 )
 from .helpers import create_named_app as create_app
@@ -371,6 +372,7 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
     manifest, tmp_path, legacy_layout: bool
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     failure = "The first provider disconnected after a submission may have completed."

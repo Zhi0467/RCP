@@ -371,3 +371,34 @@ def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, mon
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
     assert _counts(store) == before
+
+
+def test_missing_managed_credential_refuses_without_existing_login_state(tmp_path):
+    from rcp.runs.provider_login import ProviderSignedOut
+
+    from .helpers import fabricated_authorizer
+
+    store = _store(tmp_path)
+
+    async def stream(*_args):
+        raise AssertionError("Missing credentials must refuse admission")
+        yield ""
+
+    tasks = BackgroundAgentTasks(store, stream)
+    assert store.provider_login_states() == []
+    before = _counts(store)
+    with pytest.raises(ProviderSignedOut, match="token"):
+        tasks.start(
+            "project",
+            "project_chat",
+            RunRequest(
+                provider="claude",
+                run_on="local",
+                chat_scope="project",
+                message="Inspect results",
+                mode="work",
+            ),
+            authorized_by=fabricated_authorizer(),
+        )
+    assert _counts(store) == before
+    assert store.provider_login_states() == []

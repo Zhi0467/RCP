@@ -1,15 +1,15 @@
 import { KeyRound, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  codexSignInStatus,
+  providerSignInStatus,
   loadProviderLogins,
   loadSpaceUsers,
-  saveClaudeToken,
+  saveProviderToken,
   signOutProvider,
-  startCodexSignIn,
+  startProviderSignIn,
   verifyProviderLogin,
 } from "../api";
-import { accountLabel, providerLabel, resumedNote, signInNote, tokenNote } from "../providerLogins";
+import { accountLabel, resumedNote, signInNote, tokenNote } from "../providerLogins";
 import type { ProviderLoginAccount, ProviderSignInStatus } from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
@@ -25,7 +25,7 @@ interface Props {
  *
  * The login belongs to the machine account every member shares, so any signed-in
  * member may operate it; the server records who did. Nothing here ever shows a
- * credential: Codex shows a device code and a link, Claude takes a pasted setup
+ * credential: device sign-in shows a code and a link; token entry takes a pasted
  * token that is sent once and never read back.
  */
 export function ProviderLogins({ spaceKind, writesDisabled = false }: Props) {
@@ -62,8 +62,7 @@ export function ProviderLogins({ spaceKind, writesDisabled = false }: Props) {
       </header>
       <p className="provider-login-intro">
         One login per provider per machine account, shared by every member and verified by one
-        authenticated request. Codex signs in with a device code; Claude runs on a setup token RCP
-        keeps for the account.
+        authenticated request. Available sign-in methods are shown for each account.
       </p>
       {loadError ? <p role="alert">{loadError}</p> : null}
       {accounts === null && !loadError ? <p className="provider-login-intro">Loading…</p> : null}
@@ -86,7 +85,7 @@ export function ProviderLogins({ spaceKind, writesDisabled = false }: Props) {
   );
 }
 
-function ProviderLoginRow({
+export function ProviderLoginRow({
   account,
   spaceKind,
   writesDisabled,
@@ -117,7 +116,7 @@ function ProviderLoginRow({
     let cancelled = false;
     const poll = async () => {
       try {
-        const status = await codexSignInStatus(signIn.login_id);
+        const status = await providerSignInStatus(account.provider, signIn.login_id);
         if (cancelled) return;
         setSignIn(status);
         if (status.state === "pending") {
@@ -135,7 +134,7 @@ function ProviderLoginRow({
       cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [onChanged, signIn]);
+  }, [account.provider, onChanged, signIn]);
 
   async function run(kind: NonNullable<typeof busy>, action: () => Promise<string | null>) {
     setBusy(kind);
@@ -152,7 +151,7 @@ function ProviderLoginRow({
     }
   }
 
-  const label = providerLabel(account.provider);
+  const label = account.label;
   const disabled = writesDisabled || busy !== null || signIn?.state === "pending";
 
   return (
@@ -175,10 +174,10 @@ function ProviderLoginRow({
             {account.detail ? `: ${account.detail}` : "."}
           </>
         ) : (
-          "No login change has been recorded; the account counts as signed in until a provider process says otherwise."
+          "No login change has been recorded."
         )}
       </p>
-      {account.provider === "claude" && account.token ? (
+      {account.token ? (
         <p className="provider-login-detail">
           {tokenNote(
             { ...account.token, pasted_by: memberName(account.token.pasted_by) },
@@ -200,14 +199,14 @@ function ProviderLoginRow({
         </div>
       ) : null}
       <div className="provider-login-actions">
-        {account.provider === "codex" ? (
+        {account.sign_in_methods.includes("device_code") ? (
           <button
             className="button compact"
             type="button"
             disabled={disabled}
             onClick={() =>
               void run("sign-in", async () => {
-                setSignIn(await startCodexSignIn(account.host));
+                setSignIn(await startProviderSignIn(account.provider, account.host));
                 return null;
               })
             }
@@ -215,7 +214,8 @@ function ProviderLoginRow({
             {busy === "sign-in" ? <LoaderCircle size={14} className="spin" /> : null}
             Sign in with device code
           </button>
-        ) : (
+        ) : null}
+        {account.sign_in_methods.includes("token_entry") ? (
           <form
             className="provider-login-token"
             onSubmit={(event) => {
@@ -223,7 +223,7 @@ function ProviderLoginRow({
               const pasted = token.trim();
               if (!pasted) return;
               void run("token", async () => {
-                const result = await saveClaudeToken(account.host, pasted);
+                const result = await saveProviderToken(account.provider, account.host, pasted);
                 setToken("");
                 return resumedNote(result.resumed);
               });
@@ -232,8 +232,8 @@ function ProviderLoginRow({
             <input
               type="password"
               autoComplete="off"
-              aria-label={`Claude setup token for ${accountLabel(account, spaceKind)}`}
-              placeholder="Paste the output of `claude setup-token`"
+              aria-label={`${label} token for ${accountLabel(account, spaceKind)}`}
+              placeholder={account.token_instructions ?? "Paste token"}
               value={token}
               disabled={disabled}
               onChange={(event) => setToken(event.target.value)}
@@ -243,7 +243,7 @@ function ProviderLoginRow({
               Save token
             </button>
           </form>
-        )}
+        ) : null}
         <button
           className="button secondary compact"
           type="button"

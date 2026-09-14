@@ -3,28 +3,25 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import (
-    get_background_tasks,
     get_catalog,
-    get_episode_reconciliation,
     get_identity_access,
     get_provider_credentials,
     get_provider_sign_ins,
     get_store,
-    get_watcher_delivery,
 )
 from rcp.config import load_manifest
-from rcp.limits import PROVIDER_CLAUDE_TOKEN_ESTIMATED_LIFETIME_DAYS, PROVIDER_TOKEN_MAX_CHARS
+from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
 from rcp.projects import ProjectCatalog
-from rcp.providers import ProviderId
-from rcp.runs.provider_login import resume_provider_account
+from rcp.providers import ProviderId, profile_for
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
     ProviderSignInRunner,
@@ -32,7 +29,23 @@ from rcp.runs.provider_sign_in import (
 )
 from rcp.storage import AppStore
 
-router = APIRouter()
+
+class ProviderAccountRoute(APIRoute):
+    """Validation failures must never echo a submitted credential."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def handle(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                raise HTTPException(422, "Invalid provider account request.") from None
+
+        return handle
+
+
+router = APIRouter(route_class=ProviderAccountRoute)
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 CredentialsDependency = Annotated[ProviderCredentialStore, Depends(get_provider_credentials)]
@@ -44,13 +57,13 @@ class ProviderAccountRequest(BaseModel):
     host: str = ""
 
 
-class ClaudeTokenRequest(BaseModel):
+class ProviderTokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     host: str = ""
     token: str = Field(min_length=1, max_length=PROVIDER_TOKEN_MAX_CHARS)
 
 
-class ClaudeTokenSummary(BaseModel):
+class ProviderCredentialSummary(BaseModel):
     """What the UI may know about a stored setup token: never the token."""
 
     model_config = ConfigDict(extra="forbid")
@@ -59,7 +72,7 @@ class ClaudeTokenSummary(BaseModel):
     pasted_by: str
     verified_at: str | None = None
     #: An estimate from the documented lifetime; a classified login failure is the truth.
-    estimated_expiry_at: str
+    estimated_expiry_at: str | None = None
 
 
 class ProviderLoginAccount(BaseModel):
@@ -76,7 +89,10 @@ class ProviderLoginAccount(BaseModel):
     source: str | None
     changed_at: str
     changed_by: str | None
-    token: ClaudeTokenSummary | None = None
+    label: str
+    sign_in_methods: tuple[str, ...]
+    token_instructions: str | None = None
+    token: ProviderCredentialSummary | None = None
     sign_in: ProviderSignInStatus | None = None
 
 
@@ -107,21 +123,16 @@ def provider_login_accounts(
     )
     accounts = []
     for provider, host in sorted(pairs):
-        state = store.provider_login_state(provider, host)
-        token = None
-        if provider == "claude" and (record := credentials.claude_token_record(host)) is not None:
-            pasted = datetime.fromisoformat(record.pasted_at)
-            token = ClaudeTokenSummary(
-                pasted_at=record.pasted_at,
-                pasted_by=record.pasted_by,
-                verified_at=record.verified_at,
-                estimated_expiry_at=(
-                    pasted + timedelta(days=PROVIDER_CLAUDE_TOKEN_ESTIMATED_LIFETIME_DAYS)
-                ).isoformat(),
-            )
+        state = sign_ins.account_state(provider, host)
+        profile = profile_for(provider)
+        metadata = profile.authentication.credential_metadata(credentials, host)
+        token = ProviderCredentialSummary(**metadata) if metadata is not None else None
         accounts.append(
             ProviderLoginAccount(
                 **state.model_dump(),
+                label=profile.label,
+                sign_in_methods=profile.authentication.methods,
+                token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
                 token=token,
                 sign_in=sign_ins.running_sign_in(provider, host),
@@ -154,52 +165,51 @@ def verify_provider_login(
         state = sign_ins.verify(provider, body.host, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    counts = _resume_account(request, provider, body.host)
+    counts = sign_ins.resume_counts(provider, body.host)
     return {"state": state.model_dump(mode="json"), "resumed": counts}
 
 
-@router.post("/api/providers/codex/logins/sign-in")
-def start_codex_sign_in(
+@router.post("/api/providers/{provider}/logins/sign-in")
+def start_provider_sign_in(
+    provider: ProviderId,
     body: ProviderAccountRequest,
     request: Request,
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
     member = get_identity_access(request).acting_user(request)
     try:
-        return sign_ins.start_codex_sign_in(body.host, member_id=member.user_id)
+        return sign_ins.start_sign_in(provider, body.host, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
 
 
-@router.get("/api/providers/codex/logins/sign-in/{login_id}")
-def codex_sign_in_status(
+@router.get("/api/providers/{provider}/logins/sign-in/{login_id}")
+def provider_sign_in_status(
+    provider: ProviderId,
     login_id: str,
     request: Request,
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
     get_identity_access(request).acting_user(request)
     status = sign_ins.sign_in_status(login_id)
-    if status is None:
+    if status is None or status.provider != provider:
         raise HTTPException(status_code=404, detail="Unknown sign-in.")
-    if status.state == "succeeded" and status.resumed is None:
-        # The login is verified; parked work resumes exactly as after Verify.
-        counts = _resume_account(request, "codex", status.host)
-        status = sign_ins.record_resumed(login_id, counts) or status
     return status
 
 
-@router.post("/api/providers/claude/logins/token")
-def save_claude_token(
-    body: ClaudeTokenRequest,
+@router.post("/api/providers/{provider}/logins/token")
+def save_provider_token(
+    provider: ProviderId,
+    body: ProviderTokenRequest,
     request: Request,
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
     try:
-        state = sign_ins.save_claude_token(body.host, body.token, member_id=member.user_id)
+        state = sign_ins.save_token(provider, body.host, body.token, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    counts = _resume_account(request, "claude", body.host)
+    counts = sign_ins.resume_counts(provider, body.host)
     return {"state": state.model_dump(mode="json"), "resumed": counts}
 
 
@@ -216,16 +226,6 @@ def sign_out_provider_login(
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     return {"state": state.model_dump(mode="json")}
-
-
-def _resume_account(request: Request, provider: str, host: str) -> dict[str, int]:
-    return resume_provider_account(
-        get_background_tasks(request),
-        provider,
-        host,
-        reconcile_episodes=get_episode_reconciliation(request),
-        watcher_delivery=get_watcher_delivery(request),
-    )
 
 
 def _project_manifest(project):

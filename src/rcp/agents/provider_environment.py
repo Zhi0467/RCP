@@ -1,42 +1,20 @@
-"""The one environment every RCP-started Claude process receives.
-
-Claude Code rotates the same kind of single-use refresh token that killed the
-shared Codex login, and every process that reads its credentials file can spend
-it. RCP therefore runs Claude on a long-lived `setup-token` instead: the token
-is kept in the execution account's credential store and injected as
-`CLAUDE_CODE_OAUTH_TOKEN`, which Claude uses without refreshing anything. The
-two variables that would make Claude bill an API key instead are removed, so a
-member's shell cannot silently change what the service runs on.
-
-The token never appears in a command line. A local process receives it in its
-environment; a remote process reads it from a file on the remote account inside
-the same login shell that starts the provider.
-"""
+"""Private atomic credential persistence and neutral process environments."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
-import shlex
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
-from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
 
-CLAUDE_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
-CLAUDE_CONFLICTING_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-#: Where a remote execution account keeps the token RCP placed for it.
-REMOTE_CLAUDE_TOKEN_PATH = "~/.config/rcp/claude-setup-token"
-
-_UNSAFE_ACCOUNT_CHARS = re.compile(r"[^A-Za-z0-9._@-]+")
-
-
-class ClaudeTokenRecord(BaseModel):
-    """Nonsecret facts about a stored Claude setup token."""
+class CredentialRecord(BaseModel):
+    """Nonsecret facts about a stored credential."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -63,135 +41,76 @@ def account_directory_name(host: str) -> str:
 
     if not host:
         return "local"
-    return _UNSAFE_ACCOUNT_CHARS.sub("_", host) or "remote"
-
-
-def validate_claude_token(token: str) -> str:
-    """Accept only a token-shaped string; the shape is all RCP can check."""
-
-    if not token or token != token.strip() or any(ch.isspace() for ch in token):
-        raise ValueError("A setup token has no spaces or line breaks.")
-    if len(token) > PROVIDER_TOKEN_MAX_CHARS:
-        raise ValueError("The pasted value is longer than any setup token.")
-    return token
+    return "remote-" + hashlib.sha256(host.encode()).hexdigest()
 
 
 class ProviderCredentialStore:
     """Secrets RCP keeps for provider logins, under `<data dir>/providers`.
 
-    Only Claude has one today: `claude/<account>/setup-token` (mode 0600) beside
-    a nonsecret `setup-token.json`. The whole directory is excluded from
-    protected backups, so a restored server starts without any token.
+    Provider implementations select their namespace. The directory is excluded
+    from protected backups, so a restored server starts without credentials.
     """
 
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def claude_account_dir(self, host: str) -> Path:
-        return self.root / "claude" / account_directory_name(host)
+    @classmethod
+    def for_data_dir(cls, data_dir: Path) -> ProviderCredentialStore:
+        """The store for one RCP data directory; the only place that names the folder."""
 
-    def claude_token_path(self, host: str) -> Path:
-        return self.claude_account_dir(host) / "setup-token"
+        return cls(data_dir / "providers")
 
-    def claude_token_record(self, host: str) -> ClaudeTokenRecord | None:
-        path = self.claude_account_dir(host) / "setup-token.json"
+    def account_dir(self, provider: str, host: str) -> Path:
+        if provider in {"", ".", ".."}:
+            raise ValueError("Invalid credential namespace.")
+        return self.root / quote(provider, safe="") / account_directory_name(host)
+
+    def token_path(self, provider: str, host: str) -> Path:
+        return self.account_dir(provider, host) / "setup-token"
+
+    def token_record(self, provider: str, host: str) -> CredentialRecord | None:
+        path = self.account_dir(provider, host) / "setup-token.json"
         try:
-            return ClaudeTokenRecord.model_validate(json.loads(path.read_text()))
+            return CredentialRecord.model_validate(json.loads(path.read_text()))
         except (OSError, ValueError):
             return None
 
-    def claude_token(self, host: str) -> str | None:
+    def token(self, provider: str, host: str) -> str | None:
         try:
-            token = self.claude_token_path(host).read_text().strip()
+            token = self.token_path(provider, host).read_text().strip()
         except OSError:
             return None
         return token or None
 
-    def store_claude_token(
-        self, host: str, token: str, *, member_id: str, now: str
-    ) -> ClaudeTokenRecord:
-        token = validate_claude_token(token)
-        directory = self.claude_account_dir(host)
+    def store_token(
+        self, provider: str, host: str, token: str, *, member_id: str, now: str
+    ) -> CredentialRecord:
+        directory = self.account_dir(provider, host)
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-        _write_private(self.claude_token_path(host), token + "\n")
-        record = ClaudeTokenRecord(pasted_at=now, pasted_by=member_id)
+        _write_private(self.token_path(provider, host), token + "\n")
+        record = CredentialRecord(pasted_at=now, pasted_by=member_id)
         _write_private(directory / "setup-token.json", record.model_dump_json(indent=2) + "\n")
         return record
 
-    def mark_claude_token_verified(self, host: str, *, now: str) -> ClaudeTokenRecord | None:
-        record = self.claude_token_record(host)
+    def mark_token_verified(self, provider: str, host: str, *, now: str) -> CredentialRecord | None:
+        record = self.token_record(provider, host)
         if record is None:
             return None
         record = record.model_copy(update={"verified_at": now})
         _write_private(
-            self.claude_account_dir(host) / "setup-token.json",
+            self.account_dir(provider, host) / "setup-token.json",
             record.model_dump_json(indent=2) + "\n",
         )
         return record
 
-    def delete_claude_token(self, host: str) -> bool:
+    def delete_token(self, provider: str, host: str) -> bool:
         """Remove the token and its record; True when a token was stored."""
 
-        existed = self.claude_token_path(host).exists()
+        existed = self.token_path(provider, host).exists()
         for name in ("setup-token", "setup-token.json"):
-            (self.claude_account_dir(host) / name).unlink(missing_ok=True)
+            (self.account_dir(provider, host) / name).unlink(missing_ok=True)
         return existed
-
-    def process_environment(self, provider: str, host: str) -> ProviderProcessEnvironment:
-        """The environment for one provider process on one account."""
-
-        if provider != "claude":
-            return ProviderProcessEnvironment()
-        if host:
-            if self.claude_token_record(host) is None:
-                return ProviderProcessEnvironment()
-            return ProviderProcessEnvironment(remote_prefix=remote_claude_token_prefix())
-        environment = {
-            name: value
-            for name, value in os.environ.items()
-            if name not in CLAUDE_CONFLICTING_VARIABLES
-        }
-        token = self.claude_token("")
-        if token is not None:
-            environment[CLAUDE_TOKEN_VARIABLE] = token
-        else:
-            environment.pop(CLAUDE_TOKEN_VARIABLE, None)
-        return ProviderProcessEnvironment(local_env=environment)
-
-
-def remote_claude_token_prefix(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    """The shell fragment that exports the token from the remote account's file.
-
-    The path is quoted so `~` still expands; the token itself never enters the
-    command line. A missing file leaves the variable unset rather than exporting
-    an empty value that Claude would treat as a bad credential.
-    """
-
-    unset = " ".join(CLAUDE_CONFLICTING_VARIABLES)
-    quoted = _quote_home_relative(path)
-    return (
-        f"unset {unset}; "
-        f'if [ -r {quoted} ]; then export {CLAUDE_TOKEN_VARIABLE}="$(cat {quoted})"; fi'
-    )
-
-
-def remote_claude_token_placement_command(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    """Write the token read from stdin to the remote account, mode 0600 in a 0700 directory."""
-
-    quoted = _quote_home_relative(path)
-    directory = _quote_home_relative(str(Path(path).parent))
-    return f"umask 077 && mkdir -p {directory} && cat > {quoted}"
-
-
-def remote_claude_token_removal_command(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    return f"rm -f {_quote_home_relative(path)}"
-
-
-def _quote_home_relative(path: str) -> str:
-    if path.startswith("~/"):
-        return '"$HOME"/' + shlex.quote(path[2:])
-    return shlex.quote(path)
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -214,15 +133,8 @@ def _write_private(path: Path, text: str) -> None:
 
 
 __all__ = [
-    "CLAUDE_CONFLICTING_VARIABLES",
-    "CLAUDE_TOKEN_VARIABLE",
-    "ClaudeTokenRecord",
+    "CredentialRecord",
     "ProviderCredentialStore",
     "ProviderProcessEnvironment",
-    "REMOTE_CLAUDE_TOKEN_PATH",
     "account_directory_name",
-    "remote_claude_token_placement_command",
-    "remote_claude_token_prefix",
-    "remote_claude_token_removal_command",
-    "validate_claude_token",
 ]

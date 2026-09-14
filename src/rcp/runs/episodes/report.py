@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.storage import AgentTaskRecord
 
@@ -50,10 +51,11 @@ def start_episode_report(
             return None
     if existing is not None:
         report_request = EpisodeReportRunRequest.model_validate(existing.request)
-        if (
-            store.provider_login_state(report_request.provider, report_request.execution_host).state
-            == "signed_out"
-        ):
+        try:
+            tasks.admit_provider_task(
+                episode.project_id, report_request, execution_host=report_request.execution_host
+            )
+        except ProviderSignedOut:
             return None
     task = store.requeue_interrupted_episode_report_allocation(episode_id)
     if task.status != "queued":

@@ -58,18 +58,15 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="acting-member")),
     )
     resumed = []
-    monkeypatch.setattr(
-        provider_login,
-        "_resume_account",
-        lambda *args: resumed.append(args[1:]) or {"recoveries": 1},
+    runner = ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
+    runner.resume_account = lambda *args: resumed.append(args) or {"checked": 1}
     app = FastAPI()
     app.include_router(provider_login.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
-    )
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == (200 if success else 409)
     assert holds == [("codex", "")]
@@ -81,7 +78,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     assert state.changed_by == ("acting-member" if success else None)
     assert len(resumed) == int(success)
     if not success:
-        assert response.json()["detail"] == "still signed out"
+        assert "verification request" in response.json()["detail"]
 
 
 def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
@@ -106,7 +103,7 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
     app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 409
@@ -123,8 +120,8 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
         "codex", "gone.example", generation=0, detail="expired", source="turn"
     )
     credentials = ProviderCredentialStore(tmp_path / "providers")
-    credentials.store_claude_token(
-        "", "sk-ant-oat01-list-test", member_id="member", now=store.now()
+    credentials.store_token(
+        "claude", "", "sk-ant-oat01-list-test", member_id="member", now=store.now()
     )
     launcher = AgentLauncher(login_state=store.provider_login_state, credentials=credentials)
     monkeypatch.setattr(
@@ -155,3 +152,100 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     assert token["pasted_by"] == "member" and token["verified_at"] is None
     assert "sk-ant" not in response.text
     assert accounts[0]["sign_in"] is None
+
+
+def test_third_provider_device_login_completes_without_polling_and_status_is_read_only(
+    tmp_path, monkeypatch
+):
+    """Registration and an existing interaction suffice; HTTP never owns completion."""
+    from rcp.providers import PROVIDERS, CodexProfile
+
+    from .helpers import wait_until
+    from .test_provider_sign_in import _fake_codex, _runner
+
+    class ThirdProvider(CodexProfile):
+        id = "test-provider"
+        label = "Test Research Provider"
+
+    monkeypatch.setitem(PROVIDERS, ThirdProvider.id, ThirdProvider())
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    runner.store.mark_provider_login_failed(
+        ThirdProvider.id, "", generation=0, detail="expired", source="turn"
+    )
+    completions = []
+    runner.resume_account = lambda *args: completions.append(args) or {"checked": 1}
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
+    )
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_store] = lambda: runner.store
+    app.dependency_overrides[get_provider_credentials] = lambda: runner.credentials
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+    app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
+        provider_targets=lambda: [(ThirdProvider.id, "", None)]
+    )
+    client = TestClient(app)
+    account = client.get("/api/providers/logins").json()[0]
+    assert account["label"] == ThirdProvider.label
+    assert account["sign_in_methods"] == ["device_code"]
+    assert account["token"] is None
+    route = f"/api/providers/{ThirdProvider.id}/logins"
+    started = client.post(f"{route}/sign-in", json={"host": ""})
+    assert started.status_code == 200, started.text
+    operation = started.json()["login_id"]
+    assert client.post(f"{route}/sign-in", json={}).json()["login_id"] == operation
+    # The page is gone: no status GET or other HTTP request completes the work.
+    (tmp_path / "signed-in").write_text("")
+    wait_until(lambda: runner.sign_in_status(operation).state == "succeeded" or None, timeout=10)
+    runner.reconcile_recovery()
+    assert completions == [(ThirdProvider.id, "")]
+    status = client.get(f"{route}/sign-in/{operation}")
+    assert status.status_code == 200
+    assert status.json()["state"] == "succeeded"
+    assert status.json()["resumed"] == {"checked": 1}
+    assert client.get(f"{route}/sign-in/{operation}").json() == status.json()
+    assert completions == [(ThirdProvider.id, "")]
+    assert client.get(f"/api/providers/codex/logins/sign-in/{operation}").status_code == 404
+    assert client.post(f"{route}/token", json={"token": "private-value"}).status_code == 422
+    invalid = client.post(f"{route}/sign-in", json={"host": "", "unexpected": True})
+    assert invalid.status_code == 422
+    assert client.post("/api/providers/unknown/logins/sign-in", json={}).status_code == 422
+
+
+def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "login.sqlite3")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    runner = ProviderSignInRunner(store, AgentLauncher(credentials=credentials), credentials)
+    accounts = provider_login.provider_login_accounts(
+        store,
+        SimpleNamespace(provider_targets=lambda: [("claude", "", None)]),
+        credentials,
+        runner,
+    )
+    assert accounts[0].state == "signed_out"
+    assert accounts[0].sign_in_methods == ("token_entry",)
+    assert accounts[0].token is None
+    assert store.provider_login_states() == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"token": {"secret": "private-value"}},
+        {"token": "private-value", "unexpected": "private-value"},
+        {"host": ["private-value"], "token": "private-value"},
+    ],
+)
+def test_invalid_account_requests_do_not_echo_credentials(tmp_path, body):
+    store = AppStore(tmp_path / "login.sqlite3")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    runner = ProviderSignInRunner(store, AgentLauncher(credentials=credentials), credentials)
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+    response = TestClient(app).post("/api/providers/claude/logins/token", json=body)
+    assert response.status_code == 422
+    assert "private-value" not in response.text

@@ -13,12 +13,13 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
-from rcp.agents.provider_environment import CLAUDE_TOKEN_VARIABLE, ProviderCredentialStore
+from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
 from rcp.runs import provider_sign_in
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
     ProviderSignInRunner,
-    reset_claude_logins_without_tokens,
+    reset_logins_without_credentials,
 )
 from rcp.storage import AppStore
 
@@ -122,13 +123,13 @@ def test_codex_device_sign_in_shows_the_code_holds_the_gate_and_verifies(
         "codex", "", generation=0, detail="refresh_token_reused", source="turn"
     )
 
-    started = runner.start_codex_sign_in("", member_id="member")
+    started = runner.start_sign_in("codex", "", member_id="member")
     assert started.state == "pending" and started.started_by == "member"
     shown = _status_when(runner, started.login_id, lambda status: status.user_code is not None)
     assert shown.user_code == USER_CODE
     assert shown.verification_url == VERIFICATION_URL
     # One sign-in per account: a second member joins the running one.
-    assert runner.start_codex_sign_in("", member_id="other").login_id == started.login_id
+    assert runner.start_sign_in("codex", "", member_id="other").login_id == started.login_id
     assert runner.running_sign_in("codex", "") is not None
     # The login rewrites the credential file when it completes; no turn may
     # start on that file meanwhile.
@@ -142,32 +143,31 @@ def test_codex_device_sign_in_shows_the_code_holds_the_gate_and_verifies(
     assert done.finished_at is not None and done.resumed is None
     state = store.provider_login_state("codex", "")
     assert state.state == "signed_in"
-    assert state.generation == 1 and state.changed_by == "member" and state.source == "verify"
+    assert state.generation == 2 and state.changed_by == "member" and state.source == "verify"
     argv = _argv_log(tmp_path)
     assert argv[0] == ["login", "--device-auth"]
     assert argv[1][:2] == ["exec", "--ignore-user-config"], "success was not proven by a request"
     assert wait_until(lambda: gate.acquire(False) or None), "the gate was never released"
     gate.release()
     assert runner.running_sign_in("codex", "") is None
-    assert runner.record_resumed(started.login_id, {"recoveries": 1}).resumed == {"recoveries": 1}
 
 
 def test_a_denied_device_sign_in_fails_with_the_provider_detail_and_stays_signed_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    runner.store.mark_provider_login_failed(
-        "codex", "", generation=0, detail="refresh_token_reused", source="turn"
+    runner.store.mark_provider_login_verified(
+        "codex", "", member_id="member", detail="Previously verified."
     )
     (tmp_path / "deny").write_text("")
-    started = runner.start_codex_sign_in("", member_id="member")
+    started = runner.start_sign_in("codex", "", member_id="member")
     failed = _status_when(runner, started.login_id, lambda status: status.state != "pending")
     assert failed.state == "failed"
     assert "denied" in (failed.detail or "")
     assert runner.store.provider_login_state("codex", "").state == "signed_out"
     assert _argv_log(tmp_path) == [["login", "--device-auth"]]
     # The account is free for another attempt.
-    assert runner.start_codex_sign_in("", member_id="member").login_id != started.login_id
+    assert runner.start_sign_in("codex", "", member_id="member").login_id != started.login_id
 
 
 def test_claude_token_paste_stores_privately_verifies_and_never_leaks(
@@ -179,15 +179,15 @@ def test_claude_token_paste_stores_privately_verifies_and_never_leaks(
     store.mark_provider_login_failed("claude", "", generation=0, detail="signed out", source="turn")
 
     with pytest.raises(ProviderLoginRefused) as refused:
-        runner.save_claude_token("", "not a token", member_id="member")
+        runner.save_token("claude", "", "not a token", member_id="member")
     assert refused.value.status_code == 422
-    assert runner.credentials.claude_token("") is None
+    assert runner.credentials.token("claude", "") is None
 
-    state = runner.save_claude_token("", TOKEN, member_id="member")
+    state = runner.save_token("claude", "", TOKEN, member_id="member")
     assert state.state == "signed_in" and state.changed_by == "member"
-    path = runner.credentials.claude_token_path("")
+    path = runner.credentials.token_path("claude", "")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    record = runner.credentials.claude_token_record("")
+    record = runner.credentials.token_record("claude", "")
     assert record is not None and record.verified_at is not None
     assert _argv_log(tmp_path)[-1][0] == "--print", "success was not proven by a request"
 
@@ -224,9 +224,9 @@ def test_remote_token_travels_on_stdin_of_the_placement_transport(
 
     monkeypatch.setattr(runner.launcher, "_probe", probe)
 
-    state = runner.save_claude_token(host, TOKEN, member_id="member")
+    state = runner.save_token("claude", host, TOKEN, member_id="member")
     assert state.state == "signed_in" and state.host == host
-    assert stat.S_IMODE(runner.credentials.claude_token_path(host).stat().st_mode) == 0o600
+    assert stat.S_IMODE(runner.credentials.token_path("claude", host).stat().st_mode) == 0o600
     [(arguments, fed)] = transports
     assert arguments[0] == "ssh" and arguments[-2] == host
     assert "umask 077" in arguments[-1] and TOKEN not in " ".join(arguments)
@@ -252,14 +252,14 @@ def test_sign_out_fences_launches_like_a_failed_login(
     assert not runner.launcher.readiness("codex", binary=str(tmp_path / "codex")).authenticated
 
     credentials = runner.credentials
-    credentials.store_claude_token("", TOKEN, member_id="member", now=store.now())
+    credentials.store_token("claude", "", TOKEN, member_id="member", now=store.now())
     monkeypatch.setattr(
         launcher_module, "_discover_local_provider", lambda _p: str(tmp_path / "claude")
     )
     claude = runner.sign_out("claude", "", member_id="member")
     assert claude.state == "signed_out"
-    assert credentials.claude_token("") is None
-    assert credentials.claude_token_record("") is None
+    assert credentials.token("claude", "") is None
+    assert credentials.token_record("claude", "") is None
 
 
 def test_restore_resets_claude_logins_whose_token_did_not_come_back(tmp_path: Path) -> None:
@@ -268,9 +268,9 @@ def test_restore_resets_claude_logins_whose_token_did_not_come_back(tmp_path: Pa
     store.mark_provider_login_verified("claude", "", member_id="member", detail="verified")
     store.mark_provider_login_verified("claude", "gpu.example", member_id="member", detail="ok")
     store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
-    credentials.store_claude_token("gpu.example", TOKEN, member_id="member", now=store.now())
+    credentials.store_token("claude", "gpu.example", TOKEN, member_id="member", now=store.now())
 
-    reset = reset_claude_logins_without_tokens(store, credentials)
+    reset = reset_logins_without_credentials(store, credentials)
 
     assert [(state.provider, state.host) for state in reset] == [("claude", "")]
     local = store.provider_login_state("claude", "")
@@ -278,4 +278,307 @@ def test_restore_resets_claude_logins_whose_token_did_not_come_back(tmp_path: Pa
     assert "setup token" in (local.detail or "")
     assert store.provider_login_state("claude", "gpu.example").state == "signed_in"
     assert store.provider_login_state("codex", "").state == "signed_in"
-    assert reset_claude_logins_without_tokens(store, credentials) == []
+    assert reset_logins_without_credentials(store, credentials) == []
+
+
+def test_third_provider_device_sign_in_completes_recovery_without_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Registration plus an existing interaction needs no shared provider-name branch."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from rcp.providers import PROVIDERS, CodexProfile
+
+    class TestProvider(CodexProfile):
+        id = "test-device"
+        label = "Test device provider"
+
+    monkeypatch.setitem(PROVIDERS, TestProvider.id, TestProvider())
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    resumed = Event()
+    calls = []
+
+    def recover(provider, host):
+        calls.append((provider, host))
+        resumed.set()
+        return {"checked": 1}
+
+    runner.resume_account = recover
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        starts = list(
+            pool.map(
+                lambda _: runner.start_sign_in(TestProvider.id, "", member_id="member"), range(8)
+            )
+        )
+    assert len({s.login_id for s in starts}) == 1
+    (tmp_path / "signed-in").write_text("")
+    # No status read or HTTP GET drives completion.
+    assert resumed.wait(10)
+    assert runner.store.provider_login_state(TestProvider.id, "").state == "signed_in"
+    runner.reconcile_recovery()
+    assert calls == [(TestProvider.id, "")]
+    assert len([argv for argv in _argv_log(tmp_path) if argv == ["login", "--device-auth"]]) == 1
+
+
+def test_verified_generation_replays_recovery_after_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    calls = []
+
+    def interrupted(_provider, _host):
+        raise RuntimeError("simulated interruption before recovery")
+
+    runner.resume_account = interrupted
+    state = runner.verify("codex", "", member_id="member")
+    assert state.state == "signed_in"
+    restarted = ProviderSignInRunner(runner.store, runner.launcher, runner.credentials)
+    restarted.resume_account = lambda provider, host: (
+        calls.append((provider, host)) or {"checked": 1}
+    )
+    restarted.reconcile_recovery()
+    restarted.reconcile_recovery()
+    assert calls == [("codex", "")]
+
+
+def test_token_replacement_and_sign_out_wait_for_verification_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    entered, release = Event(), Event()
+    observed = []
+
+    def probe(_host, command, *, environment, **_kwargs):
+        observed.append(environment.local_env[CLAUDE_TOKEN_VARIABLE])
+        entered.set()
+        assert release.wait(10)
+        return subprocess.CompletedProcess(command, 0, "OK", "")
+
+    monkeypatch.setattr(runner.launcher, "_probe", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        saved = pool.submit(runner.save_token, "claude", "", TOKEN, member_id="member")
+        assert entered.wait(10)
+        signed_out = pool.submit(runner.sign_out, "claude", "", member_id="other")
+        assert not signed_out.done()
+        assert runner.credentials.token("claude", "") == TOKEN
+        release.set()
+        verified = saved.result(10)
+        final = signed_out.result(10)
+    assert observed == [TOKEN]
+    assert verified.state == "signed_in"
+    assert final.state == "signed_out" and final.generation > verified.generation
+    assert runner.credentials.token("claude", "") is None
+    assert runner.store.provider_login_state("claude", "").state == "signed_out"
+
+
+def test_failed_replacement_cannot_retain_old_verified_state_or_leak_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    original = runner.save_token("claude", "", TOKEN, member_id="member")
+    monkeypatch.setattr(
+        runner.launcher,
+        "_probe",
+        lambda _host, command, **_: subprocess.CompletedProcess(
+            command, 1, "", "server echoed secret-replacement-token"
+        ),
+    )
+    with pytest.raises(ProviderLoginRefused) as refusal:
+        runner.save_token("claude", "", "secret-replacement-token", member_id="member")
+    state = runner.store.provider_login_state("claude", "")
+    assert state.state == "signed_out" and state.generation > original.generation
+    assert "secret-replacement-token" not in str(refusal.value)
+    assert "secret-replacement-token" not in state.model_dump_json()
+
+
+def test_late_failure_does_not_invalidate_repaired_account_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    old = runner.store.provider_login_state("codex", "")
+    repaired = runner.verify("codex", "", member_id="member")
+    invalidated = []
+    monkeypatch.setattr(runner, "_forget_readiness", lambda *args: invalidated.append(args))
+    assert runner.observe_failure(
+        "codex", "", generation=old.generation, evidence="refresh_token_reused", source="turn"
+    )
+    assert runner.store.provider_login_state("codex", "") == repaired
+    assert invalidated == []
+
+
+def test_verification_waiting_for_token_replacement_reads_the_new_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    runner.credentials.store_token(
+        "claude", "", "old-token", member_id="member", now=runner.store.now()
+    )
+    entered, release = Event(), Event()
+    observed = []
+
+    def probe(_host, command, *, environment, **_kwargs):
+        observed.append(environment.local_env[CLAUDE_TOKEN_VARIABLE])
+        if len(observed) == 1:
+            entered.set()
+            assert release.wait(10)
+        return subprocess.CompletedProcess(command, 0, "OK", "")
+
+    monkeypatch.setattr(runner.launcher, "_probe", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replacement = pool.submit(runner.save_token, "claude", "", TOKEN, member_id="member")
+        assert entered.wait(10)
+        verify = pool.submit(runner.verify, "claude", "", member_id="other")
+        assert not verify.done()
+        release.set()
+        saved = replacement.result(10)
+        verified = verify.result(10)
+    assert observed == [TOKEN, TOKEN]
+    assert verified.generation > saved.generation
+    assert runner.store.provider_login_state("claude", "") == verified
+
+
+def test_verification_classifies_auth_error_even_when_process_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    monkeypatch.setattr(
+        runner.launcher,
+        "_probe",
+        lambda _host, command, **_: subprocess.CompletedProcess(
+            command, 0, '{"error":"refresh_token_reused"}', ""
+        ),
+    )
+    with pytest.raises(ProviderLoginRefused, match="authentication failed"):
+        runner.verify("codex", "", member_id="member")
+    state = runner.store.provider_login_state("codex", "")
+    assert state.state == "signed_out" and state.generation == 0
+
+
+def test_credential_write_interruption_leaves_account_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    old = runner.save_token("claude", "", TOKEN, member_id="member")
+    with pytest.raises(ProviderLoginRefused):
+        runner.save_token("claude", "", "invalid token", member_id="member")
+    assert runner.store.provider_login_state("claude", "") == old
+    write = runner.credentials.store_token
+
+    def interrupted(*args, **kwargs):
+        write(*args, **kwargs)
+        raise OSError("simulated interrupted persistence")
+
+    monkeypatch.setattr(runner.credentials, "store_token", interrupted)
+    with pytest.raises(ProviderLoginRefused, match="persist"):
+        runner.save_token("claude", "", "replacement-token", member_id="member")
+    state = runner.store.provider_login_state("claude", "")
+    assert state.state == "signed_out" and state.generation > old.generation
+    assert runner.credentials.token("claude", "") == "replacement-token"
+
+
+def test_registered_provider_without_sign_out_explicitly_refuses_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rcp.provider_auth import ProviderAuthentication
+    from rcp.providers import PROVIDERS, CodexProfile
+
+    class Unsupported(CodexProfile):
+        id = "no-sign-out"
+        authentication = ProviderAuthentication()
+
+    monkeypatch.setitem(PROVIDERS, Unsupported.id, Unsupported())
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    with pytest.raises(ProviderLoginRefused) as refusal:
+        runner.sign_out(Unsupported.id, "", member_id="member")
+    assert refusal.value.status_code == 422
+    assert runner.store.provider_login_states() == []
+
+
+def test_device_credential_change_interrupted_before_verification_stays_fenced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    previous = runner.store.mark_provider_login_verified(
+        "codex", "", member_id="member", detail="Previously verified."
+    )
+    (tmp_path / "signed-in").write_text("")
+
+    def interrupted(*_args):
+        raise OSError("simulated interruption after native credential replacement")
+
+    monkeypatch.setattr(runner, "_verify_locked", interrupted)
+    started = runner.start_sign_in("codex", "", member_id="other")
+    failed = _status_when(runner, started.login_id, lambda status: status.state != "pending")
+    assert failed.state == "failed"
+    state = runner.store.provider_login_state("codex", "")
+    assert state.state == "signed_out" and state.generation > previous.generation
+    assert state.changed_by == "other"
+    assert runner.refusal("codex", "") is not None
+    assert _argv_log(tmp_path) == [["login", "--device-auth"]]
+
+
+@pytest.mark.parametrize(
+    ("provider", "output"),
+    [
+        ("codex", '{"error":{"message":"unsupported model"}}'),
+        ("claude", '{"type":"result","is_error":true,"result":"unsupported model"}'),
+    ],
+)
+def test_verification_rejects_zero_exit_provider_errors_without_revoking_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, output: str
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    if provider == "claude":
+        runner.credentials.store_token(
+            "claude", "", TOKEN, member_id="member", now=runner.store.now()
+        )
+    original = runner.store.mark_provider_login_verified(
+        provider, "", member_id="member", detail="verified"
+    )
+    monkeypatch.setattr(
+        runner.launcher,
+        "_probe",
+        lambda _host, command, **_: subprocess.CompletedProcess(command, 0, output, ""),
+    )
+    with pytest.raises(ProviderLoginRefused, match="could not complete"):
+        runner.verify(provider, "", member_id="member")
+    assert runner.store.provider_login_state(provider, "") == original
+
+
+@pytest.mark.parametrize(
+    ("provider", "output"),
+    [
+        ("codex", '{"error":{"message":"unsupported model"}}'),
+        ("claude", '{"type":"result","is_error":true,"result":"unsupported model"}'),
+    ],
+)
+def test_zero_exit_provider_errors_cannot_verify_replacement_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, output: str
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    original = runner.store.mark_provider_login_verified(
+        provider, "", member_id="member", detail="verified"
+    )
+    monkeypatch.setattr(
+        runner.launcher,
+        "_probe",
+        lambda _host, command, **_: subprocess.CompletedProcess(command, 0, output, ""),
+    )
+    if provider == "claude":
+        with pytest.raises(ProviderLoginRefused, match="could not complete"):
+            runner.save_token(provider, "", TOKEN, member_id="member")
+        assert runner.credentials.token_record(provider, "").verified_at is None
+    else:
+        (tmp_path / "signed-in").write_text("")
+        started = runner.start_sign_in(provider, "", member_id="member")
+        done = _status_when(runner, started.login_id, lambda status: status.state != "pending")
+        assert done.state == "failed"
+    state = runner.store.provider_login_state(provider, "")
+    assert state.state == "signed_out" and state.generation > original.generation

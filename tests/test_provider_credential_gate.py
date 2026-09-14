@@ -591,3 +591,66 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
     launcher.readiness("claude", binary=str(binary))
 
     assert "status" in holding, "the authentication probe never ran"
+
+
+@pytest.mark.asyncio
+async def test_waiting_launch_captures_environment_and_generation_together(
+    tmp_path, monkeypatch, prompt_minimum
+):
+    from types import SimpleNamespace
+
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
+    from rcp.runs.provider_sign_in import ProviderSignInRunner
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    credentials.store_token("claude", "", "old-token", member_id="member", now=store.now())
+    launcher = AgentLauncher(login_state=store.provider_login_state, credentials=credentials)
+    ProviderSignInRunner(store, launcher, credentials)
+    launcher.readiness = lambda *_, **__: SimpleNamespace(
+        installed=True,
+        authenticated=True,
+        path_state="resolved",
+        binary_path="/test/claude",
+        version="2.1.267",
+    )
+    held = await launcher.credential_gate.hold("claude", "")
+    waiting = asyncio.Event()
+    original_hold = launcher.credential_gate.hold
+
+    async def hold(provider, host):
+        waiting.set()
+        return await original_hold(provider, host)
+
+    monkeypatch.setattr(launcher.credential_gate, "hold", hold)
+    observed = {}
+
+    async def capture():
+        observed["generation"] = store.provider_login_state("claude", "").generation
+
+    async def spawn(*args, **kwargs):
+        observed["token"] = kwargs["env"][CLAUDE_TOKEN_VARIABLE]
+        raise OSError("test provider intentionally stopped before spawn")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def consume():
+        return [
+            event
+            async for event in launcher.stream(
+                "claude", "prompt", cwd=tmp_path, capability="scratch_patch", before_start=capture
+            )
+        ]
+
+    pending = asyncio.create_task(consume())
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    credentials.store_token("claude", "", "new-token", member_id="member", now=store.now())
+    repaired = store.mark_provider_login_verified(
+        "claude", "", member_id="member", detail="verified"
+    )
+    held.release()
+    events = await asyncio.wait_for(pending, timeout=5)
+    assert any(event.event == "error" for event in events)
+    assert observed == {"generation": repaired.generation, "token": "new-token"}

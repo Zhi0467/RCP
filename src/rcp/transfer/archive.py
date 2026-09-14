@@ -42,6 +42,7 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
         "paper-snapshots",
         "project-caches",
         "project-snapshots",
+        "providers",
         "rcp-server.json",
         "rcp.lock",
         "rcp.sqlite3-journal",
@@ -74,6 +75,8 @@ TRANSFER_RESEARCH_EXCLUDED_ROOTS = frozenset(
 TRANSFER_GLOBAL_TABLES = frozenset(
     {
         "provider_skill_inventories",
+        "provider_login_states",
+        "provider_readiness_snapshots",
         "space_identity",
         "space_users",
         "storage_schema_migrations",

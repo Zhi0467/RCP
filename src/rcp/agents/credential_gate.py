@@ -173,11 +173,12 @@ class ProviderCredentialGate:
         claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
         while not claim.try_acquire():
             pass
-        hold = CredentialStartupHold(claim.lock, minimum=0.0, across_processes=claim.descriptor)
         try:
             yield
         finally:
-            hold.release()
+            if claim.descriptor is not None:
+                _drop_account_lock(claim.descriptor)
+            claim.lock.release()
 
     def _account_lock_path(self, provider: str, host: str) -> Path | None:
         """Where this OS account's lock for one provider login lives.
