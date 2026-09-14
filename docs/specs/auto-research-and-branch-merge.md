@@ -317,8 +317,12 @@ scope, independent of the default repository selection for ordinary runs.
 a new merge; provenance outside current membership is rejected.
 
 RCP builds authorable non-conflicting node creations, ordinary node updates, and
-legal edge creations/removals from the same semantic paths checked by merge
-validation.
+legal edge creations, removals, and replacements from the same semantic paths
+checked by merge validation. An existing edge edit removes and recreates that
+edge with the branch's changed fields overlaid on current main, preserving
+compatible main edits. Validation checks the replacement's net field changes;
+the temporary removal does not grant permission to change unrelated fields or
+leave the edge missing. Both operations retain ordinary authority checks.
 Already-present values are omitted. Protected changes, conflicting nodes, Decision
 outcomes, removals, and source Proposals remain together in the agent's residue.
 This keeps coupled fields such as Decision options and selection in one update.
