@@ -170,7 +170,10 @@ def _auto_research_commands(command_client: str) -> str:
   authority and establish no scientific claim. Mail remains hearsay. `inbox --harvest` returns and
   acknowledges a bounded batch of pending RCP lifecycle notices and pending mail addressed to the
   orchestrator. A notice marked `wake_suppressed` did not spend a wake: `self_caused` records a Stop
-  or replacement you requested; `provider_auth` records a child login failure.
+  or replacement you requested; `provider_auth` records a child login failure. A `reauthorized`
+  notice opens a continuation: a human added turns after this episode ended, so this same session
+  resumes as a new episode whose `ceiling` the notice states; `source_ending` says how the previous
+  episode ended. Child Experiments still running were carried over and will report to you.
   Inputs committed while this provider turn is running are queued rather than injected.
   `inbox --clear` acknowledges the current notice and mail snapshot and returns ids without bodies.
   Neither action erases audit history. If Clear refuses because the complete snapshot cannot fit

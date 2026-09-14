@@ -6,8 +6,8 @@ import uuid
 import pytest
 
 from rcp.api.episodes import (
+    ContinueEpisodeBody,
     EpisodeMessageBody,
-    ReauthorizeEpisodeBody,
     StartEpisodeBody,
     _episode_task_metadata,
     episode_for_project,
@@ -116,6 +116,12 @@ def _auto_episode(
         ),
         root,
     )
+    # A continuation resumes the root's session, so the fixture binds one.
+    store.checkpoint_agent_task(
+        stored_root.operation_id,
+        native_session_id=f"{episode_id}-session",
+        stage_root=f"/tmp/{episode_id}-stage",
+    )
     if root_status == "succeeded":
         store.complete_agent_task(stored_root.operation_id, applied_revision=None, result={})
     elif root_status == "failed":
@@ -134,6 +140,7 @@ def _branch_summary(episode: EpisodeRecord) -> GraphBranchSummary:
     return GraphBranchSummary(
         branch_id=episode.episode_id,
         episode_id=episode.episode_id,
+        current_episode_id=episode.episode_id,
         base_head=episode.graph_base_head,
         head=GraphHeadRef(
             target=episode.graph_target,
@@ -479,16 +486,23 @@ def test_episode_route_bodies_are_strict_and_normalize_only_text() -> None:
         is None
     )
     assert EpisodeMessageBody.model_validate({"body": "  Status?  "}).body == "Status?"
-    assert ReauthorizeEpisodeBody.model_validate({"invocation_ceiling": 1}).invocation_ceiling == 1
+    continue_body = ContinueEpisodeBody.model_validate(
+        {"invocation_ceiling": 1, "request_id": "8b6d1c4e-2f5a-4b8e-9c3d-1a2b3c4d5e6f"}
+    )
+    assert continue_body.invocation_ceiling == 1
 
     with pytest.raises(ValueError):
         StartEpisodeBody.model_validate(
             {"mode": "auto_research", "invocation_ceiling": 1, "campaign_id": "legacy"}
         )
     with pytest.raises(ValueError):
-        ReauthorizeEpisodeBody.model_validate({"additional_invocations": 2})
+        ContinueEpisodeBody.model_validate({"invocation_ceiling": 2})
     with pytest.raises(ValueError):
-        ReauthorizeEpisodeBody.model_validate({"invocation_ceiling": "2"})
+        ContinueEpisodeBody.model_validate({"invocation_ceiling": 2, "request_id": "not-a-uuid"})
+    with pytest.raises(ValueError):
+        ContinueEpisodeBody.model_validate(
+            {"invocation_ceiling": "2", "request_id": "8b6d1c4e-2f5a-4b8e-9c3d-1a2b3c4d5e6f"}
+        )
     with pytest.raises(ValueError):
         EpisodeMessageBody.model_validate({"body": " \n "})
 
@@ -524,7 +538,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     }
     assert [task.operation_id for task in response.tasks] == [root.operation_id]
     assert response.budget.invocations_used == 1
-    assert response.can_reauthorize
+    assert response.can_continue
     assert response.run_section == "actionable"
     assert "report_attempts_used" not in payload
     assert "stop_settled_at" not in payload
@@ -554,7 +568,9 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert response.tasks[0].can_retry is False
     assert response.tasks[0].can_resume is False
     assert not response.can_stop
-    assert not response.can_reauthorize
+    # A failed episode is ended, and its root bound a session, so it can be
+    # continued; the missing report never blocks that offer.
+    assert response.can_continue
     assert response.run_section == "actionable"
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
@@ -834,8 +850,6 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
         tasks,
         control_task_id="control",
         recovery=SimpleNamespace(status="pending") if recovering else None,
-        has_report=record.wrapup_state == "ready",
-        can_reauthorize=False,
         report_login_blocked=episode_fields.get("report_login_blocked", False),
     )
     assert result == expected

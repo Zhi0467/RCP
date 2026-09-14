@@ -40,21 +40,23 @@ def start_branch_merge(
         or episode.graph_target.branch_id != episode.episode_id
     ):
         raise ValueError("branch merge requires its exact Auto-research episode branch")
-    end_paused = tasks.store.auto_research_can_end_for_merge(episode.episode_id)
-    if not end_paused and (
-        episode.ending is None or not tasks.store.auto_research_is_quiescent(episode.episode_id)
-    ):
-        raise ValueError("the Auto-research branch is not ended and quiescent")
+    # Branch facts only: a live graph-capable writer blocks the merge; the
+    # episode's status, ending, and paused turns do not.
     active_branch_writers = [
         item
         for item in tasks.store.unsettled_graph_target_tasks(
             project_id,
             episode.graph_target,
         )
-        if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
+        if item.kind != "branch_merge"
+        and item.status in {"queued", "running", "pausing"}
+        and task_graph_capable(item.kind, item.request)
     ]
-    if active_branch_writers and not end_paused:
-        raise ValueError("the Auto-research branch still has an active graph writer")
+    if active_branch_writers:
+        writers = ", ".join(
+            f"{item.kind} {item.operation_id} ({item.status})" for item in active_branch_writers
+        )
+        raise ValueError(f"the graph branch still has an active writer: {writers}")
     if not authorized_by.display_name.strip():
         raise ValueError("branch merge requires a named human authorizer snapshot")
 

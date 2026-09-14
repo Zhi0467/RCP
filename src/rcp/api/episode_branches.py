@@ -47,38 +47,49 @@ def graph_branch_summaries(
     store: AppStore,
     catalog: ProjectCatalog,
 ) -> dict[str, GraphBranchSummary]:
-    grouped: dict[str, list[EpisodeRecord]] = {}
-    for episode in episodes:
-        if (
-            episode.mode != "auto_research"
-            or episode.graph_target.kind != "branch"
-            or episode.graph_target.branch_id != episode.episode_id
-        ):
-            raise ValueError("only an Auto-research branch has a graph branch summary")
-        grouped.setdefault(episode.project_id, []).append(episode)
+    """One summary per episode; every member of a chain shares its branch's summary."""
 
-    summaries: dict[str, GraphBranchSummary] = {}
-    for project_id, project_episodes in grouped.items():
+    branches: dict[str, EpisodeRecord] = {}
+    for episode in episodes:
+        if episode.mode != "auto_research" or episode.graph_target.kind != "branch":
+            raise ValueError("only an Auto-research branch has a graph branch summary")
+        branch_id = episode.graph_target.branch_id
+        assert branch_id is not None
+        root = episode if episode.episode_id == branch_id else store.episode(branch_id)
+        if (
+            root is None
+            or root.project_id != episode.project_id
+            or root.graph_target != episode.graph_target
+        ):
+            raise ValueError("an Auto-research branch requires its chain root episode")
+        branches[branch_id] = root
+
+    grouped: dict[str, list[EpisodeRecord]] = {}
+    for root in branches.values():
+        grouped.setdefault(root.project_id, []).append(root)
+    by_branch: dict[str, GraphBranchSummary] = {}
+    for project_id, roots in grouped.items():
         service = get_project_service(catalog, project_id)
         snapshots = service.history.branch_read_snapshots(
-            [
-                (episode.episode_id, episode.episode_id, episode.project_id)
-                for episode in project_episodes
-            ]
+            [(root.episode_id, root.episode_id, root.project_id) for root in roots]
         )
-        for episode in project_episodes:
-            snapshot = snapshots[episode.episode_id]
-            summaries[episode.episode_id] = (
-                missing_graph_branch_summary(episode, store=store)
+        for root in roots:
+            snapshot = snapshots[root.episode_id]
+            current_episode_id = store.episode_chain(root.episode_id)[-1].episode_id
+            by_branch[root.episode_id] = (
+                missing_graph_branch_summary(root, store=store)
                 if snapshot is None
                 else graph_branch_summary_from_snapshot(
-                    episode,
+                    root,
                     snapshot.metadata,
                     list(snapshot.receipts),
                     store=store,
+                    current_episode_id=current_episode_id,
                 )
             )
-    return summaries
+    return {
+        episode.episode_id: by_branch[episode.graph_target.branch_id or ""] for episode in episodes
+    }
 
 
 def missing_graph_branch_summary(
@@ -96,6 +107,7 @@ def missing_graph_branch_summary(
     return GraphBranchSummary(
         branch_id=episode.episode_id,
         episode_id=episode.episode_id,
+        current_episode_id=episode.episode_id,
         base_head=episode.graph_base_head,
         head=GraphHeadRef(
             target=episode.graph_target,
@@ -121,7 +133,15 @@ def graph_branch_summary_from_snapshot(
     receipts: list[BranchMergeReceipt],
     *,
     store: AppStore,
+    current_episode_id: str | None = None,
 ) -> GraphBranchSummary:
+    """Merge eligibility from branch facts alone: head, receipts, and live writers.
+
+    Nothing about the episode is a condition. Its status, ending, wrap-up, and
+    paused turns do not matter; a paused writer cannot restart while a merge
+    runs because admission fences the branch.
+    """
+
     current_receipt = next(
         (item for item in reversed(receipts) if item.provenance.branch_head == metadata.head),
         None,
@@ -144,7 +164,9 @@ def graph_branch_summary_from_snapshot(
             episode.project_id,
             episode.graph_target,
         )
-        if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
+        if item.kind != "branch_merge"
+        and item.status in {"queued", "running", "pausing"}
+        and task_graph_capable(item.kind, item.request)
     ]
     if active_task is not None:
         merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"] = "running"
@@ -161,35 +183,27 @@ def graph_branch_summary_from_snapshot(
         if merge_state in {"needs_action", "failed"} and latest_task is not None
         else None
     )
-    end_paused = store.auto_research_can_end_for_merge(episode.episode_id)
     if active_task is not None:
         blocked_reason = "A merge is already running for this branch. Wait for it to finish."
     elif current_receipt is not None:
         blocked_reason = "This branch head has already been merged to main."
     elif metadata.head.revision <= metadata.base_head.revision:
         blocked_reason = "This branch has no changes to merge."
-    elif not end_paused and active_branch_writers:
+    elif active_branch_writers:
         writers = ", ".join(
             f"{item.kind} {item.operation_id} ({item.status})" for item in active_branch_writers
         )
         blocked_reason = f"Branch writers must settle before merging: {writers}."
-    elif not end_paused and episode.ending is None:
-        blocked_reason = "Stop the episode or pause its orchestrator before merging."
-    elif not end_paused and not store.auto_research_is_quiescent(episode.episode_id):
-        blocked_reason = (
-            "The episode still has an unresolved turn. Resolve its recovery before merging."
-        )
     else:
         blocked_reason = None
-    merge_eligible = blocked_reason is None
     return GraphBranchSummary(
         branch_id=metadata.branch_id,
         episode_id=metadata.episode_id,
+        current_episode_id=current_episode_id or metadata.episode_id,
         base_head=metadata.base_head,
         head=metadata.head,
-        merge_eligible=merge_eligible,
+        merge_eligible=blocked_reason is None,
         merge_blocked_reason=blocked_reason,
-        merge_requires_end=merge_eligible and end_paused,
         merge_state=merge_state,
         latest_successful_merge=receipts[-1] if receipts else None,
         active_merge_task_id=(active_task.operation_id if active_task is not None else None),

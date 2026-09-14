@@ -155,9 +155,7 @@ def merge_history(manifest):
             merge_task_id=template.merge_task_id,
             authorized_by=template.authorized_by,
             metadata=metadata,
-            eligibility=BranchMergeEligibility(
-                branch_head=metadata.head, episode_ending="completed"
-            ),
+            eligibility=BranchMergeEligibility(branch_head=metadata.head),
             base_graph=branch.base_state(),
             branch_graph=branch.state(),
             main_head=history.head_ref(),
@@ -231,9 +229,7 @@ async def test_merge_recomputes_guidance_validity_without_provider(
             merge_task_id=template.merge_task_id,
             authorized_by=template.authorized_by,
             metadata=metadata,
-            eligibility=BranchMergeEligibility(
-                branch_head=metadata.head, episode_ending="completed"
-            ),
+            eligibility=BranchMergeEligibility(branch_head=metadata.head),
             base_graph=branch.base_state(),
             branch_graph=source,
             main_head=history.head_ref(),
@@ -656,9 +652,7 @@ def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
             merge_task_id=template.merge_task_id,
             authorized_by=template.authorized_by,
             metadata=metadata,
-            eligibility=BranchMergeEligibility(
-                branch_head=metadata.head, episode_ending="completed"
-            ),
+            eligibility=BranchMergeEligibility(branch_head=metadata.head),
             base_graph=branch.base_state(),
             branch_graph=branch.state(),
             main_head=history.head_ref(),

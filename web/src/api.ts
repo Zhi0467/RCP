@@ -382,14 +382,16 @@ export function archiveEpisode(
   });
 }
 
-export function reauthorizeEpisode(
+/** Add turns to an ended episode; the request id makes a retried click return the same continuation. */
+export function continueEpisode(
   apiBase: string,
   episodeId: string,
   invocationCeiling: number,
+  requestId: string,
 ): Promise<Episode> {
-  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/reauthorize`, {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/continue`, {
     method: "POST",
-    body: JSON.stringify({ invocation_ceiling: invocationCeiling }),
+    body: JSON.stringify({ invocation_ceiling: invocationCeiling, request_id: requestId }),
   });
 }
 

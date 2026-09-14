@@ -3,10 +3,12 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Slices 1, 2, 3, 5, and 6 are implemented on
-this branch; slice 4 remains. Every decision below is settled. All six slices land on one branch and one pull request as ordered
-commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
-branch. None is optional.
+two further protocol spikes. All six slices are implemented on this branch;
+slice 4 landed last with two recorded deviations (see its section). Every
+decision below is settled. All six slices land on one branch and one pull
+request as ordered commits. What remains before closure is the team-server and
+desktop verification named under closure criteria, plus the provider-boundary
+review follow-up running as its own slice on this branch.
 
 Close this handoff when every closure criterion at the end holds on the team
 server and on the desktop, and the four decision records this handoff cites are
@@ -511,6 +513,31 @@ while its episode is `running`, `wrapping_up`, or ended and that a live writer
 is refused with its name; prompt data tests for the `reauthorized` notice; a
 served-app check continuing the copied production episode and merging its
 branch first.
+
+Implemented (2026-09-14): `POST .../episodes/{id}/continue` for both modes with
+a client `request_id` (replay returns 200 with the same continuation; a second
+id is refused 409); migration 22 `episode_continuations_v1` adds
+`continues_episode_id` and `continuation_request_id` with one-continuation-per-
+source and one-request-per-project unique indexes; the branch's `branch_id` is
+the chain root and `GraphBranchSummary.current_episode_id` names the newest
+member; the Auto-research continuation root is a `lifecycle_wake` resuming the
+source orchestrator's session and stage and claiming the `reauthorized` notice;
+the Experiment continuation reuses the Run path with the source's bound session
+and stage; merge is admitted on branch facts alone (`merge_requires_end`, the
+end-and-merge path, and `auto_research_can_end_for_merge` are gone; a paused
+writer neither blocks nor is ended); `can_continue` replaces `can_reauthorize`
+and is offered only where the source session is still bound; the web card says
+**Add N turns**, shows the chain, and the timeline spans the chain with a
+`continued` boundary. Tests: `tests/test_episode_continuation.py`,
+`tests/test_paused_branch_merge.py` (rewritten), `tests/test_branch_merge_api.py`,
+`tests/test_episode_lifecycle_acceptance.py`.
+
+Deviations from the plan above, both deliberate: (1) only pending or running
+child **Experiment** routes move to the continuation; child Work routes, notices,
+mail, and watchers stay on the source, because carrying worker lineage across
+episodes would touch every actor-binding validation for no journey that needs
+it yet; (2) the served-app check against the copied production episode has not
+been run from this worktree and remains under closure criteria.
 
 ### Slice 5: wake provenance and mail harvest
 

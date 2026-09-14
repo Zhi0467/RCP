@@ -79,6 +79,7 @@ from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -981,15 +982,21 @@ def create_app(
             identity,
             layout=server_layout,
         )
+
+    def _branch_service(graph_target: GraphTargetRef, project_id: str) -> ProjectService:
+        # The branch is named after the chain root; a continuation episode
+        # shares it, so the expected episode is the branch id, not the member.
+        return _project_service(catalog, project_id).for_graph_target(
+            graph_target,
+            expected_episode_id=graph_target.branch_id,
+        )
+
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
         background_tasks,
-        project_service=lambda project_id, episode_id: _project_service(
-            catalog,
-            project_id,
-        ).for_graph_target(
+        project_service=lambda project_id, episode_id: _branch_service(
             _episode_for_http(store, catalog, project_id, episode_id).graph_target,
-            expected_episode_id=episode_id,
+            project_id,
         ),
         operation_lock=experiment_operation_lock,
     )
@@ -1000,10 +1007,7 @@ def create_app(
         instruction: str,
         worker_id: str,
     ) -> RunRequest:
-        service = _project_service(catalog, context.task.project_id).for_graph_target(
-            context.episode.graph_target,
-            expected_episode_id=context.episode.episode_id,
-        )
+        service = _branch_service(context.episode.graph_target, context.task.project_id)
         return _auto_research_worker_request(
             service,
             context,

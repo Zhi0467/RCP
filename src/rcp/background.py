@@ -941,6 +941,8 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
         graph_target: GraphTargetRef | None = None,
+        continues_episode_id: str | None = None,
+        continuation_request_id: str | None = None,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -1009,6 +1011,16 @@ class BackgroundAgentTasks:
             raise ValueError("A human authorizer snapshot must include a nonblank display name.")
         if claim_graph_repair_parent and (parent is None or continuation != "graph_repair"):
             raise ValueError("Only an initial graph-repair admission can claim its parent.")
+        if (continues_episode_id is None) != (continuation_request_id is None) or (
+            continues_episode_id is not None
+            and not (
+                isinstance(request, RunRequest)
+                and request.patch_kind == "experiment_loop"
+                and request.trigger == "experiment_run"
+                and parent is None
+            )
+        ):
+            raise ValueError("Only an Experiment Run at invocation 1 can continue an episode.")
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = resolved_dispatch_authority(
             self.store,
@@ -1121,6 +1133,8 @@ class BackgroundAgentTasks:
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
                     request.watcher_ids,
+                    continues_episode_id=continues_episode_id,
+                    continuation_request_id=continuation_request_id,
                 )
             elif parent is not None and continuation in {
                 "resume",
@@ -2103,9 +2117,10 @@ class BackgroundAgentTasks:
             request = self._request_from_record(current)
             if request.session_id is None:
                 return bool(current.native_session_id)
-            if not current.parent_operation_id:
-                return False
-            parent = self.store.agent_task(current.parent_operation_id)
+            if current.parent_operation_id:
+                parent = self.store.agent_task(current.parent_operation_id)
+            else:
+                parent = self._continued_session_owner(current)
             if (
                 parent is None
                 or parent.project_id != current.project_id
@@ -2115,6 +2130,20 @@ class BackgroundAgentTasks:
                 return False
             current = parent
         return False
+
+    def _continued_session_owner(self, record: AgentTaskRecord) -> AgentTaskRecord | None:
+        """The source orchestrator task whose session a continuation root resumes."""
+
+        episode = self.store.episode(record.episode_id or "")
+        if episode is None or episode.continues_episode_id is None:
+            return None
+        source = self.store.episode(episode.continues_episode_id)
+        if source is None or source.root_operation_id is None:
+            return None
+        binding = self.store.auto_research_actor_binding(source.root_operation_id)
+        if binding is None:
+            return None
+        return self.store.agent_task(binding.current_operation_id)
 
     def _retry_feedback(self, record: AgentTaskRecord) -> tuple[str, ...]:
         feedback: list[str] = []

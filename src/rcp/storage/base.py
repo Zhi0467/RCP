@@ -56,6 +56,7 @@ class AppStoreBase:
         (19, "episode_stop_provenance_v1"),
         (20, "lifecycle_notice_acknowledging_turn_v1"),
         (21, "provider_readiness_snapshots_v1"),
+        (22, "episode_continuations_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -566,6 +567,12 @@ class AppStoreBase:
             version=21,
             name="provider_readiness_snapshots_v1",
             migration=self._migrate_provider_readiness_snapshots,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=22,
+            name="episode_continuations_v1",
+            migration=self._migrate_episode_continuations,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2007,6 +2014,7 @@ class AppStoreBase:
         self._migrate_episode_stop_provenance(connection)
         self._migrate_lifecycle_notice_acknowledging_turn(connection)
         self._migrate_provider_readiness_snapshots(connection)
+        self._migrate_episode_continuations(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2040,6 +2048,22 @@ class AppStoreBase:
     def _migrate_lifecycle_notice_acknowledging_turn(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(
             connection, "auto_research_lifecycle_notices", "acknowledged_operation_id", "TEXT"
+        )
+
+    @classmethod
+    def _migrate_episode_continuations(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "episodes", "continues_episode_id", "TEXT")
+        cls._ensure_column(connection, "episodes", "continuation_request_id", "TEXT")
+        # One continuation per source keeps a chain linear; the request id makes
+        # a repeated POST return the same continuation instead of a second one.
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS episodes_one_continuation_per_source "
+            "ON episodes(continues_episode_id) WHERE continues_episode_id IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS episodes_continuation_request "
+            "ON episodes(project_id, continuation_request_id) "
+            "WHERE continuation_request_id IS NOT NULL"
         )
 
     @staticmethod

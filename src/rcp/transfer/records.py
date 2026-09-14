@@ -957,6 +957,7 @@ class TransferEpisodeRecord(_StrictTransferRecord):
     created_at: AwareTimestamp
     updated_at: AwareTimestamp
     ended_at: AwareTimestamp
+    continues_episode_id: str | None = None
     archive: TransferEpisodeArchiveRecord | None = None
     invocations: tuple[TransferEpisodeInvocation, ...] = ()
     report_attempts: tuple[TransferEpisodeReportAttempt, ...] = ()
@@ -983,9 +984,14 @@ class TransferEpisodeRecord(_StrictTransferRecord):
         ):
             raise ValueError("Auto-research history requires only its sanitized mode record")
         if self.mode == "auto_research" and (
-            self.graph_target.kind != "branch" or self.graph_target.branch_id != self.episode_id
+            self.graph_target.kind != "branch"
+            or (
+                self.graph_target.branch_id != self.episode_id and self.continues_episode_id is None
+            )
         ):
             raise ValueError("Auto-research history must retain its same-id graph branch")
+        if self.continues_episode_id == self.episode_id:
+            raise ValueError("episode history cannot continue itself")
         if self.graph_target.kind == "main" and self.graph_base_head is not None:
             raise ValueError("main-target episode history cannot carry a branch base head")
         if self.graph_target.kind == "branch" and (

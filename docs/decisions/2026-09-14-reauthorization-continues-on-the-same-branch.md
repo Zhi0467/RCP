@@ -26,9 +26,11 @@ first ending would land on the reopened one.
 Reauthorization creates a continuation episode. A new episode record, chained
 to the ended one by `continues_episode_id`, on the same graph branch, with the
 orchestrator resumed in its exact native session and told how many turns it now
-has. The human's number is the continuation's ceiling. Child routes the ending
-froze are carried over, so their pending completions become deliverable. The
-ended episode stays terminal history with its receipt and report untouched. The
+has. The human's number is the continuation's ceiling. Child Experiment routes
+still pending or running move to the continuation, so their endings reach the
+resumed orchestrator; child Work routes, mail, notices, and watchers stay with
+the source. The ended episode stays terminal history with its receipt and
+report untouched. The
 same route and control serve Auto-research and Experiment loops, on any episode
 with a terminal status and no live turn, including a human-stopped one; stopped
 watchers stay stopped. A continuation is a new human grant: it records the member

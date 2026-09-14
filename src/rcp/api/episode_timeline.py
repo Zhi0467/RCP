@@ -72,7 +72,59 @@ def _human(member: AuthorizedHuman | None, user_id: str | None = None) -> Episod
 
 
 def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTimelineResponse:
-    """Project recorded facts without dispatching work or inferring lifecycle decisions."""
+    """Project recorded facts without dispatching work or inferring lifecycle decisions.
+
+    A continuation chain is one run, so the timeline spans every member with a
+    ``continued`` boundary between them. The requested episode keeps its plain
+    event ids; other members' ids carry their episode id.
+    """
+
+    events: list[EpisodeTimelineEvent] = []
+    for index, member in enumerate(_episode_chain(store, episode)):
+        primary = member.episode_id == episode.episode_id
+        if index:
+            events.append(
+                EpisodeTimelineEvent(
+                    kind="lifecycle",
+                    event_id=f"lifecycle:continued:{member.episode_id}",
+                    at=member.created_at,
+                    title="Continued with more turns",
+                    actor=_human(member.authorized_by),
+                    status=str(member.invocation_ceiling),
+                    provenance="recorded" if member.authorized_by else "unknown",
+                    links=EpisodeTimelineLinks(episode_id=member.episode_id),
+                )
+            )
+        events.extend(_member_events(store, member, primary=primary))
+    events.sort(key=lambda event: (event.at, event.event_id))
+    return EpisodeTimelineResponse(
+        episode_id=episode.episode_id,
+        mode=episode.mode,
+        events=events[-EPISODE_TIMELINE_EVENT_LIMIT:],
+        truncated=len(events) > EPISODE_TIMELINE_EVENT_LIMIT,
+    )
+
+
+def _episode_chain(store: AppStore, episode: EpisodeRecord) -> list[EpisodeRecord]:
+    root = episode
+    seen = {episode.episode_id}
+    while root.continues_episode_id is not None and root.continues_episode_id not in seen:
+        seen.add(root.continues_episode_id)
+        source = store.episode(root.continues_episode_id)
+        if source is None:
+            break
+        root = source
+    try:
+        chain = store.episode_chain(root.episode_id)
+    except KeyError:
+        return [episode]
+    # The caller's record is the authority for the requested episode itself.
+    return [episode if member.episode_id == episode.episode_id else member for member in chain]
+
+
+def _member_events(
+    store: AppStore, episode: EpisodeRecord, *, primary: bool
+) -> list[EpisodeTimelineEvent]:
     auto = episode.mode == "auto_research"
     tasks = (
         [task for task in store.auto_research_tasks(episode.episode_id) if task.visible]
@@ -134,9 +186,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     wrapup = store.episode_wrapup(episode.episode_id)
     report = store.episode_report(episode.episode_id)
     members = {member.user_id: member for member in store.space_users()}
-    causes = {
-        task.operation_id: store.agent_task_continuation_cause(task.operation_id) for task in tasks
-    }
+    causes = store.agent_task_continuation_causes([task.operation_id for task in tasks])
     kinds: dict[str, EpisodeTimelineEventKind] = {}
     actors: dict[str, EpisodeTimelineActor] = {}
     for task in tasks:
@@ -165,8 +215,11 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             label=role.capitalize(),
         )
 
+    def event_key(event_id: str) -> str:
+        return event_id if primary else f"{episode.episode_id}:{event_id}"
+
     def task_event(operation_id: str | None) -> str | None:
-        return f"{kinds[operation_id]}:{operation_id}" if operation_id in kinds else None
+        return event_key(f"{kinds[operation_id]}:{operation_id}") if operation_id in kinds else None
 
     events: list[EpisodeTimelineEvent] = []
     rcp = EpisodeTimelineActor(kind="rcp", label="RCP")
@@ -185,7 +238,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         events.append(
             EpisodeTimelineEvent(
                 kind=kind,
-                event_id=event_id,
+                event_id=event_key(event_id),
                 at=at or episode.updated_at,
                 title=title[:120],
                 actor=actor,
@@ -333,7 +386,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
                 child.ended_at,
                 "Experiment ended",
                 actor=actor,
-                parent_event_id=created_id,
+                parent_event_id=event_key(created_id),
                 status=child.ending,
                 links=links,
             )
@@ -344,7 +397,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
                 child.stop_requested_at,
                 "Experiment stopped",
                 actor=actor,
-                parent_event_id=created_id,
+                parent_event_id=event_key(created_id),
                 cause=child.stop_initiated_by,
                 provenance="recorded" if child.stop_initiated_by else "unknown",
                 links=links,
@@ -466,10 +519,4 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             cause=initiator,
             provenance="recorded" if initiator else "unknown",
         )
-    events.sort(key=lambda event: (event.at, event.event_id))
-    return EpisodeTimelineResponse(
-        episode_id=episode.episode_id,
-        mode=episode.mode,
-        events=events[-EPISODE_TIMELINE_EVENT_LIMIT:],
-        truncated=len(events) > EPISODE_TIMELINE_EVENT_LIMIT,
-    )
+    return events

@@ -62,7 +62,7 @@ import {
   loadProjectReadiness,
   loadProviderLogins,
   mergeEpisodeToMain,
-  reauthorizeEpisode,
+  continueEpisode,
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
@@ -3312,12 +3312,17 @@ export default function App() {
     }
   };
 
-  const requestEpisodeReauthorization = async (episodeId: string, invocationCeiling: number) => {
+  const requestEpisodeContinuation = async (episodeId: string, invocationCeiling: number) => {
     if (!apiBase || episodeAction) return;
-    const finishEpisodeAction = beginEpisodeAction(`reauthorize:${episodeId}`);
+    const finishEpisodeAction = beginEpisodeAction(`continue:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const nextEpisode = await reauthorizeEpisode(apiBase, episodeId, invocationCeiling);
+      const nextEpisode = await continueEpisode(
+        apiBase,
+        episodeId,
+        invocationCeiling,
+        crypto.randomUUID(),
+      );
       replaceEpisode(nextEpisode);
       replaceExactAutoResearchSelection(nextEpisode.project_id, nextEpisode.episode_id);
       await reload();
@@ -4552,7 +4557,7 @@ export default function App() {
                 onStopEpisode={requestEpisodeStop}
                 onArchiveEpisode={requestEpisodeArchive}
                 onMergeEpisode={requestEpisodeMerge}
-                onReauthorizeEpisode={requestEpisodeReauthorization}
+                onContinueEpisode={requestEpisodeContinuation}
                 onSendEpisodeMessage={messageEpisodeOrchestrator}
                 onOperateEpisodeTask={operateEpisodeOrchestratorTask}
                 onSelectExperiment={selectExperiment}

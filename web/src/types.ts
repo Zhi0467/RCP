@@ -1623,7 +1623,8 @@ export interface GraphBranchSummary {
   head: GraphHeadRef;
   merge_eligible: boolean;
   merge_blocked_reason: string | null;
-  merge_requires_end: boolean;
+  /** The newest member of the branch's episode chain; `episode_id` is the chain root. */
+  current_episode_id: string;
   merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
   latest_successful_merge: BranchMergeReceipt | null;
   active_merge_task_id: string | null;
@@ -2259,7 +2260,10 @@ export interface Episode {
   archived: boolean;
   can_archive: boolean;
   can_stop: boolean;
-  can_reauthorize: boolean;
+  /** The ended episode this one added turns to, and the one that added turns to this one. */
+  continues_episode_id: string | null;
+  continued_by_episode_id: string | null;
+  can_continue: boolean;
   can_message: boolean;
   live: boolean;
   health: EpisodeHealth;

@@ -3,9 +3,9 @@
 Active:
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
-  — design confirmed 2026-09-14 and revised after an xhigh review; slices 1, 2,
-  3, 5, and 6 implemented, slice 4 remains: ending receipts compact and
-  wrap-up failures settle visibly;
+  — design confirmed 2026-09-14 and revised after an xhigh review; all six
+  slices implemented, team-server and desktop closure checks remain: ending
+  receipts compact and wrap-up failures settle visibly;
   an exhaustive health table; login failures stop retries and block launches;
   Codex per turn under a hardened gate, Claude on a static token, sign-in from
   the UI; reauthorization as a continuation episode on the same branch and

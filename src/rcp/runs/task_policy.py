@@ -197,10 +197,13 @@ def resolved_dispatch_authority(
             )
         actor_operation_id = request.actor_operation_id
         if parent is None:
+            # A continuation episode's root is a lifecycle wake of the source
+            # session; every other root starts with no wake cause.
+            allowed_wake_cause = "lifecycle" if continuation == "lifecycle_wake" else None
             if (
                 request.role != "orchestrator"
                 or actor_operation_id != operation_id
-                or request.wake_cause is not None
+                or request.wake_cause != allowed_wake_cause
             ):
                 raise ValueError(
                     "Authority refused action 'dispatch': an Auto-research root must be its "

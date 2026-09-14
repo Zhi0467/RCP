@@ -146,6 +146,41 @@ class EpisodeStoreMixin:
             ).fetchone()
         return self._episode_record(row) if row is not None else None
 
+    def episode_continuation(self, episode_id: str) -> EpisodeRecord | None:
+        """The one episode that added turns to this one, if a member continued it."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE continues_episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        return self._episode_record(row) if row is not None else None
+
+    def episode_chain(self, root_episode_id: str) -> list[EpisodeRecord]:
+        """The chain root followed by each continuation, oldest first.
+
+        A graph branch keeps its chain root's id as ``branch_id`` forever, so the
+        root is also the branch; the last member is the branch's current writer.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (root_episode_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(root_episode_id)
+            chain = [self._episode_record(row)]
+            seen = {root_episode_id}
+            while True:
+                row = connection.execute(
+                    "SELECT * FROM episodes WHERE continues_episode_id = ?",
+                    (chain[-1].episode_id,),
+                ).fetchone()
+                if row is None or row["episode_id"] in seen:
+                    return chain
+                seen.add(str(row["episode_id"]))
+                chain.append(self._episode_record(row))
+
     def episodes(self, project_id: str, *, limit: int | None = 50) -> list[EpisodeRecord]:
         """List recent history, or all episodes for runtime reconciliation."""
 
@@ -2021,8 +2056,9 @@ class EpisodeStoreMixin:
                 invocation_ceiling, invocations_used, authorized_space_id,
                 authorized_user_id, authorized_display_name, stop_requested_at,
                 stop_settled_at, ending, ending_diagnostic, wrapup_state,
-                wrapup_error, report_attempts_used, created_at, updated_at, ended_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                wrapup_error, report_attempts_used, created_at, updated_at, ended_at,
+                continues_episode_id, continuation_request_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
@@ -2048,6 +2084,8 @@ class EpisodeStoreMixin:
                 record.created_at,
                 record.updated_at,
                 record.ended_at,
+                record.continues_episode_id,
+                record.continuation_request_id,
             ),
         )
 

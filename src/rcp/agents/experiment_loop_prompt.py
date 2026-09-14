@@ -202,8 +202,10 @@ Context protocol:
   Read the files above instead of assuming that a previous provider session established state.
 - Read loop control first. `phase` distinguishes a human-started episode from a watcher wake.
   `invocation`, `invocation_ceiling`, and `remaining_invocations` are the operational budget; they
-  do not count or limit semantic attempts. `human_reauthorization` means a human Run started this
-  new episode at invocation 1 while delivering watcher ids that retain older origin provenance.
+  do not count or limit semantic attempts. `human_reauthorization` means a human started this
+  new episode at invocation 1: either a fresh Run delivering watcher ids that retain older origin
+  provenance, or a continuation of the same session with more turns after the previous episode
+  ended.
   Completion criteria are advisory interpretation aids.
 - Read the focused Experiment's full current record in `graph.json`, including all attempts. Find
   every edge whose source or target is the Experiment, then read each one-hop node's full record.

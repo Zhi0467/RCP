@@ -9,6 +9,7 @@ import type {
   GraphNode,
   WatcherRecord,
 } from "./types";
+import { blockedReasonLead } from "./campaigns.ts";
 
 export interface AgentTaskGroup {
   rootId: string;
@@ -113,31 +114,6 @@ export function authorizedInvocationCount(input: string): number | null {
 }
 
 /** Map the server's recommendation to presentation copy without re-deciding it. */
-/**
- * One lead sentence naming what blocks the episode, before the recommendation.
- * Twin of `blockedReasonLead` in `campaigns.ts`; the node test runner cannot
- * resolve an extensionless runtime import between these two modules.
- */
-function blockedReasonLead(
-  reason: "sign_in" | "reauthorize" | null | undefined,
-  ending: string | null,
-  label: string,
-): string {
-  if (reason === "sign_in") {
-    return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
-  }
-  if (reason === "reauthorize") {
-    const lead =
-      ending === "human_pause"
-        ? "The episode paused for human authority."
-        : ending === "exhausted"
-          ? "The authorized turns are spent."
-          : "More authorized turns are needed.";
-    return `${lead} ${label}`;
-  }
-  return label;
-}
-
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const step = run.control.recommendation;
   const labels: Record<ExperimentRecommendedStep, string> = {
@@ -159,7 +135,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     keep_loop: "Keep loop running; check now if needed",
     start_episode:
       run.health === "paused_at_limit"
-        ? "Reauthorize more invocations"
+        ? "Add turns or start a new episode"
         : run.control.episode_id
           ? "Start a new episode"
           : "Start an episode",

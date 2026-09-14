@@ -25,6 +25,7 @@ from rcp.storage.models import (
     AutoResearchChildAdmissionRecord,
     AutoResearchCommandFileRecord,
     AutoResearchInvocationRecord,
+    AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
     AutoResearchRecoveryMode,
     AutoResearchRecoveryRecord,
@@ -138,6 +139,197 @@ class AutoResearchStoreMixin:
         stored_task = self.agent_task(task.operation_id)
         assert stored_episode is not None and stored_task is not None
         return stored_episode, stored_task
+
+    def create_auto_research_continuation(
+        self,
+        episode: EpisodeRecord,
+        state: AutoResearchStateRecord,
+        task: AgentTaskRecord,
+        notice: AutoResearchLifecycleNoticeRecord,
+    ) -> tuple[EpisodeRecord, AgentTaskRecord, bool]:
+        """Add turns to an ended Auto-research episode in one transaction.
+
+        The continuation is a new episode on the source's graph branch. Its root
+        task resumes the source orchestrator's exact native session as a
+        lifecycle wake that claims the ``reauthorized`` notice, spending
+        invocation 1 of the new ceiling. Live child Experiment routes move to the
+        continuation so their endings reach the resumed orchestrator; every other
+        row of the source stays exactly as it was. A repeated request id returns
+        the continuation it already created, flagged by the third value.
+        """
+
+        self._validate_new_episode(episode)
+        source_id = episode.continues_episode_id
+        if (
+            episode.mode != "auto_research"
+            or episode.control_node_id is not None
+            or source_id is None
+            or episode.continuation_request_id is None
+        ):
+            raise ValueError("an Auto-research continuation names its source and request id")
+        if state.episode_id != episode.episode_id:
+            raise ValueError("Auto-research state must belong to its episode")
+        if task.episode_id != episode.episode_id or task.project_id != episode.project_id:
+            raise ValueError("the Auto-research continuation root must belong to its episode")
+        if task.kind != "auto_research" or task.parent_operation_id is not None:
+            raise ValueError("the Auto-research continuation root must be a root task")
+        if task.status != "queued" or not task.visible:
+            raise ValueError("the Auto-research continuation root must be a visible queued task")
+        if task.authorized_by != episode.authorized_by:
+            raise ValueError("Auto-research tasks retain the root human authorizer snapshot")
+        if episode.root_operation_id not in {None, task.operation_id}:
+            raise ValueError("the episode root operation does not match its task")
+        if not task.native_session_id or not task.stage_root:
+            raise ValueError("an Auto-research continuation resumes an exact session and stage")
+        if (
+            notice.episode_id != episode.episode_id
+            or notice.source_kind != "episode"
+            or notice.source_id != source_id
+            or notice.source_event != "reauthorized"
+        ):
+            raise ValueError("an Auto-research continuation records its reauthorized notice")
+        started = episode.model_copy(
+            update={"root_operation_id": task.operation_id, "status": "running"}
+        )
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                replay = connection.execute(
+                    """
+                    SELECT * FROM episodes
+                    WHERE project_id = ? AND continuation_request_id = ?
+                    """,
+                    (episode.project_id, episode.continuation_request_id),
+                ).fetchone()
+                if replay is not None:
+                    stored = self._episode_record(replay)
+                    if stored.continues_episode_id != source_id:
+                        raise ValueError("the continuation request id names another episode")
+                    connection.rollback()
+                    root = self.agent_task(stored.root_operation_id or "")
+                    assert root is not None
+                    return stored, root, True
+                source = self._load_auto_research_episode(connection, source_id)
+                self._require_continuable_source(connection, source, episode)
+                # The branch's id is the chain root's; the walk must end there.
+                current = source
+                seen = {episode.episode_id}
+                while current.continues_episode_id is not None:
+                    if current.episode_id in seen:
+                        raise ValueError("the continuation chain is cyclic")
+                    seen.add(current.episode_id)
+                    current = self._load_auto_research_episode(
+                        connection, current.continues_episode_id
+                    )
+                if current.episode_id != episode.graph_target.branch_id:
+                    raise ValueError("the continuation chain does not reach its graph branch root")
+                self._require_project_accepts_new_work(connection, episode.project_id)
+                if self._live_episode_row(connection, started) is not None:
+                    raise ValueError("Only one live Auto-research episode may run per project.")
+                self._insert_episode(connection, started)
+                connection.execute(
+                    """
+                    INSERT INTO auto_research_episodes (
+                        episode_id, starting_instruction, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        state.episode_id,
+                        state.starting_instruction,
+                        state.created_at,
+                        state.updated_at,
+                    ),
+                )
+                # A live child Experiment keeps running across the boundary; its
+                # ending must reach the orchestrator that now owns the branch.
+                connection.execute(
+                    """
+                    UPDATE auto_research_child_experiments
+                    SET auto_research_episode_id = ?, updated_at = ?
+                    WHERE auto_research_episode_id = ? AND state IN ('pending', 'running')
+                    """,
+                    (episode.episode_id, task.created_at, source_id),
+                )
+                self._insert_auto_research_lifecycle_notice(connection, notice)
+                self._insert_paid_auto_research_task(
+                    connection,
+                    started,
+                    task,
+                    "orchestrator",
+                    continuation_cause="lifecycle_wake",
+                )
+                if not self._claim_auto_research_root_inputs(
+                    connection,
+                    started,
+                    task,
+                    lifecycle_notice_ids=[notice.notice_id],
+                    message_ids=[],
+                ):
+                    raise ValueError("the continuation could not claim its reauthorized notice")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "Only one live Auto-research episode may run per project, and an episode "
+                "is continued at most once."
+            ) from exc
+        stored_episode = self.episode(episode.episode_id)
+        stored_task = self.agent_task(task.operation_id)
+        assert stored_episode is not None and stored_task is not None
+        return stored_episode, stored_task, False
+
+    def _require_continuable_source(
+        self,
+        connection: sqlite3.Connection,
+        source: EpisodeRecord,
+        continuation: EpisodeRecord,
+    ) -> None:
+        """Refuse a continuation whose source is live, occupied, or on another target.
+
+        Shared by Auto-research and Experiment continuations; each mode adds its
+        own structural checks around this rule.
+        """
+
+        if source.project_id != continuation.project_id:
+            raise ValueError("a continuation stays in its source's project")
+        if source.status not in {"completed", "failed", "needs_action", "stopped"}:
+            raise ValueError("only an ended episode can be continued")
+        if (
+            source.graph_target != continuation.graph_target
+            or source.graph_base_head != continuation.graph_base_head
+        ):
+            raise ValueError("a continuation keeps its source's graph branch and base head")
+        if (
+            connection.execute(
+                "SELECT 1 FROM episodes WHERE continues_episode_id = ?",
+                (source.episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("this episode has already been continued")
+        if (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE episode_id = ? AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (source.episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("the episode still has a live turn")
+        if (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND graph_target_json = ? AND kind = 'branch_merge'
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (source.project_id, source.graph_target.model_dump_json()),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("the graph branch is being merged")
 
     def activate_auto_research_reservation(
         self,
@@ -1819,121 +2011,6 @@ class AutoResearchStoreMixin:
             ):
                 return True
         return False
-
-    def auto_research_can_end_for_merge(self, episode_id: str) -> bool:
-        """Whether a human may retire the paused orchestrator and merge its branch."""
-
-        with self.connection() as connection:
-            episode = self._load_auto_research_episode(connection, episode_id)
-            return bool(self._paused_auto_research_merge_tasks(connection, episode))
-
-    def _paused_auto_research_merge_tasks(
-        self,
-        connection: sqlite3.Connection,
-        episode: EpisodeRecord,
-    ) -> list[AgentTaskRecord]:
-        from rcp.runs.task_policy import task_graph_capable
-
-        if (
-            episode.status not in {"running", "stopping"}
-            or episode.ending is not None
-            or episode.root_operation_id is None
-            or episode.graph_target.branch_id != episode.episode_id
-        ):
-            return []
-        orchestrator = self._auto_research_actor_latest_row(
-            connection, episode.episode_id, episode.root_operation_id
-        )
-        if orchestrator is None or orchestrator["status"] != "paused":
-            return []
-        tasks = [
-            task
-            for task in self._unsettled_graph_target_tasks_in_connection(
-                connection, episode.project_id, episode.graph_target
-            )
-            if task_graph_capable(task.kind, task.request)
-        ]
-        if not any(task.operation_id == orchestrator["operation_id"] for task in tasks):
-            return []
-        if any(
-            task.status != "paused"
-            or task.kind != "auto_research"
-            or task.episode_id != episode.episode_id
-            for task in tasks
-        ):
-            return []
-        if (
-            connection.execute(
-                """
-            SELECT 1 FROM auto_research_child_work AS route
-            JOIN graph_runs AS task ON task.operation_id = route.current_operation_id
-            WHERE route.episode_id = ? AND route.stop_requested_at IS NULL
-              AND task.status IN ('paused', 'failed', 'interrupted')
-            LIMIT 1
-            """,
-                (episode.episode_id,),
-            ).fetchone()
-            is not None
-        ):
-            return []
-        # Reuse the child owners' durable unfinished-work inventory; mail notices
-        # do not block this explicit human ending.
-        if any(
-            blocker.kind in {"experiment_episode", "experiment_replacement", "child_admission"}
-            for blocker in self._auto_research_finish_blockers(connection, episode.episode_id)
-        ):
-            return []
-        if (
-            connection.execute(
-                """
-            SELECT 1 FROM graph_runs AS run
-            WHERE run.episode_id = ? AND run.kind = 'auto_research'
-              AND run.status IN ('failed', 'interrupted')
-              AND NOT EXISTS (
-                SELECT 1 FROM graph_runs AS child
-                WHERE child.parent_operation_id = run.operation_id
-                  AND child.episode_id = run.episode_id AND child.attempt = run.attempt + 1
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-                  AND receipt.category IN (
-                    'auto_research_recovery_abandoned', 'auto_research_orchestrator_failure'
-                  )
-              )
-            LIMIT 1
-            """,
-                (episode.episode_id,),
-            ).fetchone()
-            is not None
-        ):
-            return []
-        return tasks
-
-    def _end_paused_auto_research_for_merge_in_connection(
-        self,
-        connection: sqlite3.Connection,
-        episode: EpisodeRecord,
-        *,
-        now: str,
-    ) -> EpisodeRecord:
-        tasks = self._paused_auto_research_merge_tasks(connection, episode)
-        if not tasks:
-            raise ValueError("the Auto-research branch is not paused with all child work settled")
-        diagnostic = "The human ended this paused episode to merge its graph branch to main."
-        self._request_episode_stop_in_connection(
-            connection, episode.episode_id, now=now, initiated_by=None
-        )
-        for task in tasks:
-            self._abandon_auto_research_recovery_in_connection(
-                connection, task.operation_id, diagnostic=diagnostic, now=now
-            )
-        self._settle_auto_research_watchers_in_connection(
-            connection, episode_id=episode.episode_id, now=now
-        )
-        return self._mark_episode_stop_skipped_in_connection(
-            connection, episode.episode_id, diagnostic=diagnostic, now=now
-        )
 
     @staticmethod
     def _auto_research_is_quiescent_in_connection(

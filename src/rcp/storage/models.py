@@ -2340,6 +2340,12 @@ class EpisodeRecord(BaseModel):
     created_at: str
     updated_at: str
     ended_at: str | None = None
+    #: The ended episode this one adds turns to. A continuation runs on the
+    #: source's graph branch and native session; the branch keeps the chain
+    #: root's id as its ``branch_id`` forever.
+    continues_episode_id: str | None = None
+    #: The client's idempotency key for the continuation request.
+    continuation_request_id: str | None = None
 
     @model_validator(mode="after")
     def lifecycle_is_coherent(self) -> EpisodeRecord:
@@ -2358,8 +2364,16 @@ class EpisodeRecord(BaseModel):
         if self.graph_target.kind == "branch":
             if self.graph_base_head is None or self.graph_base_head.target.kind != "main":
                 raise ValueError("a branch-target episode requires its immutable main base head")
-            if self.mode == "auto_research" and self.graph_target.branch_id != self.episode_id:
+            if (
+                self.mode == "auto_research"
+                and self.graph_target.branch_id != self.episode_id
+                and self.continues_episode_id is None
+            ):
                 raise ValueError("an Auto-research episode must own its same-id graph branch")
+        if self.continues_episode_id == self.episode_id:
+            raise ValueError("an episode cannot continue itself")
+        if self.continuation_request_id is not None and self.continues_episode_id is None:
+            raise ValueError("only a continuation episode carries a continuation request id")
         if self.wrapup_state in {"ready", "failed"} and self.ending is None:
             raise ValueError("a terminal episode wrap-up requires its semantic ending")
         return self

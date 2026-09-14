@@ -7,7 +7,7 @@ from typing import Annotated, Literal, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
@@ -23,15 +23,15 @@ from rcp.api.dependencies import (
 )
 from rcp.api.episode_timeline import EpisodeTimelineResponse, build_episode_timeline
 from rcp.api.episodes import (
+    ContinueEpisodeBody,
     EpisodeMessageBody,
     EpisodeResponse,
-    ReauthorizeEpisodeBody,
     StartEpisodeBody,
     _episode_for_http,
     serialize_episode,
     serialize_episodes,
 )
-from rcp.api.experiments import stop_bound_experiment_episode
+from rcp.api.experiments import continue_experiment_episode, stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
 from rcp.artifacts import AgentArtifactDescriptor, artifact_viewer_document, html_preview_document
 from rcp.background import BackgroundAgentTasks
@@ -39,6 +39,7 @@ from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
 from rcp.runs.auto_research_admission import (
+    continue_auto_research,
     start_auto_research,
     stop_auto_research,
 )
@@ -288,12 +289,15 @@ def merge_episode_branch(
     background_tasks: BackgroundTasksDependency,
 ) -> EpisodeResponse:
     authorized_by = identity_access.require_patch_capable_identity(request)
-    episode = _episode_for_http(store, catalog, project_id, episode_id)
-    if episode.mode != "auto_research" or episode.graph_target.kind != "branch":
+    member = _episode_for_http(store, catalog, project_id, episode_id)
+    if member.mode != "auto_research" or member.graph_target.kind != "branch":
         raise HTTPException(
             status_code=409,
             detail="Only an Auto-research graph branch can merge to main.",
         )
+    # The branch keeps its chain root's id, so the merge binds to the root
+    # whichever chain member's card dispatched it.
+    episode = _episode_for_http(store, catalog, project_id, member.graph_target.branch_id or "")
     service = get_project_service(catalog, project_id)
     try:
         summary = graph_branch_summary(episode, store=store, catalog=catalog)
@@ -309,7 +313,7 @@ def merge_episode_branch(
             merge_request,
             authorized_by=authorized_by,
         )
-        current = store.episode(episode.episode_id)
+        current = store.episode(member.episode_id)
         if current is None:
             raise RuntimeError("The branch merge episode could not be reloaded.")
         return serialize_episode(
@@ -323,68 +327,71 @@ def merge_episode_branch(
 
 
 @router.post(
-    "/api/projects/{project_id}/episodes/{episode_id}/reauthorize",
+    "/api/projects/{project_id}/episodes/{episode_id}/continue",
     response_model=EpisodeResponse,
     status_code=202,
     dependencies=[Depends(require_project_write_admission)],
 )
-def reauthorize_episode(
+def continue_episode(
     project_id: str,
     episode_id: str,
-    body: ReauthorizeEpisodeBody,
+    body: ContinueEpisodeBody,
     request: Request,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
-) -> EpisodeResponse:
+) -> EpisodeResponse | JSONResponse:
+    """Add turns to an ended episode as a continuation on its branch and session.
+
+    One control for both modes. Storage refuses a source that is live, already
+    continued, merging, or occupied by a newer live episode; a repeated request
+    id returns the continuation it already created with status 200.
+    """
+
     authorized_by = identity_access.require_patch_capable_identity(request)
-    episode = _episode_for_http(store, catalog, project_id, episode_id)
-    if not (
-        episode.mode == "auto_research"
-        and episode.status == "needs_action"
-        and episode.ending == "exhausted"
-        and episode.wrapup_state in {"ready", "failed", "legacy_unavailable", "not_started"}
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Only an exhausted, settled Auto-research episode can be reauthorized.",
-        )
-    state = store.auto_research_state(episode.episode_id)
-    if state is None:
-        raise HTTPException(status_code=409, detail="Auto-research state is unavailable.")
+    source = _episode_for_http(store, catalog, project_id, episode_id)
+    if source.status not in {"completed", "failed", "needs_action", "stopped"}:
+        raise HTTPException(status_code=409, detail="Only an ended episode can be continued.")
+    existing = store.episode_continuation(source.episode_id)
+    if existing is not None and existing.continuation_request_id != body.request_id:
+        raise HTTPException(status_code=409, detail="This episode has already been continued.")
     service = get_project_service(catalog, project_id)
     try:
         service.history.require_writable()
-        start_request = _resolved_auto_research_start_request(
-            service,
-            StartEpisodeBody(
-                mode="auto_research",
+        if source.mode == "auto_research":
+            continuation, _ = continue_auto_research(
+                background_tasks,
+                source,
                 invocation_ceiling=body.invocation_ceiling,
-                starting_instruction=state.starting_instruction,
-            ),
-        )
-        graph_base_head = service.history.head_ref()
-        fresh, _ = start_auto_research(
-            background_tasks,
-            project_id,
-            start_request,
-            authorized_by=authorized_by,
-            graph_base_head=graph_base_head,
-            ensure_graph_target=partial(
-                ensure_auto_research_graph_target,
+                request_id=body.request_id,
+                authorized_by=authorized_by,
+            )
+        else:
+            # The write-admission dependency already holds the project's
+            # Experiment operation lock for this request.
+            continuation = continue_experiment_episode(
+                project_id,
+                source,
+                invocation_ceiling=body.invocation_ceiling,
+                request_id=body.request_id,
+                authorized_by=authorized_by,
                 catalog=catalog,
-            ),
-        )
-    except ValueError as exc:
+                store=store,
+                background_tasks=background_tasks,
+            )
+    except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return serialize_episode(
+    response = serialize_episode(
         store,
         project_id,
-        fresh,
+        continuation,
         branch_summary=_branch_summary(store, catalog),
     )
+    if existing is not None:
+        return JSONResponse(status_code=200, content=response.model_dump(mode="json"))
+    return response
 
 
 @router.get(
@@ -665,8 +672,8 @@ __all__ = [
     "episode_messages",
     "episodes",
     "merge_episode_branch",
+    "continue_episode",
     "preview_episode_report",
-    "reauthorize_episode",
     "router",
     "send_episode_message",
     "start_episode",

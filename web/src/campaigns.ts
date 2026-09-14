@@ -91,7 +91,7 @@ const EPISODE_RECOMMENDATION_LABELS: Record<EpisodeRecommendationKind, string> =
   wait: "Wait for the current step",
   resume: "Resume the current turn",
   retry: "Retry the current turn",
-  reauthorize: "Authorize more turns",
+  reauthorize: "Add turns",
   open_report: "Open report",
   review: "Review the episode state",
   none: "No further action is needed",

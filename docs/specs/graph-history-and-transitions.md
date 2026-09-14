@@ -170,8 +170,11 @@ directory rename.
 A graph target is either `main` or `branch:<branch_id>`. A graph head always
 contains its target, integer revision, and last transition id; a bare integer is
 not globally unique. An Auto-research branch additionally records its project,
-episode, immutable base main head, branch kind, authorizing human snapshot,
-creation time, current head, and merge receipts.
+owning episode (the chain root whose id is the `branch_id`), immutable base main
+head, branch kind, authorizing human snapshot, creation time, current head, and
+merge receipts. Continuation episodes of that chain write to the same branch
+under their own episode ids; the branch's Patch log and metadata stay under the
+root id.
 
 A branch materializes by replaying the accepted main prefix through its immutable
 base and then its branch Patch log. Mutable main materializations are never

@@ -654,7 +654,7 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
       },
       health: "paused_at_limit",
     }).label,
-    "The authorized turns are spent. Reauthorize more invocations",
+    "The authorized turns are spent. Add turns or start a new episode",
   );
   // A human-authority pause is also a reauthorization block, but the turns
   // were not spent; the lead sentence follows the ending, not the block.
@@ -668,7 +668,7 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
       },
       health: "paused_at_limit",
     }).label,
-    "The episode paused for human authority. Reauthorize more invocations",
+    "The episode paused for human authority. Add turns or start a new episode",
   );
   assert.equal(
     experimentRecommendation({

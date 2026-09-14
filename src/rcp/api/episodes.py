@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -45,8 +46,8 @@ BranchSummaryResolver = Callable[[EpisodeRecord], GraphBranchSummary]
 BranchSummariesResolver = Callable[[list[EpisodeRecord]], dict[str, GraphBranchSummary]]
 
 _STOPPABLE_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset({"queued", "running"})
-_TERMINAL_WRAPUP_STATES: frozenset[EpisodeWrapupState] = frozenset(
-    {"ready", "failed", "legacy_unavailable"}
+_TERMINAL_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {"completed", "failed", "needs_action", "stopped"}
 )
 _EPISODE_TEXT_MAX_LENGTH = 16_000
 
@@ -117,10 +118,22 @@ class StartEpisodeBody(BaseModel):
         return value
 
 
-class ReauthorizeEpisodeBody(BaseModel):
+class ContinueEpisodeBody(BaseModel):
+    """Add turns to an ended episode; the request id makes a repeat return the same one."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
     invocation_ceiling: int = Field(ge=1)
+    request_id: str = Field(min_length=1, max_length=120)
+
+    @field_validator("request_id")
+    @classmethod
+    def request_id_is_a_uuid(cls, value: str) -> str:
+        try:
+            uuid.UUID(value)
+        except ValueError as exc:
+            raise ValueError("the continuation request id must be a UUID") from exc
+        return value
 
 
 class EpisodeMessageBody(BaseModel):
@@ -269,7 +282,11 @@ class EpisodeResponse(BaseModel):
     tasks: list[EpisodeTaskResponse]
     report: EpisodeReportSummary | None
     can_stop: bool
-    can_reauthorize: bool
+    # A continuation adds turns to an ended episode on the same branch and
+    # session. The chain is published so a card can show it as one run.
+    continues_episode_id: str | None
+    continued_by_episode_id: str | None
+    can_continue: bool
     can_message: bool
     # The lifecycle state this parent is in, what a human should do next, and the
     # recovery control that is actually available. All three are decided from
@@ -332,11 +349,7 @@ def serialize_episode(
         episode.mode != "experiment_loop" or projection_snapshot.episode != episode
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
-    owns_graph_branch = (
-        episode.mode == "auto_research"
-        and episode.graph_target.kind == "branch"
-        and episode.graph_target.branch_id == episode.episode_id
-    )
+    owns_graph_branch = episode.mode == "auto_research" and episode.graph_target.kind == "branch"
     if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
@@ -392,14 +405,7 @@ def serialize_episode(
         else None
     )
     stopped = episode.ending == "stopped"
-    reauthorizable = (
-        episode.mode == "auto_research"
-        and episode.status == "needs_action"
-        and episode.ending == "exhausted"
-        and (
-            episode.wrapup_state in _TERMINAL_WRAPUP_STATES or episode.wrapup_state == "not_started"
-        )
-    )
+    continued_by = store.episode_continuation(episode.episode_id)
     wrapup = (
         store.episode_wrapup(episode.episode_id)
         if episode.wrapup_state in {"pending", "running"}
@@ -416,8 +422,6 @@ def serialize_episode(
         tasks,
         control_task_id=current_control_task_id,
         recovery=recovery,
-        has_report=report is not None,
-        can_reauthorize=reauthorizable,
         report_login_blocked=report_login_blocked,
     )
     return EpisodeResponse(
@@ -462,7 +466,14 @@ def serialize_episode(
             and episode.stop_requested_at is None
             and episode.ending is None
         ),
-        can_reauthorize=reauthorizable,
+        continues_episode_id=episode.continues_episode_id,
+        continued_by_episode_id=continued_by.episode_id if continued_by is not None else None,
+        can_continue=(
+            episode.status in _TERMINAL_EPISODE_STATUSES
+            and continued_by is None
+            and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
+            and _continuable_session(store, episode)
+        ),
         can_message=episode.status == "running",
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
@@ -506,9 +517,7 @@ def serialize_episodes(
         branch_episodes = [
             episode
             for episode in selected
-            if episode.mode == "auto_research"
-            and episode.graph_target.kind == "branch"
-            and episode.graph_target.branch_id == episode.episode_id
+            if episode.mode == "auto_research" and episode.graph_target.kind == "branch"
         ]
         resolved = branch_summaries(branch_episodes)
         expected_ids = {episode.episode_id for episode in branch_episodes}
@@ -562,14 +571,24 @@ def _episode_recovery_control(
     return None
 
 
+def _continuable_session(store: AppStore, episode: EpisodeRecord) -> bool:
+    """Whether a continuation could resume this episode's native session."""
+
+    if episode.mode == "experiment_loop":
+        experiment = store.experiment_episode(episode.episode_id)
+        return experiment is not None and experiment.session_bound
+    if episode.root_operation_id is None:
+        return False
+    binding = store.auto_research_actor_binding(episode.root_operation_id)
+    return binding is not None and bool(binding.native_session_id and binding.stage_root)
+
+
 def _episode_projection(
     episode: _EpisodeProjectionParent,
     tasks: Sequence[_EpisodeProjectionTask],
     *,
     control_task_id: str | None,
     recovery: _RecoveryProjection | None,
-    has_report: bool,
-    can_reauthorize: bool,
     report_login_blocked: bool = False,
 ) -> tuple[
     EpisodeHealth,
@@ -870,20 +889,11 @@ def space_auto_research_episode_projection(
     recovery = (
         recovery_for(current_control_task_id) if current_control_task_id is not None else None
     )
-    can_reauthorize = (
-        episode.status == "needs_action"
-        and episode.ending == "exhausted"
-        and (
-            episode.wrapup_state in _TERMINAL_WRAPUP_STATES or episode.wrapup_state == "not_started"
-        )
-    )
     health, _recommendation, _task_control, _blocked_reason = _episode_projection(
         episode,
         tasks,
         control_task_id=current_control_task_id,
         recovery=recovery,
-        has_report=snapshot.has_report,
-        can_reauthorize=can_reauthorize,
     )
     run_section = _episode_run_section(health)
     last_activity_at = next(

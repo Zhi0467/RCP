@@ -13,7 +13,7 @@ import {
   loadProjectExperimentEpisodes,
   loadSpaceRuns,
   mergeEpisodeToMain,
-  reauthorizeEpisode,
+  continueEpisode,
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
@@ -100,7 +100,7 @@ const episode = {
   archived: false,
   can_archive: false,
   can_stop: true,
-  can_reauthorize: false,
+  can_continue: false,
   can_message: true,
   live: true,
   health: "active",
@@ -144,7 +144,7 @@ function renderEpisodes(values, { busyAction = null } = {}) {
           async onLoadMessages() {},
           async onStop() {},
           async onMerge() {},
-          async onReauthorize() {},
+          async onContinue() {},
           async onSendMessage() {},
           async onOperateTask() {},
           key: value.episode_id,
@@ -296,7 +296,7 @@ test("a final report error is visible, terminal, and has no task recovery contro
     tasks: [failedTask],
     can_stop: false,
     can_message: false,
-    can_reauthorize: true,
+    can_continue: true,
     health: "needs_action",
     recommendation: "reauthorize",
     task_control: null,
@@ -306,8 +306,33 @@ test("a final report error is visible, terminal, and has no task recovery contro
 
   assert.equal(projection.taskControl, null);
   assert.match(html, /Report generation error: The visual report could not be written\./);
-  assert.match(html, /New episode invocation ceiling/);
+  assert.match(html, /Turns to add/);
   assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
+});
+
+test("a chain member names the episode it continues and the one that continued it", () => {
+  const source = {
+    ...episode,
+    episode_id: "episode/source",
+    status: "needs_action",
+    live: false,
+    ending: "exhausted",
+    can_continue: false,
+    continued_by_episode_id: "episode/continuation",
+    health: "needs_action",
+    recommendation: "review",
+  };
+  const continuation = {
+    ...episode,
+    episode_id: "episode/continuation",
+    continues_episode_id: "episode/source",
+    can_continue: false,
+  };
+  const html = renderEpisodes([source, continuation]);
+
+  assert.match(html, /Continued by/);
+  assert.match(html, /Continues /);
+  assert.doesNotMatch(html, /Turns to add/);
 });
 
 test("a report error does not downgrade a completed episode", () => {
@@ -365,7 +390,7 @@ test("reauthorization keeps the immutable old episode and inserts the fresh pare
     ending: "exhausted",
     wrapup_state: "ready",
     can_stop: false,
-    can_reauthorize: true,
+    can_continue: true,
   };
   const freshEpisode = {
     ...episode,
@@ -448,7 +473,7 @@ function withGraphBranch(overrides = {}) {
       head: branchHead,
       merge_eligible: true,
       merge_blocked_reason: null,
-      merge_requires_end: false,
+      current_episode_id: "episode/root",
       merge_state: "unmerged",
       latest_successful_merge: null,
       active_merge_task_id: null,
@@ -491,11 +516,11 @@ test("ineligible and running branches retain merge controls; an in-flight action
   assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
 });
 
-test("a paused episode explicitly ends when its branch is merged", () => {
-  const html = renderEpisodes([withGraphBranch({ merge_requires_end: true })]);
+test("the merge control merges on branch facts and never ends the episode", () => {
+  const html = renderEpisodes([withGraphBranch({ current_episode_id: "episode/alpha" })]);
 
-  assert.match(html, />End and merge to main</);
-  assert.doesNotMatch(html, />Merge to main</);
+  assert.match(html, />Merge to main</);
+  assert.doesNotMatch(html, /End and merge/);
 });
 
 test("a stopped ineligible branch submits a deliberate merge and shows the server refusal beside it", async () => {
@@ -710,7 +735,7 @@ test("retries and continuations stay at their canonical actor depth", () => {
   );
 });
 
-test("episode API calls use only the generic endpoints and new-parent reauthorization body", async () => {
+test("episode API calls use only the generic endpoints and the continuation body", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
   globalThis.fetch = async (path, init = {}) => {
@@ -736,7 +761,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     await stopEpisode("/api/projects/demo", "episode/alpha");
     await archiveEpisode("/api/projects/demo", "episode/alpha", true);
     await archiveEpisode("/api/projects/demo", "episode/alpha", false);
-    await reauthorizeEpisode("/api/projects/demo", "episode/alpha", 4);
+    await continueEpisode("/api/projects/demo", "episode/alpha", 4, "request-1");
     await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
@@ -783,9 +808,9 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       body: JSON.stringify({ archived: false }),
     },
     {
-      path: "/api/projects/demo/episodes/episode%2Falpha/reauthorize",
+      path: "/api/projects/demo/episodes/episode%2Falpha/continue",
       method: "POST",
-      body: JSON.stringify({ invocation_ceiling: 4 }),
+      body: JSON.stringify({ invocation_ceiling: 4, request_id: "request-1" }),
     },
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/merge",
@@ -840,10 +865,7 @@ for (const mode of ["auto_research", "experiment_loop"]) {
       };
       const projection = episodeProjection(ended);
       assert.equal(projection.healthLabel, "Needs action");
-      assert.equal(
-        projection.recommendation.label,
-        "The authorized turns are spent. Authorize more turns",
-      );
+      assert.equal(projection.recommendation.label, "The authorized turns are spent. Add turns");
       const html = renderEpisodes([ended]);
       assert.match(html, /Needs action/);
       assert.doesNotMatch(html, /Let auto-research continue/);
@@ -944,7 +966,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
       health: "needs_action",
       recommendation: "reauthorize",
       blocked_reason: "reauthorize",
-      can_reauthorize: true,
+      can_continue: true,
     };
     await page.evaluate(() => window.refreshMergeEpisode());
     await header.getByText("Needs action", { exact: true }).waitFor();
@@ -953,9 +975,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     assert.equal(await header.locator(".status-pill").textContent(), "Needs action");
     assert.equal(await page.locator(".campaign-run-detail").count(), 0);
     await page.getByRole("button", { name: /^Expand auto-research/ }).click();
-    await page
-      .getByText("The authorized turns are spent. Authorize more turns", { exact: true })
-      .waitFor();
+    await page.getByText("The authorized turns are spent. Add turns", { exact: true }).waitFor();
     await page
       .getByText("Report generation error: The ending receipt could not be admitted.", {
         exact: true,

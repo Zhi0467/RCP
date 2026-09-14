@@ -1106,7 +1106,7 @@ interface ExecutionProps {
   onStopEpisode: (episodeId: string) => Promise<void>;
   onArchiveEpisode: ArchiveEpisodeAction;
   onMergeEpisode: (episodeId: string) => Promise<void>;
-  onReauthorizeEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSelectExperiment: (nodeId: string | null) => void;
@@ -1149,7 +1149,7 @@ export function ExecutionView({
   onStopEpisode,
   onArchiveEpisode,
   onMergeEpisode,
-  onReauthorizeEpisode,
+  onContinueEpisode,
   onSendEpisodeMessage,
   onOperateEpisodeTask,
   onSelectExperiment,
@@ -1459,7 +1459,7 @@ export function ExecutionView({
           onInspectTask={onInspectTask}
           onStop={onStopEpisode}
           onMerge={onMergeEpisode}
-          onReauthorize={onReauthorizeEpisode}
+          onContinue={onContinueEpisode}
           onSendMessage={onSendEpisodeMessage}
           onOperateTask={onOperateEpisodeTask}
           onArchive={onArchiveEpisode}
@@ -1557,6 +1557,7 @@ export function ExecutionView({
           Boolean(watcherCheckBusyId)
         }
         onInspectTask={onInspectTask}
+        onContinueEpisode={onContinueEpisode}
         onSelectExperiment={onSelectExperiment}
         onOpenExperimentEntry={onOpenExperimentEntry}
         onRunExperiment={onRunExperiment}
@@ -1611,6 +1612,7 @@ function ExperimentEpisodeCard({
   onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
+  onContinueEpisode,
   episodeReportHref,
 }: {
   episode: Episode;
@@ -1640,6 +1642,7 @@ function ExperimentEpisodeCard({
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   episodeReportHref: (episodeId: string) => string;
 }) {
   const detailId = useId();
@@ -1714,6 +1717,9 @@ function ExperimentEpisodeCard({
             watchedByParentAutoResearch={watchedByParentAutoResearch}
             allowStart={!isExactBranchEpisode}
             onRun={(invocationCeiling) => onRunExperiment(run.node, invocationCeiling)}
+            onContinue={(episodeId, invocationCeiling) =>
+              void onContinueEpisode(episodeId, invocationCeiling)
+            }
             onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
             onStopWatcher={onStopExperimentWatcher}

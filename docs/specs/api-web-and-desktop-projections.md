@@ -665,7 +665,12 @@ exhausted or human-pause ending reads `needs_action` with
 revoked login reads `needs_action` with `blocked_reason=sign_in` beside its
 recovery control. `blocked_reason` names the one human action that clears a
 block and is `null` otherwise; the card renders it as one lead sentence before
-the recommendation. A wrap-up state of `not_started` on a settled episode means
+the recommendation. `continues_episode_id`, `continued_by_episode_id`, and
+`can_continue` publish the continuation chain; the card shows a chain as one run
+with each member's ceiling and ending in sequence, offers **Add N turns** only
+where `can_continue`, and the timeline spans the chain with a `continued`
+boundary. The branch summary names the chain root as `episode_id` and the
+newest member as `current_episode_id`; `merge_requires_end` is gone. A wrap-up state of `not_started` on a settled episode means
 the ending had no report to generate and reads like a skipped report. A
 wrap-up whose report account is signed out reads `wrapping_up` with
 `blocked_reason=sign_in`.

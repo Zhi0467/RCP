@@ -43,7 +43,7 @@ function episode(fields) {
     tasks: [],
     report: null,
     can_stop: false,
-    can_reauthorize: false,
+    can_continue: false,
     can_message: false,
     archived: false,
     can_archive: true,

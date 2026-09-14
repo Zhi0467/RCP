@@ -47,7 +47,7 @@ export function AutoResearchEpisodeCard({
   onInspectTask,
   onStop,
   onMerge,
-  onReauthorize,
+  onContinue,
   onSendMessage,
   onOperateTask,
   onArchive,
@@ -63,14 +63,14 @@ export function AutoResearchEpisodeCard({
   onInspectTask: (operationId: string) => void;
   onStop: (episodeId: string) => Promise<void>;
   onMerge: (episodeId: string) => Promise<void>;
-  onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onContinue: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onArchive: ArchiveEpisodeAction;
 }) {
   const detailId = useId();
   const [expanded, setExpanded] = useState(initiallyExpanded);
-  const [additionalInvocations, setAdditionalInvocations] = useState("");
+  const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const mergeSnapshot = JSON.stringify(episode.graph_branch);
@@ -93,14 +93,14 @@ export function AutoResearchEpisodeCard({
     [episode, taskRows],
   );
   const { recommendation, taskControl } = projection;
-  const parsedAdditionalInvocations = Number(additionalInvocations);
-  const reauthorizationIsValid =
-    additionalInvocations.trim().length > 0 &&
-    Number.isSafeInteger(parsedAdditionalInvocations) &&
-    parsedAdditionalInvocations >= 1;
+  const parsedAdditionalTurns = Number(additionalTurns);
+  const continuationIsValid =
+    additionalTurns.trim().length > 0 &&
+    Number.isSafeInteger(parsedAdditionalTurns) &&
+    parsedAdditionalTurns >= 1;
   const stopBusy = busyAction === `stop:${episode.episode_id}`;
   const mergeBusy = busyAction === `merge:${episode.episode_id}`;
-  const reauthorizeBusy = busyAction === `reauthorize:${episode.episode_id}`;
+  const continueBusy = busyAction === `continue:${episode.episode_id}`;
   const messageBusy = busyAction === `message:${episode.episode_id}`;
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
@@ -131,19 +131,19 @@ export function AutoResearchEpisodeCard({
   }, [initiallyExpanded]);
 
   useEffect(() => {
-    if (episode.can_reauthorize) setExpanded(true);
-  }, [episode.can_reauthorize]);
+    if (episode.can_continue) setExpanded(true);
+  }, [episode.can_continue]);
 
   useEffect(() => {
     setMergeError(null);
   }, [mergeSnapshot]);
 
-  const submitReauthorization = async () => {
-    if (!reauthorizationIsValid || anotherActionBusy) return;
+  const submitContinuation = async () => {
+    if (!continuationIsValid || anotherActionBusy) return;
     setLocalError(null);
     try {
-      await onReauthorize(episode.episode_id, parsedAdditionalInvocations);
-      setAdditionalInvocations("");
+      await onContinue(episode.episode_id, parsedAdditionalTurns);
+      setAdditionalTurns("");
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
     }
@@ -210,6 +210,16 @@ export function AutoResearchEpisodeCard({
             <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <EpisodeAuthor author={episode.authorized_by} />
+            {episode.continues_episode_id && (
+              <span className="campaign-run-chain" title={episode.continues_episode_id}>
+                Continues {compactIdentity(episode.continues_episode_id)}
+              </span>
+            )}
+            {episode.continued_by_episode_id && (
+              <span className="campaign-run-chain" title={episode.continued_by_episode_id}>
+                Continued by {compactIdentity(episode.continued_by_episode_id)}
+              </span>
+            )}
           </span>
         </span>
         <EpisodeBudgetMeter episode={episode} />
@@ -281,12 +291,12 @@ export function AutoResearchEpisodeCard({
                   : episodeActionLabel(taskControl.kind)}
               </button>
             )}
-            {episode.can_reauthorize && projection.health === "needs_action" && (
+            {episode.can_continue && (
               <form
                 className="campaign-reauthorize"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void submitReauthorization();
+                  void submitContinuation();
                 }}
               >
                 <input
@@ -294,18 +304,22 @@ export function AutoResearchEpisodeCard({
                   min={1}
                   step={1}
                   inputMode="numeric"
-                  aria-label="New episode invocation ceiling"
-                  value={additionalInvocations}
+                  aria-label="Turns to add"
+                  value={additionalTurns}
                   disabled={anotherActionBusy}
-                  onChange={(event) => setAdditionalInvocations(event.target.value)}
+                  onChange={(event) => setAdditionalTurns(event.target.value)}
                 />
                 <button
                   className="button primary compact"
                   type="submit"
-                  disabled={!reauthorizationIsValid || anotherActionBusy}
+                  disabled={!continuationIsValid || anotherActionBusy}
                 >
-                  {reauthorizeBusy && <LoaderCircle className="spin" size={12} />}
-                  Reauthorize
+                  {continueBusy && <LoaderCircle className="spin" size={12} />}
+                  {continueBusy
+                    ? "Adding turns…"
+                    : continuationIsValid
+                      ? `Add ${parsedAdditionalTurns} turns`
+                      : "Add turns"}
                 </button>
               </form>
             )}
@@ -380,11 +394,7 @@ export function AutoResearchEpisodeCard({
                 onClick={() => void mergeToMain()}
               >
                 {mergeBusy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
-                {mergeBusy
-                  ? "Starting merge…"
-                  : episode.graph_branch.merge_requires_end
-                    ? "End and merge to main"
-                    : "Merge to main"}
+                {mergeBusy ? "Starting merge…" : "Merge to main"}
               </button>
               {mergeError?.snapshot === mergeSnapshot && (
                 <div className="campaign-branch-diagnostic" role="alert">

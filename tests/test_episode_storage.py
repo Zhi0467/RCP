@@ -1840,6 +1840,10 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN acknowledged_operation_id"
         )
         connection.execute("DROP TABLE provider_readiness_snapshots")
+        connection.execute("DROP INDEX episodes_one_continuation_per_source")
+        connection.execute("DROP INDEX episodes_continuation_request")
+        connection.execute("ALTER TABLE episodes DROP COLUMN continues_episode_id")
+        connection.execute("ALTER TABLE episodes DROP COLUMN continuation_request_id")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 19")
         assert (
             connection.execute(
