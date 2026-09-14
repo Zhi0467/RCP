@@ -67,8 +67,15 @@ export function runsEpisodeCards(
   currentExperimentEpisodeIds: ReadonlySet<string>,
   showArchived = false,
 ): Episode[] {
-  const shown = [...episodes]
+  // A continuation chain is one run whose newest member is the card, so the
+  // newest member decides the chain's visibility; archiving it hides the run.
+  const knownIds = new Set(episodes.map((episode) => episode.episode_id));
+  return [...episodes]
     .sort(compareEpisodesNewestFirst)
+    .filter(
+      (episode) =>
+        !(episode.continued_by_episode_id && knownIds.has(episode.continued_by_episode_id)),
+    )
     .filter(
       (episode) =>
         (!episode.archived || showArchived) &&
@@ -76,12 +83,6 @@ export function runsEpisodeCards(
           currentExperimentEpisodeIds.has(episode.episode_id) ||
           (episode.archived && showArchived)),
     );
-  // A continuation chain is one run; its newest shown member is the card.
-  const shownIds = new Set(shown.map((episode) => episode.episode_id));
-  return shown.filter(
-    (episode) =>
-      !(episode.continued_by_episode_id && shownIds.has(episode.continued_by_episode_id)),
-  );
 }
 
 /** The chain a run card renders: oldest member first, ending with the card's own episode. */

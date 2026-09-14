@@ -33,6 +33,7 @@ from rcp.runs.experiment_admission import (
     start_experiment_continuation,
 )
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request
+from rcp.runs.provider_login import provider_login_host
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeNotRunning, EpisodeRecord
@@ -366,6 +367,20 @@ def continue_experiment_episode(
         }
     )
     request = target_service.resolve_compute_request(request)
+    # The saved stage is frozen on one machine; the worker checks the alias
+    # against it. A repointed alias must refuse here, before the source is chained.
+    try:
+        current_host = provider_login_host(target_service.manifest, request.run_on)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if current_host != (experiment.stage_host or ""):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The saved stage is not on the machine its execution alias names now, so the "
+                "session cannot be resumed. Start a new episode instead."
+            ),
+        )
     try:
         start_experiment_continuation(
             background_tasks,

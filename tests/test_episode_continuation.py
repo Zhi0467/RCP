@@ -285,6 +285,52 @@ def test_continue_refuses_a_live_or_unbound_episode(manifest, tmp_path) -> None:
     assert store.episode_continuation(loop.episode_id) is None
 
 
+def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
+    manifest, tmp_path: Path
+) -> None:
+    """A repointed execution alias cannot resume the saved session; nothing is chained."""
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    stage = tmp_path / "loop-stage"
+    stage.mkdir()
+    # The same binding `bind_session` commits, frozen on a machine the alias no longer names.
+    loop.store.commit_experiment_episode_turn(
+        episode_id=loop.episode_id,
+        project_id=loop.project_id,
+        control_node_id=EXPERIMENT_ID,
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="other-host",
+        native_session_id="native-session-abc",
+        stage_host="other-host",
+        stage_root=str(stage),
+        chat_id=loop.chat_id,
+        operation_id="loop-root",
+        invocation=1,
+        graph_result="applied",
+        watcher_ids=[],
+        context_baseline={},
+    )
+    loop.settle_exhausted_ending()
+    store = app.state.background_tasks.store
+    episodes_before = [item.model_dump(mode="json") for item in store.episodes(loop.project_id)]
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{loop.project_id}/episodes/{loop.episode_id}/continue",
+            json={"invocation_ceiling": 3, "request_id": str(uuid.uuid4())},
+        )
+
+    assert response.status_code == 409, response.text
+    assert "Start a new episode instead." in response.json()["detail"]
+    assert store.episode_continuation(loop.episode_id) is None
+    assert [
+        item.model_dump(mode="json") for item in store.episodes(loop.project_id)
+    ] == episodes_before
+
+
 def test_continue_resumes_an_ended_experiment_episode_in_its_session(
     manifest, tmp_path: Path
 ) -> None:
