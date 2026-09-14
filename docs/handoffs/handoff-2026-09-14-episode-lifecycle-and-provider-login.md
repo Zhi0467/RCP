@@ -3,8 +3,8 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Nothing is implemented. Every decision below is
-settled. All six slices land on one branch and one pull request as ordered
+two further protocol spikes. Slice 1 is implemented on this branch; slices 2
+to 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
 commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
 branch. None is optional.
 
@@ -170,8 +170,9 @@ so its reads are coherent, in a deterministic order with explicit tie-breakers,
 and it compacts in a fixed order until it fits: lifecycle payload text 800 to 240 to 80 characters, then drop oldest
 facts; child diagnostics 480 to 160, then drop oldest; list lengths 16 to 8 to 4
 to 0 for command facts, graph results, actors, and child work; starting
-instruction 1200 to 480 to 160; finally the meter and counts alone. Every count
-field stays honest. Size is measured on the complete stored envelope, mode,
+instruction 1200 to 480 to 160; then the meter and counts alone; finally the
+receipt's copy of the ending diagnostic is halved until the envelope fits (the
+episode keeps the full diagnostic). Every count field stays honest. Size is measured on the complete stored envelope, mode,
 ending, episode id, partial flag, and diagnostic included, with the same
 encoder `compact_episode_receipt` uses. The persisted receipt is the fence;
 once a wrap-up row exists the reconciler reuses it and never rebuilds the spec.
