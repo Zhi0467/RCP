@@ -931,7 +931,7 @@ export default function App() {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
   const [textScale, setTextScale] = useState(readTextScale);
-  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+  const appearance = useTheme();
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
@@ -3882,6 +3882,11 @@ export default function App() {
     return (
       <>
         <ProjectLanding
+          themeChoice={appearance.theme}
+          colorModeChoice={appearance.mode}
+          onThemeChoiceChange={appearance.setTheme}
+          onColorModeChoiceChange={appearance.setMode}
+          palette={appearance.palette}
           projects={projects}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
@@ -4582,8 +4587,6 @@ export default function App() {
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
               showTextScale={desktop}
-              themeChoice={themeChoice}
-              onThemeChoiceChange={setThemeChoice}
               spaceKind={verifiedHealth?.space_kind ?? "personal"}
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}

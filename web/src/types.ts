@@ -2726,6 +2726,8 @@ export interface ProjectArtifact {
   operation_id: string | null;
   artifact_id: string | null;
   episode_id: string | null;
+  episode_mode: EpisodeMode | null;
+  source_chat_href: string | null;
   viewer_url: string;
   can_open: boolean;
   unavailable_reason: string | null;

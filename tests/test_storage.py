@@ -76,6 +76,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (14, "team_session_ids_v1"),
         (15, "team_device_pairings_v1"),
         (16, "agent_task_failure_kind_v1"),
+        (17, "episode_report_titles_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -110,6 +111,11 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         AppStore,
         "_migrate_space_run_projection_indexes",
         staticmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_episode_report_titles",
+        classmethod(unexpected_migration),
     )
 
     AppStore(path)
@@ -245,6 +251,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
             (14,),
             (15,),
             (16,),
+            (17,),
         ]
 
     reopened = AppStore(path)

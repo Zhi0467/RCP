@@ -9,7 +9,7 @@ def test_episode_report_skill_is_versioned_and_packaged() -> None:
     registry = official_registry()
     package = registry.package("skill", "episode-report")
 
-    assert package.version == "1.1.0"
+    assert package.version == "1.2.0"
 
     root = Path(__file__).resolve().parents[1]
     wheel = (root / "pyproject.toml").read_text(encoding="utf-8")

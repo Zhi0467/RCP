@@ -100,8 +100,6 @@ function Fixture() {
         onCacheMetricsChange={noop}
         onRefreshReadiness={ready}
         showTextScale={false}
-        themeChoice="light"
-        onThemeChoiceChange={noop}
         textScale={100}
         onTextScaleChange={noop}
         spaceKind="personal"

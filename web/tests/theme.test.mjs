@@ -3,34 +3,66 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
-
 import {
-  normalizeThemeChoice,
-  resolveTheme,
+  APPEARANCE_STORAGE_KEY,
+  LEGACY_THEME_STORAGE_KEY,
+  COLOR_MODE_CHOICES,
   THEME_CHOICES,
+  colorModeChoiceLabel,
+  normalizeColorModeChoice,
+  normalizeThemeChoice,
+  readStoredAppearance,
+  resolveColorMode,
+  resolveTheme,
   themeChoiceLabel,
 } from "../src/theme.ts";
 
-test("an unreadable stored choice falls back to following the system", () => {
-  assert.equal(normalizeThemeChoice(null), "system");
-  assert.equal(normalizeThemeChoice(""), "system");
-  assert.equal(normalizeThemeChoice("sepia"), "system");
-  assert.equal(normalizeThemeChoice(undefined), "system");
-  assert.equal(normalizeThemeChoice("dark"), "dark");
-  assert.equal(normalizeThemeChoice("light"), "light");
+test("theme and color mode normalize independently with Aqua and System defaults", () => {
+  for (const value of [null, undefined, "", "sepia", "dark", "system"]) {
+    assert.equal(normalizeThemeChoice(value), "aqua");
+  }
+  assert.equal(normalizeThemeChoice("aqua"), "aqua");
+  assert.equal(normalizeThemeChoice("classic"), "classic");
+  for (const value of [null, undefined, "", "aqua"]) {
+    assert.equal(normalizeColorModeChoice(value), "system");
+  }
+  assert.equal(normalizeColorModeChoice("light"), "light");
+  assert.equal(normalizeColorModeChoice("dark"), "dark");
+  assert.deepEqual(THEME_CHOICES.map(themeChoiceLabel), ["Classic", "Aqua"]);
+  assert.deepEqual(COLOR_MODE_CHOICES.map(colorModeChoiceLabel), ["System", "Light", "Dark"]);
 });
 
-test("an explicit choice outranks the system preference in both directions", () => {
-  assert.equal(resolveTheme("light", true), "light");
-  assert.equal(resolveTheme("dark", false), "dark");
-  assert.equal(resolveTheme("system", true), "dark");
-  assert.equal(resolveTheme("system", false), "light");
+test("legacy preferences adopt Aqua while preserving mode, and saved themes take precedence", () => {
+  for (const legacy of ["light", "dark", "system"]) {
+    assert.deepEqual(readStoredAppearance(null, legacy), { theme: "aqua", mode: legacy });
+  }
+  assert.deepEqual(readStoredAppearance(null, "aqua"), { theme: "aqua", mode: "light" });
+  assert.deepEqual(readStoredAppearance(null, null), { theme: "aqua", mode: "system" });
+  assert.deepEqual(readStoredAppearance("broken", "dark"), { theme: "aqua", mode: "dark" });
+  assert.deepEqual(readStoredAppearance('{"theme":"classic","mode":"system"}', "aqua"), {
+    theme: "classic",
+    mode: "system",
+  });
+  assert.deepEqual(readStoredAppearance('{"theme":"aqua","mode":"dark"}', "light"), {
+    theme: "aqua",
+    mode: "dark",
+  });
+  assert.deepEqual(readStoredAppearance('{"theme":"aqua","mode":"invalid"}', "dark"), {
+    theme: "aqua",
+    mode: "system",
+  });
 });
 
-test("every offered choice has a label", () => {
-  assert.deepEqual(THEME_CHOICES, ["system", "light", "dark"]);
-  for (const choice of THEME_CHOICES) {
-    assert.ok(themeChoiceLabel(choice).length > 0);
+test("every theme supports explicit modes and follows the OS only in System mode", () => {
+  for (const theme of THEME_CHOICES) {
+    for (const prefersDark of [true, false]) {
+      assert.equal(resolveTheme(theme, resolveColorMode("light", prefersDark)), `${theme}-light`);
+      assert.equal(resolveTheme(theme, resolveColorMode("dark", prefersDark)), `${theme}-dark`);
+      assert.equal(
+        resolveTheme(theme, resolveColorMode("system", prefersDark)),
+        `${theme}-${prefersDark ? "dark" : "light"}`,
+      );
+    }
   }
 });
 
@@ -41,15 +73,18 @@ const PRE_PAINT_SCRIPT = (() => {
   return match[1];
 })();
 
-/** Run the shipped pre-paint script and report the theme it stamped. */
-function stampedTheme({ stored, systemDark }) {
+function stampedAppearance({ stored = null, legacy = null, systemDark }) {
   const documentElement = { dataset: {} };
   runInNewContext(PRE_PAINT_SCRIPT, {
     document: { documentElement },
     localStorage: {
-      getItem() {
+      getItem(key) {
         if (stored instanceof Error) throw stored;
-        return stored;
+        return key === APPEARANCE_STORAGE_KEY
+          ? stored
+          : key === LEGACY_THEME_STORAGE_KEY
+            ? legacy
+            : null;
       },
     },
     window: {
@@ -58,29 +93,49 @@ function stampedTheme({ stored, systemDark }) {
       },
     },
   });
-  return documentElement.dataset.theme;
+  return { ...documentElement.dataset };
 }
 
-test("the pre-paint script stamps the same theme the hook would resolve", () => {
-  assert.equal(stampedTheme({ stored: "dark", systemDark: false }), "dark");
-  assert.equal(stampedTheme({ stored: "light", systemDark: true }), "light");
-  assert.equal(stampedTheme({ stored: null, systemDark: true }), "dark");
-  assert.equal(stampedTheme({ stored: "sepia", systemDark: true }), "dark");
-  assert.equal(stampedTheme({ stored: null, systemDark: false }), "light");
+test("shipped pre-paint and runtime agree for both axes and legacy migration", () => {
+  const preferences = [
+    null,
+    "broken",
+    "null",
+    "[]",
+    "{}",
+    ...THEME_CHOICES.flatMap((theme) =>
+      COLOR_MODE_CHOICES.map((mode) => JSON.stringify({ theme, mode })),
+    ),
+  ];
+  for (const stored of preferences) {
+    for (const legacy of [null, "light", "dark", "system", "aqua", "sepia"]) {
+      for (const systemDark of [false, true]) {
+        const choice = readStoredAppearance(stored, legacy);
+        assert.deepEqual(
+          stampedAppearance({ stored, legacy, systemDark }),
+          {
+            theme: choice.theme,
+            colorMode: resolveColorMode(choice.mode, systemDark),
+          },
+          JSON.stringify({ stored, legacy, systemDark }),
+        );
+      }
+    }
+  }
 });
 
-test("blocked storage still honours a dark system preference before first paint", () => {
-  // Storage can throw outright when a privacy policy blocks it. Falling back to
-  // light there would produce the exact flash this script exists to prevent.
-  const blocked = new Error("storage is not available");
-  assert.equal(stampedTheme({ stored: blocked, systemDark: true }), "dark");
-  assert.equal(stampedTheme({ stored: blocked, systemDark: false }), "light");
+test("blocked storage still follows the OS before first paint", () => {
+  for (const systemDark of [false, true]) {
+    assert.deepEqual(stampedAppearance({ stored: new Error("blocked"), systemDark }), {
+      theme: "aqua",
+      colorMode: systemDark ? "dark" : "light",
+    });
+  }
 });
 
-const STYLESHEET = readFileSync(
-  fileURLToPath(new URL("../src/styles.css", import.meta.url)),
-  "utf-8",
-);
+const STYLESHEET = ["../src/styles.css", "../src/themes/aqua.css"]
+  .map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8"))
+  .join("\n");
 
 function rootTokens(selector) {
   const start = STYLESHEET.indexOf(`${selector} {`);
@@ -97,8 +152,14 @@ function rootTokens(selector) {
 /** Resolve one token for a theme, following var() indirection through the base palette. */
 function resolveToken(name, theme) {
   const base = rootTokens(":root");
-  const dark = rootTokens(':root[data-theme="dark"]');
-  const lookup = theme === "dark" ? { ...base, ...dark } : base;
+  const [material, mode] = theme.split("-");
+  const lookup = { ...base };
+  if (mode === "dark") Object.assign(lookup, rootTokens(':root[data-color-mode="dark"]'));
+  if (material === "aqua") {
+    Object.assign(lookup, rootTokens(':root[data-theme="aqua"]'));
+    if (mode === "dark")
+      Object.assign(lookup, rootTokens(':root[data-theme="aqua"][data-color-mode="dark"]'));
+  }
   let value = lookup[name];
   for (let hop = 0; hop < 4 && value?.startsWith("var("); hop += 1) {
     value = lookup[value.slice(4, value.indexOf(")")).trim()];
@@ -122,8 +183,8 @@ function contrastRatio(foreground, background) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-test("text on the inverting ink surface stays readable in both themes", () => {
-  for (const theme of ["light", "dark"]) {
+test("text on the inverting ink surface stays readable in every theme and color mode", () => {
+  for (const theme of ["classic-light", "classic-dark", "aqua-light", "aqua-dark"]) {
     const ratio = contrastRatio(resolveToken("--paper", theme), resolveToken("--ink", theme));
     assert.ok(ratio >= 4.5, `${theme} ink surface contrast is ${ratio.toFixed(2)}:1`);
   }

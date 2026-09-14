@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./themes/aqua.css";
 
 :root {
   color-scheme: light;
@@ -56,11 +57,11 @@
 
 /* Dark mode.
  *
- * `data-theme` is stamped on the root before first paint and maintained by
+ * `data-color-mode` is stamped on the root before first paint and maintained by
  * useTheme, so an explicit Light or Dark choice wins over the OS in both
  * directions. Only the base palette is restated here: every alias and every
  * `color-mix` above is late-bound and follows on its own. */
-:root[data-theme="dark"] {
+:root[data-color-mode="dark"] {
   color-scheme: dark;
   --paper: #191512;
   --paper-deep: #221d19;
@@ -9928,33 +9929,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-weight: 550;
   margin: 0;
 }
-.appearance-controls {
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-}
-.appearance-controls button {
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: var(--ui);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 5px 11px;
-}
-.appearance-controls button:hover {
-  color: var(--ink);
-}
-.appearance-controls button.is-selected {
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 14%);
-  color: var(--ink);
-}
 .text-scale-controls {
   align-items: center;
   display: flex;
@@ -13164,6 +13138,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin: 0;
 }
 
+.artifact-entry-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.artifact-episode-tag {
+  background: var(--surface-cool);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
 .artifacts-list {
   list-style: none;
   padding: 0;
@@ -13173,9 +13165,29 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .artifact-entry {
   padding: 1.25rem 0;
   border-top: 1px solid var(--rule);
+  position: relative;
+}
+
+/* One preview link owns the whole row, including its name and whitespace. */
+.artifact-entry-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.artifact-entry .artifact-entry-open:active {
+  transform: none;
+}
+
+.artifact-entry:has(.artifact-entry-open:focus-visible) {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
 }
 
 .artifact-entry > div {
+  display: grid;
+  gap: 8px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -13184,13 +13196,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex-shrink: 0;
 }
 
-.artifact-entry-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-}
-
-.artifact-entry-path {
-  overflow-wrap: anywhere;
-  font-size: 0.85rem;
+.artifact-entry-chat {
+  align-items: center;
+  color: var(--cobalt);
+  display: inline-flex;
+  gap: 6px;
+  justify-self: start;
+  position: relative;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  z-index: 1;
 }

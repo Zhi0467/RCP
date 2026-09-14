@@ -80,6 +80,12 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # installation its own backups.
         "77dc37f966fdcad42c1fe7219f452aaf8a05c61da7e17cb2af4de935bdecba6c",
         "70f6364f20be6ce432be4ada6f9db62de11c54a1e9c1ff246a9b2d71e08cee1a",
+        # episode_reports.display_title: the report's authored title, so the
+        # artifact inventory names a report without reading its HTML. Added by
+        # ALTER TABLE on both paths, so again one shape per graph_runs history:
+        # a fresh install and an installation that upgraded in place.
+        "b35f70af4a53d4bac03d7af45eca7ccb9ec2343460cae1b4810250979ab6077b",
+        "2342bd789302cab58123ce9cfec4c39a2e2a92ac86ff7d8839327afac8d3ab8b",
     }
 )
 

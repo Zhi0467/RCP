@@ -1253,24 +1253,35 @@ class ProjectService:
         )
 
     def chat_transcript(self, chat_id: str) -> ChatTranscript | None:
-        try:
-            normalized = str(uuid.UUID(chat_id))
-        except ValueError as exc:
-            raise ValueError("chat_id must be a UUID") from exc
-        if normalized != chat_id:
-            raise ValueError("chat_id must be a canonical UUID")
-        suffix = f"-{chat_id}.jsonl"
+        return self.chat_transcripts([chat_id]).get(chat_id)
+
+    def chat_transcripts(self, chat_ids: list[str]) -> dict[str, ChatTranscript]:
+        """Read selected canonical chats in one scan of this exact graph target."""
+        for chat_id in chat_ids:
+            try:
+                normalized = str(uuid.UUID(chat_id))
+            except ValueError as exc:
+                raise ValueError("chat_id must be a UUID") from exc
+            if normalized != chat_id:
+                raise ValueError("chat_id must be a canonical UUID")
+        requested = set(chat_ids)
+        if not requested:
+            return {}
+        suffixes = tuple(f"-{chat_id}.jsonl" for chat_id in requested)
+        transcripts: dict[str, ChatTranscript | None] = {}
         with self.history.workspace.snapshot_lock:
-            transcripts = [
-                transcript
-                for path, _ in self._canonical_chat_files()
-                if path.name.endswith(suffix)
-                and (transcript := self._read_chat_transcript(path)) is not None
-                and transcript.chat_id == chat_id
-                and transcript.graph_target == self.history.graph_target
-            ]
+            for path, _ in self._canonical_chat_files():
+                if (
+                    path.name.endswith(suffixes)
+                    and (transcript := self._read_chat_transcript(path)) is not None
+                    and transcript.chat_id in requested
+                    and transcript.graph_target == self.history.graph_target
+                ):
+                    transcripts[transcript.chat_id] = (
+                        None if transcript.chat_id in transcripts else transcript
+                    )
         # The same UUID under two canonical node/project paths is ambiguous.
-        return transcripts[0] if len(transcripts) == 1 else None
+        return {chat_id: transcript for chat_id, transcript in transcripts.items() if transcript}
 
     def _canonical_chat_summaries(self) -> list[ChatSummary]:
         with self.history.workspace.snapshot_lock:

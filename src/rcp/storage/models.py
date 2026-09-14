@@ -2469,8 +2469,7 @@ class EpisodeReportSummary(BaseModel):
     episode_id: str
     mode: EpisodeMode
     created_at: str
-    control_node_id: str | None = None
-    instruction: str | None = None
+    display_title: str | None = None
 
 
 class EpisodeReportRecord(BaseModel):

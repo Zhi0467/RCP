@@ -42,6 +42,11 @@ const identity = {
 
 function landingProps(identityValue = identity) {
   return {
+    themeChoice: "classic",
+    colorModeChoice: "system",
+    palette: "classic-light",
+    onThemeChoiceChange() {},
+    onColorModeChoiceChange() {},
     projects: [],
     invitations: [],
     async onAnswerInvitation() {},

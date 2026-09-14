@@ -71,7 +71,9 @@ test("space Runs mixes active modes and folds completed groups", () => {
     }),
   ];
 
-  const html = renderToStaticMarkup(React.createElement(SpaceRuns, { entries, onOpen() {} }));
+  const html = renderToStaticMarkup(
+    React.createElement(SpaceRuns, { entries, theme: "classic-light", onOpen() {} }),
+  );
 
   assert.match(html, /<h2 id="space-runs-title">Runs<\/h2>/);
   assert.match(html, /<h3>Needs action<\/h3><span>1<\/span>/);
@@ -85,7 +87,9 @@ test("space Runs mixes active modes and folds completed groups", () => {
 });
 
 test("space Runs always names every section and its empty count", () => {
-  const html = renderToStaticMarkup(React.createElement(SpaceRuns, { entries: [], onOpen() {} }));
+  const html = renderToStaticMarkup(
+    React.createElement(SpaceRuns, { entries: [], theme: "classic-light", onOpen() {} }),
+  );
 
   assert.match(html, /<h3>Needs action<\/h3><span>0<\/span>/);
   assert.match(html, /Nothing needs you right now\./);
@@ -95,8 +99,13 @@ test("space Runs always names every section and its empty count", () => {
   assert.match(html, /No completed runs in the last 7 days\./);
 });
 
-test("every space lifecycle badge color pair meets WCAG AA contrast in both themes", () => {
-  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), ["dark", "light"]);
+test("every space lifecycle badge color pair meets WCAG AA contrast in every theme", () => {
+  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), [
+    "aqua-dark",
+    "aqua-light",
+    "classic-dark",
+    "classic-light",
+  ]);
   for (const [theme, palette] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
     assert.deepEqual(
       Object.keys(palette).sort(),
@@ -144,7 +153,7 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
   const opened = [];
   const row = SpaceRunRow({
     entry,
-    theme: "light",
+    theme: "classic-light",
     onOpen(projectId, selection) {
       opened.push([projectId, selection]);
     },
@@ -167,6 +176,7 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
 test("archived space runs stay out of default cards and attention counts", () => {
   const html = renderToStaticMarkup(
     React.createElement(SpaceRuns, {
+      theme: "classic-light",
       entries: [run({ title: "Obsolete failure", archived: true })],
       onOpen() {},
       onArchive() {},
@@ -182,7 +192,7 @@ test("space run profiles name the recorded starter and leave unattributed histor
     renderToStaticMarkup(
       React.createElement(SpaceRunRow, {
         entry,
-        theme: "light",
+        theme: "classic-light",
         onOpen() {},
         onArchive() {},
       }),

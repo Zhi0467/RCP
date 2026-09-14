@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from rcp.artifacts import html_document_title
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
@@ -50,6 +51,7 @@ class AppStoreBase:
         (14, "team_session_ids_v1"),
         (15, "team_device_pairings_v1"),
         (16, "agent_task_failure_kind_v1"),
+        (17, "episode_report_titles_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -59,6 +61,7 @@ class AppStoreBase:
             "_legacy_campaign_reports_archive",
             "_legacy_campaigns_archive",
             "episodes",
+            "episode_reports",
             "episode_wrapups",
             "graph_run_receipts",
             "graph_runs",
@@ -529,6 +532,12 @@ class AppStoreBase:
             version=16,
             name="agent_task_failure_kind_v1",
             migration=self._migrate_agent_task_failure_kind,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=17,
+            name="episode_report_titles_v1",
+            migration=self._migrate_episode_report_titles,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1965,6 +1974,7 @@ class AppStoreBase:
         self._migrate_episode_archives(connection)
         self._migrate_team_device_pairings(connection)
         self._migrate_team_session_ids(connection)
+        self._ensure_column(connection, "episode_reports", "display_title", "TEXT")
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1983,6 +1993,15 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_episode_report_titles(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "episode_reports", "display_title", "TEXT")
+        for row in connection.execute("SELECT report_id, html FROM episode_reports"):
+            connection.execute(
+                "UPDATE episode_reports SET display_title = ? WHERE report_id = ?",
+                (html_document_title(row[1]), row[0]),
+            )
 
     @classmethod
     def _migrate_team_session_ids(cls, connection: sqlite3.Connection) -> None:

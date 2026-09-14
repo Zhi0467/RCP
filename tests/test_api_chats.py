@@ -5,11 +5,53 @@ import threading
 import uuid
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from rcp.runs.chat import _append_chat_exchange
+from rcp.service import RunRequest
 from rcp.transport import StateUnavailable
 
 from .helpers import create_named_app
+
+
+def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
+    manifest, tmp_path, monkeypatch
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    good, ambiguous, missing = (str(uuid.uuid4()) for _ in range(3))
+    for chat_id, scope, node_id in [
+        (good, "project", None),
+        (ambiguous, "project", None),
+        (ambiguous, "node", "rq/ambiguous"),
+    ]:
+        _append_chat_exchange(
+            service,
+            RunRequest(
+                chat_id=chat_id, chat_scope=scope, node_id=node_id, message="Read this chat."
+            ),
+            "A retained answer.",
+            None,
+            None,
+        )
+    scans = []
+    original = service._canonical_chat_files
+
+    def counted():
+        scans.append(True)
+        return original()
+
+    monkeypatch.setattr(service, "_canonical_chat_files", counted)
+    transcripts = service.chat_transcripts([good, ambiguous, missing, good])
+    assert list(transcripts) == [good]
+    assert transcripts[good].messages[-1].text == "A retained answer."
+    assert len(scans) == 1
+    assert service.chat_transcript(ambiguous) is None
+    assert service.chat_transcripts([]) == {}
+    for invalid in ["not-a-uuid", good.upper()]:
+        with pytest.raises(ValueError, match="chat_id must be"):
+            service.chat_transcripts([good, invalid])
 
 
 def test_chat_history_is_paginated_from_full_canonical_transcripts(

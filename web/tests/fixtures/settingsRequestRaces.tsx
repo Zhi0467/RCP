@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useTheme } from "../../src/hooks/useTheme";
 import { ProjectSettings } from "../../src/views/ProjectSettings";
 import type { IdentityResponse, ProjectSnapshot } from "../../src/types";
 import "../../src/styles.css";
@@ -88,6 +89,7 @@ const teamIdentity: IdentityResponse | null = new URLSearchParams(window.locatio
   : null;
 
 function Fixture() {
+  useTheme();
   const [project, setProject] = useState(() => projectFor("alpha"));
   const [visible, setVisible] = useState(true);
   return (
@@ -115,8 +117,6 @@ function Fixture() {
           onRefreshReadiness={async () => undefined}
           showTextScale={false}
           spaceKind={teamIdentity ? "team" : "personal"}
-          themeChoice="system"
-          onThemeChoiceChange={() => undefined}
           textScale={100}
           onTextScaleChange={() => undefined}
         />

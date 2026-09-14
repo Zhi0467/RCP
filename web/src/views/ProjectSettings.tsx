@@ -42,7 +42,6 @@ import {
   type MachineProviderPaths,
 } from "../settingsDraft";
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
-import { THEME_CHOICES, themeChoiceLabel, type ThemeChoice } from "../theme";
 import type { ProjectReadinessRetention } from "../hooks/projectSession";
 import type {
   AgentExecutionProfile,
@@ -79,11 +78,9 @@ interface Props {
     providerError: string | null;
     computeError: string | null;
   };
-  /** Text size is a desktop webview zoom; appearance applies everywhere. */
+  /** Text size is a desktop webview zoom. */
   showTextScale: boolean;
   spaceKind: "personal" | "team";
-  themeChoice: ThemeChoice;
-  onThemeChoiceChange: (choice: ThemeChoice) => void;
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
@@ -195,8 +192,6 @@ export function ProjectSettings({
   onRefreshReadiness,
   readinessRequest,
   showTextScale,
-  themeChoice,
-  onThemeChoiceChange,
   spaceKind,
   onMovePersonalProjectToTeam,
   textScale,
@@ -629,26 +624,13 @@ export function ProjectSettings({
       {spaceKind === "team" ? <ServerSettings /> : null}
       <AgentUsageWidgets usage={usage} providers={project.providers} />
 
-      <section className="settings-section display-settings">
-        <header>
-          <span>
-            <Type size={16} />
-          </span>
-          <h2>Display</h2>
-          <div className="appearance-controls" role="group" aria-label="Appearance">
-            {THEME_CHOICES.map((choice) => (
-              <button
-                className={choice === themeChoice ? "is-selected" : undefined}
-                type="button"
-                aria-pressed={choice === themeChoice}
-                onClick={() => onThemeChoiceChange(choice)}
-                key={choice}
-              >
-                {themeChoiceLabel(choice)}
-              </button>
-            ))}
-          </div>
-          {showTextScale && (
+      {showTextScale && (
+        <section className="settings-section display-settings">
+          <header>
+            <span>
+              <Type size={16} />
+            </span>
+            <h2>Display</h2>
             <div className="text-scale-controls" role="group" aria-label="Interface text size">
               <button
                 className="icon-button"
@@ -677,9 +659,9 @@ export function ProjectSettings({
                 <Plus size={15} />
               </button>
             </div>
-          )}
-        </header>
-      </section>
+          </header>
+        </section>
+      )}
       {spaceKind === "personal" && onMovePersonalProjectToTeam ? (
         <section className="settings-section project-home-settings">
           <header>

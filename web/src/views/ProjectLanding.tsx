@@ -1,12 +1,14 @@
 import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
+import { AppearancePicker, type AppearancePickerProps } from "../components/AppearancePicker";
 import type { ArchiveEpisodeAction } from "../components/EpisodeRunControls";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
 import { isDesktopRuntime } from "../desktopRuntime";
 import type { ProjectTab } from "../projectTabs";
+import type { ResolvedTheme } from "../theme";
 import type {
   IdentityResponse,
   ProjectCard,
@@ -16,7 +18,8 @@ import type {
 } from "../types";
 import { projectCreationPrimaryLabel } from "../projectSetup";
 
-interface Props {
+interface Props extends AppearancePickerProps {
+  palette: ResolvedTheme;
   projects: ProjectCard[];
   invitations: ProjectInvitation[];
   onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
@@ -192,6 +195,11 @@ export function ProjectLanding({
   identityError,
   onRequestIdentityName,
   onExitTeamSpace,
+  themeChoice,
+  colorModeChoice,
+  onThemeChoiceChange,
+  onColorModeChoiceChange,
+  palette,
 }: Props) {
   const desktop = isDesktopRuntime();
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
@@ -278,6 +286,12 @@ export function ProjectLanding({
           identityError={identityError}
           onRequestName={onRequestIdentityName}
           onAddTeamSpace={desktop ? () => setAddTeamOpen(true) : undefined}
+        />
+        <AppearancePicker
+          themeChoice={themeChoice}
+          colorModeChoice={colorModeChoice}
+          onThemeChoiceChange={onThemeChoiceChange}
+          onColorModeChoiceChange={onColorModeChoiceChange}
         />
       </header>
 
@@ -392,7 +406,12 @@ export function ProjectLanding({
           />
         )}
 
-        <SpaceRuns entries={spaceRuns} onOpen={onOpenExperiment} onArchive={onArchiveEpisode} />
+        <SpaceRuns
+          entries={spaceRuns}
+          theme={palette}
+          onOpen={onOpenExperiment}
+          onArchive={onArchiveEpisode}
+        />
       </main>
 
       {deleteProject && (

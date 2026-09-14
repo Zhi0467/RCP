@@ -1,0 +1,424 @@
+/* One upper-left light source makes Aqua controls rise from
+   the pearl surface; fields and selected controls press back into it. */
+:root[data-theme="aqua"] {
+  color-scheme: light;
+  --paper: #e5e8ec;
+  --paper-deep: #dbe0e6;
+  --sheet: #f1f3f5;
+  --walnut: #303944;
+  --ink-soft: #5b6673;
+  --oxblood: #386792;
+  --oxblood-dark: #28547e;
+  --teal: #326d72;
+  --mustard: #886014;
+  --coral: #a8483e;
+  --indigo: #52668e;
+  --plum: #785a7c;
+  --forest: #38644e;
+  --moss: #5b714d;
+  --slate: #587590;
+  --rose-paper: #dbe8f4;
+  --red-soft: #f3e1de;
+  --rule: #bec7d0;
+  --shadow-rgb: 61 77 96;
+  --accent-ink: #ffffff;
+  --display: "Lucida Grande", "Lucida Sans Unicode", "Helvetica Neue", sans-serif;
+  --ui: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --shadow: 1px 14px 30px rgb(var(--shadow-rgb) / 22%), 0 2px 5px rgb(var(--shadow-rgb) / 12%);
+  --aqua-surface: linear-gradient(145deg, #f2f4f6, #e1e5e9);
+  --aqua-toolbar: linear-gradient(#f2f4f6, #dce1e7);
+  --aqua-raised:
+    inset 1px 1px 0 rgb(255 255 255 / 92%), inset -1px -1px 0 rgb(var(--shadow-rgb) / 7%),
+    3px 3px 7px rgb(var(--shadow-rgb) / 19%), -2px -2px 5px rgb(255 255 255 / 80%);
+  --aqua-inset:
+    inset 2px 2px 5px rgb(var(--shadow-rgb) / 22%), inset -2px -2px 4px rgb(255 255 255 / 86%),
+    0 1px 0 rgb(255 255 255 / 70%);
+  --aqua-selected: linear-gradient(145deg, #cbdced, #e1edf8);
+  --aqua-field: #e9edf1;
+  --aqua-canvas: #dfe4e9;
+  --aqua-focus: #5285b5;
+  --aqua-selected-border: #97b3ce;
+  --aqua-highlight: rgb(255 255 255 / 90%);
+  --aqua-sheen: rgb(255 255 255 / 46%);
+  --aqua-glow: rgb(255 255 255 / 80%);
+  --aqua-hover:
+    inset 1px 1px 0 var(--aqua-highlight), 4px 5px 10px rgb(var(--shadow-rgb) / 25%),
+    -2px -2px 5px var(--aqua-glow);
+}
+
+:root[data-theme="aqua"][data-color-mode="dark"] {
+  color-scheme: dark;
+  --paper: #282e36;
+  --paper-deep: #222830;
+  --sheet: #343c46;
+  --walnut: #e5ebf2;
+  --ink-soft: #afbccc;
+  --oxblood: #8bbbe8;
+  --oxblood-dark: #afd5f7;
+  --teal: #83c4c3;
+  --mustard: #ddc181;
+  --coral: #efaa9c;
+  --indigo: #b1bce7;
+  --plum: #d0b1d9;
+  --forest: #97c6ac;
+  --moss: #bdc998;
+  --slate: #abc4de;
+  --rose-paper: #324a60;
+  --red-soft: #513b3b;
+  --rule: #485360;
+  --shadow-rgb: 0 0 0;
+  --accent-ink: #1c2936;
+  --aqua-surface: linear-gradient(145deg, #3c4550, #2d353e);
+  --aqua-toolbar: linear-gradient(#3e4752, #2d343e);
+  --aqua-raised:
+    inset 1px 1px 0 rgb(204 224 244 / 20%), inset -1px -1px 0 rgb(0 0 0 / 24%),
+    3px 3px 7px rgb(0 0 0 / 38%), -2px -2px 5px rgb(174 203 230 / 7%);
+  --aqua-inset:
+    inset 2px 2px 5px rgb(0 0 0 / 42%), inset -2px -2px 4px rgb(189 216 242 / 13%),
+    0 1px 0 rgb(202 223 245 / 12%);
+  --aqua-selected: linear-gradient(145deg, #273e53, #385671);
+  --aqua-field: #29313a;
+  --aqua-canvas: #242b33;
+  --aqua-focus: #9ac9f4;
+  --aqua-selected-border: #577897;
+  --aqua-highlight: rgb(204 224 244 / 24%);
+  --aqua-sheen: rgb(204 224 244 / 10%);
+  --aqua-glow: rgb(174 203 230 / 8%);
+}
+
+/* Shared controls keep their sizing and semantic colors. Relief is shallow
+   enough that a compact toolbar still reads as a usable instrument. */
+:root[data-theme="aqua"]
+  :is(
+    .button,
+    .icon-button,
+    .dag-tool-button,
+    .dag-lens,
+    .node-window-dock-item,
+    .text-scale-value
+  ) {
+  background-image: linear-gradient(145deg, var(--aqua-sheen), rgb(var(--shadow-rgb) / 5%));
+  border-radius: 8px;
+  box-shadow: var(--aqua-raised);
+}
+
+:root[data-theme="aqua"] :is(.button.primary, .icon-button.primary, .draft-sync.active) {
+  background-image: linear-gradient(rgb(255 255 255 / 12%), transparent 52%, rgb(0 0 0 / 10%));
+  box-shadow:
+    inset 0 1px 0 var(--aqua-highlight),
+    2px 3px 6px rgb(var(--shadow-rgb) / 25%);
+  text-shadow: 0 1px 1px rgb(var(--shadow-rgb) / 30%);
+}
+
+:root[data-theme="aqua"]
+  :is(.button, .icon-button, .dag-tool-button, .dag-lens, .node-window-dock-item):active:not(
+    :disabled
+  ) {
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] :is(.button, .icon-button, .dag-tool-button):disabled {
+  box-shadow: inset 0 1px 0 var(--aqua-highlight);
+}
+
+:root[data-theme="aqua"]
+  :is(
+    input:not(
+      :where([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="hidden"])
+    ),
+    select,
+    textarea
+  ) {
+  background: var(--aqua-field);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--oxblood);
+}
+
+:root[data-theme="aqua"] :focus-visible {
+  outline: 3px solid var(--aqua-focus);
+  outline-offset: 3px;
+}
+
+/* Satin shell and inset selections: no imitation titlebar or window controls. */
+:root[data-theme="aqua"]
+  :is(
+    .project-header,
+    .project-tabs,
+    .node-window-dock,
+    .detail-drawer > header,
+    .chat-dock > header,
+    .paper-toolbar,
+    .conversation-list > header
+  ) {
+  background: var(--aqua-toolbar);
+  box-shadow:
+    inset 0 1px 0 var(--aqua-highlight),
+    0 2px 5px rgb(var(--shadow-rgb) / 9%);
+}
+
+:root[data-theme="aqua"] .project-tabs {
+  gap: 5px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+:root[data-theme="aqua"] .project-tabs > button:not(.project-tabs-toggle) {
+  background: var(--aqua-surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--aqua-raised);
+  color: var(--ink);
+  margin-bottom: 0;
+}
+
+:root[data-theme="aqua"] :is(.dag-layout-switch, .paper-view-toggle) {
+  background: var(--paper-deep);
+  border-radius: 9px;
+  box-shadow: var(--aqua-inset);
+  padding: 3px;
+}
+
+:root[data-theme="aqua"]
+  :is(.dag-layout-switch button, .paper-view-toggle button, .research-subpanel > button) {
+  border-radius: 6px;
+}
+
+:root[data-theme="aqua"]
+  :is(
+    .project-tabs > button.active,
+    .project-tabs > button:active,
+    .dag-layout-switch button.is-active,
+    .paper-view-toggle button[aria-pressed="true"],
+    .research-subpanel > button.active,
+    .conversation-list [role="option"].active
+  ) {
+  background: var(--aqua-selected);
+  border-color: var(--aqua-selected-border);
+  box-shadow: var(--aqua-inset);
+  color: var(--oxblood-dark);
+}
+
+:root[data-theme="aqua"] .project-dock-tab.active {
+  background: var(--aqua-selected);
+  border-radius: 8px;
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] .project-tabs > button .inbox-count {
+  background: #f0d59a;
+  color: #614711;
+  box-shadow:
+    inset 0 1px 1px rgb(255 255 255 / 80%),
+    0 1px 2px rgb(var(--shadow-rgb) / 18%);
+}
+
+/* Quiet raised panels share the same material as the controls. */
+:root[data-theme="aqua"]
+  :is(
+    .settings-section,
+    .overview-card,
+    .proposal-card,
+    .research-node-card,
+    .run-card,
+    .attention-item
+  ) {
+  background: var(--aqua-surface);
+  border-radius: 12px;
+  box-shadow: var(--aqua-raised);
+}
+
+:root[data-theme="aqua"]
+  :is(.detail-drawer, .chat-dock, .project-cover-menu, .landing-identity-panel) {
+  border-radius: 13px;
+  box-shadow:
+    inset 1px 1px 0 var(--aqua-highlight),
+    var(--shadow);
+}
+
+:root[data-theme="aqua"] .dag-controls {
+  background: var(--aqua-toolbar);
+  border-radius: 12px 12px 0 0;
+  box-shadow: inset 1px 1px 0 var(--aqua-highlight);
+}
+
+:root[data-theme="aqua"] .dag-scroll {
+  background: var(--aqua-canvas);
+  border-radius: 0 0 12px 12px;
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] .dag-node {
+  background: var(--aqua-surface);
+  border-radius: 11px;
+  box-shadow: var(--aqua-raised);
+}
+
+:root[data-theme="aqua"] .dag-node::before {
+  background: linear-gradient(
+    90deg,
+    var(--node-accent),
+    color-mix(in srgb, var(--node-accent) 65%, var(--sheet))
+  );
+  width: 6px;
+}
+
+:root[data-theme="aqua"] .dag-node:hover {
+  box-shadow: var(--aqua-hover);
+}
+
+:root[data-theme="aqua"] .dag-node.is-dragging {
+  box-shadow:
+    inset 1px 1px 0 var(--aqua-highlight),
+    6px 10px 18px rgb(var(--shadow-rgb) / 28%);
+}
+
+/* The composer is one recessed writing well, rather than nested cavities. */
+:root[data-theme="aqua"] .chat-composer {
+  background: var(--aqua-field);
+  border-radius: 15px;
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] .chat-composer textarea {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-theme="aqua"] .chat-composer:focus-within {
+  border-color: var(--aqua-selected-border);
+  box-shadow:
+    var(--aqua-inset),
+    0 0 0 2px rgb(82 133 181 / 20%);
+}
+
+:root[data-theme="aqua"] .conversation-list {
+  background: var(--paper-deep);
+  box-shadow: inset -2px 0 5px rgb(var(--shadow-rgb) / 9%);
+}
+
+/* Project tiles retain their content and controls, without book materials. */
+:root[data-theme="aqua"] .project-cover-shell {
+  --project-cover: var(--sheet);
+  --project-cover-ink: var(--ink);
+}
+
+:root[data-theme="aqua"] .project-cover {
+  background: var(--aqua-surface);
+  border: 1px solid var(--rule);
+  border-radius: 15px;
+  box-shadow: var(--aqua-raised);
+  color: var(--ink);
+}
+
+:root[data-theme="aqua"] .project-cover::before,
+:root[data-theme="aqua"] .project-cover::after,
+:root[data-theme="aqua"] .project-cover-spine {
+  display: none;
+}
+
+:root[data-theme="aqua"] .project-cover-shell:hover {
+  transform: translateY(-2px);
+}
+
+:root[data-theme="aqua"] .project-cover-shell:hover .project-cover {
+  box-shadow: var(--aqua-hover);
+}
+
+:root[data-theme="aqua"] .project-cover-trigger {
+  background: var(--aqua-toolbar);
+  border-color: var(--rule);
+  border-radius: 7px;
+  box-shadow: var(--aqua-raised);
+  color: var(--ink);
+}
+
+/* Relief belongs to the actual click target, not its expanded detail. */
+:root[data-theme="aqua"] :is(.overview-questions, .space-runs-rows, .artifacts-list) {
+  display: grid;
+  gap: 12px;
+  border: 0;
+}
+
+:root[data-theme="aqua"]
+  :is(
+    .overview-questions > button,
+    .space-run-row,
+    .campaign-run:has(.campaign-run-toggle),
+    .artifact-entry:has(.artifact-entry-open)
+  ) {
+  background: var(--aqua-surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: var(--aqua-raised);
+}
+
+:root[data-theme="aqua"] .overview-questions > button {
+  padding-inline: 20px;
+  transition: box-shadow 0.16s;
+}
+
+:root[data-theme="aqua"] .artifact-entry:has(.artifact-entry-open) {
+  padding: 20px;
+}
+
+:root[data-theme="aqua"] .space-run-row > button {
+  border-radius: inherit;
+}
+
+:root[data-theme="aqua"] .space-run-row {
+  border-left: 4px solid var(--space-run-tone);
+}
+
+:root[data-theme="aqua"] .space-run-rail {
+  display: none;
+}
+
+:root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) {
+  border-left: 4px solid var(--campaign-tone);
+  overflow: visible;
+}
+
+:root[data-theme="aqua"] .campaign-run-heading:has(.campaign-run-toggle) {
+  border-radius: 11px;
+}
+
+:root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) > .campaign-state-rail {
+  display: none;
+}
+
+:root[data-theme="aqua"] .campaign-run-detail {
+  background: var(--paper-deep);
+  border-radius: 0 0 11px 11px;
+}
+
+:root[data-theme="aqua"]
+  :is(
+    .overview-questions > button:hover,
+    .space-run-row:has(> button:hover),
+    .campaign-run:has(.campaign-run-toggle:hover),
+    .artifact-entry:has(.artifact-entry-open:hover)
+  ) {
+  box-shadow: var(--aqua-hover);
+}
+
+:root[data-theme="aqua"]
+  :is(
+    .overview-questions > button:active,
+    .space-run-row:has(> button:active),
+    .campaign-run-heading:has(.campaign-run-toggle:active),
+    .artifact-entry:has(.artifact-entry-open:active)
+  ) {
+  background: var(--aqua-field);
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] .artifact-entry:has(.artifact-entry-open:focus-visible) {
+  outline-color: var(--aqua-focus);
+}

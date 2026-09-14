@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, JsonValue
 
+from rcp.artifacts import html_document_title
 from rcp.storage.models import ProjectTransferImportRecord
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
@@ -2167,8 +2168,8 @@ class ProjectTransferStoreMixin:
                     """
                     INSERT INTO episode_reports (
                         report_id, episode_id, attempt_id, allocation_operation_id,
-                        ending, sha256, html, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ending, sha256, html, created_at, display_title
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         report.report_id,
@@ -2179,6 +2180,7 @@ class ProjectTransferStoreMixin:
                         report.sha256,
                         report.html,
                         report.created_at,
+                        html_document_title(report.html),
                     ),
                 )
 
