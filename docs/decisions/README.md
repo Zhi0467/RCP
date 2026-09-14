@@ -1,5 +1,23 @@
 # Active decision records
 
+- [Provider logins are kept alive](2026-09-14-provider-logins-are-kept-alive.md)
+  records why every credential gets one refresh path and no needless process
+  (Codex per turn under the gate, Claude on a static token), why the shared
+  owner process is deferred, how sign-in moves into the RCP UI, and what that
+  reverses in the operator and authority docs.
+
+- [Reauthorization continues on the same branch](2026-09-14-reauthorization-continues-on-the-same-branch.md)
+  records why adding turns creates a continuation episode chained to the ended
+  one on the same branch and session, instead of a new branch or a reopened row.
+
+- [A branch merges on branch facts](2026-09-14-a-branch-merges-on-branch-facts.md)
+  records why merge eligibility depends on the branch head and its writers alone
+  and no longer on the episode's lifecycle.
+
+- [Reconciler failures are durable state](2026-09-14-reconciler-failures-are-durable-state.md)
+  records why a lifecycle step that cannot complete is written on the episode
+  once and shown, instead of being retried and logged forever.
+
 - [Agents retire graph conditions](2026-09-13-agents-retire-graph-conditions.md)
   records why an agent withdraws a canonical condition the same way it withdraws
   an observer, why the human control's narrower scope is not an argument against
