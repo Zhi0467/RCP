@@ -101,10 +101,18 @@ Temporary outputs remain in their originating chats until kept.
 
 Reports appear as soon as their immutable bytes are captured; **Save copy** is
 not required to make them discoverable. Saving a repository copy does not add a
-duplicate report entry. Each report retains its owning episode identity and
-creation time, and each kept artifact exposes its saved repository path.
-Opening an entry uses the existing bounded artifact viewer in both browser and
-desktop. Listing grants no new filesystem or graph authority.
+duplicate report entry. Cards show the artifact title and a **Source chat** link
+when its originating conversation is available. The listing retains episode
+identity, creation time, and saved path in its data without displaying repeated
+type labels, timestamps, paths, or opaque episode IDs on each card.
+
+Source chat preserves the exact project and graph target. Episode-owned branch
+conversations open through their existing Runs transcript, preserving its
+read-only boundary. Missing or non-chat origins have no source link; their
+artifact preview remains available. The source link is independent of the
+card's preview click target. Opening an entry uses the existing bounded artifact
+viewer in both browser and desktop. Listing grants no new filesystem or graph
+authority.
 
 ## Unified artifact viewer
 

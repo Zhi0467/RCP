@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Annotated, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from rcp.api.dependencies import (
     get_catalog,
+    get_graph_service,
     get_store,
     require_project_membership,
     require_registered_project,
 )
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.projects import ProjectCatalog
-from rcp.storage import AppStore
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+logger = logging.getLogger(__name__)
 
 
 class SavedArtifactResponse(BaseModel):
@@ -28,9 +33,79 @@ class SavedArtifactResponse(BaseModel):
     operation_id: str | None = None
     artifact_id: str | None = None
     episode_id: str | None = None
+    source_chat_href: str | None = None
     viewer_url: str
     can_open: bool = True
     unavailable_reason: str | None = None
+
+
+def _saved_chat_origins(
+    catalog: ProjectCatalog,
+    store: AppStore,
+    project_id: str,
+    tasks: list[AgentTaskRecord],
+) -> dict[str, str]:
+    """Verify source conversations once per exact graph, without reading report bytes."""
+    by_target: dict[str | None, list[AgentTaskRecord]] = {}
+    for task in tasks:
+        if task.project_id != project_id or task.kind not in {"node_chat", "project_chat"}:
+            continue
+        chat_id = task.request.get("chat_id")
+        if not isinstance(chat_id, str):
+            continue
+        try:
+            if str(uuid.UUID(chat_id)) != chat_id:
+                continue
+        except ValueError:
+            continue
+        by_target.setdefault(task.graph_target.branch_id, []).append(task)
+
+    origins: dict[str, str] = {}
+    for branch_id, group in by_target.items():
+        chat_ids = sorted({task.request["chat_id"] for task in group})
+        try:
+            service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+            transcripts = service.chat_transcripts(chat_ids)
+        except (HTTPException, OSError, StateUnavailable) as exc:
+            # Losing a source conversation never removes an independently saved preview.
+            logger.warning("Saved artifact source conversations unavailable: %s", exc)
+            continue
+        for task in group:
+            chat_id = task.request["chat_id"]
+            if chat_id not in transcripts:
+                continue
+            query = {"view": "chats", "chat": chat_id}
+            if branch_id is not None:
+                query["branch_id"] = branch_id
+                if task.episode_id is not None:
+                    episode = store.episode(task.episode_id)
+                    route = store.auto_research_child_experiment(task.episode_id)
+                    if (
+                        episode is None
+                        or episode.project_id != project_id
+                        or episode.mode != "experiment_loop"
+                        or episode.graph_target != task.graph_target
+                        or not episode.control_node_id
+                        or route is None
+                        or route.project_id != project_id
+                        or route.control_node_id != episode.control_node_id
+                        or route.auto_research_episode_id != branch_id
+                    ):
+                        continue
+                    # This session belongs to a bounded episode. Runs owns its
+                    # read-only transcript; ordinary Chats would expose a composer.
+                    query = {
+                        "view": "runs",
+                        "experiment": episode.control_node_id,
+                        "episode": episode.episode_id,
+                        "target": "branch",
+                        "branch": branch_id,
+                        "parent": route.auto_research_episode_id,
+                    }
+            origins[task.operation_id] = (
+                f"#/projects/{quote(project_id, safe='')}?{urlencode(query)}"
+            )
+    return origins
 
 
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
@@ -45,7 +120,19 @@ def saved_artifacts(
     require_registered_project(catalog, project_id)
     base = f"/api/projects/{quote(project_id, safe='')}"
     entries: list[SavedArtifactResponse] = []
-    for task in store.project_tasks_with_kept_artifacts(project_id):
+    artifact_tasks = store.project_tasks_with_kept_artifacts(project_id)
+    reports = store.project_episode_report_summaries(project_id)
+    report_origins: dict[str, AgentTaskRecord] = {}
+    for report in reports:
+        wrapup = store.episode_wrapup(report.episode_id)
+        if wrapup is not None and wrapup.concluding_operation_id is not None:
+            origin = store.agent_task(wrapup.concluding_operation_id)
+            if origin is not None:
+                report_origins[report.episode_id] = origin
+    chat_origins = _saved_chat_origins(
+        catalog, store, project_id, [*artifact_tasks, *report_origins.values()]
+    )
+    for task in artifact_tasks:
         raw_artifacts = task.result.get("artifacts") if task.result else None
         if not isinstance(raw_artifacts, list):
             continue
@@ -65,6 +152,7 @@ def saved_artifacts(
                     path=f"artifacts/{artifact.kept_filename}",
                     operation_id=task.operation_id,
                     artifact_id=artifact.artifact_id,
+                    source_chat_href=chat_origins.get(task.operation_id),
                     viewer_url=(
                         f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/"
                         f"{artifact.artifact_id}/viewer"
@@ -74,16 +162,18 @@ def saved_artifacts(
     # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
     # retains that wrap-up and forbids stopped endings. Captured reports therefore
     # satisfy _episode_report_viewer_response's availability prerequisites.
-    for report in store.project_episode_report_summaries(project_id):
+    for report in reports:
+        origin = report_origins.get(report.episode_id)
         label = "Experiment" if report.mode == "experiment_loop" else "Auto-research"
-        subject = report.control_node_id or report.instruction or report.episode_id[:8]
+        subject = report.control_node_id or report.instruction
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
-                name=f"{label} report: {subject[:160]}",
+                name=f"{label} report: {subject[:160]}" if subject else f"{label} report",
                 kind="report",
                 created_at=report.created_at,
                 episode_id=report.episode_id,
+                source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
                 viewer_url=f"{base}/episodes/{quote(report.episode_id, safe='')}/report/viewer",
             )
         )

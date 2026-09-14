@@ -13168,6 +13168,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 
 .artifact-entry > div {
+  display: grid;
+  gap: 8px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -13176,13 +13178,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex-shrink: 0;
 }
 
-.artifact-entry-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-}
-
-.artifact-entry-path {
-  overflow-wrap: anywhere;
-  font-size: 0.85rem;
+.artifact-entry-chat {
+  align-items: center;
+  color: var(--cobalt);
+  display: inline-flex;
+  gap: 6px;
+  justify-self: start;
+  position: relative;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  z-index: 1;
 }

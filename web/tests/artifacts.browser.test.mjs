@@ -37,6 +37,8 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: null,
         artifact_id: null,
         episode_id: "old-episode",
+        source_chat_href:
+          "#/projects/project?view=runs&experiment=experiment%2Ftransfer&episode=old-episode&target=branch&branch=branch-one&parent=parent-episode",
         can_open: true,
         unavailable_reason: null,
         viewer_url: "/api/projects/project/episodes/old-episode/report/viewer",
@@ -50,6 +52,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: "task",
         artifact_id: "plot",
         episode_id: null,
+        source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
         can_open: true,
         unavailable_reason: null,
         viewer_url: "/api/projects/project/tasks/task/artifacts/plot/viewer",
@@ -63,14 +66,41 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: "task",
         artifact_id: "unavailable",
         episode_id: null,
+        source_chat_href: null,
         can_open: false,
         unavailable_reason: "Preview unavailable.",
         viewer_url: null,
       },
+      {
+        id: "report:no-chat",
+        name: "Auto-research report",
+        kind: "report",
+        created_at: "2026-09-10T12:00:00Z",
+        path: null,
+        operation_id: null,
+        artifact_id: null,
+        episode_id: "no-chat",
+        source_chat_href: null,
+        can_open: true,
+        unavailable_reason: null,
+        viewer_url: "/api/projects/project/episodes/no-chat/report/viewer",
+      },
     ];
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
-    await page.getByText("Episode old-episode", { exact: true }).waitFor();
+    await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
+    assert.doesNotMatch(
+      await page.locator(".artifacts-list").innerText(),
+      /Episode report|Saved artifact|old-episode|artifacts\/plot\.html/,
+    );
+    assert.equal(await page.locator(".artifacts-list time").count(), 0);
+    assert.equal(
+      await page
+        .getByRole("link", { name: "Open originating chat for Auto-research report" })
+        .count(),
+      0,
+    );
+    await page.getByRole("link", { name: "Open Auto-research report", exact: true }).waitFor();
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");
@@ -160,6 +190,33 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         args: { projectId: "project", taskId: "task", artifactId: "plot" },
       },
     ]);
+    // The source link stays above the stretched preview hit target and follows
+    // the same app window, even in the native shell.
+    for (const theme of ["classic", "aqua"]) {
+      await page.evaluate((theme) => {
+        document.documentElement.dataset.theme = theme;
+      }, theme);
+      for (const entry of entries.slice(0, 2)) {
+        const source = page.getByRole("link", {
+          name: `Open originating chat for ${entry.name}`,
+          exact: true,
+        });
+        await source.click();
+        assert.equal(new URL(page.url()).hash, entry.source_chat_href);
+        assert.equal(
+          await page.evaluate(() => window.previewCalls.length),
+          2,
+          "Source chat never opens an artifact preview",
+        );
+      }
+      const source = page.getByRole("link", {
+        name: "Open originating chat for Saved plot",
+        exact: true,
+      });
+      await source.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(new URL(page.url()).hash, entries[1].source_chat_href);
+    }
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

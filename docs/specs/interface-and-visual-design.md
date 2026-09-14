@@ -24,7 +24,8 @@ focus indicators remain distinct. Clickable Overview rows, Runs card headers,
 space Runs rows, and available artifact rows also rise from the surface and
 press inward while held. Expanded run detail and unavailable artifacts do not
 use the same action cue. An available artifact's preview link spans its entire
-row and keeps the existing browser or desktop preview behavior.
+row and keeps the existing browser or desktop preview behavior. Its **Source
+chat** link remains a separate click target.
 
 The space landing page's **Display** control places **Mode** above **Theme**.
 Mode offers **System**, **Light**, and **Dark** independently of **Classic** or

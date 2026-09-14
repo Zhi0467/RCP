@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
 import { api } from "../api";
 import {
   isDesktopRuntime,
@@ -84,16 +84,15 @@ export function Artifacts({ projectId }: { projectId: string }) {
             <li key={entry.id} className="artifact-entry">
               <div>
                 <h3>{entry.name}</h3>
-                <p className="artifact-entry-meta">
-                  <span>{entry.kind === "report" ? "Episode report" : "Saved artifact"}</span>
-                  <time dateTime={entry.created_at}>
-                    {new Date(entry.created_at).toLocaleString()}
-                  </time>
-                </p>
-                {entry.episode_id && (
-                  <p className="artifact-entry-path">Episode {entry.episode_id}</p>
+                {entry.source_chat_href && (
+                  <a
+                    className="artifact-entry-chat"
+                    href={entry.source_chat_href}
+                    aria-label={`Open originating chat for ${entry.name}`}
+                  >
+                    <MessageSquare size={14} aria-hidden="true" /> Source chat
+                  </a>
                 )}
-                {entry.path && <p className="artifact-entry-path">{entry.path}</p>}
                 {!entry.can_open && <p>{entry.unavailable_reason || "Preview unavailable."}</p>}
               </div>
               {entry.can_open && (

@@ -372,11 +372,16 @@
   border-radius: inherit;
 }
 
+:root[data-theme="aqua"] .space-run-row {
+  border-left: 4px solid var(--space-run-tone);
+}
+
 :root[data-theme="aqua"] .space-run-rail {
-  border-radius: 12px 0 0 12px;
+  display: none;
 }
 
 :root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) {
+  border-left: 4px solid var(--campaign-tone);
   overflow: visible;
 }
 
@@ -385,7 +390,7 @@
 }
 
 :root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) > .campaign-state-rail {
-  border-radius: 12px 0 0 12px;
+  display: none;
 }
 
 :root[data-theme="aqua"] .campaign-run-detail {
