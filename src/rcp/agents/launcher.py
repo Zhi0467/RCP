@@ -253,7 +253,12 @@ class AgentProcessControl:
                 name="rcp-remote-pause",
                 daemon=True,
             ).start()
-        if loop is not None and process is not None and not loop.is_closed():
+        if (
+            loop is not None
+            and process is not None
+            and started_at is not None
+            and not loop.is_closed()
+        ):
             loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._terminate(process, started_at))
             )
@@ -275,14 +280,17 @@ class AgentProcessControl:
                 self._loop = None
 
     @staticmethod
-    async def _terminate(
-        process: asyncio.subprocess.Process, started_at: float | None = None
-    ) -> None:
+    async def _terminate(process: asyncio.subprocess.Process, started_at: float) -> None:
+        """Stop the local process group, never inside the startup hold.
+
+        Every termination path passes the time the process was spawned: a
+        provider signalled while it refreshes its login spends the single-use
+        refresh token, so a young process is left alone until the hold has passed.
+        """
+
         if process.returncode is not None:
             return
-        # A provider signalled while it refreshes its login spends the single-use
-        # refresh token; a young process is left alone until the hold has passed.
-        if started_at is not None and (remaining := remaining_startup_hold(started_at)) > 0:
+        if (remaining := remaining_startup_hold(started_at)) > 0:
             with suppress(TimeoutError):
                 await asyncio.wait_for(process.wait(), timeout=remaining)
         if process.returncode is not None:
@@ -332,16 +340,18 @@ class AgentProcessControl:
         return {0: True, 1: False}.get(result.returncode)
 
     @staticmethod
-    def _confirm_remote_stopped(host: str, pid_file: str) -> bool:
+    def _confirm_remote_stopped(host: str, pid_file: str, started_at: float) -> bool:
         """Settle this newly spawned pass before allowing another runtime or turn."""
         return AgentProcessControl.remote_stopped(host, pid_file) is True or (
-            AgentProcessControl._terminate_remote(host, pid_file)
+            AgentProcessControl._terminate_remote_after_hold(host, pid_file, started_at)
         )
 
     @classmethod
     def _terminate_remote_after_hold(
         cls, host: str, pid_file: str, started_at: float | None
     ) -> bool:
+        """The remote counterpart of `_terminate`; `None` means nothing was spawned yet."""
+
         if started_at is not None and (remaining := remaining_startup_hold(started_at)) > 0:
             time.sleep(remaining)
         return cls._terminate_remote(host, pid_file)
@@ -1110,6 +1120,9 @@ class AgentLauncher:
             if runtime.id == profile.legacy_runtime_id:
                 self.invalidate_readiness(provider, host=host, binary=binary)
             raise _PrePromptRuntimeFailure(str(exc)) from exc
+        # Every stop of this process, local or remote, honours the startup hold
+        # measured from here, not only an explicit Pause.
+        started_at = time.monotonic()
         if control is not None:
             control.attach(process)
         steering = LiveProviderSteering(
@@ -1230,12 +1243,15 @@ class AgentLauncher:
                     process.stdin.close()
                     if host and remote_pid_file:
                         stopped_remote = await asyncio.to_thread(
-                            AgentProcessControl._terminate_remote, host, remote_pid_file
+                            AgentProcessControl._terminate_remote_after_hold,
+                            host,
+                            remote_pid_file,
+                            started_at,
                         )
                         completion_stop_failed = not stopped_remote
                     elif host:
                         completion_stop_failed = True
-                    await AgentProcessControl._terminate(process)
+                    await AgentProcessControl._terminate(process, started_at)
                 if step.delivers_prompt:
                     if prompt_delivered:
                         raise RuntimeError(
@@ -1273,11 +1289,12 @@ class AgentLauncher:
                                 if not step.stop_process:
                                     if host and remote_pid_file:
                                         await asyncio.to_thread(
-                                            AgentProcessControl._terminate_remote,
+                                            AgentProcessControl._terminate_remote_after_hold,
                                             host,
                                             remote_pid_file,
+                                            started_at,
                                         )
-                                    await AgentProcessControl._terminate(process)
+                                    await AgentProcessControl._terminate(process, started_at)
                                 try:
                                     stderr = await asyncio.wait_for(
                                         stderr_task,
@@ -1291,7 +1308,10 @@ class AgentLauncher:
                             event.text = "\n".join(part for part in (event.text, detail) if part)
                         if host and remote_pid_file:
                             remote_stopped = await asyncio.to_thread(
-                                AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                                AgentProcessControl._confirm_remote_stopped,
+                                host,
+                                remote_pid_file,
+                                started_at,
                             )
                             completion_stop_failed = not remote_stopped
                             if prompt_delivered and remote_stopped:
@@ -1318,7 +1338,7 @@ class AgentLauncher:
             stderr = _meaningful_stderr(stderr)
             if host and remote_pid_file:
                 remote_stopped = await asyncio.to_thread(
-                    AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                    AgentProcessControl._confirm_remote_stopped, host, remote_pid_file, started_at
                 )
                 completion_stop_failed = not remote_stopped
                 if not prompt_delivered and remote_stopped:
@@ -1410,11 +1430,15 @@ class AgentLauncher:
                 try:
                     if host and remote_pid_file and remote_stopped is not True:
                         await asyncio.to_thread(
-                            AgentProcessControl._confirm_remote_stopped, host, remote_pid_file
+                            AgentProcessControl._confirm_remote_stopped,
+                            host,
+                            remote_pid_file,
+                            started_at,
                         )
                 finally:
                     await _cleanup_provider_process(
                         process,
+                        started_at=started_at,
                         stdin_task=stdin_task,
                         stdout_task=stdout_task,
                         stdout_lines=stdout_lines,
@@ -1593,6 +1617,7 @@ async def _feed_stdin(stream, data: bytes, *, close: bool = True) -> None:
 async def _cleanup_provider_process(
     process: asyncio.subprocess.Process,
     *,
+    started_at: float,
     stdin_task: asyncio.Task[None] | None,
     stdout_task: asyncio.Task[tuple[bytes | None, int]] | None,
     stdout_lines,
@@ -1624,7 +1649,7 @@ async def _cleanup_provider_process(
         if task is not None
     ]
     try:
-        await AgentProcessControl._terminate(process)
+        await AgentProcessControl._terminate(process, started_at)
     finally:
         for task in tasks:
             if not task.done():

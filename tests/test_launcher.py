@@ -5,6 +5,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
@@ -828,7 +829,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
                 await next_event
         await stream.aclose()
         if process is not None and process.returncode is None:
-            await AgentProcessControl._terminate(process)
+            await AgentProcessControl._terminate(process, time.monotonic() - 3600)
 
 
 def test_codex_failure_event_surfaces_provider_error() -> None:

@@ -654,3 +654,48 @@ async def test_waiting_launch_captures_environment_and_generation_together(
     events = await asyncio.wait_for(pending, timeout=5)
     assert any(event.event == "error" for event in events)
     assert observed == {"generation": repaired.generation, "token": "new-token"}
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Claude's result stops the process; that stop honours the hold like a Pause.
+
+    The stop_process path, error cleanup, and final cleanup all terminate the
+    provider without a Pause, so they must all wait out the same hold before
+    signalling a process that may still be rotating its refresh token.
+    """
+
+    unwanted = tmp_path / "unwanted-next-turn"
+    provider_script = "\n".join(
+        (
+            "import json, sys, time",
+            "from pathlib import Path",
+            'print(json.dumps({"type": "result", "result": "Finished."}), flush=True)',
+            "time.sleep(30)",
+            f"Path({str(unwanted)!r}).write_text('kept running')",
+        )
+    )
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness", (), {"installed": True, "authenticated": True}
+    )()
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", provider_script]
+    )
+
+    started = time.monotonic()
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude", "prompt", cwd=tmp_path, capability="scratch_patch"
+        )
+    ]
+    elapsed = time.monotonic() - started
+
+    assert events[-1].event == "done"
+    assert elapsed >= PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS, (
+        f"the result stop signalled the provider after {elapsed:.2f}s, inside the startup hold"
+    )
+    assert not unwanted.exists(), "the provider outlived its result"
