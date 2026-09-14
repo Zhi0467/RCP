@@ -158,6 +158,7 @@ def _begin_report(
     root: AgentTaskRecord,
     *,
     ending: str,
+    provider: str = "codex",
 ) -> tuple[str, str]:
     now = store.now()
     allocation_operation_id = f"{episode.episode_id}-report"
@@ -174,7 +175,7 @@ def _begin_report(
         partial=ending != "completed",
         concluding_operation_id=root.operation_id,
         allocation_operation_id=allocation_operation_id,
-        provider="codex",
+        provider=provider,
         run_on="local",
         execution_host="",
         native_session_id="native-session",
@@ -196,7 +197,7 @@ def _begin_report(
         graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
-        request={"provider": "codex", "run_on": "local", "execution_host": ""},
+        request={"provider": provider, "run_on": "local", "execution_host": ""},
         created_at=now,
         updated_at=now,
         status_message="Wrapping up visualization and report",
@@ -977,6 +978,23 @@ def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> No
     store.mark_provider_login_failed(
         "codex", "", generation=0, detail="Sign in again.", source="report"
     )
+    response = serialize_episode(
+        store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
+    )
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "wrapping_up",
+        "wait",
+        "sign_in",
+    )
+
+
+def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "tokenless-report")
+    _begin_report(store, episode, root, ending="completed", provider="claude")
+    # The durable row still says signed in; the token the launch needs is gone.
+    store.mark_provider_login_verified("claude", "", member_id="member", detail="Verified.")
     response = serialize_episode(
         store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
     )
