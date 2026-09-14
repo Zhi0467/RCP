@@ -575,6 +575,42 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
 
+def test_can_continue_is_withheld_while_another_episode_owns_the_slot(tmp_path) -> None:
+    """The offer mirrors admission: a live project episode or an active merge refuses it."""
+
+    from .test_branch_target_storage import _merge_task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    ended, root = _auto_episode(store, "ended", root_status="failed")
+    _, attempt_id = _begin_report(store, ended, root, ending="failed")
+    store.finish_episode_report_error(attempt_id, "The report output was invalid.")
+
+    def can_continue() -> bool:
+        stored = store.episode(ended.episode_id)
+        assert stored is not None
+        return serialize_episode(
+            store, "project", stored, branch_summary=_branch_summary
+        ).can_continue
+
+    assert can_continue()
+    live, live_root = _auto_episode(store, "live", root_status="queued")
+    assert not can_continue()
+    assert not serialize_episode(
+        store, "project", live, branch_summary=_branch_summary
+    ).can_continue
+    # A wrapping-up episode still owns the slot; only its settled report frees it.
+    store.fail_agent_task(live_root.operation_id, "provider failed")
+    assert not can_continue()
+    live_root = store.agent_task(live_root.operation_id)
+    assert live_root is not None
+    _, live_attempt_id = _begin_report(store, live, live_root, ending="failed")
+    store.finish_episode_report_error(live_attempt_id, "The report output was invalid.")
+    assert can_continue()
+    store.create_branch_merge_task(_merge_task(store, ended, "merge"))
+    assert not can_continue()
+
+
 def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)

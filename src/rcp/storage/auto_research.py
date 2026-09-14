@@ -317,18 +317,7 @@ class AutoResearchStoreMixin:
             is not None
         ):
             raise ValueError("the episode still has a live turn")
-        if (
-            connection.execute(
-                """
-                SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND graph_target_json = ? AND kind = 'branch_merge'
-                  AND status IN ('queued', 'running', 'pausing')
-                LIMIT 1
-                """,
-                (source.project_id, source.graph_target.model_dump_json()),
-            ).fetchone()
-            is not None
-        ):
+        if self._active_branch_merge_exists(connection, source.project_id, source.graph_target):
             raise ValueError("the graph branch is being merged")
 
     def activate_auto_research_reservation(

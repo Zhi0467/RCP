@@ -31,6 +31,7 @@ import {
   episodeTaskRows,
   isLiveEpisode,
   mergeEpisode,
+  episodeChain,
   runsEpisodeCards,
 } from "../src/campaigns.ts";
 
@@ -65,7 +66,7 @@ test("the Auto-research dialog meters only operational invocations", () => {
   assert.doesNotMatch(html, /Start auto-research" disabled/);
 });
 
-function renderEpisodes(values, { busyAction = null } = {}) {
+function renderEpisodes(values, { busyAction = null, chain } = {}) {
   return renderToStaticMarkup(
     React.createElement(
       "section",
@@ -73,6 +74,7 @@ function renderEpisodes(values, { busyAction = null } = {}) {
       values.map((value, index) =>
         React.createElement(AutoResearchEpisodeCard, {
           episode: value,
+          chain,
           tasks: values.flatMap((episode) => episode.tasks),
           messages: [],
           initiallyExpanded: index === 0 || value.live,
@@ -248,7 +250,7 @@ test("a final report error is visible, terminal, and has no task recovery contro
   assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
 });
 
-test("a chain member names the episode it continues and the one that continued it", () => {
+test("a continuation chain is one run card listing each member's ceiling and ending", () => {
   const source = {
     ...episode,
     episode_id: "episode/source",
@@ -259,17 +261,27 @@ test("a chain member names the episode it continues and the one that continued i
     continued_by_episode_id: "episode/continuation",
     health: "needs_action",
     recommendation: "review",
+    budget: { ...episode.budget, invocation_ceiling: 3, invocations_used: 3 },
   };
   const continuation = {
     ...episode,
     episode_id: "episode/continuation",
     continues_episode_id: "episode/source",
     can_continue: false,
+    budget: { ...episode.budget, invocation_ceiling: 2, invocations_used: 1 },
   };
-  const html = renderEpisodes([source, continuation]);
 
-  assert.match(html, /Continued by/);
-  assert.match(html, /Continues /);
+  assert.deepEqual(runsEpisodeCards([source, continuation], new Set()), [continuation]);
+  const chain = episodeChain([source, continuation], continuation);
+  assert.deepEqual(
+    chain.map((member) => member.episode_id),
+    ["episode/source", "episode/continuation"],
+  );
+  const html = renderEpisodes([continuation], { chain });
+
+  assert.match(html, /Continued 1 time/);
+  assert.match(html, /3 of 3 turns[^]*?Exhausted[^]*?1 of 2 turns[^]*?Current/);
+  assert.doesNotMatch(html, /Continued by|Continues /);
   assert.doesNotMatch(html, /Turns to add/);
 });
 

@@ -75,7 +75,7 @@ import {
   EpisodeAuthor,
   type ArchiveEpisodeAction,
 } from "../components/EpisodeRunControls";
-import { runsEpisodeCards } from "../campaigns";
+import { episodeChain, runsEpisodeCards } from "../campaigns";
 import {
   graphTargetsEqual,
   mainExperimentRouteMatchesControl,
@@ -1243,8 +1243,9 @@ export function ExecutionView({
   // current archive preference, including for main cards built from that cache.
   const episodesById = new Map(episodes.map((episode) => [episode.episode_id, episode]));
   indexedEntries.forEach((entry) => episodesById.set(entry.episode.episode_id, entry.episode));
+  const episodeRecords = [...episodesById.values()];
   const orderedEpisodes = runsEpisodeCards(
-    [...episodesById.values()],
+    episodeRecords,
     new Set(experimentRuns.keys()),
     showArchived,
   );
@@ -1442,6 +1443,7 @@ export function ExecutionView({
       return (
         <AutoResearchEpisodeCard
           episode={episode}
+          chain={episodeChain(episodeRecords, episode)}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={

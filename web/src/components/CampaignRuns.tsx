@@ -37,6 +37,7 @@ import {
 
 export function AutoResearchEpisodeCard({
   episode,
+  chain = [episode],
   initiallyExpanded,
   selected = false,
   detailRef,
@@ -53,6 +54,8 @@ export function AutoResearchEpisodeCard({
   onArchive,
 }: {
   episode: Episode;
+  /** Every chain member oldest first, ending with `episode`; a lone episode is its own chain. */
+  chain?: Episode[];
   initiallyExpanded: boolean;
   selected?: boolean;
   detailRef?: Ref<HTMLDivElement>;
@@ -210,14 +213,12 @@ export function AutoResearchEpisodeCard({
             <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <EpisodeAuthor author={episode.authorized_by} />
-            {episode.continues_episode_id && (
-              <span className="campaign-run-chain" title={episode.continues_episode_id}>
-                Continues {compactIdentity(episode.continues_episode_id)}
-              </span>
-            )}
-            {episode.continued_by_episode_id && (
-              <span className="campaign-run-chain" title={episode.continued_by_episode_id}>
-                Continued by {compactIdentity(episode.continued_by_episode_id)}
+            {chain.length > 1 && (
+              <span
+                className="campaign-run-chain"
+                title={chain.map((member) => compactIdentity(member.episode_id)).join(" → ")}
+              >
+                Continued {chain.length - 1} {chain.length === 2 ? "time" : "times"}
               </span>
             )}
           </span>
@@ -234,6 +235,28 @@ export function AutoResearchEpisodeCard({
       </div>
       {expanded && (
         <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
+          {chain.length > 1 && (
+            <ol className="campaign-run-chain-members" aria-label="Continuation chain">
+              {chain.map((member) => (
+                <li
+                  key={member.episode_id}
+                  data-episode-id={member.episode_id}
+                  aria-current={member.episode_id === episode.episode_id ? "true" : undefined}
+                >
+                  <span>
+                    {member.budget.invocations_used} of {member.budget.invocation_ceiling} turns
+                  </span>
+                  <span>
+                    {member.ending
+                      ? episodeEndingLabel(member.ending)
+                      : member.episode_id === episode.episode_id
+                        ? "Current"
+                        : "Unsettled"}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
           <div className="campaign-run-actions">
             <div
               className={`campaign-run-health ${projection.health}`}

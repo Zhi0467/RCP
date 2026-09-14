@@ -12220,6 +12220,28 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font: 9px var(--mono);
   white-space: nowrap;
 }
+.campaign-run-chain {
+  color: var(--muted);
+  font: 9px var(--mono);
+  white-space: nowrap;
+}
+.campaign-run-chain-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.campaign-run-chain-members li {
+  color: var(--muted);
+  display: flex;
+  font: 10px var(--mono);
+  gap: 6px;
+}
+.campaign-run-chain-members li[aria-current="true"] {
+  color: var(--ink);
+}
 .campaign-run .status-pill.needs_action,
 .campaign-run .status-pill.stopping,
 .campaign-run .status-pill.queued {

@@ -39,9 +39,16 @@ export function EpisodeTimeline({
   const openMail = timeline.events.filter(
     (event) => event.kind === "mail" && !timeline.isFolded(event.event_id, foldState),
   );
-  const missingMail = openMail.some(
-    (event) => event.links.message_id && bodies[event.links.message_id] === undefined,
-  );
+  // Mail belongs to the chain member that received it, which is not always the
+  // displayed episode; each owning episode's collection is read once.
+  const missingMailEpisodes = [
+    ...new Set(
+      openMail
+        .filter((event) => event.links.message_id && bodies[event.links.message_id] === undefined)
+        .map((event) => event.links.episode_id ?? episodeId),
+    ),
+  ];
+  const missingMail = missingMailEpisodes.length > 0;
 
   useEffect(() => {
     setBodies({});
@@ -52,12 +59,15 @@ export function EpisodeTimeline({
     if (!missingMail) return;
     let cancelled = false;
     setMailError(null);
-    void loadEpisodeMessages(apiBase, episodeId)
-      .then((messages) => {
+    void Promise.all(missingMailEpisodes.map((owner) => loadEpisodeMessages(apiBase, owner)))
+      .then((collections) => {
         if (cancelled) return;
-        const fullBodies = Object.fromEntries(
-          messages.map((message) => [message.message_id, message.body]),
-        );
+        const fullBodies = {
+          ...bodies,
+          ...Object.fromEntries(
+            collections.flat().map((message) => [message.message_id, message.body]),
+          ),
+        };
         setBodies(fullBodies);
         if (
           openMail.some(

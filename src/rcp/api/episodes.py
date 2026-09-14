@@ -473,6 +473,7 @@ def serialize_episode(
             and continued_by is None
             and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
             and _continuable_session(store, episode)
+            and store.continuation_slot_open(episode)
         ),
         can_message=episode.status == "running",
         live=episode.status in _LIVE_EPISODE_STATUSES,

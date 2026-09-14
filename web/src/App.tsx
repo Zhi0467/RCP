@@ -789,6 +789,9 @@ export default function App() {
     reject: (error: Error) => void;
   } | null>(null);
   const activeGraphTargetRef = useRef(graphTarget);
+  // One request id per logical continuation, kept until the server has answered
+  // it, so a retry after a lost response replays the episode already created.
+  const continuationRequestIds = useRef(new Map<string, string>());
   activeGraphTargetRef.current = graphTarget;
   const {
     identityReady,
@@ -3317,12 +3320,10 @@ export default function App() {
     const finishEpisodeAction = beginEpisodeAction(`continue:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const nextEpisode = await continueEpisode(
-        apiBase,
-        episodeId,
-        invocationCeiling,
-        crypto.randomUUID(),
-      );
+      const requestId = continuationRequestIds.current.get(episodeId) ?? crypto.randomUUID();
+      continuationRequestIds.current.set(episodeId, requestId);
+      const nextEpisode = await continueEpisode(apiBase, episodeId, invocationCeiling, requestId);
+      continuationRequestIds.current.delete(episodeId);
       replaceEpisode(nextEpisode);
       replaceExactAutoResearchSelection(nextEpisode.project_id, nextEpisode.episode_id);
       await reload();

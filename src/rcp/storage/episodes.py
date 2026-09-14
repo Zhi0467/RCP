@@ -7,6 +7,7 @@ import uuid
 
 from rcp.artifacts import html_document_title
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
@@ -2166,6 +2167,38 @@ class EpisodeStoreMixin:
         )
         return all(
             getattr(stored, field) == getattr(requested, field) for field in immutable_fields
+        )
+
+    def continuation_slot_open(self, episode: EpisodeRecord) -> bool:
+        """Whether a continuation of ``episode`` would be admitted right now.
+
+        The same two facts refuse it at admission: another live episode owns the
+        project (Auto-research) or the control node (Experiment), or the branch is
+        being merged. The projection asks first so it offers only a callable control.
+        """
+
+        with self.connection() as connection:
+            return self._live_episode_row(
+                connection, episode
+            ) is None and not self._active_branch_merge_exists(
+                connection, episode.project_id, episode.graph_target
+            )
+
+    @staticmethod
+    def _active_branch_merge_exists(
+        connection: sqlite3.Connection, project_id: str, graph_target: GraphTargetRef
+    ) -> bool:
+        return (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND graph_target_json = ? AND kind = 'branch_merge'
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (project_id, graph_target.model_dump_json()),
+            ).fetchone()
+            is not None
         )
 
     @staticmethod
