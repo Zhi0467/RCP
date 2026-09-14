@@ -4,7 +4,6 @@ import {
   CirclePause,
   ExternalLink,
   LoaderCircle,
-  MessageCircle,
   Network,
   Play,
   RotateCcw,
@@ -13,19 +12,22 @@ import {
   Telescope,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState, type Ref } from "react";
-import { taskStatusLabel } from "../agentTasks";
 import {
   episodeEndingLabel,
   episodeProjection,
   episodeReportPreviewUrl,
-  episodeTaskRoleLabel,
   episodeTaskRows,
   formatTokenCount,
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
-import { experimentBoardHref, experimentBoardRouteToken } from "../experimentBoard";
-import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
-import type { AgentTask, Episode, EpisodeMessage, ExperimentLoopIndexEntry } from "../types";
+import { fetchEpisodeTimeline } from "../api";
+import { EpisodeTimeline } from "./EpisodeTimeline";
+import type {
+  AgentTask,
+  Episode,
+  EpisodeTimelineResponse,
+  ExperimentLoopIndexEntry,
+} from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 import {
   EpisodeArchiveButton,
@@ -35,7 +37,6 @@ import {
 
 export function AutoResearchEpisodeCard({
   episode,
-  messages,
   initiallyExpanded,
   selected = false,
   detailRef,
@@ -44,7 +45,6 @@ export function AutoResearchEpisodeCard({
   childExperiments = [],
   onOpenExperimentEntry,
   onInspectTask,
-  onLoadMessages,
   onStop,
   onMerge,
   onReauthorize,
@@ -53,7 +53,6 @@ export function AutoResearchEpisodeCard({
   onArchive,
 }: {
   episode: Episode;
-  messages: EpisodeMessage[];
   initiallyExpanded: boolean;
   selected?: boolean;
   detailRef?: Ref<HTMLDivElement>;
@@ -62,7 +61,6 @@ export function AutoResearchEpisodeCard({
   childExperiments?: ExperimentLoopIndexEntry[];
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onInspectTask: (operationId: string) => void;
-  onLoadMessages: (episodeId: string) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
   onMerge: (episodeId: string) => Promise<void>;
   onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
@@ -78,27 +76,10 @@ export function AutoResearchEpisodeCard({
   const mergeSnapshot = JSON.stringify(episode.graph_branch);
   const [mergeError, setMergeError] = useState<{ snapshot: string; message: string } | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
-  const turnRows = useMemo(
-    () =>
-      [
-        ...taskRows.map((row) => ({
-          kind: "task" as const,
-          createdAt: row.task.created_at,
-          key: row.task.operation_id,
-          row,
-        })),
-        ...childExperiments.map((entry) => ({
-          kind: "experiment" as const,
-          createdAt: entry.episode.created_at,
-          key: `experiment:${entry.episode.episode_id}`,
-          entry,
-        })),
-      ].sort(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
-      ),
-    [childExperiments, taskRows],
-  );
+  const apiBase = `/api/projects/${encodeURIComponent(episode.project_id)}`;
+  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
   const projection = useMemo(
     () =>
       episodeProjection(
@@ -124,10 +105,22 @@ export function AutoResearchEpisodeCard({
 
   useEffect(() => {
     if (!expanded) return;
-    void onLoadMessages(episode.episode_id).catch((error) => {
-      setLocalError(error instanceof Error ? error.message : String(error));
-    });
-  }, [episode.episode_id, expanded, onLoadMessages]);
+    let cancelled = false;
+    void fetchEpisodeTimeline(apiBase, episode.episode_id).then(
+      (response) => {
+        if (!cancelled) {
+          setTimeline(response);
+          setTimelineError(null);
+        }
+      },
+      (error) => {
+        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, episode.episode_id, episode.updated_at, expanded, timelineRefresh]);
 
   useEffect(() => {
     if (initiallyExpanded) setExpanded(true);
@@ -158,6 +151,7 @@ export function AutoResearchEpisodeCard({
     setLocalError(null);
     try {
       await onSendMessage(episode.episode_id, body);
+      setTimelineRefresh((value) => value + 1);
       setMessage("");
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
@@ -403,134 +397,48 @@ export function AutoResearchEpisodeCard({
             </div>
           )}
 
-          <section className="campaign-turns" aria-label="Episode turns">
-            <header>
-              <h3>Turns</h3>
-              <span>{turnRows.length}</span>
-            </header>
-            {turnRows.length > 0 ? (
-              <ul>
-                {turnRows.map((turn) => {
-                  if (turn.kind === "task") {
-                    const { task, role, depth } = turn.row;
-                    const target = taskTarget(task);
-                    const roleLabel =
-                      task.kind === "branch_merge" ? "Branch merge" : episodeTaskRoleLabel(role);
-                    return (
-                      <li className={`campaign-task depth-${depth}`} key={turn.key}>
-                        <button type="button" onClick={() => onInspectTask(task.operation_id)}>
-                          <span className={`campaign-task-role ${role}`}>{roleLabel}</span>
-                          <span className="campaign-task-copy">
-                            <strong>{target || roleLabel}</strong>
-                            <span>{task.status_message}</span>
-                            {task.degradation && (
-                              <span className="run-history-degraded">{task.degradation}</span>
-                            )}
-                          </span>
-                          <span className={`status-pill ${task.status}`}>
-                            {taskStatusLabel(task)}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  }
-                  const { entry } = turn;
-                  const tone = experimentHealthTone(entry.control.health);
-                  return (
-                    <li className="campaign-task depth-1" key={turn.key}>
-                      <a
-                        href={experimentBoardHref(
-                          entry.project_id,
-                          experimentBoardRouteToken(entry),
-                        )}
-                        onClick={(event) => {
-                          if (
-                            event.button !== 0 ||
-                            event.metaKey ||
-                            event.ctrlKey ||
-                            event.shiftKey ||
-                            event.altKey
-                          ) {
-                            return;
-                          }
-                          onOpenExperimentEntry(entry);
-                        }}
-                      >
-                        <span className="campaign-task-role experiment">Experiment</span>
-                        <span className="campaign-task-copy">
-                          <strong>{entry.node.title}</strong>
-                        </span>
-                        <span className={`status-pill ${tone}`}>
-                          {experimentHealthLabel(entry.control.health)}
-                        </span>
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="campaign-empty">No turns recorded.</p>
-            )}
-          </section>
-
-          <section className="campaign-mail" aria-label="Episode mail">
-            <header>
-              <h3>
-                <MessageCircle size={13} /> Mail
-              </h3>
-              <span>{messages.length}</span>
-            </header>
-            <div className="campaign-mail-thread" role="log" aria-live="polite">
-              {messages.length > 0 ? (
-                [...messages]
-                  .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
-                  .map((item) => (
-                    <article
-                      className={`campaign-message ${item.sender_role}`}
-                      key={item.message_id}
-                    >
-                      <header>
-                        <strong>{messageSenderLabel(item)}</strong>
-                        <span>
-                          {item.delivered_at ? "Delivered" : "Pending"} ·{" "}
-                          <time dateTime={item.created_at}>{formatTimestamp(item.created_at)}</time>
-                        </span>
-                      </header>
-                      <div className="chat-markdown">
-                        <MarkdownAnswer text={item.body} />
-                      </div>
-                    </article>
-                  ))
-              ) : (
-                <p className="campaign-empty">No messages yet.</p>
-              )}
+          {timelineError && (
+            <div className="campaign-run-error" role="alert">
+              {timelineError}
             </div>
-            {episode.can_message && (
-              <form
-                className="campaign-message-composer"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void submitMessage();
-                }}
+          )}
+          {timeline?.episode_id === episode.episode_id && (
+            <EpisodeTimeline
+              events={timeline.events}
+              apiBase={apiBase}
+              episodeId={episode.episode_id}
+              graphTarget={episode.graph_target}
+              truncated={timeline.truncated}
+              onInspectTask={onInspectTask}
+              childExperiments={childExperiments}
+              onOpenExperimentEntry={onOpenExperimentEntry}
+            />
+          )}
+          {episode.can_message && (
+            <form
+              className="campaign-message-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitMessage();
+              }}
+            >
+              <textarea
+                rows={2}
+                aria-label="Message orchestrator"
+                value={message}
+                disabled={anotherActionBusy}
+                onChange={(event) => setMessage(event.target.value)}
+              />
+              <button
+                className="button primary compact"
+                type="submit"
+                disabled={!message.trim() || anotherActionBusy}
               >
-                <textarea
-                  rows={2}
-                  aria-label="Message orchestrator"
-                  value={message}
-                  disabled={anotherActionBusy}
-                  onChange={(event) => setMessage(event.target.value)}
-                />
-                <button
-                  className="button primary compact"
-                  type="submit"
-                  disabled={!message.trim() || anotherActionBusy}
-                >
-                  {messageBusy ? <LoaderCircle className="spin" size={12} /> : <Send size={12} />}
-                  Send
-                </button>
-              </form>
-            )}
-          </section>
+                {messageBusy ? <LoaderCircle className="spin" size={12} /> : <Send size={12} />}
+                Send
+              </button>
+            </form>
+          )}
           {/* A stopped episode reaches here with no report, no report error, and no
               ending diagnostic, because the projection withholds all three. There is
               nothing left for this view to suppress. */}
@@ -611,20 +519,6 @@ export function EpisodeBudgetMeter({ episode }: { episode: Episode }) {
       </span>
     </span>
   );
-}
-
-function taskTarget(task: AgentTask): string | null {
-  const value = task.request.control_node_id ?? task.request.node_id;
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function messageSenderLabel(message: EpisodeMessage): string {
-  if (message.sender_role === "human") {
-    return message.authorized_by?.display_name ?? "Unattributed";
-  }
-  if (message.sender_role === "orchestrator") return "Orchestrator";
-  const worker = message.control_node_id || message.sender_task_id;
-  return worker ? `Worker · ${worker}` : "Worker";
 }
 
 function formatTimestamp(value: string, includeSeconds = false): string {

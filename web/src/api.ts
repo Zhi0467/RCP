@@ -7,6 +7,7 @@ import type {
   ArtifactRevisionCandidate,
   Episode,
   EpisodeMessage,
+  EpisodeTimelineResponse,
   EpisodeMode,
   ExperimentLoopIndexEntry,
   IdentityResponse,
@@ -394,6 +395,15 @@ export function mergeEpisodeToMain(apiBase: string, episodeId: string): Promise<
   return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/merge`, {
     method: "POST",
   });
+}
+
+export function fetchEpisodeTimeline(
+  apiBase: string,
+  episodeId: string,
+): Promise<EpisodeTimelineResponse> {
+  return api<EpisodeTimelineResponse>(
+    `${apiBase}/episodes/${encodeURIComponent(episodeId)}/timeline`,
+  );
 }
 
 export function loadEpisodeMessages(apiBase: string, episodeId: string): Promise<EpisodeMessage[]> {

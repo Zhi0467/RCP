@@ -87,7 +87,6 @@ import type {
   AgentTask,
   Edge,
   Episode,
-  EpisodeMessage,
   EpisodeRunSection,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
@@ -1083,7 +1082,6 @@ export function DagView({
 interface ExecutionProps {
   graph: GraphState;
   episodes: Episode[];
-  episodeMessages: Readonly<Record<string, EpisodeMessage[] | undefined>>;
   episodeAction: string | null;
   tasks: AgentTask[];
   watchers: WatcherRecord[];
@@ -1105,7 +1103,6 @@ interface ExecutionProps {
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
-  onLoadEpisodeMessages: (episodeId: string) => Promise<void>;
   onStopEpisode: (episodeId: string) => Promise<void>;
   onArchiveEpisode: ArchiveEpisodeAction;
   onMergeEpisode: (episodeId: string) => Promise<void>;
@@ -1128,7 +1125,6 @@ interface ExecutionProps {
 export function ExecutionView({
   graph,
   episodes,
-  episodeMessages,
   episodeAction,
   tasks,
   watchers,
@@ -1150,7 +1146,6 @@ export function ExecutionView({
   mutationsDisabled = false,
   experimentStartsDisabled = false,
   onInspectTask,
-  onLoadEpisodeMessages,
   onStopEpisode,
   onArchiveEpisode,
   onMergeEpisode,
@@ -1447,7 +1442,6 @@ export function ExecutionView({
       return (
         <AutoResearchEpisodeCard
           episode={episode}
-          messages={episodeMessages[episode.episode_id] ?? []}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={
@@ -1463,7 +1457,6 @@ export function ExecutionView({
             onOpenExperimentEntry(entry);
           }}
           onInspectTask={onInspectTask}
-          onLoadMessages={onLoadEpisodeMessages}
           onStop={onStopEpisode}
           onMerge={onMergeEpisode}
           onReauthorize={onReauthorizeEpisode}

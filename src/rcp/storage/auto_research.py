@@ -1374,6 +1374,16 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._auto_research_recovery_record(row) if row is not None else None
 
+    def auto_research_recoveries(self, episode_id: str) -> list[AutoResearchRecoveryRecord]:
+        """Read the complete recorded recovery history for an episode."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM auto_research_recoveries WHERE episode_id = ? "
+                "ORDER BY created_at, recovery_id",
+                (episode_id,),
+            ).fetchall()
+        return [self._auto_research_recovery_record(row) for row in rows]
+
     def auto_research_control_recovery(
         self, episode_id: str, operation_id: str
     ) -> AutoResearchRecoveryRecord | None:

@@ -1137,7 +1137,6 @@ export default function App() {
     episodeAction,
     episodeRefreshError,
     episodes,
-    episodeMessages,
     liveAutoResearchEpisode,
     openRunDialog,
     closeRunDialog,
@@ -4524,7 +4523,6 @@ export default function App() {
                 onProviderLoginVerified={() => void refreshProviderLogins()}
                 graph={presentedGraph}
                 episodes={episodes}
-                episodeMessages={episodeMessages}
                 episodeAction={episodeAction}
                 tasks={projectTasks}
                 watchers={watchers}
@@ -4551,7 +4549,6 @@ export default function App() {
                 mutationsDisabled={mutationsDisabled}
                 experimentStartsDisabled={experimentStartRequiresSync}
                 onInspectTask={selectTaskInspector}
-                onLoadEpisodeMessages={refreshEpisodeMessages}
                 onStopEpisode={requestEpisodeStop}
                 onArchiveEpisode={requestEpisodeArchive}
                 onMergeEpisode={requestEpisodeMerge}

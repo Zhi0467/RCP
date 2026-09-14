@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # Operational storage retention and query bounds.
+EPISODE_TIMELINE_EVENT_LIMIT = 400
 AGENT_TASK_LIST_DEFAULT_LIMIT = 20
 AGENT_TASK_LIST_MAX_LIMIT = 100
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200

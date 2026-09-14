@@ -21,6 +21,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.episode_timeline import EpisodeTimelineResponse, build_episode_timeline
 from rcp.api.episodes import (
     EpisodeMessageBody,
     EpisodeResponse,
@@ -123,6 +124,21 @@ def episodes(
         mode=mode,
         branch_summaries=_branch_summaries(store, catalog),
     )
+
+
+@router.get(
+    "/api/projects/{project_id}/episodes/{episode_id}/timeline",
+    response_model=EpisodeTimelineResponse,
+)
+def episode_timeline(
+    project_id: str,
+    episode_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> EpisodeTimelineResponse:
+    episode = _episode_for_http(store, catalog, project_id, episode_id)
+    return build_episode_timeline(store, episode)
 
 
 @router.post(

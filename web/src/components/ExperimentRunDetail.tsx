@@ -1,8 +1,9 @@
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { taskStatusLabel } from "../agentTasks";
+import { useEffect, useState, type ReactNode } from "react";
+import { fetchEpisodeTimeline } from "../api";
+import { EpisodeTimeline } from "./EpisodeTimeline";
 import {
   type ExperimentRun,
   type ExperimentWatcherGroup,
@@ -15,7 +16,7 @@ import {
   watcherLastObservedAt,
 } from "../runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
-import type { ExperimentLoopHealth, WatcherRecord } from "../types";
+import type { EpisodeTimelineResponse, ExperimentLoopHealth, WatcherRecord } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -113,6 +114,26 @@ export function ExperimentRunDetail({
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
+  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!episode) return;
+    let cancelled = false;
+    void fetchEpisodeTimeline(apiBase, episode.episode_id).then(
+      (response) => {
+        if (!cancelled) {
+          setTimeline(response);
+          setTimelineError(null);
+        }
+      },
+      (error) => {
+        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, episode?.episode_id, episode?.updated_at]);
   const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??
@@ -268,29 +289,20 @@ export function ExperimentRunDetail({
         <strong>{recommendation.label}</strong>
       </div>
 
-      {currentTask?.active && (
-        <section className="campaign-turns experiment-current-turn" aria-label="Experiment turn">
-          <header>
-            <h3>Current turn</h3>
-            <span>1</span>
-          </header>
-          <ul>
-            <li className="campaign-task">
-              <button type="button" onClick={() => onInspectTask?.(currentTask.operation_id)}>
-                <span className="campaign-task-role worker">Agent</span>
-                <span className="campaign-task-copy">
-                  <strong>
-                    Invocation {taskInvocation(currentTask) ?? control.invocations_used}
-                  </strong>
-                  <span>{currentTask.status_message}</span>
-                </span>
-                <span className={`status-pill ${currentTask.status}`}>
-                  {taskStatusLabel(currentTask)}
-                </span>
-              </button>
-            </li>
-          </ul>
-        </section>
+      {timelineError && (
+        <div className="campaign-run-error" role="alert">
+          {timelineError}
+        </div>
+      )}
+      {episode && timeline?.episode_id === episode.episode_id && (
+        <EpisodeTimeline
+          events={timeline.events}
+          apiBase={apiBase}
+          episodeId={episode.episode_id}
+          graphTarget={episode.graph_target}
+          truncated={timeline.truncated}
+          onInspectTask={(operationId) => onInspectTask?.(operationId)}
+        />
       )}
 
       {episode?.ending_diagnostic && (

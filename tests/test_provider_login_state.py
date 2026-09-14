@@ -60,11 +60,13 @@ def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
     AppStore(fixture)
     with sqlite3.connect(fixture) as connection:
         connection.execute("DROP TABLE provider_login_states")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 18")
+        # Later migrations only add columns; dropping their ledger rows too keeps
+        # the fixture at version 17 as more migrations land.
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version > 17")
     copied = tmp_path / "copied.sqlite3"
     shutil.copy2(fixture, copied)
     upgraded = AppStore(copied)
-    assert upgraded.storage_schema_ledger_head() == 18
+    assert upgraded.storage_schema_ledger_head() >= 18
     assert upgraded.provider_login_states() == []
     with sqlite3.connect(fixture) as connection:
         assert (

@@ -35,6 +35,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
+const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
@@ -165,15 +166,40 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /12345|12,345/);
 });
 
-test("an episode turn that lost part of its launch says so on its row", () => {
-  // The turn succeeded, so its status pill reads as untroubled and nothing else
-  // on the row contradicts it. The backend authors the sentence; the row shows
-  // it verbatim rather than deciding anything about it.
+test("an episode turn that lost part of its launch says so on its timeline row", () => {
   const note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default.";
-  const degraded = { ...episode, tasks: [{ ...rootTask, degradation: note }] };
-
-  assert.match(renderEpisodes([degraded]), /ignored the requested reasoning effort/);
-  assert.doesNotMatch(renderEpisodes([episode]), /run-history-degraded/);
+  const event = {
+    event_id: `turn:${rootTask.operation_id}`,
+    kind: "turn",
+    at: rootTask.created_at,
+    actor: { kind: "orchestrator", id: rootTask.operation_id, label: "Orchestrator", member: null },
+    parent_event_id: null,
+    title: "Orchestrator turn",
+    detail: note,
+    status: "succeeded",
+    cause: null,
+    links: {
+      task_id: rootTask.operation_id,
+      message_id: null,
+      notice_id: null,
+      episode_id: episode.episode_id,
+      control_node_id: null,
+    },
+    provenance: "recorded",
+  };
+  const render = (detail) =>
+    renderToStaticMarkup(
+      React.createElement(EpisodeTimeline, {
+        events: [{ ...event, detail }],
+        apiBase: "/api/projects/demo",
+        episodeId: episode.episode_id,
+        onInspectTask() {},
+      }),
+    );
+  const html = render(note);
+  assert.match(html, /ignored the requested reasoning effort/);
+  assert.match(html, /status-pill succeeded/);
+  assert.doesNotMatch(render(null), /ignored the requested reasoning effort/);
 });
 
 test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
@@ -504,6 +530,11 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     };
     const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
     let polledEpisode = stopped;
+    await page.route("**/api/projects/**/timeline", (route) =>
+      route.fulfill({
+        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
+      }),
+    );
     await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
     let requests = 0;
     await page.route("**/api/projects/**/merge", async (route) => {
@@ -886,6 +917,11 @@ test("a served exhausted card settles from wrapping up to a visible report failu
       tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
     };
     let polls = 0;
+    await page.route("**/api/projects/**/timeline", (route) =>
+      route.fulfill({
+        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
+      }),
+    );
     await page.route("**/fixture/episode", (route) => {
       polls += 1;
       return route.fulfill({ json: projected });

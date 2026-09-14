@@ -2269,6 +2269,43 @@ export interface Episode {
   run_section: EpisodeRunSection;
 }
 
+export type EpisodeTimelineEventKind =
+  "turn" | "retry" | "wake" | "mail" | "notice" | "child" | "lifecycle" | "human";
+
+export interface EpisodeTimelineActor {
+  kind: "orchestrator" | "worker" | "wake" | "human" | "rcp" | "child";
+  id: string | null;
+  label: string;
+  member: AuthorizedHuman | null;
+}
+
+export interface EpisodeTimelineEvent {
+  event_id: string;
+  kind: EpisodeTimelineEventKind;
+  at: string;
+  actor: EpisodeTimelineActor;
+  parent_event_id: string | null;
+  title: string;
+  detail: string | null;
+  status: string | null;
+  cause: string | null;
+  links: {
+    task_id: string | null;
+    message_id: string | null;
+    notice_id: string | null;
+    episode_id: string | null;
+    control_node_id: string | null;
+  };
+  provenance: "recorded" | "unknown";
+}
+
+export interface EpisodeTimelineResponse {
+  episode_id: string;
+  mode: EpisodeMode;
+  events: EpisodeTimelineEvent[];
+  truncated: boolean;
+}
+
 export interface EpisodeMessage {
   message_id: string;
   episode_id: string;
