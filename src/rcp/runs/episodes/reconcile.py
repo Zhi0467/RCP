@@ -4,6 +4,8 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from rcp.runs.auto_research import (
     AutoResearchEndingSignal,
     AutoResearchRunRequest,
@@ -20,14 +22,27 @@ from rcp.runs.auto_research_recovery import (
     reconcile_due_auto_research_recoveries,
 )
 from rcp.runs.episodes.report import start_episode_report
-from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
+from rcp.runs.episodes.wrapup import (
+    EpisodeWrapupSpec,
+    begin_episode_report_wrapup,
+    episode_wrapup_receipt,
+    existing_episode_report_admission,
+)
 from rcp.runs.experiment_loop import (
     experiment_loop_launch_failure_diagnostic,
     experiment_loop_operational_ending_wrapup_spec,
     experiment_loop_wrapup_spec,
 )
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    AppStore,
+    EpisodeNotRunning,
+    EpisodeRecord,
+    EpisodeReportConflict,
+    EpisodeWrapupRecord,
+)
+from rcp.storage.episodes import compact_episode_receipt
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -46,6 +61,7 @@ class EpisodeReconciler:
         self.store = store
         self.background = background
         self.logger = logger
+        self._report_failure_warnings: set[tuple[str, type[Exception]]] = set()
 
     def _has_unsettled_visible_episode_task(self, episode_id: str) -> bool:
         """Whether already-admitted visible work still owns an unfinished turn."""
@@ -75,39 +91,115 @@ class EpisodeReconciler:
     ) -> bool:
         """Admit the shared hidden report only after Auto-research is quiescent."""
 
-        if self._has_unsettled_visible_episode_task(
-            signal.episode_id
-        ) or not self.store.auto_research_is_quiescent(signal.episode_id):
-            return False
+        episode: EpisodeRecord | None = None
+        spec: EpisodeWrapupSpec | None = None
+        admitting = False
         try:
-            admission = begin_episode_report_wrapup(
-                self.store,
-                auto_research_wrapup_spec(self.store, signal),
-            )
+            episode = self.store.episode(signal.episode_id)
+            if episode is None or episode.status not in {"queued", "running", "wrapping_up"}:
+                return False
+            if self._has_unsettled_visible_episode_task(
+                signal.episode_id
+            ) or not self.store.auto_research_is_quiescent(signal.episode_id):
+                return False
+            admitting = True
+            existing = self.store.episode_wrapup(signal.episode_id)
+            if existing is not None:
+                admission = existing_episode_report_admission(self.store, episode, existing)
+            else:
+                spec = auto_research_wrapup_spec(self.store, signal)
+                admission = begin_episode_report_wrapup(self.store, spec)
+            admitting = False
             if admission.launchable:
                 start_episode_report(self.background, signal.episode_id)
             return True
         except Exception as exc:
+            self._record_report_failure(signal.episode_id, source, operation_id, exc)
+            if (
+                admitting
+                and episode is not None
+                and isinstance(
+                    exc,
+                    (
+                        ValueError,
+                        KeyError,
+                        ValidationError,
+                        EpisodeReportConflict,
+                        EpisodeNotRunning,
+                    ),
+                )
+            ):
+                try:
+                    receipt_json, receipt_sha256 = compact_episode_receipt(
+                        episode_wrapup_receipt(
+                            receipt=spec.receipt
+                            if spec
+                            else {"admission_error": type(exc).__name__},
+                            episode_id=signal.episode_id,
+                            mode=episode.mode,
+                            ending=signal.ending,
+                            partial=signal.partial,
+                            diagnostic=spec.diagnostic if spec else signal.diagnostic,
+                        )
+                    )
+                    now = self.store.now()
+                    self.store.fail_episode_wrapup_unlaunchable(
+                        signal.episode_id,
+                        EpisodeWrapupRecord(
+                            episode_id=signal.episode_id,
+                            ending=signal.ending,
+                            partial=signal.partial,
+                            concluding_operation_id=spec.continuation_operation_id
+                            if spec
+                            else None,
+                            receipt_json=receipt_json,
+                            receipt_sha256=receipt_sha256,
+                            state="failed",
+                            diagnostic=str(exc),
+                            created_at=now,
+                            updated_at=now,
+                            finished_at=now,
+                        ),
+                        ending_diagnostic=signal.diagnostic,
+                    )
+                except EpisodeNotRunning:
+                    # A concurrent Stop or settlement wins over report admission.
+                    return False
+                except Exception as settlement_error:
+                    self._record_report_failure(
+                        signal.episode_id, source, operation_id, settlement_error
+                    )
+            return False
+
+    def _record_report_failure(
+        self,
+        episode_id: str,
+        source: str,
+        operation_id: str | None,
+        exc: Exception,
+    ) -> None:
+        key = (episode_id, type(exc))
+        if key not in self._report_failure_warnings:
+            self._report_failure_warnings.add(key)
             self.logger.warning(
                 "Could not reconcile episode report for %s after %s: %s",
-                signal.episode_id,
+                episode_id,
                 source,
                 exc,
             )
-            if operation_id is not None:
-                with suppress(Exception):
-                    self.store.record_agent_task_receipt(
-                        operation_id,
-                        "episode_report_reconciliation_failed",
-                        {
-                            "episode_id": signal.episode_id,
-                            "source": source,
-                            "exception_type": type(exc).__name__,
-                            "detail": str(exc),
-                        },
-                        tier="diagnostic",
-                    )
-            return False
+        if operation_id is not None:
+            with suppress(Exception):
+                self.store.record_agent_task_receipt(
+                    operation_id,
+                    "episode_report_reconciliation_failed",
+                    {
+                        "episode_id": episode_id,
+                        "source": source,
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                    tier="diagnostic",
+                )
 
     def reconcile_auto_research_episode(
         self,
@@ -131,25 +223,7 @@ class EpisodeReconciler:
             try:
                 start_episode_report(self.background, episode_id)
             except Exception as exc:
-                self.logger.warning(
-                    "Could not restart episode report for %s after %s: %s",
-                    episode_id,
-                    source,
-                    exc,
-                )
-                if operation_id is not None:
-                    with suppress(Exception):
-                        self.store.record_agent_task_receipt(
-                            operation_id,
-                            "episode_report_reconciliation_failed",
-                            {
-                                "episode_id": episode_id,
-                                "source": source,
-                                "exception_type": type(exc).__name__,
-                                "detail": str(exc),
-                            },
-                            tier="diagnostic",
-                        )
+                self._record_report_failure(episode_id, source, operation_id, exc)
             return
         if signal is None and episode.ending is None:
             if (

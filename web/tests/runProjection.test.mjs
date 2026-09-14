@@ -644,6 +644,25 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
     currentWatchers: [],
     health: "agent_active",
   };
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: {
+        ...base.control,
+        recommendation: "start_episode",
+        episode: { blocked_reason: "reauthorize" },
+      },
+      health: "paused_at_limit",
+    }).label,
+    "The authorized turns are spent. Reauthorize more invocations",
+  );
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: { ...base.control, recommendation: "retry", episode: { blocked_reason: "sign_in" } },
+    }).label,
+    "The provider login is dead. Sign in again, then retry this episode, or switch provider",
+  );
   assert.equal(experimentRecommendation(base).step, "wait");
   assert.equal(
     experimentRecommendation({

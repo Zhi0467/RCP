@@ -2404,6 +2404,7 @@ class AutoResearchSpaceRunTaskState(BaseModel):
 
     operation_id: str
     status: AgentTaskStatus
+    failure_kind: AgentFailureKind | None
     created_at: str
     last_activity_at: str | None
     attempt: int = Field(ge=1)

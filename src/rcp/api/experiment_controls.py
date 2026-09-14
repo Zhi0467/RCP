@@ -320,7 +320,9 @@ def _experiment_run_health(
         return "completed"
     if stop_requested and operational.stop_settled and awaiting_human:
         return "human_stopped"
-    if episode is not None and episode.wrapup_state in {"pending", "running"}:
+    if episode is not None and (
+        episode.status == "wrapping_up" or episode.wrapup_state in {"pending", "running"}
+    ):
         return "wrapping_up"
     if episode is not None and episode.health == "failed":
         return "failed"

@@ -648,59 +648,190 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
         )
 
 
-def test_the_projection_decides_lifecycle_state_so_no_surface_has_to() -> None:
-    """Health, next step, and control come from one place, on backend inputs only.
-
-    Four different situations reach `needs_action`, which is why the
-    recommendation travels beside the health rather than being re-derived from
-    `status` wherever it is needed.
-    """
+@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
+@pytest.mark.parametrize(
+    ("episode_fields", "task_fields", "recovering", "expected"),
+    [
+        pytest.param(
+            {"ending": "stopped", "status": "stopped", "wrapup_state": "running"},
+            {},
+            False,
+            ("stopped", "none", None, None),
+            id="stopped-wins",
+        ),
+        pytest.param(
+            {"wrapup_state": "pending"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="report-pending",
+        ),
+        pytest.param(
+            {"wrapup_state": "running"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="report-running",
+        ),
+        pytest.param(
+            {"status": "wrapping_up", "ending": "exhausted"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="production-before-admission",
+        ),
+        pytest.param(
+            {"status": "wrapping_up", "ending": "exhausted", "wrapup_state": "failed"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="wrapping-status-any-report-state",
+        ),
+        *[
+            pytest.param(
+                {
+                    "status": status,
+                    "ending": ending,
+                    "wrapup_state": wrapup,
+                    "wrapup_error": "Report admission failed." if wrapup == "failed" else None,
+                },
+                {},
+                False,
+                (health, recommendation, None, blocked),
+                id=f"{ending}-{wrapup}",
+            )
+            for ending, status, health, fallback, blocked in [
+                ("completed", "completed", "completed", "none", None),
+                ("failed", "failed", "failed", "review", None),
+                ("exhausted", "needs_action", "needs_action", "reauthorize", "reauthorize"),
+                ("human_pause", "needs_action", "needs_action", "reauthorize", "reauthorize"),
+            ]
+            for wrapup in ["ready", "failed", "skipped", "legacy_unavailable", "not_started"]
+            for recommendation in [
+                "open_report"
+                if wrapup == "ready" and ending in {"completed", "failed"}
+                else fallback
+            ]
+        ],
+        pytest.param(
+            {"status": "stopping", "stop_requested_at": "2026-08-24T00:00:00Z"},
+            {"status": "running"},
+            True,
+            ("stopping", "wait", None, None),
+            id="stop-finishing-before-recovery",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "failure_kind": "provider_auth"},
+            True,
+            ("recovering", "wait", None, None),
+            id="recovery-pending",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "failure_kind": "provider_auth"},
+            False,
+            ("needs_action", "retry", "retry", "sign_in"),
+            id="provider-auth",
+        ),
+        pytest.param(
+            {},
+            {"status": "paused", "native_session_id": "session"},
+            False,
+            ("needs_action", "resume", "resume", None),
+            id="paused",
+        ),
+        pytest.param(
+            {},
+            {"status": "interrupted"},
+            False,
+            ("needs_action", "retry", "retry", None),
+            id="interrupted",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed"},
+            False,
+            ("needs_action", "retry", "retry", None),
+            id="failed-control",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "history_only": True},
+            False,
+            ("needs_action", "review", None, None),
+            id="failed-without-recovery",
+        ),
+        pytest.param(
+            {}, {"status": "queued"}, False, ("starting", "wait", None, None), id="queued-turn"
+        ),
+        pytest.param(
+            {}, {"status": "pausing"}, False, ("active", "wait", None, None), id="pausing-turn"
+        ),
+        pytest.param(
+            {},
+            {"status": "running"},
+            False,
+            ("active", "continue", "pause", None),
+            id="running-turn",
+        ),
+        pytest.param(
+            {}, {}, False, ("active", "continue", None, None), id="waiting-without-live-turn"
+        ),
+    ],
+)
+def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
+    mode,
+    episode_fields,
+    task_fields,
+    recovering,
+    expected,
+) -> None:
+    from types import SimpleNamespace
 
     from rcp.api.episodes import _episode_projection
 
-    def episode(**fields: object) -> EpisodeRecord:
-        base = {
+    record = EpisodeRecord.model_validate(
+        {
             "episode_id": str(uuid.uuid4()),
             "project_id": "project",
-            "mode": "auto_research",
+            "mode": mode,
+            "control_node_id": "exp/one" if mode == "experiment_loop" else None,
             "status": "running",
             "invocation_ceiling": 4,
             "invocations_used": 1,
             "created_at": "2026-08-24T00:00:00Z",
             "updated_at": "2026-08-24T00:00:00Z",
         }
-        return EpisodeRecord.model_validate({**base, **fields})
-
-    def project(record: EpisodeRecord, **kwargs: object) -> tuple[str, str, str | None]:
-        return _episode_projection(
-            record,
-            [],
-            control_task_id=None,
-            recovery=None,
-            has_report=False,
-            can_reauthorize=False,
-            **kwargs,  # type: ignore[arg-type]
-        )
-
-    assert project(episode(wrapup_state="running")) == ("wrapping_up", "wait", None)
-    assert project(episode(status="stopped", ending="stopped", wrapup_state="skipped")) == (
-        "stopped",
-        "none",
-        None,
     )
-    assert project(episode(status="failed", ending="failed")) == ("failed", "review", None)
-    assert project(episode(status="queued")) == ("starting", "wait", None)
-    assert project(episode()) == ("active", "continue", None)
-
-    reauthorizable = _episode_projection(
-        episode(status="needs_action", ending="exhausted", wrapup_state="ready"),
-        [],
-        control_task_id=None,
-        recovery=None,
-        has_report=False,
-        can_reauthorize=True,
+    record = record.model_copy(update=episode_fields)
+    tasks = (
+        [
+            SimpleNamespace(
+                operation_id="control",
+                failure_kind=task_fields.get("failure_kind"),
+                status=task_fields["status"],
+                can_pause=task_fields["status"] == "running",
+                can_resume=task_fields["status"] == "paused",
+                can_retry=not task_fields.get("history_only", False),
+            )
+        ]
+        if task_fields
+        else []
     )
-    assert reauthorizable == ("needs_action", "reauthorize", None)
+    result = _episode_projection(
+        record,
+        tasks,
+        control_task_id="control",
+        recovery=SimpleNamespace(status="pending") if recovering else None,
+        has_report=record.wrapup_state == "ready",
+        can_reauthorize=False,
+    )
+    assert result == expected
+    if record.ending is not None:
+        assert result[0] != "active"
+    if record.wrapup_state == "failed":
+        assert record.wrapup_error == episode_fields.get("wrapup_error")
 
 
 def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> None:
@@ -729,3 +860,49 @@ def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> No
     assert response.report is None
     assert response.can_message is False
     assert (response.health, response.recommendation) == ("stopped", "none")
+
+
+def test_auth_failure_reaches_both_full_and_compact_episode_tasks(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "auth", root_status="failed")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET failure_kind = 'provider_auth' WHERE operation_id = ?",
+            (root.operation_id,),
+        )
+    response = serialize_episode(store, "project", episode, branch_summary=_branch_summary)
+    assert response.tasks[0].failure_kind == "provider_auth"
+    assert response.blocked_reason == "sign_in"
+    snapshots = store.auto_research_space_run_projection_snapshots(
+        {"project"}, completed_since=episode.created_at
+    )
+    assert snapshots[0].tasks[0].failure_kind == "provider_auth"
+    assert space_auto_research_episode_projection(snapshots[0])[:2] == (
+        "needs_action",
+        "actionable",
+    )
+
+
+@pytest.mark.parametrize("wrapup_state", ["not_started", "failed"])
+def test_exhausted_serialization_carries_reauthorization_and_report_error(
+    tmp_path, wrapup_state
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, _root = _auto_episode(store, "exhausted")
+    ended = episode.model_copy(
+        update={
+            "status": "needs_action",
+            "ending": "exhausted",
+            "wrapup_state": wrapup_state,
+            "wrapup_error": "Report admission failed." if wrapup_state == "failed" else None,
+        }
+    )
+    response = serialize_episode(store, "project", ended, branch_summary=_branch_summary)
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "needs_action",
+        "reauthorize",
+        "reauthorize",
+    )
+    assert response.wrapup_error == ended.wrapup_error

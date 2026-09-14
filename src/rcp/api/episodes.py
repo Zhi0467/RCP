@@ -12,6 +12,7 @@ from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import (
+    AgentFailureKind,
     AgentTaskRecord,
     AgentTaskStatus,
     AppStore,
@@ -63,6 +64,7 @@ class _EpisodeProjectionTask(Protocol):
     can_pause: bool
     can_resume: bool
     can_retry: bool
+    failure_kind: AgentFailureKind | None
 
 
 class _AutoResearchControlTask(_EpisodeProjectionTask, Protocol):
@@ -155,6 +157,7 @@ class EpisodeTaskResponse(BaseModel):
     finished_at: str | None = None
     status_message: str
     error: str | None = None
+    failure_kind: AgentFailureKind | None
     degradation: str | None = None
     applied_revision: int | None = None
     result: dict[str, object] | None = None
@@ -205,6 +208,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -272,6 +276,7 @@ class EpisodeResponse(BaseModel):
     # backend lifecycle alone, so the surfaces consume them rather than each
     # reaching its own conclusion from `status`, `ending`, and task rows.
     health: EpisodeHealth
+    blocked_reason: EpisodeBlockedReason | None
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
     run_section: EpisodeRunSection
@@ -393,7 +398,7 @@ def serialize_episode(
         and episode.ending == "exhausted"
         and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
     )
-    health, next_step, task_control = _episode_projection(
+    health, next_step, task_control, blocked_reason = _episode_projection(
         episode,
         tasks,
         control_task_id=current_control_task_id,
@@ -447,6 +452,7 @@ def serialize_episode(
         can_message=episode.status == "running",
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
+        blocked_reason=blocked_reason,
         recommendation=next_step,
         task_control=task_control,
         run_section=_episode_run_section(health),
@@ -550,49 +556,55 @@ def _episode_projection(
     recovery: _RecoveryProjection | None,
     has_report: bool,
     can_reauthorize: bool,
-) -> tuple[EpisodeHealth, EpisodeRecommendationKind, EpisodeTaskControlKind | None]:
-    """Decide lifecycle state, next human step, and available control for one parent.
-
-    Every input is backend lifecycle, so this is the projection's answer and not a
-    conclusion any surface reaches on its own. Several distinct situations share
-    the `needs_action` state, which is why the recommendation travels with it.
-    """
+) -> tuple[
+    EpisodeHealth,
+    EpisodeRecommendationKind,
+    EpisodeTaskControlKind | None,
+    EpisodeBlockedReason | None,
+]:
+    """Apply the episode health table in precedence order, before task controls."""
 
     task = next((item for item in tasks if item.operation_id == control_task_id), None)
-
-    if episode.wrapup_state in {"pending", "running"}:
-        return "wrapping_up", "wait", None
-    if has_report and episode.wrapup_state == "ready":
-        if episode.status == "completed":
-            return "completed", "open_report", None
-        if episode.status == "failed":
-            return "failed", "open_report", None
-        return "needs_action", "open_report", None
-    if episode.status == "stopped":
-        return "stopped", "none", None
-    if episode.status == "completed":
-        return "completed", "none", None
-    if episode.status == "failed":
-        return "failed", "review", None
-    if recovery is not None and recovery.status == "pending":
-        return "recovering", "wait", None
-    if episode.status == "needs_action" and can_reauthorize:
-        return "needs_action", "reauthorize", None
+    if episode.ending == "stopped" or (episode.ending is None and episode.status == "stopped"):
+        return "stopped", "none", None, None
+    if episode.status == "wrapping_up" or episode.wrapup_state in {"pending", "running"}:
+        return "wrapping_up", "wait", None, None
+    if episode.ending == "completed" or (episode.ending is None and episode.status == "completed"):
+        return (
+            "completed",
+            "open_report" if episode.wrapup_state == "ready" else "none",
+            None,
+            None,
+        )
+    if episode.ending == "failed" or (episode.ending is None and episode.status == "failed"):
+        return (
+            "failed",
+            "open_report" if episode.wrapup_state == "ready" else "review",
+            None,
+            None,
+        )
+    if episode.ending in {"exhausted", "human_pause"}:
+        return "needs_action", "reauthorize", None, "reauthorize"
     recovery_control = _episode_recovery_control(task)
-    if recovery_control is not None:
-        return "needs_action", recovery_control, recovery_control
-    if episode.status == "stopping":
-        return "stopping", "wait", None
+    live_turn = any(item.status in {"queued", "running", "pausing"} for item in tasks)
+    if (episode.stop_requested_at is not None or episode.status == "stopping") and live_turn:
+        return "stopping", "wait", None, None
+    if recovery is not None and recovery.status == "pending":
+        return "recovering", "wait", None, None
+    if task is not None and task.status == "failed" and task.failure_kind == "provider_auth":
+        return "needs_action", recovery_control or "review", recovery_control, "sign_in"
     if task is not None and task.status in {"paused", "interrupted", "failed"}:
-        return "needs_action", "review", None
-    if episode.status == "queued" or (task is not None and task.status == "queued"):
-        return "starting", "wait", None
+        return "needs_action", recovery_control or "review", recovery_control, None
+    if episode.status == "stopping":
+        return "stopping", "wait", None, None
+    if episode.status == "queued" or any(item.status == "queued" for item in tasks):
+        return "starting", "wait", None, None
     if episode.status == "needs_action":
-        return "needs_action", "review", None
+        return "needs_action", "review", None, None
     if task is not None and task.status == "pausing":
-        return "active", "wait", None
+        return "active", "wait", None, None
     pause = "pause" if task is not None and task.status == "running" and task.can_pause else None
-    return "active", "continue", pause
+    return "active", "continue", pause, None
 
 
 def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
@@ -846,7 +858,7 @@ def space_auto_research_episode_projection(
         and episode.ending == "exhausted"
         and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
     )
-    health, _recommendation, _task_control = _episode_projection(
+    health, _recommendation, _task_control, _blocked_reason = _episode_projection(
         episode,
         tasks,
         control_task_id=current_control_task_id,

@@ -357,7 +357,7 @@ class EpisodeStoreMixin:
                 episode_placeholders = ", ".join("?" for _ in lifecycle_episode_ids)
                 task_rows = connection.execute(
                     f"""
-                    SELECT run.operation_id, run.episode_id, run.kind, run.status,
+                    SELECT run.operation_id, run.episode_id, run.kind, run.status, run.failure_kind,
                            run.created_at, run.last_activity_at, run.attempt,
                            run.parent_operation_id, run.native_session_id,
                            run.history_only, run.stage_host, run.stage_root, run.visible,
@@ -425,6 +425,7 @@ class EpisodeStoreMixin:
                 AutoResearchSpaceRunTaskState(
                     operation_id=str(data["operation_id"]),
                     status=data["status"],
+                    failure_kind=data["failure_kind"],
                     created_at=str(data["created_at"]),
                     last_activity_at=data["last_activity_at"],
                     attempt=int(data["attempt"]),
@@ -1046,6 +1047,8 @@ class EpisodeStoreMixin:
                 if stored != wrapup:
                     raise EpisodeReportConflict("the episode wrap-up restart fence is immutable")
                 return episode, stored
+            if episode.stop_requested_at is not None or episode.ending == "stopped":
+                raise EpisodeNotRunning("Stop already fenced this episode")
             if episode.status not in {"queued", "running", "wrapping_up"}:
                 raise EpisodeNotRunning("the episode has already ended")
             if wrapup.concluding_operation_id is not None:

@@ -103,6 +103,7 @@ const episode = {
   can_message: true,
   live: true,
   health: "active",
+  blocked_reason: null,
   recommendation: "continue",
   task_control: "pause",
 };
@@ -786,4 +787,149 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     requests.some(({ path }) => path.includes("experiment-loops")),
     false,
   );
+});
+
+for (const mode of ["auto_research", "experiment_loop"]) {
+  for (const wrapupState of ["not_started", "failed"]) {
+    test(`${mode} exhausted ${wrapupState} card uses the settled projection`, () => {
+      const ended = {
+        ...episode,
+        mode,
+        status: "needs_action",
+        ending: "exhausted",
+        wrapup_state: wrapupState,
+        wrapup_error: wrapupState === "failed" ? "Receipt admission failed." : null,
+        live: false,
+        health: "needs_action",
+        recommendation: "reauthorize",
+        blocked_reason: "reauthorize",
+        task_control: null,
+        can_stop: false,
+        can_message: false,
+      };
+      const projection = episodeProjection(ended);
+      assert.equal(projection.healthLabel, "Needs action");
+      assert.equal(
+        projection.recommendation.label,
+        "The authorized turns are spent. Authorize more turns",
+      );
+      const html = renderEpisodes([ended]);
+      assert.match(html, /Needs action/);
+      assert.doesNotMatch(html, /Let auto-research continue/);
+      if (wrapupState === "failed")
+        assert.match(html, /Report generation error: Receipt admission failed\./);
+    });
+  }
+}
+
+test("an exhausted episode waiting for admission says wrapping up", () => {
+  const wrapping = {
+    ...episode,
+    status: "wrapping_up",
+    ending: "exhausted",
+    wrapup_state: "not_started",
+    health: "wrapping_up",
+    recommendation: "wait",
+    blocked_reason: null,
+    task_control: null,
+  };
+  assert.equal(episodeProjection(wrapping).health, "wrapping_up");
+  const html = renderEpisodes([wrapping]);
+  assert.match(html, /Wrapping up visualization and report/);
+  assert.doesNotMatch(html, /Let auto-research continue/);
+});
+
+test("a blocked login leads the recovery instruction", () => {
+  const blocked = {
+    ...episode,
+    health: "needs_action",
+    recommendation: "retry",
+    blocked_reason: "sign_in",
+  };
+  assert.equal(
+    episodeProjection(blocked).recommendation.label,
+    "The provider login is dead. Sign in again, then retry the current turn",
+  );
+});
+
+test("a served exhausted card settles from wrapping up to a visible report failure", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("response", (response) => {
+      if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
+    });
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    let projected = {
+      ...episode,
+      status: "wrapping_up",
+      ending: "exhausted",
+      wrapup_state: "not_started",
+      health: "wrapping_up",
+      recommendation: "wait",
+      blocked_reason: null,
+      task_control: null,
+      can_stop: false,
+      can_message: false,
+      tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
+    };
+    let polls = 0;
+    await page.route("**/fixture/episode", (route) => {
+      polls += 1;
+      return route.fulfill({ json: projected });
+    });
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
+    );
+    await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
+    const header = page.locator(".campaign-run-heading");
+    assert.equal(
+      await header.locator(".status-pill").textContent(),
+      "Wrapping up visualization and report",
+    );
+    projected = {
+      ...projected,
+      status: "needs_action",
+      wrapup_state: "failed",
+      live: false,
+      wrapup_error: "The ending receipt could not be admitted.",
+      health: "needs_action",
+      recommendation: "reauthorize",
+      blocked_reason: "reauthorize",
+      can_reauthorize: true,
+    };
+    await page.evaluate(() => window.refreshMergeEpisode());
+    await header.getByText("Needs action", { exact: true }).waitFor();
+    // Newly available authorization opens the card; its collapsed header stays truthful too.
+    await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
+    assert.equal(await header.locator(".status-pill").textContent(), "Needs action");
+    assert.equal(await page.locator(".campaign-run-detail").count(), 0);
+    await page.getByRole("button", { name: /^Expand auto-research/ }).click();
+    await page
+      .getByText("The authorized turns are spent. Authorize more turns", { exact: true })
+      .waitFor();
+    await page
+      .getByText("Report generation error: The ending receipt could not be admitted.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(await page.getByText("Let auto-research continue", { exact: true }).count(), 0);
+    assert.equal(polls, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
 });

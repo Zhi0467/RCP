@@ -150,7 +150,17 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
           ? "Episode ended"
           : "No action needed",
   };
-  return { step, label: labels[step] };
+  const blockedReason = run.control.episode?.blocked_reason;
+  const label = labels[step];
+  return {
+    step,
+    label:
+      blockedReason === "sign_in" && step !== "reauthenticate_provider"
+        ? `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`
+        : blockedReason === "reauthorize"
+          ? `The authorized turns are spent. ${label}`
+          : label,
+  };
 }
 
 export function buildExperimentRun(

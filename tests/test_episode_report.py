@@ -167,18 +167,17 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
     monkeypatch.setattr("rcp.runs.episodes.reconcile.start_episode_report", fail_restart)
     logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
 
-    EpisodeReconciler(store, background, logger=logger).reconcile_auto_research_episode(
-        "episode",
-        source="startup",
-        operation_id="operation",
-    )
+    reconciler = EpisodeReconciler(store, background, logger=logger)
+    for _ in range(2):
+        reconciler.reconcile_auto_research_episode(
+            "episode",
+            source="startup",
+            operation_id="operation",
+        )
 
     assert len(warnings) == 1
-    assert warnings[0][:3] == (
-        "Could not restart episode report for %s after %s: %s",
-        "episode",
-        "startup",
-    )
+    assert warnings[0][1:3] == ("episode", "startup")
+    assert len(receipts) == 2
     assert str(warnings[0][3]) == "allocation is unavailable"
     assert receipts[0][0:2] == ("operation", "episode_report_reconciliation_failed")
     assert receipts[0][2]["detail"] == "allocation is unavailable"

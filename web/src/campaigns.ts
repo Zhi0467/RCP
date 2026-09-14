@@ -90,7 +90,7 @@ const EPISODE_RECOMMENDATION_LABELS: Record<EpisodeRecommendationKind, string> =
   wait: "Wait for the current step",
   resume: "Resume the current turn",
   retry: "Retry the current turn",
-  reauthorize: "Start a new authorized episode",
+  reauthorize: "Authorize more turns",
   open_report: "Open report",
   review: "Review the episode state",
   none: "No further action is needed",
@@ -127,7 +127,16 @@ export function episodeProjection(
   return {
     health: episode.health,
     healthLabel: EPISODE_HEALTH_LABELS[episode.health],
-    recommendation: { kind: episode.recommendation, label, task },
+    recommendation: {
+      kind: episode.recommendation,
+      label:
+        episode.blocked_reason === "sign_in"
+          ? `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`
+          : episode.blocked_reason === "reauthorize"
+            ? `The authorized turns are spent. ${label}`
+            : label,
+      task,
+    },
     taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
   };
 }

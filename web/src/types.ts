@@ -2184,6 +2184,7 @@ export type EpisodeHealth =
   | "completed"
   | "stopped"
   | "failed";
+export type EpisodeBlockedReason = "sign_in" | "reauthorize";
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
@@ -2262,6 +2263,7 @@ export interface Episode {
   can_message: boolean;
   live: boolean;
   health: EpisodeHealth;
+  blocked_reason: EpisodeBlockedReason | null;
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
   run_section: EpisodeRunSection;
