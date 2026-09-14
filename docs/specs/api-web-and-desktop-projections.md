@@ -735,10 +735,30 @@ an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
 `/api/projects/{project_id}/experiment-episodes` path restricts projection work
 to that visible project. The same child appears once as a linked, subordinate
-**Experiment** row in the owning Auto-research card's **Turns** list. That row is
+`child` event on the owning Auto-research card's timeline. That event is
 navigational provenance, not a second lifecycle or budget: its label and status
 consume the indexed node and control, while the child card retains its own
 episode budget, transcript, and valid controls.
+
+### Episode timeline
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/timeline` is a read-only
+projection of one episode's causal record as typed events on one time axis:
+`turn`, `retry`, `wake`, `mail`, `notice`, `child`, `lifecycle`, and `human`.
+Each event carries its time, an actor (orchestrator, worker, wake, human
+member, RCP, or child), a `parent_event_id` that nests a retry under its turn,
+a delivered notice or message under the wake or harvesting turn that consumed
+it, and a child under the turn that admitted it, plus a cause (wake cause,
+retry cause, notice source event, `wake_suppressed`), bounded detail, links to
+the task, message, notice, or episode, and a `provenance` flag that is
+`unknown` when the record cannot say who or what caused an event; nothing is
+guessed. The response is bounded and says when it was truncated. The web holds
+one `EpisodeTimeline` model class and one `TimelineRenderConfig` that maps event
+kinds to lane, glyph, tone, and fold behavior; the component renders what the
+model decides. Mail is folded and opens on click; a task event opens the task
+inspector; a child event opens the child. The timeline replaces the Turns and
+Mail lists on the Auto-research card and the turn list on the Experiment run
+detail; the message composer stays beneath it.
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable
 objective separately from retained stale guidance. When the backend finds the

@@ -251,6 +251,16 @@ the legible number stays honest. Its report allocation is hidden from that
 operational budget. Every non-Stop ending produces the durable visual report;
 Stop alone means no report.
 
+An episode's history is one timeline: a vertical time axis with events
+branching to lanes (orchestrator, workers, children, mail, lifecycle, human),
+each a compact row with glyph, title, actor, time, and status pill. Retries
+nest under their turn, delivered notices and mail under the wake or turn that
+consumed them, children under the turn that admitted them. Mail rows are
+folded to sender and first line and open in place. A row whose cause the record
+does not hold says so with a small "provenance unknown" tag rather than
+implying one. Lane, glyph, tone, and fold behavior come from one render
+configuration, not from the component.
+
 Result views are revised by acting on the picture — box a region, underscore
 items — not by describing it in the composer. A gesture writes a visible draft
 and never dispatches a turn by itself.

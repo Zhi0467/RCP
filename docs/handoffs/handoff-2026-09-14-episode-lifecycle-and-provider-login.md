@@ -3,8 +3,8 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Slices 1, 2, and 5 are implemented on this
-branch; slices 3, 4, and 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
+two further protocol spikes. Slices 1, 2, 5, and 6 are implemented on
+this branch; slices 3 and 4 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
 commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
 branch. None is optional.
 
