@@ -116,6 +116,9 @@ export function ExperimentRunDetail({
   const episode = control.episode;
   const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
+  const watcherSignature = run.watchers
+    .map((watcher) => `${watcher.watcher_id}:${watcher.status}:${watcher.completed_at ?? ""}`)
+    .join("|");
   useEffect(() => {
     if (!episode) return;
     let cancelled = false;
@@ -133,7 +136,8 @@ export function ExperimentRunDetail({
     return () => {
       cancelled = true;
     };
-    // Turn progress updates the task row without touching the episode's own timestamp.
+    // Turn progress updates the task row, and a watcher stops or completes,
+    // without touching the episode's own timestamp.
   }, [
     apiBase,
     episode?.episode_id,
@@ -141,6 +145,7 @@ export function ExperimentRunDetail({
     currentTask?.operation_id,
     currentTask?.status,
     currentTask?.updated_at,
+    watcherSignature,
   ]);
   const stopUnsettled = control.stop_pending;
   const currentOperationId =

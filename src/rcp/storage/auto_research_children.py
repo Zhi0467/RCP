@@ -1929,15 +1929,30 @@ class AutoResearchChildrenStoreMixin:
     def auto_research_lifecycle_notices(
         self,
         episode_id: str,
+        *,
+        newest: int | None = None,
     ) -> list[AutoResearchLifecycleNoticeRecord]:
+        """Every notice oldest first, or only the `newest` of them in the same order."""
+
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM auto_research_lifecycle_notices
-                WHERE episode_id = ? ORDER BY created_at, notice_id
-                """,
-                (episode_id,),
-            ).fetchall()
+            if newest is None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM auto_research_lifecycle_notices
+                    WHERE episode_id = ? ORDER BY created_at, notice_id
+                    """,
+                    (episode_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT * FROM auto_research_lifecycle_notices
+                        WHERE episode_id = ? ORDER BY created_at DESC, notice_id DESC LIMIT ?
+                    ) ORDER BY created_at, notice_id
+                    """,
+                    (episode_id, newest),
+                ).fetchall()
         return [self._lifecycle_notice_record(row) for row in rows]
 
     def auto_research_lifecycle_delivery(

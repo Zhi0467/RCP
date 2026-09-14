@@ -725,6 +725,18 @@ async def _stream_agent_events(
         execution.login_generation = execution.store.provider_login_state(
             request.provider, execution_host
         ).generation
+
+    async def capture_login_generation() -> None:
+        # Read again under the credential gate: a Verify that landed while this
+        # launch waited for the gate bumped the generation, and this process runs
+        # on the credential it verified, so its failure must count against it.
+        if execution is not None:
+            execution.login_generation = (
+                await asyncio.to_thread(
+                    execution.store.provider_login_state, request.provider, execution_host
+                )
+            ).generation
+
     async with aclosing(
         launcher.stream(
             request.provider,
@@ -748,6 +760,7 @@ async def _stream_agent_events(
             capability=capability,
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
+            before_start=capture_login_generation if execution is not None else None,
         )
     ) as stream:
         async for event in stream:

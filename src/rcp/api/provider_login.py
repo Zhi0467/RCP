@@ -105,7 +105,13 @@ def provider_login_accounts(
         for machine in manifest.machines:
             machines.setdefault(machine.host, set()).add(machine.alias)
     pairs = {(provider, host) for provider, host, _ in catalog.provider_targets()}
-    pairs.update((state.provider, state.host) for state in store.provider_login_states())
+    # A stored row for a host no project names any more is history, not an
+    # account anyone can act on; Verify would refuse it as an unknown host.
+    pairs.update(
+        (state.provider, state.host)
+        for state in store.provider_login_states()
+        if not state.host or state.host in machines
+    )
     accounts = []
     for provider, host in sorted(pairs):
         state = store.provider_login_state(provider, host)

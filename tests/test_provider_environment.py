@@ -207,3 +207,32 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     snapshot = store.provider_readiness_snapshot("claude", "", str(binary))
     assert snapshot is not None and snapshot.version == "2.1.271 (Claude Code)"
     assert TOKEN not in snapshot.readiness_json
+
+
+@pytest.mark.asyncio
+async def test_before_start_runs_once_under_the_credential_gate(
+    tmp_path: Path, credentials: ProviderCredentialStore
+) -> None:
+    """The login generation a turn runs under is read while nothing can change it."""
+
+    binary = _fake_claude(tmp_path)
+    launcher = AgentLauncher(credentials=credentials)
+    lock = launcher.credential_gate._lock_for("claude", "")
+    observed: list[bool] = []
+
+    async def before_start() -> None:
+        observed.append(not lock.acquire(False))
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude",
+            "Discuss",
+            binary=str(binary),
+            cwd=tmp_path,
+            capability="discuss",
+            before_start=before_start,
+        )
+    ]
+    assert [event.text for event in events if event.event == "answer"] == ["Discuss works"]
+    assert observed == [True], "before_start did not run exactly once inside the hold"

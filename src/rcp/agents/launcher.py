@@ -12,7 +12,7 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -806,8 +806,15 @@ class AgentLauncher:
         capability: AgentCapability,
         binary: str | None = None,
         runtime_id: str | None = None,
+        before_start: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Run the preferred provider runtime, falling back only before prompt delivery."""
+        """Run the preferred provider runtime, falling back only before prompt delivery.
+
+        `before_start` runs once the credential gate is held and the provider is
+        certain to start: the moment a caller may read the login generation this
+        process will run under, since a Verify cannot change it while the gate is
+        held.
+        """
 
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
@@ -836,6 +843,7 @@ class AgentLauncher:
                         capability=capability,
                         binary=binary,
                         runtime_id=runtime.id,
+                        before_start=before_start,
                     )
                 ) as stream:
                     async for event in stream:
@@ -878,6 +886,7 @@ class AgentLauncher:
         capability: AgentCapability,
         binary: str | None = None,
         runtime_id: str,
+        before_start: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1001,6 +1010,12 @@ class AgentLauncher:
             credential_hold.release()
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
+        if before_start is not None:
+            try:
+                await before_start()
+            except BaseException:
+                credential_hold.release()
+                raise
         # Declared only once this turn is certain to launch. Announcing a remote
         # pass and then pausing would leave a live pass nothing ever closes.
         if host and remote_pid_file:

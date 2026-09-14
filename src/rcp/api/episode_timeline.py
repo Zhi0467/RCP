@@ -111,8 +111,21 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         if routes
         else {}
     )
-    notices = store.auto_research_lifecycle_notices(episode.episode_id) if auto else []
-    messages = store.auto_research_messages(episode.episode_id) if auto else []
+    # The response keeps the newest EPISODE_TIMELINE_EVENT_LIMIT events, so no
+    # older notice or message (bodies up to 16 KB) can reach the wire; hydrate
+    # only as many as could.
+    notices = (
+        store.auto_research_lifecycle_notices(
+            episode.episode_id, newest=EPISODE_TIMELINE_EVENT_LIMIT
+        )
+        if auto
+        else []
+    )
+    messages = (
+        store.auto_research_messages(episode.episode_id, newest=EPISODE_TIMELINE_EVENT_LIMIT)
+        if auto
+        else []
+    )
     watchers = (
         [row for row in store.watchers(episode.project_id) if row.episode_id == episode.episode_id]
         if not auto

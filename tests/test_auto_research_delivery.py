@@ -1887,3 +1887,47 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
     wait_for_task(store, retried.operation_id, expect="succeeded")
     categories = [receipt.category for receipt in store.agent_task_receipts(retried.operation_id)]
     assert "operation_dispatch_started" in categories
+
+
+def test_newest_notices_and_messages_are_a_bounded_suffix_in_order(tmp_path):
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, request, _execution):
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    for index in range(3):
+        store.record_auto_research_lifecycle_notice(
+            AutoResearchLifecycleNoticeRecord(
+                notice_id=f"notice-{index}",
+                episode_id=episode.episode_id,
+                source_kind="worker",
+                source_id=f"worker-{index}",
+                source_event="succeeded",
+                payload={},
+                created_at=f"2026-09-14T10:00:0{index}+00:00",
+            )
+        )
+        record_auto_research_message(
+            store,
+            message_id=f"message-{index}",
+            episode_id=episode.episode_id,
+            sender_role="human",
+            sender_task_id=None,
+            authorized_by=episode.authorized_by,
+            recipient_task_id=root.operation_id,
+            body=f"mail {index}",
+        )
+
+    notices = store.auto_research_lifecycle_notices(episode.episode_id, newest=2)
+    assert [notice.notice_id for notice in notices] == ["notice-1", "notice-2"]
+    assert [n.notice_id for n in store.auto_research_lifecycle_notices(episode.episode_id)] == [
+        "notice-0",
+        "notice-1",
+        "notice-2",
+    ]
+    messages = store.auto_research_messages(episode.episode_id, newest=2)
+    assert [message.message_id for message in messages] == ["message-1", "message-2"]
+    assert len(store.auto_research_messages(episode.episode_id)) == 3

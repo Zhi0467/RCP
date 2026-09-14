@@ -91,9 +91,11 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "54df9d9d1875cced1d511ebe2586df022959ae438a7c620e4eb3fe789a7aa429",
         # provider_readiness_snapshots: the credential-touching readiness answer
         # kept per executable version, so a restart runs only `--version`. One
-        # CREATE TABLE on both paths, so a fresh install and an in-place upgrade
-        # share this shape.
+        # CREATE TABLE on both paths, so a fresh install shares this shape with
+        # a database that upgraded from the previous release; an installation
+        # whose graph_runs kept the rebuilt column order has the second.
         "657bf07e3bdb4358fdb7d243a774d3596b2c91c9b65445b648e85426559484cc",
+        "25b83f855aa94e284a3e41efd60b222977c3f3a5cea94a402bee35cfdcf127fa",
     }
 )
 
