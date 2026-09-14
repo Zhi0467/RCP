@@ -80,9 +80,18 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     """
 
     events: list[EpisodeTimelineEvent] = []
-    for index, member in enumerate(_episode_chain(store, episode)):
+    chain = _episode_chain(store, episode)
+    skipped_members = False
+    # Newest member first: a continuation is created after its source ended, so
+    # once the newer members alone overflow the response no older member can
+    # place an event in it, and its hydration is skipped.
+    for position in range(len(chain) - 1, -1, -1):
+        if len(events) > EPISODE_TIMELINE_EVENT_LIMIT:
+            skipped_members = True
+            break
+        member = chain[position]
         primary = member.episode_id == episode.episode_id
-        if index:
+        if position:
             events.append(
                 EpisodeTimelineEvent(
                     kind="lifecycle",
@@ -101,7 +110,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         episode_id=episode.episode_id,
         mode=episode.mode,
         events=events[-EPISODE_TIMELINE_EVENT_LIMIT:],
-        truncated=len(events) > EPISODE_TIMELINE_EVENT_LIMIT,
+        truncated=skipped_members or len(events) > EPISODE_TIMELINE_EVENT_LIMIT,
     )
 
 

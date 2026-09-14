@@ -161,6 +161,25 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(manifest
     chain = store.episode_chain(original.episode_id)
     assert [member.episode_id for member in chain] == [original.episode_id, continuation_id]
 
+    # Once the newest member alone overflows the response, the source is not
+    # hydrated at all and the response says it is truncated.
+    with store.connection() as connection:
+        for index in range(401):
+            connection.execute(
+                "INSERT INTO auto_research_lifecycle_notices (notice_id, episode_id, source_kind,"
+                " source_id, source_event, state, payload_json, created_at)"
+                " VALUES (?, ?, 'watcher', ?, 'completed', 'pending', '{}', ?)",
+                (f"extra-{index:04}", continuation_id, f"extra-{index}", store.now()),
+            )
+    with TestClient(app) as client:
+        response = client.get(f"/api/projects/{project_id}/episodes/{continuation_id}/timeline")
+    assert response.status_code == 200
+    assert response.json()["truncated"] is True
+    assert not any(
+        event["event_id"].startswith(f"{original.episode_id}:")
+        for event in response.json()["events"]
+    )
+
 
 def test_continuation_preflight_failure_leaves_the_source_unchanged(
     manifest,
@@ -197,6 +216,38 @@ def test_continuation_preflight_failure_leaves_the_source_unchanged(
 
     assert response.status_code == 409
     assert response.json() == {"detail": "the pinned orchestrator profile is unavailable"}
+    assert [item.model_dump(mode="json") for item in store.episodes(project_id)] == episodes_before
+    assert [item.model_dump(mode="json") for item in store.agent_tasks(project_id)] == tasks_before
+
+
+def test_continuation_refuses_a_stage_frozen_on_another_machine(manifest, tmp_path) -> None:
+    """A repointed execution alias cannot resume the saved session; nothing is chained."""
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    original, root, _ = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="exhausted-episode",
+        report_error="The report output was invalid.",
+    )
+    store.checkpoint_agent_task(
+        root.operation_id, stage_host="other-host", stage_root=root.stage_root
+    )
+    episodes_before = [item.model_dump(mode="json") for item in store.episodes(project_id)]
+    tasks_before = [item.model_dump(mode="json") for item in store.agent_tasks(project_id)]
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project_id}/episodes/{original.episode_id}/continue",
+            json={"invocation_ceiling": 4, "request_id": str(uuid.uuid4())},
+        )
+
+    assert response.status_code == 409
+    assert "Start a new Auto-research episode instead." in response.json()["detail"]
     assert [item.model_dump(mode="json") for item in store.episodes(project_id)] == episodes_before
     assert [item.model_dump(mode="json") for item in store.agent_tasks(project_id)] == tasks_before
 
