@@ -14,6 +14,7 @@ import type { ProviderLoginAccount, ProviderSignInStatus } from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
 const SIGN_IN_POLL_MS = 2000;
+const SIGN_IN_POLL_FAILURE_LIMIT = 5;
 
 interface Props {
   spaceKind: "personal" | "team";
@@ -114,10 +115,12 @@ export function ProviderLoginRow({
   useEffect(() => {
     if (!signIn || signIn.state !== "pending") return;
     let cancelled = false;
+    let failures = 0;
     const poll = async () => {
       try {
         const status = await providerSignInStatus(account.provider, signIn.login_id);
         if (cancelled) return;
+        failures = 0;
         setSignIn(status);
         if (status.state === "pending") {
           pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
@@ -127,6 +130,14 @@ export function ProviderLoginRow({
       } catch (failure) {
         if (cancelled) return;
         setError(failure instanceof Error ? failure.message : String(failure));
+        // A transient status failure must not leave the row disabled forever:
+        // keep following the sign-in, and give the row back after repeated failures.
+        failures += 1;
+        if (failures < SIGN_IN_POLL_FAILURE_LIMIT) {
+          pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
+        } else {
+          setSignIn(null);
+        }
       }
     };
     pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
