@@ -225,3 +225,80 @@ def test_repeated_launch_failures_settle_the_allocation_as_unlaunchable(tmp_path
     launch.side_effect = None
     assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
     assert store.episode(signal.episode_id) == settled
+
+
+def _experiment_ending(tmp_path, monkeypatch):
+    from rcp.storage import AppStore
+
+    from .test_experiment_episode_storage import _admit_root, _bind
+
+    store = AppStore(tmp_path / "experiment.sqlite3")
+    episode_id, root = _admit_root(store)
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="native-session", stage_root=str(tmp_path / "stage")
+    )
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    _bind(
+        store,
+        episode_id,
+        root.operation_id,
+        invocation=1,
+        ending_signal={
+            "episode_id": episode_id,
+            "ending": "completed",
+            "partial": False,
+            "receipt": {"semantic_signals": ["experiment_completed"]},
+        },
+    )
+    launch = Mock()
+    monkeypatch.setattr(reconcile, "start_episode_report", launch)
+    owner = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
+    return store, episode_id, owner, launch
+
+
+def test_experiment_permanent_admission_defect_settles_once(tmp_path, monkeypatch):
+    store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        reconcile, "begin_episode_report_wrapup", Mock(side_effect=ValueError("bad ledger"))
+    )
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    settled = store.episode(episode_id)
+    # A completed ending settles to its own terminal status; the failed report is
+    # published through the wrap-up state, never by reopening the episode.
+    assert settled.status == "completed"
+    assert settled.ending == "completed"
+    assert settled.wrapup_state == "failed"
+    assert settled.wrapup_error == "bad ledger"
+    assert store.episode_wrapup(episode_id).state == "failed"
+    launch.assert_not_called()
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    assert store.episode(episode_id) == settled
+
+
+def test_experiment_transient_admission_failure_keeps_wrapping_up(tmp_path, monkeypatch):
+    store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        store,
+        "settle_experiment_episode_wrapup",
+        Mock(side_effect=sqlite3.OperationalError("locked")),
+    )
+    for _ in range(5):
+        owner.reconcile_experiment_episode(episode_id, source="poll")
+    assert store.episode(episode_id).status == "wrapping_up"
+    assert store.episode_wrapup(episode_id) is None
+    launch.assert_not_called()
+
+
+def test_experiment_repeated_launch_failures_settle_the_allocation(tmp_path, monkeypatch):
+    store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+    launch.side_effect = ValueError("the persisted report request never validates")
+    for _ in range(2):
+        owner.reconcile_experiment_episode(episode_id, source="poll")
+        assert store.episode(episode_id).status == "wrapping_up"
+        assert store.episode_wrapup(episode_id).state == "pending"
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    settled = store.episode(episode_id)
+    assert settled.status == "completed"
+    assert settled.wrapup_state == "failed"
+    assert "never validates" in (settled.wrapup_error or "")
+    assert store.episode_wrapup(episode_id).state == "failed"

@@ -141,56 +141,85 @@ class EpisodeReconciler:
                 start_episode_report(self.background, signal.episode_id)
             return True
         except Exception as exc:
-            self._record_report_failure(signal.episode_id, source, operation_id, exc)
-            if launching and self._launch_failure_is_permanent(signal.episode_id, exc):
-                self._settle_unlaunchable_report(signal.episode_id, source, operation_id, exc)
+            if episode is None:
+                self._record_report_failure(signal.episode_id, source, operation_id, exc)
                 return False
-            if (
-                admitting
-                and episode is not None
-                and self._admission_failure_is_permanent(signal.episode_id, exc)
-            ):
-                try:
-                    receipt_json, receipt_sha256 = compact_episode_receipt(
-                        episode_wrapup_receipt(
-                            receipt=spec.receipt
-                            if spec
-                            else {"admission_error": type(exc).__name__},
-                            episode_id=signal.episode_id,
-                            mode=episode.mode,
-                            ending=signal.ending,
-                            partial=signal.partial,
-                            diagnostic=spec.diagnostic if spec else signal.diagnostic,
-                        )
-                    )
-                    now = self.store.now()
-                    self.store.fail_episode_wrapup_unlaunchable(
-                        signal.episode_id,
-                        EpisodeWrapupRecord(
-                            episode_id=signal.episode_id,
-                            ending=signal.ending,
-                            partial=signal.partial,
-                            concluding_operation_id=spec.continuation_operation_id
-                            if spec
-                            else None,
-                            receipt_json=receipt_json,
-                            receipt_sha256=receipt_sha256,
-                            state="failed",
-                            diagnostic=str(exc),
-                            created_at=now,
-                            updated_at=now,
-                            finished_at=now,
-                        ),
-                        ending_diagnostic=signal.diagnostic,
-                    )
-                except EpisodeNotRunning:
-                    # A concurrent Stop or settlement wins over report admission.
-                    return False
-                except Exception as settlement_error:
-                    self._record_report_failure(
-                        signal.episode_id, source, operation_id, settlement_error
-                    )
+            self._settle_wrapup_failure(
+                episode,
+                ending=signal.ending,
+                partial=signal.partial,
+                diagnostic=signal.diagnostic,
+                spec=spec,
+                source=source,
+                operation_id=operation_id,
+                exc=exc,
+                admitting=admitting,
+                launching=launching,
+            )
             return False
+
+    def _settle_wrapup_failure(
+        self,
+        episode: EpisodeRecord,
+        *,
+        ending: str,
+        partial: bool,
+        diagnostic: str | None,
+        spec: EpisodeWrapupSpec | None,
+        source: str,
+        operation_id: str | None,
+        exc: Exception,
+        admitting: bool,
+        launching: bool,
+    ) -> None:
+        """Record one wrap-up failure; settle it durably once it cannot succeed later.
+
+        Both modes share this policy so that no ending can loop in `wrapping_up`
+        on a deterministic defect: a permanent admission error becomes a failed
+        wrap-up at once, an unclassified one after a few repeats, and a launch that
+        keeps failing the same way fails its allocation.
+        """
+
+        self._record_report_failure(episode.episode_id, source, operation_id, exc)
+        if launching and self._launch_failure_is_permanent(episode.episode_id, exc):
+            self._settle_unlaunchable_report(episode.episode_id, source, operation_id, exc)
+            return
+        if not admitting or not self._admission_failure_is_permanent(episode.episode_id, exc):
+            return
+        try:
+            receipt_json, receipt_sha256 = compact_episode_receipt(
+                episode_wrapup_receipt(
+                    receipt=spec.receipt if spec else {"admission_error": type(exc).__name__},
+                    episode_id=episode.episode_id,
+                    mode=episode.mode,
+                    ending=ending,
+                    partial=partial,
+                    diagnostic=spec.diagnostic if spec else diagnostic,
+                )
+            )
+            now = self.store.now()
+            self.store.fail_episode_wrapup_unlaunchable(
+                episode.episode_id,
+                EpisodeWrapupRecord(
+                    episode_id=episode.episode_id,
+                    ending=ending,
+                    partial=partial,
+                    concluding_operation_id=spec.continuation_operation_id if spec else None,
+                    receipt_json=receipt_json,
+                    receipt_sha256=receipt_sha256,
+                    state="failed",
+                    diagnostic=str(exc),
+                    created_at=now,
+                    updated_at=now,
+                    finished_at=now,
+                ),
+                ending_diagnostic=diagnostic,
+            )
+        except EpisodeNotRunning:
+            # A concurrent Stop or settlement wins over report admission.
+            return
+        except Exception as settlement_error:
+            self._record_report_failure(episode.episode_id, source, operation_id, settlement_error)
 
     def _admission_failure_is_permanent(self, episode_id: str, exc: Exception) -> bool:
         if isinstance(exc, _PERMANENT_ADMISSION_ERRORS):
@@ -477,6 +506,8 @@ class EpisodeReconciler:
                 ending=ending,
                 diagnostic=diagnostic,
             )
+        admitting = True
+        launching = False
         try:
             self.store.fence_episode_ending(
                 spec.episode_id,
@@ -486,25 +517,20 @@ class EpisodeReconciler:
             if not self.store.settle_experiment_episode_wrapup(spec.episode_id):
                 return
             admission = begin_episode_report_wrapup(self.store, spec)
+            admitting = False
             if admission.launchable:
+                launching = True
                 start_episode_report(self.background, spec.episode_id)
         except Exception as exc:
-            self.logger.warning(
-                "Could not reconcile Experiment episode %s after %s: %s",
-                episode_id,
-                source,
-                exc,
+            self._settle_wrapup_failure(
+                episode,
+                ending=spec.ending,
+                partial=spec.partial,
+                diagnostic=spec.diagnostic,
+                spec=spec,
+                source=source,
+                operation_id=operation_id,
+                exc=exc,
+                admitting=admitting,
+                launching=launching,
             )
-            if operation_id is not None:
-                with suppress(Exception):
-                    self.store.record_agent_task_receipt(
-                        operation_id,
-                        "episode_report_reconciliation_failed",
-                        {
-                            "episode_id": episode_id,
-                            "source": source,
-                            "exception_type": type(exc).__name__,
-                            "detail": str(exc),
-                        },
-                        tier="diagnostic",
-                    )
