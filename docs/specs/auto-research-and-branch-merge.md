@@ -160,9 +160,23 @@ Sleeping-actor delivery claims a bounded notice batch atomically with one B
 allocation. A graph-condition wake of the root orchestrator also claims pending
 lifecycle notices and root-addressed mail within the delivery bounds. Lifecycle
 wakes wait a short grace window so notices arriving together share one allocation.
-A running orchestrator may harvest or clear its inbox without a separate wake.
-Budget exhaustion retains notices but cannot create an unauthorized turn. Clear
-refuses before acknowledgment if even its compact full response exceeds the bound.
+A running orchestrator may harvest or clear its inbox without a separate wake;
+the harvest returns and consumes, in one transaction, the pending lifecycle
+notices and the pending mail addressed to the orchestrator, attributing the
+consumption to the running turn, so mail that arrives before a turn's last
+harvest never costs a wake. Budget exhaustion retains notices but cannot create
+an unauthorized turn. Clear refuses before acknowledgment if even its compact
+full response exceeds the bound.
+
+Every Stop and every replacement records who initiated it (`human:<member>`,
+`orchestrator:<operation>`, or `system:<reason>`) in the same transaction as
+the fence. A notice born from a stop the orchestrator itself requested, or from
+a replacement it created advancing, carries `wake_suppressed=self_caused`; a
+child task failure classified as a revoked login carries
+`wake_suppressed=provider_auth`. A suppressed notice never admits a paid wake
+and never holds ordinary mail; the running orchestrator still learns of it
+through the harvest, it still counts in the ending receipt, and it never blocks
+quiescence or an ending. A failed replacement is new information and wakes.
 
 A completed child watcher group wakes the same child route and native session,
 never the root. Watchers retain the episode id and route worker id. One atomic

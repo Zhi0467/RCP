@@ -3,8 +3,8 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Slices 1 and 2 are implemented on this branch;
-slices 3 to 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
+two further protocol spikes. Slices 1, 2, and 5 are implemented on this
+branch; slices 3, 4, and 6 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
 commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
 branch. None is optional.
 
@@ -185,9 +185,10 @@ Failure policy by phase:
   its ending's terminal status, and the reconciler stops. The card shows the
   error as a nonblocking report error. Reauthorization and merge remain
   available.
-- **Login blockage** on the report's provider: the wrap-up stays `pending` with
-  `blocked_reason=sign_in`; it resumes after a verified sign-in and spends no
-  report attempt.
+- **Login blockage** on the report's provider: the attempt that met the dead
+  login is counted honestly, the account is marked signed out, and the wrap-up
+  stays `pending` with `blocked_reason=sign_in`; no further attempt starts
+  until a verified sign-in requeues the same allocation.
 - **Transient unavailability** (database lock, canonical repository lock, SSH
   to the stage host): retried on the next poll without bound; the diagnostic
   receipt on the reconciling operation stays as today. An exception that is
@@ -335,7 +336,7 @@ One typed outcome, `provider_auth`, propagated through every owner:
 | turn, worker, wake, recovery child | `background.py` finalizer via `classify_agent_failure` | signatures added; kind stored before settlement creates notices |
 | readiness before launch | `agents/launcher.py` | typed auth outcome from readiness, not generic text |
 | skill, catalog, readiness probes | `provider_skills.py`, `server_ops/provider_readiness.py` | typed probe outcome persisted on the machine-account state |
-| hidden report attempt | `runs/tasks/episode_report.py` | classified before its retry loop; blocked auth spends no attempt and parks the wrap-up |
+| hidden report attempt | `runs/tasks/episode_report.py` | classified before its retry loop; the attempt that ran is counted, no further attempt starts, the wrap-up parks |
 | final report failure | `storage/episodes.py` | kind persisted in the same transaction |
 | Auto recovery: scheduling, due rows, restart | `runs/auto_research_recovery.py` | guard scheduling and claiming, including pre-existing pending rows |
 | Experiment Stop recovery | `runs/experiment_recovery.py` | graceful Stop preserved; the exact retry waits for sign-in |
