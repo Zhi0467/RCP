@@ -79,3 +79,27 @@ def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
             ).fetchone()[0]
             == 17
         )
+
+
+def test_failure_atomically_invalidates_only_its_generation_readiness(tmp_path):
+    from rcp.storage.models import ProviderReadinessSnapshotRecord
+
+    store = AppStore(tmp_path / "state.sqlite3")
+    repaired = store.mark_provider_login_verified("codex", "", member_id="member", detail="ok")
+    snapshot = ProviderReadinessSnapshotRecord(
+        provider="codex",
+        host="",
+        binary="/fake/provider",
+        version="1",
+        readiness_json="{}",
+        probed_at=store.now(),
+    )
+    store.save_provider_readiness_snapshot(snapshot)
+    store.mark_provider_login_failed(
+        "codex", "", generation=0, detail="old failure", source="probe"
+    )
+    assert store.provider_readiness_snapshot("codex", "", snapshot.binary) == snapshot
+    store.mark_provider_login_failed(
+        "codex", "", generation=repaired.generation, detail="new failure", source="turn"
+    )
+    assert store.provider_readiness_snapshot("codex", "", snapshot.binary) is None

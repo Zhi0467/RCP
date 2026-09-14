@@ -14,6 +14,7 @@ from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeEligibility,
     BranchMergeRunOutcome,
+    BranchMergeSemanticConflict,
     BranchMergeStage,
     build_deterministic_merge_ops,
     parse_branch_merge_candidate,
@@ -757,3 +758,121 @@ def test_merge_contract_cites_the_plan_file_instead_of_inlining_it() -> None:
     assert "/stage/inputs/plan.json" in contract
     assert '"op": "create_nodes"' not in contract
     assert '"path": "nodes/dec/choice/status"' in contract
+
+
+def _replace_edge(edge, **changes) -> list[dict]:
+    raw = edge.model_dump(mode="json", exclude={"created_rev", "layer"})
+    raw.update(changes)
+    return [
+        {"op": "remove_edges", "edge_ids": [edge.id]},
+        {"op": "create_edges", "edges": [raw]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_edge_explanation_merge_commits_without_provider(merge_history, tmp_path: Path):
+    history, branch, load_context = merge_history
+    _append(branch, *_replace_edge(branch.state().edges["edge/base"], explanation="Branch detail."))
+    source_head = branch.head_ref()
+
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    assert outcome.correction_rounds == 0
+    assert history.state().edges["edge/base"].explanation == "Branch detail."
+    assert history.materialize(write_outputs=False).state == history.state()
+    assert branch.head_ref() == source_head
+
+
+def test_edge_replacement_conformance_uses_its_net_change(merge_history):
+    history, branch, load_context = merge_history
+    operations = _replace_edge(branch.state().edges["edge/base"], explanation="Branch detail.")
+    _append(branch, *operations)
+    context = load_context()
+    candidate = parse_branch_merge_candidate(
+        json.dumps({"summary": "Carry the edge detail.", "ops": operations}), context
+    )
+
+    prepared = prepare_branch_merge_with_history(
+        history, candidate, expected_main_head=context.main_head, context=context
+    )
+
+    assert prepared.projection.graph.edges["edge/base"].explanation == "Branch detail."
+    assert history.head_ref() == context.main_head
+
+
+@pytest.mark.parametrize("candidate_kind", ["remove_only", "unrelated_field", "wrong_value"])
+def test_edge_replacement_still_rejects_incomplete_or_unrelated_changes(
+    merge_history, candidate_kind: str
+):
+    history, branch, load_context = merge_history
+    original = branch.state().edges["edge/base"]
+    _append(branch, *_replace_edge(original, explanation="Branch detail."))
+    operations = _replace_edge(original, explanation="Branch detail.")
+    if candidate_kind == "remove_only":
+        operations.pop()
+    elif candidate_kind == "unrelated_field":
+        operations[-1]["edges"][0]["relation"] = "informs"
+        operations[-1]["edges"][0]["target"] = "dec/choice"
+    else:
+        operations[-1]["edges"][0]["explanation"] = "Unrequested detail."
+    context = load_context()
+    candidate = parse_branch_merge_candidate(
+        json.dumps({"summary": "Invalid edge replacement.", "ops": operations}), context
+    )
+
+    with pytest.raises(BranchMergeSemanticConflict):
+        prepare_branch_merge_with_history(
+            history, candidate, expected_main_head=context.main_head, context=context
+        )
+
+    assert history.head_ref() == context.main_head
+    assert history.state().edges[original.id] == original
+
+
+@pytest.mark.asyncio
+async def test_edge_builder_preserves_compatible_main_changes(merge_history, tmp_path: Path):
+    history, branch, load_context = merge_history
+    original = branch.state().edges["edge/base"]
+    _append(branch, *_replace_edge(original, explanation="Branch detail."))
+    _append(history, *_replace_edge(original, relation="informs", target="dec/choice"))
+
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    edge = history.state().edges[original.id]
+    assert (edge.relation, edge.target, edge.explanation) == (
+        "informs",
+        "dec/choice",
+        "Branch detail.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_conflicting_edge_replacement_can_be_resolved_by_provider(
+    merge_history, tmp_path: Path
+):
+    history, branch, load_context = merge_history
+    original = branch.state().edges["edge/base"]
+    _append(branch, *_replace_edge(original, explanation="Branch detail."))
+    _append(history, *_replace_edge(original, explanation="Main detail."))
+    ops, residue = build_deterministic_merge_ops(load_context())
+    assert ops == []
+    assert residue == {("edges", original.id, "explanation"): "conflict"}
+    launcher = _SequenceLauncher(
+        [
+            json.dumps(
+                {
+                    "summary": "Resolve the conflicting explanation.",
+                    "ops": _replace_edge(original, explanation="Resolved detail."),
+                }
+            )
+        ]
+    )
+
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    assert outcome.correction_rounds == 0
+    assert launcher.sessions == [None]
+    assert history.state().edges[original.id].explanation == "Resolved detail."

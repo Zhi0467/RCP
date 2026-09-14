@@ -419,20 +419,36 @@ def auto_research_wrapup_spec(
 ) -> EpisodeWrapupSpec:
     """Build a compact receipt and select the root actor's exact latest task."""
 
-    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, episode_wrapup_receipt
+    from rcp.runs.episodes.wrapup import (
+        EpisodeReportAdmissionInvalid,
+        EpisodeWrapupSpec,
+        episode_wrapup_receipt,
+    )
     from rcp.storage.episodes import compact_episode_receipt
 
-    episode = _auto_research_episode(store, signal.episode_id)
+    episode = store.episode(signal.episode_id)
+    if episode is None or episode.mode != "auto_research":
+        raise EpisodeReportAdmissionInvalid("The Auto-research episode no longer exists.")
+    if store.auto_research_state(signal.episode_id) is None:
+        raise EpisodeReportAdmissionInvalid("The Auto-research episode lost its durable state.")
     if episode.ending != signal.ending or episode.ending_diagnostic != signal.diagnostic:
-        raise ValueError("the Auto-research ending signal differs from its durable fence")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research ending signal differs from its durable fence"
+        )
     if episode.root_operation_id is None:
-        raise ValueError("the Auto-research episode has no root orchestrator actor")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research episode has no root orchestrator actor"
+        )
+    if store.auto_research_invocation(episode.root_operation_id) is None:
+        raise EpisodeReportAdmissionInvalid("The Auto-research root actor lost its invocation.")
     binding = store.auto_research_actor_binding(episode.root_operation_id)
     if binding.episode_id != episode.episode_id or binding.role != "orchestrator":
-        raise ValueError("the Auto-research root actor binding is inconsistent")
+        raise EpisodeReportAdmissionInvalid("the Auto-research root actor binding is inconsistent")
     continuation = store.agent_task(binding.current_operation_id)
     if continuation is None:
-        raise ValueError("the Auto-research root actor lost its latest continuation task")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research root actor lost its latest continuation task"
+        )
 
     state = store.auto_research_state(episode.episode_id)
     projection = project_auto_research_episode(store, episode.episode_id)

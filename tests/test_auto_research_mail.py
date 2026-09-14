@@ -60,6 +60,7 @@ from .helpers import (
     create_named_app,
     fabricated_authorizer,
     seed_patch,
+    store_test_claude_token,
     wait_for_task,
 )
 from .test_api import ScriptedLauncher, _experiment_fixture_patch
@@ -639,6 +640,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
+    store_test_claude_token(store)
     child_turns = []
     original_stage = child_work_module._stage_auto_research_child_work_turn
 

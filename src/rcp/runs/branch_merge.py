@@ -59,11 +59,13 @@ from rcp.core.models import (
     Proposal,
 )
 from rcp.core.operations import (
+    CreateEdgesOperation,
     CreateProposalsOperation,
     HumanEditCause,
     ProposalOperation,
     ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
+    RemoveEdgesOperation,
     SetStandingOperation,
     UpdateNodesOperation,
     graph_operations_from_proposal,
@@ -1047,39 +1049,65 @@ def build_deterministic_merge_ops(
 
     # Edges touching a node that still needs judgment belong to that same task.
     uncertain_nodes = {path[1] for path in residue if path[0] == "nodes"}
+    edge_paths: dict[str, list[SemanticWritePath]] = {}
     for path in sorted(residue):
-        if len(path) != 3 or path[0] != "edges" or path[-1] != "$" or path not in mandatory:
+        if path[0] == "edges":
+            edge_paths.setdefault(path[1], []).append(path)
+    for identity, paths in edge_paths.items():
+        if any(path not in mandatory for path in paths):
             continue
-        edge = branch.edges.get(path[1]) or context.main_graph.edges.get(path[1])
+        incoming = branch.edges.get(identity)
+        current = context.main_graph.edges.get(identity)
+        edge = incoming or current
         if edge is None:
             continue
-        if {edge.source, edge.target} & uncertain_nodes:
-            residue[path] = "edge_endpoint_uncertain"
+        endpoints = {edge.source, edge.target}
+        if current is not None:
+            endpoints.update((current.source, current.target))
+        if endpoints & uncertain_nodes:
+            for path in paths:
+                residue[path] = "edge_endpoint_uncertain"
             continue
-        edge_op = (
-            {
-                "op": "create_edges",
-                "edges": [edge.model_dump(mode="json", exclude={"created_rev", "layer"})],
-            }
-            if path[1] in branch.edges
-            else {"op": "remove_edges", "edge_ids": [edge.id]}
-        )
+        edge_ops: list[dict[str, Any]] = []
+        if current is not None:
+            edge_ops.append({"op": "remove_edges", "edge_ids": [identity]})
+        if incoming is not None:
+            raw = (current or incoming).model_dump(mode="json", exclude={"created_rev"})
+            # Recreate the edge with only branch-changed fields overlaid on main.
+            # Compatible main edits, including nested assessment fields, survive.
+            if current is not None:
+                for path in paths:
+                    parts = path[2:-1] if path[-1] == "$" else path[2:]
+                    target = raw
+                    for part in parts[:-1]:
+                        target = target[part]
+                    value = _semantic_path_value(source, path)
+                    if value is _MISSING:
+                        target.pop(parts[-1], None)
+                    else:
+                        target[parts[-1]] = deepcopy(value)
+            raw.pop("layer", None)
+            edge_ops.append({"op": "create_edges", "edges": [raw]})
         probe = Patch(
             kind="work",
             author="agent",
             summary="Classify merge edge authority.",
-            ops=([{"op": "create_nodes", "nodes": creates}] if creates else []) + [edge_op],
+            ops=([{"op": "create_nodes", "nodes": creates}] if creates else []) + edge_ops,
         )
-        if RESTRUCTURE_PROTECTED_EPISTEMIC in operation_actions(
-            context.main_graph, probe, probe.ops[-1]
+        if any(
+            RESTRUCTURE_PROTECTED_EPISTEMIC
+            in operation_actions(context.main_graph, probe, operation)
+            for operation in probe.ops[-len(edge_ops) :]
         ):
-            residue[path] = "protected_restructure"
+            for path in paths:
+                residue[path] = "protected_restructure"
             continue
-        if path[1] in branch.edges:
-            edge_creates.append(edge.model_dump(mode="json", exclude={"created_rev", "layer"}))
-        else:
-            edge_removes.append(edge.id)
-        del residue[path]
+        if current is not None:
+            edge_removes.append(identity)
+        if incoming is not None:
+            edge_creates.append(raw)
+        for path in paths:
+            del residue[path]
 
     ops: list[dict[str, Any]] = []
     if creates:
@@ -1188,6 +1216,7 @@ def validate_branch_merge_candidate_conformance(
     timeline = current_main
     review_proposals: list[Proposal] = []
     restoring_standing: set[SemanticWritePath] = set()
+    replacing_edges: dict[str, Edge] = {}
     initiating_indexes = sorted(
         index
         for group in prepared.transition.initiating_groups
@@ -1272,9 +1301,36 @@ def validate_branch_merge_candidate_conformance(
                     raise BranchMergeSemanticConflict(
                         "Standing restoration must match the source branch."
                     )
+        write_paths = _graph_semantic_write_paths(timeline, next_state)
+        # Edge edits have no update operation. Check a remove/recreate pair by
+        # its net fields, while retaining each operation's ordinary authority
+        # validation and requiring every removed edge to be restored.
+        if isinstance(operation, RemoveEdgesOperation):
+            for identity in operation.edge_ids:
+                path = ("edges", identity, "$")
+                if identity in timeline.edges and any(
+                    item[:2] == path[:2] and item[2] != "$" for item in allowed
+                ):
+                    replacing_edges[identity] = timeline.edges[identity]
+                    write_paths.discard(path)
+        if isinstance(operation, CreateEdgesOperation):
+            for edge in operation.edges:
+                identity = edge.id or f"{edge.source}::{edge.relation}::{edge.target}"
+                original = replacing_edges.pop(identity, None)
+                if original is not None:
+                    write_paths.discard(("edges", identity, "$"))
+                    write_paths.update(
+                        _document_write_paths(
+                            _semantic_document(original, _SEMANTIC_EDGE_BOOKKEEPING),
+                            _semantic_document(
+                                next_state.edges[identity], _SEMANTIC_EDGE_BOOKKEEPING
+                            ),
+                            prefix=("edges", identity),
+                        )
+                    )
         unexpected = sorted(
             path
-            for path in _graph_semantic_write_paths(timeline, next_state)
+            for path in write_paths
             if not any(_semantic_path_covers(item, path) for item in operation_allowed)
         )
         if unexpected:
@@ -1283,6 +1339,11 @@ def validate_branch_merge_candidate_conformance(
                 "Branch merge candidate writes outside the source branch delta: " + rendered
             )
         timeline = next_state
+
+    if replacing_edges:
+        raise BranchMergeSemanticConflict(
+            "Branch merge candidate omits replacement edges: " + ", ".join(sorted(replacing_edges))
+        )
 
     mandatory |= restoring_standing
     reviewed_paths = _review_proposal_coverage(

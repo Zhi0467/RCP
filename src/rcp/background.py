@@ -14,8 +14,10 @@ from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
@@ -54,11 +56,9 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
-from rcp.runs.provider_login import (
-    project_provider_login_block,
-    require_project_provider_login,
-)
+from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.provider_sign_in import account_login_refusal, record_provider_failure
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
     AgentTaskRequest,
@@ -365,6 +365,30 @@ class BackgroundAgentTasks:
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
         )
+
+    def admit_provider_task(
+        self, project_id: str, request: AgentTaskRequest, *, execution_host: str | None = None
+    ) -> None:
+        """Refuse an ineligible execution account before durable allocation or debit."""
+
+        if request.provider is None:
+            raise ValueError("Provider task admission requires a resolved provider.")
+        host = execution_host
+        if host is None:
+            if request.run_on in {None, "local"}:
+                host = ""
+            else:
+                project = self.store.project(project_id)
+                if project is None:
+                    raise KeyError(project_id)
+                host = provider_login_host(load_manifest(project.locator), request.run_on)
+        if reason := account_login_refusal(
+            self.store,
+            ProviderCredentialStore.for_data_dir(self.store.path.parent),
+            request.provider,
+            host,
+        ):
+            raise ProviderSignedOut(reason)
 
     def plan_startup_recovery(self) -> StartupRecoveryPlan:
         """Describe recovery work without changing a row or resolving a stage."""
@@ -956,11 +980,8 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task admission")
-        require_project_provider_login(
-            self.store,
-            project_id,
-            getattr(request, "provider", None),
-            getattr(request, "run_on", None),
+        self.admit_provider_task(
+            project_id, request, execution_host=(stage_host or "") if stage_root else None
         )
         episode: EpisodeRecord | None = None
         task_graph_target = (
@@ -1222,12 +1243,13 @@ class BackgroundAgentTasks:
         if request.model_dump(mode="json") != record.request:
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
-        if project_provider_login_block(
-            self.store,
-            record.project_id,
-            getattr(request, "provider", None),
-            getattr(request, "run_on", None),
-        ):
+        try:
+            self.admit_provider_task(
+                record.project_id,
+                request,
+                execution_host=(record.stage_host or "") if record.stage_root else None,
+            )
+        except ProviderSignedOut:
             return record
 
         intent = self.store.agent_task_admission_intent(operation_id)
@@ -1725,7 +1747,7 @@ class BackgroundAgentTasks:
     ) -> AgentFailureKind | None:
         """Name this failure so recovery can offer the right next step."""
 
-        provider = getattr(request, "provider", None)
+        provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
@@ -1739,11 +1761,12 @@ class BackgroundAgentTasks:
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
         if kind == "provider_auth" and provider:
-            self.store.mark_provider_login_failed(
+            record_provider_failure(
+                self.store,
                 provider,
                 execution.stage_host or "",
                 generation=execution.login_generation,
-                detail=error,
+                evidence=error,
                 source="turn",
             )
         return kind

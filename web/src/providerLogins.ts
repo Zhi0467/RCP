@@ -1,12 +1,11 @@
-import type { ClaudeTokenSummary, ProviderLoginAccount, ProviderSignInStatus } from "./types";
+import type {
+  ProviderCredentialSummary,
+  ProviderLoginAccount,
+  ProviderSignInStatus,
+  ProviderResumeSummary,
+} from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-export function providerLabel(provider: string): string {
-  if (provider === "codex") return "Codex";
-  if (provider === "claude") return "Claude";
-  return provider;
-}
 
 /** The execution account as a human names it, with the project machines that use it. */
 export function accountLabel(
@@ -18,8 +17,10 @@ export function accountLabel(
   return aliases.length ? `${where} (${aliases.join(", ")})` : where;
 }
 
-/** How a stored setup token stands; an estimate, since Claude never says when it expires. */
-export function tokenNote(token: ClaudeTokenSummary, now: Date): string {
+/** How a stored credential stands; any expiry is an estimate. */
+export function tokenNote(token: ProviderCredentialSummary, now: Date): string {
+  if (!token.estimated_expiry_at)
+    return `Token saved by ${token.pasted_by}, ${token.verified_at ? "verified" : "not verified yet"}.`;
   const expiry = new Date(token.estimated_expiry_at);
   const daysLeft = Math.floor((expiry.getTime() - now.getTime()) / DAY_MS);
   const verified = token.verified_at ? "verified" : "not verified yet";
@@ -35,7 +36,13 @@ export function signInNote(status: ProviderSignInStatus): string {
   if (status.state === "failed")
     return status.detail ? `Sign-in failed: ${status.detail}` : "Sign-in failed.";
   if (status.user_code && status.verification_url) {
-    return `Open the link, sign in to ChatGPT, and enter the code. The code expires in 15 minutes.`;
+    return `Open the link, sign in, and enter the code.`;
   }
-  return "Starting Codex and waiting for its device code…";
+  return "Starting sign-in and waiting for its device code…";
+}
+
+export function resumedNote(resumed: ProviderResumeSummary): string {
+  return resumed.checked
+    ? `Verified. Rechecked ${resumed.checked} ${resumed.checked === 1 ? "item" : "items"} for resumption.`
+    : "Verified.";
 }

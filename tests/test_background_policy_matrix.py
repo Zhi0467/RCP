@@ -17,7 +17,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, write_local_test_manifest
 
 # Every engine-owned policy cell is reachable with a deterministic fake stream;
 # none of these rows needs or skips for a real provider.
@@ -230,7 +230,7 @@ def _store(tmp_path: Path) -> AppStore:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator=str(tmp_path / "research.yaml"),
+            locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
             state_location=str(tmp_path / ".research"),
             state_remote=False,
@@ -439,7 +439,10 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
     elif family == "paper coach":
-        kind, request = "paper_coach", CoachRequest(message="Review the introduction.")
+        kind, request = (
+            "paper_coach",
+            CoachRequest(provider="codex", message="Review the introduction."),
+        )
     elif family == "Experiment loop":
         task = tasks.start(
             "project",
@@ -636,7 +639,10 @@ def _resume_case(
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
     elif family == "paper coach":
-        kind, request = "paper_coach", CoachRequest(message="Review the introduction.")
+        kind, request = (
+            "paper_coach",
+            CoachRequest(provider="codex", message="Review the introduction."),
+        )
     else:  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
     previous = _record(
@@ -853,7 +859,10 @@ def _repair_case(
 
     request_by_family = {
         "ingestion": ("refresh", _ingestion_request()),
-        "paper coach": ("paper_coach", CoachRequest(message="Review the introduction.")),
+        "paper coach": (
+            "paper_coach",
+            CoachRequest(provider="codex", message="Review the introduction."),
+        ),
         "Auto-research": ("auto_research", _auto_request()),
         "branch merge": ("branch_merge", _branch_request()),
         "episode report": ("episode_report", _report_request()),
@@ -919,7 +928,10 @@ def _recovery_case(
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
     elif family == "paper coach":
-        kind, request = "paper_coach", CoachRequest(message="Review the introduction.")
+        kind, request = (
+            "paper_coach",
+            CoachRequest(provider="codex", message="Review the introduction."),
+        )
     elif family == "result-view revision":
         kind, request = "node_chat", _result_view_request()
     else:  # pragma: no cover - the table is the closed caller set

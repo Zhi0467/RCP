@@ -146,6 +146,9 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "setup",
         "health_composition",
         "server_status_composition",
+        "provider_credentials",
+        "provider_sign_ins",
+        "episode_reconciliation",
     )
     assert services.store is app.state.background_tasks.store
     assert services.catalog is app.state.catalog

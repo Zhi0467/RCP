@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 from rcp.runs.auto_research import AutoResearchEndingSignal, auto_research_wrapup_spec
 from rcp.runs.episodes import reconcile
-from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.episodes.wrapup import (
+    EpisodeReportAdmissionInvalid,
+    EpisodeWrapupSpec,
+    begin_episode_report_wrapup,
+)
 from rcp.storage import EpisodeNotRunning, EpisodeReportConflict
 
 from .test_auto_research_wrapup import _episode
@@ -43,13 +47,12 @@ def _validation_error():
 @pytest.mark.parametrize(
     "defect",
     [
-        ValueError("bad ledger"),
-        KeyError("missing binding"),
+        EpisodeReportAdmissionInvalid("bad ledger"),
         _validation_error(),
         EpisodeReportConflict("bad fence"),
         EpisodeNotRunning("not running"),
     ],
-    ids=["value", "key", "validation", "conflict", "not-running"],
+    ids=["invalid", "validation", "conflict", "not-running"],
 )
 @pytest.mark.parametrize("phase", ["spec", "admission"])
 def test_permanent_admission_defects_settle_once(tmp_path, monkeypatch, caplog, defect, phase):
@@ -182,20 +185,21 @@ class _UnclassifiedDefect(Exception):
     """A programming error nobody classified as permanent or transient."""
 
 
-def test_unclassified_defect_is_retried_three_times_then_settled(tmp_path, monkeypatch):
+@pytest.mark.parametrize("defect", [_UnclassifiedDefect("bug"), ValueError("bug"), KeyError("bug")])
+def test_unclassified_defect_count_survives_reconciler_restart(tmp_path, monkeypatch, defect):
     store, signal, owner, launch = _ending(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        reconcile, "auto_research_wrapup_spec", Mock(side_effect=_UnclassifiedDefect("bug"))
-    )
+    monkeypatch.setattr(reconcile, "auto_research_wrapup_spec", Mock(side_effect=defect))
     for _ in range(2):
+        owner = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
         assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
         assert store.episode(signal.episode_id).status == "wrapping_up"
         assert store.episode_wrapup(signal.episode_id) is None
+    owner = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
     assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
     settled = store.episode(signal.episode_id)
     assert settled.status == "needs_action"
     assert settled.wrapup_state == "failed"
-    assert settled.wrapup_error == "bug"
+    assert settled.wrapup_error == str(defect)
     launch.assert_not_called()
 
 
@@ -259,7 +263,9 @@ def _experiment_ending(tmp_path, monkeypatch):
 def test_experiment_permanent_admission_defect_settles_once(tmp_path, monkeypatch):
     store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        reconcile, "begin_episode_report_wrapup", Mock(side_effect=ValueError("bad ledger"))
+        reconcile,
+        "begin_episode_report_wrapup",
+        Mock(side_effect=EpisodeReportAdmissionInvalid("bad ledger")),
     )
     owner.reconcile_experiment_episode(episode_id, source="poll")
     settled = store.episode(episode_id)
@@ -302,3 +308,59 @@ def test_experiment_repeated_launch_failures_settle_the_allocation(tmp_path, mon
     assert settled.wrapup_state == "failed"
     assert "never validates" in (settled.wrapup_error or "")
     assert store.episode_wrapup(episode_id).state == "failed"
+
+
+@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
+def test_admission_and_launch_failures_have_separate_repeat_counters(
+    tmp_path, monkeypatch, caplog, mode
+):
+    if mode == "auto_research":
+        store, signal, owner, launch = _ending(tmp_path, monkeypatch)
+        episode_id = signal.episode_id
+
+        def poll():
+            owner.reconcile_auto_research_wrapup(signal, source="poll")
+
+    else:
+        store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+
+        def poll():
+            owner.reconcile_experiment_episode(episode_id, source="poll")
+
+    with caplog.at_level(logging.WARNING):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                reconcile,
+                "begin_episode_report_wrapup",
+                Mock(side_effect=_UnclassifiedDefect("admission defect")),
+            )
+            for _ in range(2):
+                poll()
+                assert store.episode_wrapup(episode_id) is None
+        launch.side_effect = _UnclassifiedDefect("launch defect")
+        for _ in range(2):
+            poll()
+            assert store.episode(episode_id).status == "wrapping_up"
+            assert store.episode_wrapup(episode_id).state == "pending"
+        poll()
+    assert store.episode(episode_id).wrapup_state == "failed"
+    assert store.episode(episode_id).wrapup_error == "launch defect"
+    assert launch.call_count == 3
+    assert len(caplog.records) == 1
+
+
+def test_experiment_existing_admission_never_rebuilds_the_receipt(tmp_path, monkeypatch):
+    store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    admitted = store.episode_wrapup(episode_id)
+    assert admitted.state == "pending"
+    launch.reset_mock()
+    builder = Mock(side_effect=AssertionError("must reuse immutable admission"))
+    admission = Mock(side_effect=AssertionError("must reuse durable allocation"))
+    monkeypatch.setattr(reconcile, "experiment_loop_wrapup_spec", builder)
+    monkeypatch.setattr(reconcile, "begin_episode_report_wrapup", admission)
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    assert store.episode_wrapup(episode_id) == admitted
+    builder.assert_not_called()
+    admission.assert_not_called()
+    launch.assert_called_once()

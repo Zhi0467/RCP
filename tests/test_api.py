@@ -97,6 +97,7 @@ from .helpers import (
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
+    store_test_claude_token,
     wait_for_entry,
     wait_until,
 )
@@ -329,7 +330,8 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(
             path_state="resolved",
         )
 
-    def refresh(provider: str, host: str, binary: str | None, _readiness):
+    def refresh(provider: str, host: str, binary: str | None, _readiness, *, reuse_cached):
+        assert reuse_cached is True
         calls.append(("refresh", provider, host, binary))
         if sum(call[0] == "refresh" for call in calls) == len(targets):
             completed.set()
@@ -2731,6 +2733,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> Non
 
 def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     stage = tmp_path / "exhausted-stage"
     stage.mkdir()
@@ -2840,6 +2843,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -4871,6 +4875,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
     """A semantically valid resumed patch is revalidated against current state."""
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     session_id = str(uuid.uuid4())
@@ -5499,6 +5504,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
     manifest, tmp_path, provider: str
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     launcher = ScriptedLauncher([{}], message="Finished.")

@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.agents.provider_environment import (
+from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.provider_auth import (
     CLAUDE_CONFLICTING_VARIABLES,
     CLAUDE_TOKEN_VARIABLE,
-    ProviderCredentialStore,
     remote_claude_token_placement_command,
     remote_claude_token_prefix,
+    validate_claude_token,
 )
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.storage import AppStore
@@ -75,39 +76,39 @@ def credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProviderCred
     for name in CLAUDE_CONFLICTING_VARIABLES:
         monkeypatch.setenv(name, "a-member-shell-value")
     store = ProviderCredentialStore(tmp_path / "providers")
-    store.store_claude_token("", TOKEN, member_id="member", now="2026-09-14T10:00:00+00:00")
+    store.store_token("claude", "", TOKEN, member_id="member", now="2026-09-14T10:00:00+00:00")
     return store
 
 
 def test_token_is_stored_privately_and_the_record_is_secret_free(
     credentials: ProviderCredentialStore,
 ) -> None:
-    path = credentials.claude_token_path("")
+    path = credentials.token_path("claude", "")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
-    assert credentials.claude_token("") == TOKEN
-    record = credentials.claude_token_record("")
+    assert credentials.token("claude", "") == TOKEN
+    record = credentials.token_record("claude", "")
     assert record is not None and record.pasted_by == "member" and record.verified_at is None
     assert TOKEN not in (path.parent / "setup-token.json").read_text()
     with pytest.raises(ValueError):
-        credentials.store_claude_token("", "two words", member_id="member", now="now")
+        validate_claude_token("two words")
     with pytest.raises(ValueError):
-        credentials.store_claude_token("", "x" * 5000, member_id="member", now="now")
+        validate_claude_token("x" * 5000)
 
 
 def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     credentials: ProviderCredentialStore,
 ) -> None:
-    environment = credentials.process_environment("claude", "")
+    environment = AgentLauncher(credentials=credentials).process_environment("claude", "")
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(environment.local_env)
     assert environment.remote_prefix is None
     # Codex has no RCP-managed credential; it inherits the service environment.
-    assert credentials.process_environment("codex", "").local_env is None
+    assert AgentLauncher(credentials=credentials).process_environment("codex", "").local_env is None
 
-    credentials.delete_claude_token("")
-    without = credentials.process_environment("claude", "").local_env
+    credentials.delete_token("claude", "")
+    without = AgentLauncher(credentials=credentials).process_environment("claude", "").local_env
     assert without is not None
     assert CLAUDE_TOKEN_VARIABLE not in without
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(without)
@@ -117,9 +118,14 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
     credentials: ProviderCredentialStore,
 ) -> None:
     host = "gpu.example"
-    assert credentials.process_environment("claude", host).remote_prefix is None
-    credentials.store_claude_token(host, TOKEN, member_id="member", now="now")
-    prefix = credentials.process_environment("claude", host).remote_prefix
+    assert (
+        AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
+        is None
+    )
+    credentials.store_token("claude", host, TOKEN, member_id="member", now="now")
+    prefix = (
+        AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
+    )
     assert prefix == remote_claude_token_prefix()
     assert TOKEN not in prefix
     assert "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN" in prefix
@@ -128,7 +134,11 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
     )
     placement = remote_claude_token_placement_command()
     assert placement.startswith("umask 077 && mkdir -p ")
-    assert placement.endswith('cat > "$HOME"/.config/rcp/claude-setup-token')
+    assert 'cat > "$HOME"/.config/rcp/claude-setup-token.tmp' in placement
+    assert (
+        'mv -f "$HOME"/.config/rcp/claude-setup-token.tmp "$HOME"/.config/rcp/claude-setup-token'
+        in placement
+    )
     assert TOKEN not in placement
 
 
@@ -236,3 +246,36 @@ async def test_before_start_runs_once_under_the_credential_gate(
     ]
     assert [event.text for event in events if event.event == "answer"] == ["Discuss works"]
     assert observed == [True], "before_start did not run exactly once inside the hold"
+
+
+def test_account_paths_do_not_collide_and_deletion_is_isolated(tmp_path: Path) -> None:
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    hosts = ["", "local", "account/host", "account_host", "account:host"]
+    for index, host in enumerate(hosts):
+        credentials.store_token("claude", host, f"token-{index}", member_id="member", now="now")
+    assert len({credentials.token_path("claude", host) for host in hosts}) == len(hosts)
+    credentials.delete_token("claude", "account/host")
+    for index, host in enumerate(hosts):
+        assert credentials.token("claude", host) == (
+            None if host == "account/host" else f"token-{index}"
+        )
+
+
+def test_remote_environment_refuses_missing_token_instead_of_inheriting_one(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    from rcp.providers import profile_for
+
+    missing = tmp_path / "missing-token"
+    prefix = remote_claude_token_prefix(str(missing))
+    result = subprocess.run(
+        ["sh", "-c", prefix + "; printf 'provider-started'"],
+        env={**os.environ, CLAUDE_TOKEN_VARIABLE: "inherited-token"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0 and "provider-started" not in result.stdout
+    assert profile_for("claude").credential_failure(result.stderr)
+    assert "inherited-token" not in result.stderr

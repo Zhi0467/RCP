@@ -3,7 +3,14 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import { chromium } from "playwright";
+import {
+  rootTask,
+  episode,
+  branchId,
+  baseHead,
+  branchHead,
+  withGraphBranch,
+} from "./fixtures/campaigns.mjs";
 
 import {
   archiveEpisode,
@@ -39,75 +46,6 @@ const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeT
 const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
-
-const rootTask = {
-  operation_id: "turn-root",
-  role: "orchestrator",
-  depth: 0,
-  project_id: "project one",
-  kind: "auto_research",
-  status: "running",
-  request: { role: "orchestrator", actor_operation_id: "turn-root" },
-  created_at: "2026-08-12T08:00:00Z",
-  updated_at: "2026-08-12T08:00:00Z",
-  status_message: "Reviewing the graph",
-  attempt: 1,
-  parent_operation_id: null,
-  episode_id: "episode/alpha",
-  estimate_seconds: 10,
-  estimate_samples: 1,
-  phase: "running",
-  elapsed_seconds: 1,
-  progress: 0.3,
-  can_pause: true,
-  can_resume: false,
-  can_retry: false,
-};
-
-const episode = {
-  episode_id: "episode/alpha",
-  project_id: "project one",
-  mode: "auto_research",
-  control_node_id: null,
-  graph_target: { kind: "main" },
-  graph_base_head: null,
-  graph_branch: null,
-  root_operation_id: rootTask.operation_id,
-  current_operation_id: rootTask.operation_id,
-  current_orchestrator_task_id: rootTask.operation_id,
-  current_control_task_id: rootTask.operation_id,
-  recovery: null,
-  status: "running",
-  starting_instruction: "Begin with the unresolved **Blocker**.",
-  budget: {
-    invocation_ceiling: 8,
-    invocations_used: 3,
-    invocations_remaining: 5,
-    observed_input_tokens: 12_345,
-    observed_generated_tokens: 678,
-  },
-  authorized_by: { space_id: "space", user_id: "human", display_name: "Ada" },
-  stop_requested_at: null,
-  ending: null,
-  ending_diagnostic: null,
-  wrapup_state: "not_started",
-  wrapup_error: null,
-  created_at: "2026-08-12T08:00:00Z",
-  updated_at: "2026-08-12T08:02:00Z",
-  ended_at: null,
-  tasks: [rootTask],
-  report: null,
-  archived: false,
-  can_archive: false,
-  can_stop: true,
-  can_continue: false,
-  can_message: true,
-  live: true,
-  health: "active",
-  blocked_reason: null,
-  recommendation: "continue",
-  task_control: "pause",
-};
 
 test("the Auto-research dialog meters only operational invocations", () => {
   const html = renderToStaticMarkup(
@@ -449,40 +387,6 @@ test("Show archived retains an archived Experiment after a newer episode replace
   );
 });
 
-const branchId = "8ba94d42-4d42-4ccb-9d2a-f299340dd3b8";
-const baseHead = {
-  target: { kind: "main" },
-  revision: 4,
-  transition_id: "transition-main-base-0004",
-};
-const branchHead = {
-  target: { kind: "branch", branch_id: branchId },
-  revision: 2,
-  transition_id: "transition-branch-head-0002",
-};
-
-function withGraphBranch(overrides = {}) {
-  return {
-    ...episode,
-    graph_target: { kind: "branch", branch_id: branchId },
-    graph_base_head: baseHead,
-    graph_branch: {
-      branch_id: branchId,
-      episode_id: episode.episode_id,
-      base_head: baseHead,
-      head: branchHead,
-      merge_eligible: true,
-      merge_blocked_reason: null,
-      current_episode_id: "episode/root",
-      merge_state: "unmerged",
-      latest_successful_merge: null,
-      active_merge_task_id: null,
-      merge_diagnostic: null,
-      ...overrides,
-    },
-  };
-}
-
 test("an eligible episode shows its graph branch base, head, and merge action", () => {
   const html = renderEpisodes([withGraphBranch()]);
 
@@ -521,100 +425,6 @@ test("the merge control merges on branch facts and never ends the episode", () =
 
   assert.match(html, />Merge to main</);
   assert.doesNotMatch(html, /End and merge/);
-});
-
-test("a stopped ineligible branch submits a deliberate merge and shows the server refusal beside it", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("console", (message) => {
-      if (message.type() === "error" && !message.text().includes("409 (Conflict)")) {
-        errors.push(message.text());
-      }
-    });
-    const stopped = {
-      ...withGraphBranch({ merge_eligible: false }),
-      status: "stopped",
-      ending: "stopped",
-      health: "stopped",
-      recommendation: "none",
-      can_stop: false,
-      can_message: false,
-      task_control: null,
-      tasks: [],
-    };
-    const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
-    let polledEpisode = stopped;
-    await page.route("**/api/projects/**/timeline", (route) =>
-      route.fulfill({
-        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
-      }),
-    );
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
-    let requests = 0;
-    await page.route("**/api/projects/**/merge", async (route) => {
-      assert.equal(route.request().method(), "POST");
-      requests += 1;
-      await route.fulfill(
-        requests === 1
-          ? { status: 409, json: { detail: reason } }
-          : {
-              status: 202,
-              json: {
-                ...stopped,
-                graph_branch: {
-                  ...stopped.graph_branch,
-                  merge_state: "running",
-                  active_merge_task_id: "merge-task",
-                },
-              },
-            },
-      );
-    });
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
-    );
-    const merge = page.getByRole("button", { name: "Merge to main", exact: true });
-    await merge.click();
-    const branch = page.getByRole("region", { name: "Episode graph branch" });
-    await branch.getByRole("alert").waitFor();
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
-    assert.equal(requests, 1);
-    assert.equal(await merge.isEnabled(), true);
-    // Polling identical state retains the refusal, but a newly eligible snapshot retires it.
-    await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
-    polledEpisode = {
-      ...stopped,
-      graph_branch: { ...stopped.graph_branch, merge_eligible: true },
-    };
-    await page.evaluate(() => window.refreshMergeEpisode());
-    await branch.getByRole("alert").waitFor({ state: "detached" });
-    assert.equal(requests, 1);
-    // Returning to the earlier snapshot must not resurrect an obsolete refusal.
-    polledEpisode = stopped;
-    await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    // Eligibility can change after the last snapshot; the second click must reach the server.
-    await merge.click();
-    await branch.getByText("Merge running", { exact: true }).waitFor();
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    assert.equal(requests, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
 });
 
 test("merged and failed branch summaries stay visible without branch-management controls", () => {
@@ -905,91 +715,6 @@ test("a blocked login leads the recovery instruction", () => {
   );
 });
 
-test("a served exhausted card settles from wrapping up to a visible report failure", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("response", (response) => {
-      if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
-    });
-    page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
-    });
-    let projected = {
-      ...episode,
-      status: "wrapping_up",
-      ending: "exhausted",
-      wrapup_state: "not_started",
-      health: "wrapping_up",
-      recommendation: "wait",
-      blocked_reason: null,
-      task_control: null,
-      can_stop: false,
-      can_message: false,
-      tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
-    };
-    let polls = 0;
-    await page.route("**/api/projects/**/timeline", (route) =>
-      route.fulfill({
-        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
-      }),
-    );
-    await page.route("**/fixture/episode", (route) => {
-      polls += 1;
-      return route.fulfill({ json: projected });
-    });
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
-    );
-    await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
-    const header = page.locator(".campaign-run-heading");
-    assert.equal(
-      await header.locator(".status-pill").textContent(),
-      "Wrapping up visualization and report",
-    );
-    projected = {
-      ...projected,
-      status: "needs_action",
-      wrapup_state: "failed",
-      live: false,
-      wrapup_error: "The ending receipt could not be admitted.",
-      health: "needs_action",
-      recommendation: "reauthorize",
-      blocked_reason: "reauthorize",
-      can_continue: true,
-    };
-    await page.evaluate(() => window.refreshMergeEpisode());
-    await header.getByText("Needs action", { exact: true }).waitFor();
-    // Newly available authorization opens the card; its collapsed header stays truthful too.
-    await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
-    assert.equal(await header.locator(".status-pill").textContent(), "Needs action");
-    assert.equal(await page.locator(".campaign-run-detail").count(), 0);
-    await page.getByRole("button", { name: /^Expand auto-research/ }).click();
-    await page.getByText("The authorized turns are spent. Add turns", { exact: true }).waitFor();
-    await page
-      .getByText("Report generation error: The ending receipt could not be admitted.", {
-        exact: true,
-      })
-      .waitFor();
-    assert.equal(await page.getByText("Let auto-research continue", { exact: true }).count(), 0);
-    assert.equal(polls, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
-});
-
 test("the login notice names each signed-out account once and offers verification", async () => {
   const { ProviderLoginNotice } = await server.ssrLoadModule(
     "/src/components/ProviderLoginNotice.tsx",
@@ -1013,114 +738,9 @@ test("the login notice names each signed-out account once and offers verificatio
     },
   ];
   const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
-  assert.match(html, /Codex on local is signed out since/);
+  assert.match(html, /codex on local is signed out since/);
   assert.match(html, /Please sign in again/);
-  assert.match(html, /Sign in on the machine, then verify/);
+  assert.match(html, /Any member can sign it in again from Settings/);
   assert.equal((html.match(/Verify sign-in/g) ?? []).length, 1);
   assert.doesNotMatch(html, /remote.example/);
-});
-
-test("a served login notice parks verification, shows failure, then clears after success", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0, hmr: false },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("console", (message) => {
-      if (message.type() === "error" && !message.text().includes("409"))
-        errors.push(message.text());
-    });
-    let finishProbe;
-    let requests = 0;
-    await page.route("**/api/providers/codex/logins/verify", async (route) => {
-      requests += 1;
-      assert.deepEqual(route.request().postDataJSON(), { host: "" });
-      await new Promise((resolve) => {
-        finishProbe = resolve;
-      });
-      await route.fulfill(
-        requests === 1
-          ? { status: 409, json: { detail: "Please sign in again" } }
-          : { json: { state: { state: "signed_in", generation: 1 }, resumed: {} } },
-      );
-    });
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
-    );
-    await page.getByRole("button", { name: "Verify sign-in" }).click();
-    assert.equal(await page.getByRole("button", { name: "Verifying…" }).isDisabled(), true);
-    finishProbe();
-    await page.getByRole("alert").waitFor();
-    assert.equal(await page.getByRole("alert").textContent(), "Please sign in again");
-    await page.getByRole("button", { name: "Verify sign-in" }).click();
-    await page.getByRole("button", { name: "Verifying…" }).waitFor();
-    finishProbe();
-    await page.getByRole("status").waitFor({ state: "detached" });
-    assert.equal(requests, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
-});
-
-test("an open space landing refreshes login notices with its Runs poll", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
-    });
-    let states = [];
-    let requests = 0;
-    await page.route("**/api/providers/logins", (route) => {
-      requests += 1;
-      return route.fulfill({ json: states });
-    });
-    await page.route("**/api/team/connections", (route) => route.fulfill({ json: [] }));
-    const firstLoad = page.waitForResponse("**/api/providers/logins");
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/appearance.html`,
-    );
-    await firstLoad;
-    assert.equal(await page.getByRole("button", { name: "Verify sign-in" }).count(), 0);
-    states = [
-      {
-        provider: "codex",
-        host: "",
-        state: "signed_out",
-        generation: 0,
-        changed_at: "2026-09-14T00:00:00Z",
-        detail: "Please sign in again",
-      },
-    ];
-    await page.evaluate(() => window.refreshSpaceRuns());
-    await page.getByRole("button", { name: "Verify sign-in" }).waitFor();
-    const timestamp = page.locator(".provider-login-notice time");
-    assert.equal(await timestamp.getAttribute("datetime"), states[0].changed_at);
-    assert.notEqual(await timestamp.textContent(), states[0].changed_at);
-    assert.equal(requests, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
 });

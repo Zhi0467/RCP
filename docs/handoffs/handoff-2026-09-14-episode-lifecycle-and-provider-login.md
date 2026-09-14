@@ -194,8 +194,9 @@ Failure policy by phase:
 - **Transient unavailability** (database lock, canonical repository lock, SSH
   to the stage host): retried on the next poll without bound; the diagnostic
   receipt on the reconciling operation stays as today. An exception that is
-  neither classified permanent nor transient is retried three times per
-  process, then settled as a permanent defect, because repeating an
+  neither classified permanent nor transient is retried three times across
+  restarts, counted from durable reconciliation-failure receipts, then settled as
+  a permanent defect, because repeating an
   unclassified deterministic failure forever is the incident itself. A launch
   of the admitted report allocation that fails the same non-transient way
   three times settles the allocation as unlaunchable through the existing
@@ -461,7 +462,9 @@ landing.
 
 ### Slice 3: provider login hardening and sign-in from the UI
 
-Owners: `src/rcp/provider_skills.py`, `src/rcp/agents/credential_gate.py`,
+Owners: `src/rcp/provider_auth.py`, `src/rcp/providers.py`,
+`src/rcp/runs/provider_sign_in.py`, `src/rcp/provider_skills.py`,
+`src/rcp/agents/credential_gate.py`,
 `src/rcp/agents/launcher.py` (environment builder, no early termination),
 new `src/rcp/agents/provider_environment.py`, new `src/rcp/api/provider_login.py`,
 `src/rcp/server_ops/provider_readiness.py`, `src/rcp/server_ops/provider_update.py`,
@@ -476,17 +479,29 @@ being terminated inside the gate hold; a served-app device-code sign-in on the
 team server completing with no shell; doctor reporting state from a real
 request.
 
-Implemented on this branch with these deviations from the text above, each
-deliberate: the remote Claude token file is placed when the token is saved and
-re-placed by Verify, and the remote login shell exports the variable only when
-the file exists, rather than re-placing it on every launch; `rcp server doctor`
-reports each account's durable login state (`provider_logins`) read from the
-database read-only, and the readiness check names Settings, Provider logins
-instead of a shell login command; `server provider update` no longer probes or
-recovers the login at all; the credential-touching readiness answer is stored
-per `(provider, host, executable)` with its version (migration 21) so a service
-restart runs only `--version`. The served-app device-code sign-in on the team
-server and the Claude token journey are still to be driven live.
+Implemented on this branch. Authentication is selected by `ProviderProfile`:
+Codex owns device-code parsing and native login/logout; Claude owns setup-token
+validation, metadata, environment preparation, and remote placement. Shared
+account coordination owns atomic sign-in reservation, gated credential mutation
+and verification, durable generations, readiness invalidation, and recovery via
+the existing episode/queue/watcher owners. Admission checks required credentials
+even without a state row. Launches prepare their environment and capture their
+generation under the same gate, retaining the bounded startup hold. Provider
+interpretation covers turns, verification, catalog, Work readiness, and skill
+probes. The generic account API publishes provider labels, supported interaction
+types, and safe metadata; React renders those capabilities without provider-name
+branches. Device completion resumes parked work without polling, and existing
+durable reconciliation repairs interrupted recovery without duplicate launches.
+Explicit skill Refresh probes; unchanged implicit inventories may be reused.
+
+The remote Claude token file is placed when saved and re-placed by Verify;
+`rcp server doctor` reports durable account state read-only and names Settings,
+Provider logins; `server provider update` does not probe or recover the login.
+Credential-touching readiness is persisted per account and executable with its
+version (migration 21), so unchanged startup runs only `--version`. Automated
+checks exercise a third fixture provider through shared account actions and
+rendered interactions. Live real-provider and remote journeys remain closure
+checks; local served verification uses a disposable account and data directory.
 
 ### Slice 4: continuation episode and branch merge on branch facts
 

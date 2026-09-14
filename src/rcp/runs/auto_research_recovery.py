@@ -7,7 +7,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_failure_signal,
 )
-from rcp.runs.provider_login import project_provider_login_block
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.storage import EpisodeRecord
 
 if TYPE_CHECKING:
@@ -118,10 +118,15 @@ def reconcile_due_auto_research_recoveries(
         if operation_ids is not None and recovery.operation_id not in operation_ids:
             continue
         task = store.agent_task(recovery.operation_id)
-        if task is not None and project_provider_login_block(
-            store, task.project_id, task.request.get("provider"), task.request.get("run_on")
-        ):
-            continue
+        if task is not None:
+            try:
+                background.admit_provider_task(
+                    task.project_id,
+                    background._request_from_record(task),
+                    execution_host=(task.stage_host or "") if task.stage_root else None,
+                )
+            except ProviderSignedOut:
+                continue
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:

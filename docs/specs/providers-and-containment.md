@@ -548,39 +548,46 @@ minimum version for that profile through the same launch abstraction used by
 tasks. The provider's own status command is a presence check, not a liveness
 check, and is never proof of a login.
 
-**Codex** keeps its native login under the execution account's own home. Sign-in
-(`POST /api/providers/codex/logins/sign-in`, polled at
-`GET /api/providers/codex/logins/sign-in/{login_id}`) runs `codex login
---device-auth` as the execution account under the credential gate, parses the
-one-time code and verification URL from its output, shows both, and on exit
-runs the verify request below; one sign-in runs per account at a time, a second
-member joins it, and a watchdog ends an abandoned one. Sign-out runs `codex
-logout`.
+Each `ProviderProfile` selects its authentication implementation alongside its
+runtime. The implementation owns supported sign-in interactions, credential
+requirements and validation, environment preparation, protocol parsing, safe
+credential metadata, and interpretation of provider evidence. Shared RCP code
+uses these capabilities and normalized outcomes without selecting authentication
+behavior by provider name. The credential store owns private atomic persistence
+and collision-free account paths; it does not choose launch semantics.
+Remote account keys use a digest of the exact execution host instead of the old
+lossy character replacement. Tokens stored under the old remote account paths
+must be pasted again; RCP does not guess which account owned an ambiguous old
+path. Local token paths remain unchanged.
 
-**Claude** runs on a long-lived `setup-token` instead of its browser login,
-because that login rotates a single-use refresh token on every process start.
-A member obtains the token on any machine with a browser and pastes it
-(`POST /api/providers/claude/logins/token`); RCP validates only its shape,
-stores it in the execution account's credential store at
-`<data dir>/providers/claude/<account>/setup-token` (directory 0700, file 0600,
-atomic write) beside a nonsecret record of who pasted it and when, places it on
-an SSH account at `~/.config/rcp/claude-setup-token` with the token on the
-transport's stdin, then runs the verify request. One environment builder
-(`ProviderCredentialStore.process_environment`) supplies every Claude process
-RCP starts, local or remote, with `CLAUDE_CODE_OAUTH_TOKEN` from that file and
-removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`: turns, the hidden
-report turn, readiness probes, the skill probe, and the readiness coordinator.
-A remote process reads the file inside its own login shell; the token never
-enters a command line, an event, a receipt, a response, or a log. The token's
-expiry is not readable; the UI shows the paste date and an estimated expiry, and
-a classified login failure is the truth. Sign-out deletes the stored token and
-the remote file. The `providers` directory is excluded from protected backups;
-at service start a Claude account recorded `signed_in` without its token file is
-marked `signed_out` with `source="restore"` before any launch.
+**Codex** owns native device sign-in (`codex login --device-auth`), parsing its
+one-time code and verification URL, native logout, and verification commands.
+**Claude** owns setup-token validation, the estimated lifetime metadata,
+`CLAUDE_CODE_OAUTH_TOKEN` injection, removal of conflicting inherited credential
+sources, and remote token placement and removal. Tokens travel on transport
+stdin or through private environment preparation, never in argv, responses,
+events, receipts, logs, or backups. The `providers` directory remains excluded
+from protected backups. A provider that requires a managed credential refuses
+admission when it is missing, including an account with no durable login row.
 
-Sign-out (`POST /api/providers/{provider}/logins/sign-out`) marks the account
-`signed_out` with a new generation, `source="sign_out"`, and the acting member,
-and fences admission exactly as a failed login does.
+The shared account lifecycle owner coordinates sign-in, verification, and
+sign-out per execution account. Concurrent device sign-ins atomically join one
+operation. It acquires the account gate before reading or mutating credentials
+and holds it through verification and durable login-state publication. Token
+replacement and native device sign-in publish a signed-out fence before changing
+credentials, so interruption cannot leave an unverified credential eligible. Successful
+verification invalidates readiness and releases eligible parked work through the
+existing recovery owners. Completion belongs to this service, not an HTTP poll;
+its durable recovery work can be reconciled after interruption without duplicate
+dispatch. Member authorization remains at the API boundary; durable changes
+record the acting member.
+
+The provider-neutral routes are `POST /api/providers/{provider}/logins/sign-in`,
+`GET /api/providers/{provider}/logins/sign-in/{login_id}`,
+`POST /api/providers/{provider}/logins/token`, `.../verify`, and `.../sign-out`.
+Unsupported interactions are explicitly refused. Status GET only reads operation
+status. Sign-out publishes `signed_out` with a new generation, `source="sign_out"`,
+and the acting member, fencing admission exactly as a failed login does.
 
 ### Login state and failure
 
@@ -589,16 +596,20 @@ RCP keeps one durable login state per `(provider, host)` machine account,
 own diagnostic matches the provider profile's revoked-login signatures (for
 Codex: `token_revoked`, `refresh_token_invalidated`, `refresh_token_reused`,
 "refresh token was revoked", "refresh token was already used", "your session has
-ended"; Claude declares none until one is observed) is classified
+ended"; Claude recognizes its own remote missing-credential fence and declares
+no native revoked-login signatures until one is observed) is classified
 `provider_auth` on every path: a turn, a wake, a worker, an automatic recovery,
 the hidden report attempt, and the readiness probes. The classification marks
 the account `signed_out` with the generation the launch captured; a late
 failure carrying an older generation never re-marks an account repaired since.
 
-While an account is `signed_out`, every paid admission for it (an Auto-research
+While an account is `signed_out` or lacks a required managed credential, every
+paid admission for it (an Auto-research
 turn, wake, child Work, child Experiment, or report attempt; an Experiment-loop
 turn or Retry) is refused before a task is created or budget debited. Human and
-API paths receive the refusal text; reconcilers leave the durable input pending
+API paths receive the refusal text. One shared task-admission fence checks
+eligibility before durable task creation or budget debit; queued tasks remain queued when
+the account cannot launch. Reconcilers leave the durable input pending
 (notices, mail, watcher completions, the report allocation). An Auto-research
 recovery for a `provider_auth` failure is created `blocked` and is never claimed
 until the account is verified. Readiness reads the durable state, so the Retry
@@ -611,11 +622,15 @@ the profile's `login_probe_command`. Success marks `signed_in`, bumps the
 generation, invalidates readiness, and resumes the parked work once: blocked
 recoveries are released and claimed, pending lifecycle, mail, and watcher
 inputs are delivered, pending wrap-ups restart, and one Experiment-loop turn
-that failed with `provider_auth` is retried through its exact path. Failure
-keeps `signed_out` and records the probe's bounded diagnostic. Any signed-in
-member may verify; the acting member is recorded. Nothing on other providers or
-machines is touched. A catalog failure cannot approve an explicitly saved
-model, and an unexpected implementation error fails the command rather than
+that failed with `provider_auth` is retried through its exact path. Authentication
+failure records `signed_out` and a safe diagnostic; transport,
+unsupported configuration, and ordinary provider failures do not falsely revoke
+the login. Any signed-in
+member may verify; the acting member is recorded. Recovery release, Experiment
+Retry, queued launches, and watcher delivery target the verified account. The
+ordinary episode reconciliation pass also runs once, with its existing login
+gates keeping other signed-out accounts parked. A catalog failure cannot approve
+an explicitly saved model, and an unexpected implementation error fails the command rather than
 being relabelled as a missing install. The later provider call uses the same
 authentication and version rule. A failed check names the provider and
 machine/account and points at Settings, Provider logins, where any member signs
@@ -736,7 +751,13 @@ available while it runs.
 A provider login is one rotating credential owned by one execution account, and
 no provider CLI locks it while refreshing. RCP therefore admits one provider
 startup at a time per provider and execution account. Turns, readiness probes,
-and skill inventory probes share that one gate, because each runs the provider
+and skill inventory probes share that one gate. Each credential-touching path
+acquires it before preparing the environment and capturing the login generation
+from the same credential state. A turn rechecks eligibility there before spawn;
+a late failure from an older generation cannot invalidate a repaired account.
+The provider implementation interprets evidence from turns, verification, model
+catalog, Work readiness, and skill probes; shared code durably applies the same
+authentication-failure policy on every path. Each runs the provider
 executable and each can rotate the same token; a probe holds for its whole run,
 while a turn holds until the provider writes a line of its own and a minimum
 stagger has passed. A broker readiness line is not the provider speaking. A hold
@@ -746,11 +767,12 @@ stalled startup closing the credential to everything else.
 RCP starts no provider process it does not need. The credential-touching
 readiness answer (login status, model catalog, Work probe) is stored durably per
 `(provider, host, executable)` with the version it was read from; a later
-readiness read runs only `--version`, which touches no credential and outside
-the gate, and reuses the stored answer while the version is unchanged. An
+readiness read runs only `--version`, with its environment prepared under the
+account gate, and reuses the stored answer while the version is unchanged. An
 explicit Refresh, a version change, a verify, a sign-in, or a sign-out probes
 again. The skill inventory is reused the same way while the executable, its
-version, and the probe command match the stored inventory. A provider process,
+version, and the probe command match the stored inventory on implicit reads.
+An explicit human skill Refresh always probes. A provider process,
 probe, or turn is never signalled before the gate's minimum hold has elapsed
 since it started, so a login refresh begun at start can finish its write; a
 probe timeout is clamped to that hold, and a Pause of a young process waits it

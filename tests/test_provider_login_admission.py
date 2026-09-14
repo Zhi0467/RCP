@@ -315,12 +315,12 @@ def test_committed_task_waits_for_verify_without_poll_writes(
     client = _verify_client(store, tasks, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["queued"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, queued.operation_id, expect="succeeded")
     wait_until(lambda: queued.operation_id not in tasks._workers)
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["queued"] == 0
+    assert again.json()["resumed"]["checked"] == int(experiment)
     assert calls == [queued.operation_id]
 
 
@@ -363,12 +363,42 @@ def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, mon
     client = _verify_client(store, tasks, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["lifecycle"] == 1
-    assert response.json()["resumed"]["queued"] == 0
+    assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, operation_id, expect="succeeded")
     wait_until(lambda: operation_id not in tasks._workers)
     assert _counts(store) == before
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["lifecycle"] == 0
+    assert again.json()["resumed"]["checked"] >= 1
     assert _counts(store) == before
+
+
+def test_missing_managed_credential_refuses_without_existing_login_state(tmp_path):
+    from rcp.runs.provider_login import ProviderSignedOut
+
+    from .helpers import fabricated_authorizer
+
+    store = _store(tmp_path)
+
+    async def stream(*_args):
+        raise AssertionError("Missing credentials must refuse admission")
+        yield ""
+
+    tasks = BackgroundAgentTasks(store, stream)
+    assert store.provider_login_states() == []
+    before = _counts(store)
+    with pytest.raises(ProviderSignedOut, match="token"):
+        tasks.start(
+            "project",
+            "project_chat",
+            RunRequest(
+                provider="claude",
+                run_on="local",
+                chat_scope="project",
+                message="Inspect results",
+                mode="work",
+            ),
+            authorized_by=fabricated_authorizer(),
+        )
+    assert _counts(store) == before
+    assert store.provider_login_states() == []

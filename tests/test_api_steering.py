@@ -21,7 +21,7 @@ from rcp.service import (
     iter_canonical_chat_transfer,
 )
 
-from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
+from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, store_test_claude_token, wait_until
 
 
 @pytest.fixture
@@ -29,6 +29,7 @@ def running_chat(manifest, tmp_path, monkeypatch, request):
     provider = getattr(request, "param", "codex")
     runtime = "claude.stream-json.v1" if provider == "claude" else "codex.app-server-stdio.v1"
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     client = TestClient(app)
     background = app.state.background_tasks
     project_id = app.state.default_project_id
@@ -517,6 +518,7 @@ time.sleep(120)
     )
     binary.chmod(0o755)
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "integration-data")
+    store_test_claude_token(app.state.background_tasks.store)
     monkeypatch.setattr(
         app.state.launcher,
         "readiness",

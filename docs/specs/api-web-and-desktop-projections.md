@@ -677,7 +677,8 @@ wrap-up whose report account is signed out reads `wrapping_up` with
 
 Provider login state is published at `GET /api/providers/logins` (every
 machine account, with the project machines that use it, a secret-free summary
-of a stored Claude token, and any running Codex sign-in) and inside each
+of a stored credential, provider-owned labels and supported sign-in methods,
+and any running sign-in) and inside each
 project's readiness snapshot as `provider_logins` (the accounts that project
 uses). While any account is `signed_out`, the project Runs view and the space
 landing render one `ProviderLoginNotice` per account naming the provider,
@@ -685,10 +686,18 @@ machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
 at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
 copy points at it. Project Settings carries a **Provider logins** card
 (`ProviderLogins`) for both space kinds with one row per account: state, who
-changed it and when, **Sign in with device code** for Codex (the code and link
-render while `GET .../sign-in/{login_id}` is polled), a token field and **Save
-token** for Claude (the token is sent once and never read back), **Verify
-sign-in**, and **Sign out**. Every action is available to any signed-in member
+changed it and when, **Sign in with device code** when `device_code` is supported
+(the code and link render while `GET .../sign-in/{login_id}` is polled), a token
+field and **Save token** when `token_entry` is supported (the token is sent once
+and never read back), **Verify sign-in**, and **Sign out**. Unknown interactions
+do not inherit another provider's form. The backend supplies the provider label,
+token instructions, and safe credential metadata; React never selects login
+behavior from a provider name. Generic provider routes reject unsupported
+actions and unknown request fields. Status GET reads status only: verification
+completion resumes eligible parked work through the shared account lifecycle
+and existing recovery owners even when the member leaves Settings or closes
+the page. Durable reconciliation repairs interruption before resumption without
+duplicate launches. Every action is available to any signed-in member
 and records that member. Task
 status, phase, workers, and diagnostics remain supporting history rather than
 competing primary states.
@@ -937,8 +946,18 @@ picks a default itself.
 
 The browser may stage human drafts and render backend projections; it is not the
 owner of authority, tasks, graph rules, provider authentication, watcher
-delivery, or canonical state. Provider authentication stays native to the
-execution account and is not owned by another RCP layer. Client-generated ids,
+delivery, or canonical state. Provider implementations own authentication
+mechanics for the execution account; the shared account lifecycle owns durable
+state and recovery. Client-generated ids,
 cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
+
+## Provider sign-in resume response
+
+Verified sign-in, token save, and successful device sign-in retain
+`resumed`, now `{ "checked": N }`. This is a coarse count of episodes inspected
+by the ordinary periodic reconciliation pass, plus queued tasks and completed
+watcher groups checked for the verified account. It is not a launch count:
+already-settled episodes and inputs still waiting on other conditions may be
+included. The web reports items rechecked for resumption.

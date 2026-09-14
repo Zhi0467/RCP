@@ -160,6 +160,11 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
         unsettled_graph_target_tasks=lambda *_args: [],
         auto_research_child_experiments=lambda _episode_id: [],
         record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
+        agent_task_receipts=lambda operation_id: [
+            SimpleNamespace(category=category, payload=payload)
+            for recorded_operation, category, payload, _kwargs in receipts
+            if recorded_operation == operation_id
+        ],
     )
 
     def fail_restart(_tasks: object, _episode_id: str) -> None:
@@ -955,3 +960,22 @@ def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest,
     assert episode.wrapup_state == "failed"
     assert episode.status == "completed"
     assert episode.report_attempts_used == 3
+
+
+@pytest.mark.asyncio
+async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recoverable(
+    manifest, tmp_path
+):
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    launcher = _ReportLauncher([])
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert [event.event for event in events] == ["error"]
+    assert launcher.calls == 0
+    episode = store.episode(request.episode_id)
+    assert episode.report_attempts_used == 0 and episode.wrapup_state == "pending"
+    task = store.agent_task(execution.operation_id)
+    assert task.failure_kind == "provider_auth"
+    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+    queued = store.requeue_interrupted_episode_report_allocation(request.episode_id)
+    assert queued.operation_id == execution.operation_id and queued.status == "queued"

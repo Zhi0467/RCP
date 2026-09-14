@@ -41,7 +41,7 @@ from rcp.storage import (
 )
 from rcp.storage.models import _required_timestamp
 
-from .helpers import fabricated_authorizer, wait_for_task, wait_until
+from .helpers import fabricated_authorizer, store_test_claude_token, wait_for_task, wait_until
 
 EXPERIMENT_ID = "exp/orchestrated-loop"
 PROJECT_ID = "project"
@@ -339,6 +339,7 @@ def test_kickoff_preserves_optional_goal_and_uses_current_node_work_profile(
         tmp_path,
         ceiling=2,
     )
+    store_test_claude_token(store)
     child_id = CHILD_EXPLICIT if goal is not None else CHILD_FALLBACK
     admission_id = f"admission-{child_id}"
     _admit(

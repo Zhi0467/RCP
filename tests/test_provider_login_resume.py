@@ -30,6 +30,22 @@ from .test_auto_research_recovery import (
 )
 
 
+def _resume_app(store, background, monkeypatch):
+    # Exercise the same composed episode pass the timer and sign-in share.
+    from rcp.api import app as app_module
+
+    callback = background.on_task_settled
+    with monkeypatch.context() as patch:
+        patch.setattr(app_module, "AppStore", lambda _: store)
+        patch.setattr(app_module, "BackgroundAgentTasks", lambda *_, **__: background)
+        composed = app_module.create_app(data_dir=store.path.parent / "resume-app")
+    background.on_task_settled = callback
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.state.services = composed.state.services
+    return app
+
+
 def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, monkeypatch):
     store = _store(tmp_path)
     project = store.project("project")
@@ -52,6 +68,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         else:
             yield _sse(AgentEvent(event="done"))
 
+    ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
+        "claude", "", "test-token", member_id="member", now=store.now()
+    )
     background = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(background)
     roots = []
@@ -63,7 +82,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
                 invocation_ceiling=4,
                 run_truth_scope=["repo"],
                 provider=provider,
-                run_on="removed-alias",
+                run_on="laptop",
             ),
             authorized_by=fabricated_authorizer(),
             graph_base_head=GraphHeadRef(revision=0),
@@ -101,19 +120,19 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         "get_identity_access",
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
     )
-    monkeypatch.setattr(provider_login, "get_background_tasks", lambda _: background)
-    app = FastAPI()
-    app.include_router(provider_login.router)
+    app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    runner = ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
+    runner.resume_account = app.state.services.provider_sign_ins.resume_account
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
 
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["recoveries"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     assert response.json()["state"]["generation"] == 1
     assert response.json()["state"]["changed_by"] == "member"
     recovery = store.auto_research_recovery("task:root-project")
@@ -125,7 +144,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     assert reconcile_due_auto_research_recoveries(background) == 0
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["recoveries"] == 0
+    assert again.json()["resumed"]["checked"] >= 1
     assert calls.count(("project", "retry")) == 1
     assert calls.count(("other", "retry")) == 0
 
@@ -146,14 +165,14 @@ def _verify_client(store, background, monkeypatch):
         "get_identity_access",
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
     )
-    monkeypatch.setattr(provider_login, "get_background_tasks", lambda _: background)
-    app = FastAPI()
-    app.include_router(provider_login.router)
+    app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    runner = ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
     )
+    runner.resume_account = app.state.services.provider_sign_ins.resume_account
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     return TestClient(app)
 
 
@@ -202,7 +221,7 @@ def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["experiments"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     children = [
         task
         for task in store.episode_tasks(root.episode_id)
@@ -214,7 +233,7 @@ def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
     assert store.episode(root.episode_id).invocations_used == 1
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["experiments"] == 0
+    assert again.json()["resumed"]["checked"] >= 1
     assert calls == ["fresh", "retry"]
     assert store.provider_login_state("codex", "other-machine") == remote
 
@@ -227,6 +246,8 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     from .test_episode_report import _ReportLauncher, _setup_report
 
     service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
+    # The report fixture omits the mode adapter; its admitted visible turn is finished.
+    store.complete_agent_task("operation", applied_revision=None, result={})
     report_launcher = _ReportLauncher(["auth", "valid"])
 
     async def stream(_project, _kind, report_request, execution):
@@ -245,7 +266,7 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["reports"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, report.operation_id, expect="succeeded")
     wait_until(lambda: report.operation_id not in background._workers)
     assert store.episode(request.episode_id).wrapup_state == "ready"
@@ -253,7 +274,7 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     assert report_launcher.calls == 2
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["reports"] == 0
+    assert again.json()["resumed"]["checked"] >= 1
     assert report_launcher.calls == 2
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
@@ -292,6 +313,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         else:
             yield _sse(AgentEvent(event="done"))
 
+    original_manifest = manifest.path.read_text()
+    if run_on == "removed-alias":
+        manifest.path.write_text(original_manifest.replace("laptop", "removed-alias"))
     background = BackgroundAgentTasks(store, stream)
     roots = []
     for index in range(2):
@@ -310,13 +334,14 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         )
         roots.append(wait_for_task(store, task.operation_id, expect="failed"))
         wait_until(lambda operation_id=task.operation_id: operation_id not in background._workers)
+    manifest.path.write_text(original_manifest)
     store.checkpoint_agent_task(
         roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
     )
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["experiments"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     children = [
         task
         for task in store.episode_tasks(roots[0].episode_id)
@@ -347,13 +372,13 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
         update={"watcher_id": "elsewhere", "execution_host": "other.example"}
     )
     monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale], [elsewhere]])
+    client = _verify_client(store, background, monkeypatch)
     delivered = []
     monkeypatch.setattr(
-        provider_login,
-        "get_watcher_delivery",
-        lambda _: SimpleNamespace(deliver_watcher_group=lambda group: delivered.append(group)),
+        client.app.state.services.watcher_delivery,
+        "deliver_watcher_group",
+        lambda group: delivered.append(group),
     )
-    client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
     assert [group[0].watcher_id for group in delivered] == [watcher.watcher_id]

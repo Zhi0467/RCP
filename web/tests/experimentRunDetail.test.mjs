@@ -809,10 +809,8 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
   });
 
   assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
-  assert.match(html, /<h3>Current turn<\/h3><span>1<\/span>/);
-  assert.match(html, /campaign-task-role worker">Agent/);
-  assert.match(html, /<strong>Invocation 1<\/strong>/);
-  assert.match(html, /Agent task is running\./);
+  // Timeline data arrives after mount; SSR no longer duplicates the turn list.
+  assert.doesNotMatch(html, /<h3>Current turn<\/h3>/);
   assert.match(html, /<h4>Experiment objective<\/h4>/);
   assert.doesNotMatch(html, /will update when it finishes/);
   assert.match(html, /Previous research summary \(stale\).*No baseline has been run yet\./s);

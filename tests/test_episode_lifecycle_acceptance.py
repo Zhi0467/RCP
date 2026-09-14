@@ -423,7 +423,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
         assert budget["invocation_ceiling"] == 1
         assert budget["invocations_used"] == 1
         assert budget["invocations_remaining"] == 0
-        assert episode["can_reauthorize"] is True
+        assert episode["can_continue"] is True
         assert episode["report"] is not None
         preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text

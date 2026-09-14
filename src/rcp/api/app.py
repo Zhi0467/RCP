@@ -117,7 +117,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
-from rcp.runs.provider_sign_in import ProviderSignInRunner, reset_claude_logins_without_tokens
+from rcp.runs.provider_sign_in import ProviderSignInRunner, reset_logins_without_credentials
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -624,7 +624,7 @@ def create_app(
     )
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
-    provider_credentials = ProviderCredentialStore(app_data / "providers")
+    provider_credentials = ProviderCredentialStore.for_data_dir(app_data)
     launcher = (
         AcceptanceAgentLauncher()
         if acceptance_agent
@@ -635,9 +635,9 @@ def create_app(
         )
     )
     # A restored data directory carries login state but no token: the backup
-    # excludes `providers`, so a Claude account the archive knew as signed in is
-    # signed out here before anything can launch on a credential that is gone.
-    reset_claude_logins_without_tokens(store, provider_credentials)
+    # excludes `providers`; reset accounts whose implementation requires a
+    # managed credential before anything can launch on one that is gone.
+    reset_logins_without_credentials(store, provider_credentials)
     provider_sign_ins = ProviderSignInRunner(store, launcher, provider_credentials)
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
@@ -660,6 +660,7 @@ def create_app(
     # One gate, so a skill probe and a turn cannot rotate one login together.
     provider_skills = ProviderSkillInventoryManager(
         store,
+        account_lifecycle=provider_sign_ins,
         credential_gate=launcher.credential_gate,
         process_environment=launcher.process_environment,
     )
@@ -1187,12 +1188,13 @@ def create_app(
 
     graph_watcher_retry_worker = WatcherRetryWorker(retry_graph_wakes_after_poll)
 
-    def after_watcher_poll() -> None:
-        graph_watcher_retry_worker.signal()
+    def reconcile_episodes() -> int:
         reconcile_auto_research_recovery_pass()
         auto_research_episode_ids: list[str] = []
+        checked = 0
         for project in store.projects():
             for episode in store.episodes(project.project_id, limit=None):
+                checked += 1
                 if episode.mode == "auto_research":
                     auto_research_episode_ids.append(episode.episode_id)
                     try:
@@ -1229,6 +1231,23 @@ def create_app(
                     episode_id,
                     exc,
                 )
+
+        return checked
+
+    from rcp.runs.provider_login import resume_provider_account
+
+    provider_sign_ins.resume_account = lambda provider, host: resume_provider_account(
+        background_tasks,
+        provider,
+        host,
+        reconcile_episodes=reconcile_episodes,
+        watcher_delivery=watcher_delivery,
+    )
+
+    def after_watcher_poll() -> None:
+        provider_sign_ins.reconcile_recovery()
+        graph_watcher_retry_worker.signal()
+        reconcile_episodes()
 
     watcher_poller = WatcherPoller(
         store,
@@ -1291,6 +1310,7 @@ def create_app(
         server_status_composition=server_status_composition,
         provider_credentials=provider_credentials,
         provider_sign_ins=provider_sign_ins,
+        episode_reconciliation=reconcile_episodes,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1317,9 +1337,9 @@ def create_app(
                         path_state="unreachable" if host else "missing",
                         reason=str(exc),
                     )
-                    provider_skills.refresh(provider, host, binary, readiness)
+                    provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
                     raise
-                provider_skills.refresh(provider, host, binary, readiness)
+                provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
 
             # Mark the whole startup inventory before beginning any provider
             # process so the UI never mistakes a prior process's cache for a

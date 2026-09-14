@@ -57,6 +57,7 @@ from rcp.watchers import (
 
 from .helpers import append_fixture_patch, wait_until
 from .helpers import create_named_app as create_app
+from .test_background import _store as _admission_store
 
 _CREATED_AT = "2026-08-12T00:00:00+00:00"
 
@@ -2192,7 +2193,7 @@ def test_watcher_notification_admission_fence_owns_claim_and_spawn(
     tmp_path,
     monkeypatch,
 ) -> None:
-    store = AppStore(tmp_path / "fenced-claim.sqlite3")
+    store = _admission_store(tmp_path)
     owner = store.local_owner
     assert owner is not None
     store.rename_space_user(owner.user_id, "Test researcher")
@@ -2694,7 +2695,7 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
     tmp_path,
     monkeypatch,
 ) -> None:
-    store = AppStore(tmp_path / "shutdown-admission.sqlite3")
+    store = _admission_store(tmp_path)
     owner = store.local_owner
     assert owner is not None
     store.rename_space_user(owner.user_id, "Test researcher")
@@ -2831,6 +2832,7 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     request = RunRequest(
+        provider="codex",
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
         message="Apply a graph change, then stop.",

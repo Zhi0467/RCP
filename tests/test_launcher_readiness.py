@@ -232,6 +232,49 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     )
     readiness = launcher.readiness("claude", binary=str(binary))
     assert not readiness.authenticated
-    assert "Verify sign-in" in readiness.reason
+    assert "Settings" in readiness.reason
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
     assert not launcher.cached_readiness("claude", binary=str(binary)).authenticated
+
+
+@pytest.mark.parametrize("path", ["auth", "catalog", "work"])
+@pytest.mark.parametrize(
+    "diagnostic,blocked",
+    [("refresh_token_reused", True), ("connection refused", False), ("unsupported model", False)],
+)
+def test_probe_failure_updates_account_only_for_provider_auth(
+    tmp_path, monkeypatch, path, diagnostic, blocked
+):
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.providers import profile_for
+    from rcp.runs.provider_sign_in import ProviderSignInRunner
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    launcher = AgentLauncher(login_state=store.provider_login_state, readiness_snapshots=store)
+    ProviderSignInRunner(store, launcher, ProviderCredentialStore(tmp_path / "providers"))
+    profile = profile_for("codex")
+    binary = tmp_path / "codex"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(profile, "auth_command", lambda binary: [binary, "auth"])
+    monkeypatch.setattr(profile, "catalog_command", lambda binary: [binary, "catalog"])
+    monkeypatch.setattr(profile, "work_like_probe_command", lambda binary: [binary, "work"])
+    monkeypatch.setattr(profile, "is_authenticated", lambda result: result.returncode == 0)
+    monkeypatch.setattr(profile, "models", lambda result: [])
+
+    def probe(host, command, **kwargs):
+        assert not launcher.credential_gate._lock_for("codex", "").acquire(False)
+        return subprocess.CompletedProcess(
+            command,
+            1 if command[-1] == path else 0,
+            "1.0" if command[-1] == "--version" else "OK",
+            diagnostic if command[-1] == path else "",
+        )
+
+    monkeypatch.setattr(launcher, "_probe", probe)
+    readiness = launcher.readiness("codex", binary=str(binary), refresh=True)
+    assert (store.provider_login_state("codex", "").state == "signed_out") is blocked
+    if blocked:
+        assert not readiness.authenticated
+        assert store.provider_readiness_snapshot("codex", "", str(binary)) is None
