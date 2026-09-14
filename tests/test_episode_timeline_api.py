@@ -412,3 +412,58 @@ def test_task_degradation_survives_detail_bound(manifest, tmp_path):
     )
     assert event.detail.startswith(note)
     assert len(event.detail) == 500
+
+
+def test_timeline_reads_hydrate_only_the_newest_suffix(tmp_path):
+    """The timeline keeps the newest events, so its store reads take a ``newest`` bound.
+
+    Bounded reads return the same records as the tail of the full read, in the
+    same order; only the rows that can never reach the wire are left unread.
+    """
+
+    from .test_branch_target_storage import _create_auto_episode, _store, _worker_authority
+
+    store = _store(tmp_path)
+    episode, root = _create_auto_episode(store)
+    for index in range(3):
+        worker_id = f"worker-{index}"
+        store.create_auto_research_agent_task(
+            root.model_copy(
+                update={
+                    "operation_id": worker_id,
+                    "parent_operation_id": root.operation_id,
+                    "request": {
+                        **root.request,
+                        "role": "worker",
+                        "actor_operation_id": worker_id,
+                        "control_node_id": f"exp/{index}",
+                    },
+                    "dispatch_authority": _worker_authority(episode.episode_id),
+                }
+            ),
+            role="worker",
+        )
+    paid = store.auto_research_tasks(episode.episode_id)
+    assert len(paid) == 4
+    assert store.auto_research_tasks(episode.episode_id, newest=2) == paid[-2:]
+    tasks = store.episode_tasks(episode.episode_id)
+    assert store.episode_tasks(episode.episode_id, newest=2) == tasks[-2:]
+    invocations = store.episode_invocations(episode.episode_id)
+    assert [row.invocation_number for row in invocations] == [1, 2, 3, 4]
+    assert store.episode_invocations(episode.episode_id, newest=1) == invocations[-1:]
+    with store.connection() as connection:
+        for recovery_id, created_at, updated_at in (
+            ("recovery-old", "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z"),
+            ("recovery-new", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"),
+        ):
+            connection.execute(
+                "INSERT INTO auto_research_recoveries (recovery_id, episode_id, operation_id,"
+                " failure_kind, retry_mode, attempts, max_attempts, status, diagnostic,"
+                " created_at, updated_at) VALUES (?, ?, ?, 'provider', 'exact', 1, 3,"
+                " 'exhausted', 'diag', ?, ?)",
+                (recovery_id, episode.episode_id, root.operation_id, created_at, updated_at),
+            )
+    recoveries = store.auto_research_recoveries(episode.episode_id)
+    assert [row.recovery_id for row in recoveries] == ["recovery-old", "recovery-new"]
+    # A recovery is an event at its last update, so the bound keeps the latest-updated row.
+    assert store.auto_research_recoveries(episode.episode_id, newest=1) == recoveries[:1]

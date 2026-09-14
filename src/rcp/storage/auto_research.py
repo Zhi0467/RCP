@@ -1160,26 +1160,35 @@ class AutoResearchStoreMixin:
             stage_root=latest["stage_root"],
         )
 
-    def auto_research_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
+    def auto_research_tasks(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[AgentTaskRecord]:
+        """The episode's paid tasks in creation order; ``newest`` keeps only that suffix."""
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT run.*,
-                       EXISTS (
-                         SELECT 1 FROM graph_run_receipts AS receipt
-                         WHERE receipt.operation_id = run.operation_id
-                           AND receipt.category IN (
-                             'auto_research_recovery_abandoned',
-                             'experiment_recovery_abandoned'
-                           )
-                       ) AS recovery_abandoned
-                FROM graph_runs AS run
-                JOIN auto_research_invocations AS invocation
-                  ON invocation.operation_id = run.operation_id
-                WHERE invocation.episode_id = ?
-                ORDER BY run.created_at, run.operation_id
+                SELECT * FROM (
+                    SELECT run.*,
+                           EXISTS (
+                             SELECT 1 FROM graph_run_receipts AS receipt
+                             WHERE receipt.operation_id = run.operation_id
+                               AND receipt.category IN (
+                                 'auto_research_recovery_abandoned',
+                                 'experiment_recovery_abandoned'
+                               )
+                           ) AS recovery_abandoned
+                    FROM graph_runs AS run
+                    JOIN auto_research_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE invocation.episode_id = ?
+                    ORDER BY run.created_at DESC, run.operation_id DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY created_at, operation_id
                 """,
-                (episode_id,),
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -1566,13 +1575,22 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._auto_research_recovery_record(row) if row is not None else None
 
-    def auto_research_recoveries(self, episode_id: str) -> list[AutoResearchRecoveryRecord]:
-        """Read the complete recorded recovery history for an episode."""
+    def auto_research_recoveries(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[AutoResearchRecoveryRecord]:
+        """Read an episode's recovery history in creation order.
+
+        ``newest`` keeps only the most recently updated rows, since a recovery is
+        an event at its last update, not at its creation.
+        """
         with self.connection() as connection:
             rows = connection.execute(
+                "SELECT * FROM ("
                 "SELECT * FROM auto_research_recoveries WHERE episode_id = ? "
-                "ORDER BY created_at, recovery_id",
-                (episode_id,),
+                "ORDER BY updated_at DESC, recovery_id DESC"
+                + (" LIMIT ?" if newest is not None else "")
+                + ") ORDER BY created_at, recovery_id",
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._auto_research_recovery_record(row) for row in rows]
 

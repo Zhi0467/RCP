@@ -901,14 +901,23 @@ class EpisodeStoreMixin:
         assert stored_episode is not None and stored_task is not None
         return stored_episode, invocation, stored_task
 
-    def episode_invocations(self, episode_id: str) -> list[EpisodeInvocationRecord]:
+    def episode_invocations(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[EpisodeInvocationRecord]:
+        """The episode's invocations in order; ``newest`` keeps only that suffix."""
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM episode_invocations
-                WHERE episode_id = ? ORDER BY invocation_number
+                SELECT * FROM (
+                    SELECT * FROM episode_invocations
+                    WHERE episode_id = ? ORDER BY invocation_number DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY invocation_number
                 """,
-                (episode_id,),
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._episode_invocation_record(row) for row in rows]
 

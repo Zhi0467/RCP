@@ -126,21 +126,28 @@ def _member_events(
     store: AppStore, episode: EpisodeRecord, *, primary: bool
 ) -> list[EpisodeTimelineEvent]:
     auto = episode.mode == "auto_research"
+    # The response keeps the newest EPISODE_TIMELINE_EVENT_LIMIT events. Every task
+    # is exactly one event at its creation time, so no task older than the newest
+    # limit + 1 can reach the wire; the extra row keeps ``truncated`` honest.
+    newest = EPISODE_TIMELINE_EVENT_LIMIT + 1
     tasks = (
-        [task for task in store.auto_research_tasks(episode.episode_id) if task.visible]
+        [
+            task
+            for task in store.auto_research_tasks(episode.episode_id, newest=newest)
+            if task.visible
+        ]
         if auto
-        else _operational_tasks(store, episode)
+        else _operational_tasks(store, episode, newest=newest)
     )
     by_task = {task.operation_id: task for task in tasks}
     if auto:
         # Ordinary child Work allocations are outside auto_research_invocations.
-        for task in _operational_tasks(store, episode):
+        for task in _operational_tasks(store, episode, newest=newest):
             by_task.setdefault(task.operation_id, task)
         tasks = list(by_task.values())
     degradations = store.agent_task_degradations(list(by_task))
-    invocations = store.episode_invocations(episode.episode_id)
     roles = store.auto_research_invocations(list(by_task)) if auto else {}
-    recoveries = store.auto_research_recoveries(episode.episode_id) if auto else []
+    recoveries = store.auto_research_recoveries(episode.episode_id, newest=newest) if auto else []
     recovery_by_task = {row.admitted_operation_id: row for row in recoveries}
     works = store.auto_research_child_works(episode.episode_id) if auto else []
     work_origins = {row.root_operation_id: row for row in works}
@@ -163,21 +170,11 @@ def _member_events(
         if routes
         else {}
     )
-    # The response keeps the newest EPISODE_TIMELINE_EVENT_LIMIT events, so no
-    # older notice or message (bodies up to 16 KB) can reach the wire; hydrate
-    # only as many as could.
+    # Notice and message bodies run up to 16 KB; hydrate only as many as could reach the wire.
     notices = (
-        store.auto_research_lifecycle_notices(
-            episode.episode_id, newest=EPISODE_TIMELINE_EVENT_LIMIT
-        )
-        if auto
-        else []
+        store.auto_research_lifecycle_notices(episode.episode_id, newest=newest) if auto else []
     )
-    messages = (
-        store.auto_research_messages(episode.episode_id, newest=EPISODE_TIMELINE_EVENT_LIMIT)
-        if auto
-        else []
-    )
+    messages = store.auto_research_messages(episode.episode_id, newest=newest) if auto else []
     watchers = (
         [row for row in store.watchers(episode.project_id) if row.episode_id == episode.episode_id]
         if not auto
@@ -441,8 +438,13 @@ def _member_events(
                 links=links,
             )
     if episode.invocations_used == episode.invocation_ceiling:
+        # Only the ceiling invocation is an event; it is the newest one by number.
         invocation = next(
-            (row for row in invocations if row.invocation_number == episode.invocation_ceiling),
+            (
+                row
+                for row in store.episode_invocations(episode.episode_id, newest=1)
+                if row.invocation_number == episode.invocation_ceiling
+            ),
             None,
         )
         add(
