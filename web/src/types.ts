@@ -2783,3 +2783,33 @@ export interface ProviderLoginState {
   changed_at: string;
   changed_by: string | null;
 }
+
+/** What the UI may know about a stored Claude setup token: never the token. */
+export interface ClaudeTokenSummary {
+  pasted_at: string;
+  pasted_by: string;
+  verified_at: string | null;
+  estimated_expiry_at: string;
+}
+
+/** One Codex device-code sign-in as it runs. */
+export interface ProviderSignInStatus {
+  login_id: string;
+  provider: "codex";
+  host: string;
+  state: "pending" | "succeeded" | "failed";
+  user_code: string | null;
+  verification_url: string | null;
+  detail: string | null;
+  started_at: string;
+  started_by: string;
+  finished_at: string | null;
+  resumed: Record<string, number> | null;
+}
+
+/** One `(provider, execution account)` pair every project on this server may launch on. */
+export interface ProviderLoginAccount extends ProviderLoginState {
+  machines: string[];
+  token: ClaudeTokenSummary | null;
+  sign_in: ProviderSignInStatus | null;
+}

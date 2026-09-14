@@ -9,14 +9,15 @@ import asyncio
 import errno
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from rcp.agents import AgentLauncher, credential_gate
-from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.agents import AgentLauncher, AgentProcessControl, credential_gate
+from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
@@ -323,6 +324,28 @@ async def test_a_cancelled_wait_does_not_strand_the_credential(
     later.release()
 
 
+@pytest.mark.asyncio
+async def test_a_young_provider_process_is_not_signalled_inside_the_startup_hold() -> None:
+    """A kill during the login refresh spends the single-use refresh token.
+
+    Nothing reports when the refresh runs, so every kill of a process younger
+    than the startup hold waits the hold out first. A process that exits on
+    its own owes nothing.
+    """
+
+    assert remaining_startup_hold(time.monotonic() - 3600) == 0
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    control = AgentProcessControl()
+    control.attach(process)
+    control.request_pause()
+    await asyncio.sleep(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS / 4)
+    assert process.returncode is None, "the pause signalled the provider inside the hold"
+    await asyncio.wait_for(process.wait(), timeout=PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS + 5)
+    assert process.returncode != 0
+
+
 def test_a_finished_probe_releases_without_the_turn_stagger() -> None:
     """The minimum exists because a turn's first line can precede its auth.
 
@@ -551,14 +574,18 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
     launcher = AgentLauncher()
     holding: list[str] = []
 
-    def probe(_host, command):
+    def probe(_host, command, **_):
+        if command[-1:] == ["--version"]:
+            # The version read touches no credential and decides whether the
+            # stored answer is current; it runs before the hold.
+            return subprocess.CompletedProcess(command, 0, "2.1.267", "")
         assert not launcher.credential_gate._lock_for("claude", "").acquire(False), (
             f"{command[-2:]} ran without the credential hold"
         )
         holding.append(command[-1])
         if command[-2:] == ["auth", "status"]:
             return subprocess.CompletedProcess(command, 0, '{"loggedIn":true}', "")
-        return subprocess.CompletedProcess(command, 0, "2.1.267", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     launcher._probe = probe
     launcher.readiness("claude", binary=str(binary))

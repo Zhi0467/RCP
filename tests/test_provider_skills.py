@@ -66,7 +66,11 @@ def test_success_replaces_inventory_and_failure_preserves_it(
 
     monkeypatch.setattr(subprocess, "run", fail)
     manager.mark_refreshing("claude", "", "/opt/claude")
-    stale = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    # A new provider version is what makes the manager probe again; the same
+    # executable at the same version reuses the stored inventory without one.
+    stale = manager.refresh(
+        "claude", "", "/opt/claude", _ready("claude", "/opt/claude", version="provider 1.2.4")
+    )
 
     assert stale.status == "stale"
     assert stale.stale is True
@@ -78,6 +82,34 @@ def test_success_replaces_inventory_and_failure_preserves_it(
     references = manager.resolve("claude", "", "/opt/claude", "laptop", ["review", "plugin:triage"])
     assert [reference.name for reference in references] == ["review", "plugin:triage"]
     assert all(reference.stale for reference in references)
+
+
+def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    manager = ProviderSkillInventoryManager(store)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("review"), ""),
+    )
+    manager.mark_refreshing("claude", "", "/opt/claude")
+    first = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    assert [skill.name for skill in first.skills] == ["review"]
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the skill probe started the provider for an unchanged inventory")
+
+    # A new process (or a later startup) reads the same executable at the same
+    # version: the stored inventory stands and the provider is not started.
+    monkeypatch.setattr(subprocess, "run", never)
+    again = ProviderSkillInventoryManager(store)
+    again.mark_refreshing("claude", "", "/opt/claude")
+    reused = again.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    assert reused.status == "fresh"
+    assert reused.skills == first.skills
+    assert reused.inventory_hash == first.inventory_hash
 
 
 def test_first_failure_has_no_native_skills(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.limits import PROVIDER_LOGIN_DETAIL_MAX_CHARS
-from rcp.storage.models import ProviderLoginStateRecord
+from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 
 
 class ProviderLoginStoreMixin:
@@ -101,6 +101,71 @@ class ProviderLoginStoreMixin:
             )
             self._write_provider_login_state(connection, record)
         return record
+
+    def mark_provider_login_signed_out(
+        self,
+        provider: str,
+        host: str,
+        *,
+        member_id: str | None,
+        source: Literal["sign_out", "restore"],
+        detail: str,
+    ) -> ProviderLoginStateRecord:
+        """A deliberate sign-out or a restore that lost the credential; fences like a failure."""
+
+        if source not in {"sign_out", "restore"}:
+            raise ValueError("unknown provider sign-out source")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT generation FROM provider_login_states WHERE provider = ? AND host = ?",
+                (provider, host),
+            ).fetchone()
+            record = ProviderLoginStateRecord(
+                provider=provider,
+                host=host,
+                state="signed_out",
+                generation=(row[0] if row else 0) + 1,
+                detail=" ".join(detail.split())[:PROVIDER_LOGIN_DETAIL_MAX_CHARS],
+                source=source,
+                changed_at=self.now(),
+                changed_by=member_id,
+            )
+            self._write_provider_login_state(connection, record)
+        return record
+
+    def provider_readiness_snapshot(
+        self, provider: str, host: str, binary: str
+    ) -> ProviderReadinessSnapshotRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM provider_readiness_snapshots "
+                "WHERE provider = ? AND host = ? AND binary = ?",
+                (provider, host, binary),
+            ).fetchone()
+        return ProviderReadinessSnapshotRecord(**dict(row)) if row else None
+
+    def save_provider_readiness_snapshot(self, record: ProviderReadinessSnapshotRecord) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO provider_readiness_snapshots
+                   (provider, host, binary, version, readiness_json, probed_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(provider, host, binary) DO UPDATE SET
+                   version=excluded.version, readiness_json=excluded.readiness_json,
+                   probed_at=excluded.probed_at""",
+                tuple(record.model_dump().values()),
+            )
+
+    def delete_provider_readiness_snapshots(self, provider: str, host: str) -> int:
+        """Forget every probed answer for one account so the next readiness probes again."""
+
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM provider_readiness_snapshots WHERE provider = ? AND host = ?",
+                (provider, host),
+            )
+        return cursor.rowcount
 
     @staticmethod
     def _write_provider_login_state(connection, record: ProviderLoginStateRecord) -> None:

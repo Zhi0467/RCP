@@ -60,6 +60,10 @@ def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
     AppStore(fixture)
     with sqlite3.connect(fixture) as connection:
         connection.execute("DROP TABLE provider_login_states")
+        connection.execute("DROP TABLE provider_readiness_snapshots")
+        connection.execute(
+            "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN acknowledged_operation_id"
+        )
         # Later migrations only add columns; dropping their ledger rows too keeps
         # the fixture at version 17 as more migrations land.
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version > 17")

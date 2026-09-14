@@ -9,8 +9,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentLauncher
+from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import provider_login
-from rcp.api.dependencies import get_launcher, get_store
+from rcp.api.dependencies import get_launcher, get_provider_sign_ins, get_store
+from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.storage import AppStore
 
 
@@ -23,7 +26,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
         "codex", "", generation=0, detail="refresh_token_reused", source="turn"
     )
     launcher = AgentLauncher(login_state=store.provider_login_state)
-    monkeypatch.setattr(provider_login, "_discover_local_provider", lambda _: "/test/codex")
+    monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: "/test/codex")
     probes = []
     holds = []
     monkeypatch.setattr(
@@ -32,7 +35,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
         lambda provider, host: holds.append((provider, host)) or nullcontext(),
     )
 
-    def probe(host, command, *, timeout):
+    def probe(host, command, *, timeout, **_):
         assert timeout == 60
         probes.append((host, command))
         return subprocess.CompletedProcess(
@@ -58,6 +61,9 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     app.include_router(provider_login.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
+    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    )
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == (200 if success else 409)
     assert holds == [("codex", "")]
@@ -75,7 +81,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
 def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "login.sqlite3")
     launcher = AgentLauncher(login_state=store.provider_login_state)
-    monkeypatch.setattr(provider_login, "_discover_local_provider", lambda _: "/test/codex")
+    monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: "/test/codex")
     monkeypatch.setattr(
         provider_login,
         "get_identity_access",
@@ -93,6 +99,9 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     app.include_router(provider_login.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
+    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    )
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 409
     assert store.provider_login_state("codex", "").state == "signed_in"

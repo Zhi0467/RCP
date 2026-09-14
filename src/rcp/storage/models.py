@@ -3664,13 +3664,31 @@ class ProviderLoginStateRecord(BaseModel):
     state: Literal["signed_in", "signed_out"] = "signed_in"
     generation: int = 0
     detail: str | None = None
-    source: Literal["turn", "report", "probe", "verify"] | None = None
+    source: Literal["turn", "report", "probe", "verify", "sign_out", "restore"] | None = None
     changed_at: str = ""
     changed_by: str | None = None
 
 
+class ProviderReadinessSnapshotRecord(BaseModel):
+    """The last credential-touching readiness answer for one exact executable version.
+
+    Reused until the executable or its version changes or a human asks for a
+    re-probe, so a service restart starts no process that reads the login.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    host: str
+    binary: str
+    version: str
+    readiness_json: str
+    probed_at: str
+
+
 __all__ = [
     "ProviderLoginStateRecord",
+    "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",
     "ArtifactRevisionCandidateStatus",
     "ArtifactRevisionConflict",

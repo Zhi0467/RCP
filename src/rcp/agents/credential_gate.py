@@ -48,6 +48,18 @@ from rcp.limits import (
 )
 
 
+def remaining_startup_hold(started_at: float) -> float:
+    """Seconds a provider process started at `started_at` must still be left alone.
+
+    A process killed while it refreshes its login spends the single-use refresh
+    token and leaves the credential dead. Nothing reports when the refresh runs,
+    so every kill of a young provider process waits out the same minimum stagger
+    the startup gate uses; a process that has already exited owes nothing.
+    """
+
+    return max(0.0, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS - (time.monotonic() - started_at))
+
+
 class CredentialStartupHold:
     """One admitted startup.
 

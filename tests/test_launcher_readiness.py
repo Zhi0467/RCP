@@ -113,7 +113,7 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
     binary = _claude_binary(tmp_path)
     launcher = AgentLauncher()
 
-    def probe(_host, command):
+    def probe(_host, command, **_):
         if "--input-format" in command:
             return subprocess.CompletedProcess(command, 255, "", "connection failed")
         if command[-2:] == ["auth", "status"]:

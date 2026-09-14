@@ -55,6 +55,7 @@ class AppStoreBase:
         (18, "provider_login_states_v1"),
         (19, "episode_stop_provenance_v1"),
         (20, "lifecycle_notice_acknowledging_turn_v1"),
+        (21, "provider_readiness_snapshots_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -559,6 +560,12 @@ class AppStoreBase:
             version=20,
             name="lifecycle_notice_acknowledging_turn_v1",
             migration=self._migrate_lifecycle_notice_acknowledging_turn,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=21,
+            name="provider_readiness_snapshots_v1",
+            migration=self._migrate_provider_readiness_snapshots,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1999,6 +2006,7 @@ class AppStoreBase:
         self._migrate_provider_login_states(connection)
         self._migrate_episode_stop_provenance(connection)
         self._migrate_lifecycle_notice_acknowledging_turn(connection)
+        self._migrate_provider_readiness_snapshots(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2033,6 +2041,20 @@ class AppStoreBase:
         cls._ensure_column(
             connection, "auto_research_lifecycle_notices", "acknowledged_operation_id", "TEXT"
         )
+
+    @staticmethod
+    def _migrate_provider_readiness_snapshots(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS provider_readiness_snapshots (
+                provider TEXT NOT NULL,
+                host TEXT NOT NULL,
+                binary TEXT NOT NULL,
+                version TEXT NOT NULL,
+                readiness_json TEXT NOT NULL,
+                probed_at TEXT NOT NULL,
+                PRIMARY KEY (provider, host, binary)
+            )
+        """)
 
     @staticmethod
     def _migrate_provider_login_states(connection: sqlite3.Connection) -> None:

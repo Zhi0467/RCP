@@ -17,6 +17,7 @@ from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderR
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
+from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
 
 
@@ -85,7 +86,7 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
     release_forced = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -667,7 +668,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
     launcher = AgentLauncher()
     probes = 0
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         nonlocal probes
         probes += 1
         return ProviderReadiness(
@@ -1628,7 +1629,9 @@ async def test_process_control_terminates_only_its_process_group() -> None:
     control.attach(process)
 
     control.request_pause()
-    await asyncio.wait_for(process.wait(), timeout=2)
+    # A provider that just started may be rotating its credential; the kill
+    # waits out the startup hold before the signal is sent.
+    await asyncio.wait_for(process.wait(), timeout=PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS + 2)
 
     assert process.returncode is not None
     assert process.returncode != 0

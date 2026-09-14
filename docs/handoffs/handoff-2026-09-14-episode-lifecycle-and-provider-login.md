@@ -3,8 +3,8 @@
 Date: 2026-09-14
 Status: design confirmed by the human on 2026-09-14 after a forensic read of the
 production database, then revised the same day after an xhigh design review and
-two further protocol spikes. Slices 1, 2, 5, and 6 are implemented on
-this branch; slices 3 and 4 remain. Every decision below is settled. All six slices land on one branch and one pull request as ordered
+two further protocol spikes. Slices 1, 2, 3, 5, and 6 are implemented on
+this branch; slice 4 remains. Every decision below is settled. All six slices land on one branch and one pull request as ordered
 commits; slices 1, 2, 5, and 6 start first, slices 3 and 4 follow on this same
 branch. None is optional.
 
@@ -473,6 +473,18 @@ no conflicting variable; the probe never running during a turn start and never
 being terminated inside the gate hold; a served-app device-code sign-in on the
 team server completing with no shell; doctor reporting state from a real
 request.
+
+Implemented on this branch with these deviations from the text above, each
+deliberate: the remote Claude token file is placed when the token is saved and
+re-placed by Verify, and the remote login shell exports the variable only when
+the file exists, rather than re-placing it on every launch; `rcp server doctor`
+reports each account's durable login state (`provider_logins`) read from the
+database read-only, and the readiness check names Settings, Provider logins
+instead of a shell login command; `server provider update` no longer probes or
+recovers the login at all; the credential-touching readiness answer is stored
+per `(provider, host, executable)` with its version (migration 21) so a service
+restart runs only `--version`. The served-app device-code sign-in on the team
+server and the Claude token journey are still to be driven live.
 
 ### Slice 4: continuation episode and branch merge on branch facts
 

@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearAllProjectCaches, clearProjectCaches, probeMachineCompute } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
+import { ProviderLogins } from "../components/ProviderLogins";
 import { ServerSettings } from "../components/ServerSettings";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
@@ -869,6 +870,8 @@ export function ProjectSettings({
           })}
         </div>
       </section>
+
+      <ProviderLogins spaceKind={spaceKind} writesDisabled={writesDisabled} />
 
       <section className="settings-section compute-settings">
         <header>

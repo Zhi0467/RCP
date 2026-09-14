@@ -57,9 +57,10 @@ identity, process identity, SSH transport credentials, repository credentials,
 and provider-native authentication are separate authorities. RCP selects and
 readiness-checks a provider and keeps one durable record per machine account of
 whether its shared login is alive, learned from real provider results and
-verified by one real request; it performs no login itself and stores no
-provider credential. Execution uses whatever the configured operating-system
-account has authenticated natively, and no new provider work starts on an
+verified by one real request. Members sign a shared account in and out from the
+product; Codex keeps its native login on one refresh path, Claude runs on a
+stored long-lived token that RCP injects into every process it starts, and RCP
+starts no provider process it does not need. No new provider work starts on an
 account whose login is known to be dead. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
 non-reloading service, and its commit and update lifecycle are managed by the
 server CLI. The unfinished journeys that make this deployment usable are not

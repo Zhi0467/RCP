@@ -18,7 +18,6 @@ from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEven
 from rcp.server_ops.install import _run_as_account
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
-    CommandAction,
     MachineTarget,
     NonsecretField,
     ServerCommandRequest,
@@ -109,9 +108,7 @@ def prepare_provider_update_command(
             )
         )
 
-        emitter.emit_step(
-            _running(pending[2], "Checking the updated executable, version, and existing login.")
-        )
+        emitter.emit_step(_running(pending[2], "Checking the updated executable and version."))
         try:
             after_path = _discover_provider(account, provider)
             if after_path is None:
@@ -119,49 +116,6 @@ def prepare_provider_update_command(
                     "The updater completed but no provider executable is discoverable as rcp."
                 )
             after_version = _provider_version(account, after_path, process_runner)
-            authenticated = _provider_authenticated(
-                account,
-                provider,
-                after_path,
-                process_runner,
-            )
-            if not authenticated:
-                login = _server_login_command(provider, after_path)
-                emitter.emit_step(
-                    pending[2].model_copy(
-                        update={
-                            "state": "operator_action_needed",
-                            "performed_by": "human",
-                            "message": (
-                                "The provider updated, but its native login is not usable as rcp. "
-                                "Complete provider login, then rerun this command."
-                            ),
-                            "actions": (
-                                CommandAction(
-                                    argv=(
-                                        "sudo",
-                                        "-u",
-                                        layout.service_account,
-                                        "-H",
-                                        *login,
-                                    )
-                                ),
-                            ),
-                            "resume_argv": (
-                                str(layout.cli_wrapper),
-                                "server",
-                                "provider",
-                                "update",
-                                provider,
-                            ),
-                            "fields": (
-                                NonsecretField(name="executable_after", value=str(after_path)),
-                                NonsecretField(name="version_after", value=after_version),
-                            ),
-                        }
-                    )
-                )
-                return
         except (OSError, ProviderUpdateRefused) as exc:
             emitter.emit_step(_failed(pending[2], str(exc)))
             return
@@ -177,7 +131,7 @@ def prepare_provider_update_command(
                             name="command_path_changed",
                             value="yes" if before_path not in {None, after_path} else "no",
                         ),
-                        NonsecretField(name="authentication", value="ready"),
+                        NonsecretField(name="authentication", value="unchanged by this update"),
                     ),
                 }
             )
@@ -214,9 +168,9 @@ def _pending_steps(provider: ProviderUpdateId, target: MachineTarget) -> tuple[S
         ServerStep(
             number=3,
             title=f"Verify {label}",
-            purpose="Prove the updated executable, version, and native authentication.",
+            purpose="Prove the updated executable and its version under the service account.",
             phase="provider_update_verify",
-            expected_success=f"{label} is executable and authenticated under the rcp account.",
+            expected_success=f"{label} is executable under the rcp account; its login is untouched.",
             message=f"RCP will verify the updated {label} installation.",
             **common,
         ),
@@ -263,16 +217,6 @@ def _provider_version(
     if _SAFE_VERSION.fullmatch(version) is None:
         raise ProviderUpdateRefused("The provider returned no safe bounded version string.")
     return version
-
-
-def _provider_authenticated(
-    account: pwd.struct_passwd,
-    provider: ProviderUpdateId,
-    binary: Path,
-    runner: ProviderProcessRunner,
-) -> bool:
-    command = tuple(profile_for(provider).auth_command(str(binary)))
-    return profile_for(provider).is_authenticated(runner(account, command, _PROBE_TIMEOUT_SECONDS))
 
 
 def _update_provider(
@@ -330,18 +274,15 @@ def _bounded_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
     return redact_server_text(single_line) or "no diagnostic output"
 
 
-def _server_login_command(provider: ProviderUpdateId, binary: Path) -> tuple[str, ...]:
-    if provider == "codex":
-        return (str(binary), "login", "--device-auth")
-    return tuple(profile_for(provider).login_command(str(binary)))
-
-
 def _success_message(
     provider: ProviderUpdateId,
     before_path: Path | None,
     after_path: Path,
 ) -> str:
-    result = f"{profile_for(provider).label} is updated and authenticated as rcp."
+    result = (
+        f"{profile_for(provider).label} is updated as rcp. An update does not change its "
+        "login; Settings, Provider logins, shows whether the login is alive."
+    )
     if before_path is not None and before_path != after_path:
         return (
             f"{result} Its command path changed; existing projects keep their explicit path "

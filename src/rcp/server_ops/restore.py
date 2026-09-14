@@ -89,6 +89,11 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Episode Stop provenance and lifecycle wake suppression, fresh and upgraded.
         "cebd2eeb1227eea61c56d9fc96c953e60a12902273ef79a3be76014cbfea1655",
         "54df9d9d1875cced1d511ebe2586df022959ae438a7c620e4eb3fe789a7aa429",
+        # provider_readiness_snapshots: the credential-touching readiness answer
+        # kept per executable version, so a restart runs only `--version`. One
+        # CREATE TABLE on both paths, so a fresh install and an in-place upgrade
+        # share this shape.
+        "657bf07e3bdb4358fdb7d243a774d3596b2c91c9b65445b648e85426559484cc",
     }
 )
 

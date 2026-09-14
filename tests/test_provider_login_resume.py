@@ -10,13 +10,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import provider_login
-from rcp.api.dependencies import get_launcher, get_store
+from rcp.api.dependencies import get_launcher, get_provider_sign_ins, get_store
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
+from rcp.runs.provider_sign_in import ProviderSignInRunner
 
 from .helpers import fabricated_authorizer, wait_for_task
 from .test_auto_research_recovery import (
@@ -83,6 +86,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     assert blocked_other.status == "blocked"
     assert store.auto_research_recovery("task:root-project").status == "blocked"
 
+    monkeypatch.setattr(
+        launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
+    )
     launcher = AgentLauncher(login_state=store.provider_login_state)
     monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
     monkeypatch.setattr(
@@ -100,6 +106,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     app.include_router(provider_login.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
+    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    )
     client = TestClient(app)
 
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
@@ -122,6 +131,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
 
 
 def _verify_client(store, background, monkeypatch):
+    monkeypatch.setattr(
+        launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
+    )
     launcher = AgentLauncher(login_state=store.provider_login_state)
     monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
     monkeypatch.setattr(
@@ -139,6 +151,9 @@ def _verify_client(store, background, monkeypatch):
     app.include_router(provider_login.router)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
+    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
+        store, launcher, ProviderCredentialStore(store.path.parent / "providers")
+    )
     return TestClient(app)
 
 

@@ -6,6 +6,7 @@ import json
 import os
 import pwd
 import re
+import sqlite3
 import stat
 import subprocess
 from collections.abc import Callable
@@ -127,6 +128,9 @@ class ServerDoctorReport(_StrictModel):
     provider_check_status: Literal["available", "unavailable"]
     dependencies_ready: bool
     dependency_versions: str
+    #: Each machine account's durable provider login state, from real provider
+    #: results and verified requests; never a provider status command.
+    provider_logins: str = "none recorded"
     problems: tuple[str, ...]
     backup_status: DoctorBackupState = "not_configured"
     backup_destination: str | None = None
@@ -239,6 +243,7 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="provider_check_status", value=self.provider_check_status),
             NonsecretField(name="dependencies_ready", value=self.dependencies_ready),
             NonsecretField(name="dependency_versions", value=self.dependency_versions),
+            NonsecretField(name="provider_logins", value=self.provider_logins),
             NonsecretField(name="backup_status", value=self.backup_status),
             NonsecretField(name="backup_destination", value=_shown(self.backup_destination)),
             NonsecretField(name="backup_schedule", value=_shown(self.backup_schedule)),
@@ -569,6 +574,7 @@ class LinuxServerDoctorMachine:
             data_dir_id=data_dir_identity(self.layout.data_dir),
             control_socket_status=control_status,
             provider_check_status=provider_check_status,
+            provider_logins=provider_login_summary(self.layout.data_dir / "rcp.sqlite3"),
             dependencies_ready=dependencies_ready,
             dependency_versions=dependency_versions,
             backup_status=backup.status,
@@ -1328,6 +1334,36 @@ def _check_descendant_path(
         gid=gid,
         mode=mode,
         add_problem=add_problem,
+    )
+
+
+def provider_login_summary(database: Path) -> str:
+    """The durable login state of every machine account, read without touching the service.
+
+    A read-only connection never creates or migrates anything; a missing,
+    foreign, or older database reads `unavailable`, and an account nobody has
+    recorded reads `none recorded`. The bounded detail is left out: it can carry
+    provider output, and the state, source, and time are what an operator needs.
+    """
+
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return "unavailable"
+    try:
+        rows = connection.execute(
+            "SELECT provider, host, state, source, changed_at FROM provider_login_states "
+            "ORDER BY provider, host"
+        ).fetchall()
+    except sqlite3.Error:
+        return "unavailable"
+    finally:
+        connection.close()
+    if not rows:
+        return "none recorded"
+    return ";".join(
+        f"{provider}@{host or 'local'}={state}({source or 'unknown'},{changed_at})"
+        for provider, host, state, source, changed_at in rows
     )
 
 

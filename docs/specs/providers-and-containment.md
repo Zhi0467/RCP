@@ -538,14 +538,49 @@ authentication is already present there. The remote account need not be named
 `rcp`; it must be explicitly configured and reachable from the server's service
 account.
 
-RCP does not perform provider login, store provider credentials, switch accounts,
-refresh tokens, or create alternate provider homes. The operator uses each
-provider's own login command directly as the target execution account. RCP's
-server CLI checks executable, version, the account's durable login state,
-configured runtime, explicit model catalog entry, reasoning effort, and the
-provider-owned minimum version for that profile through the same launch
-abstraction used by tasks. The provider's own status command is a presence
-check, not a liveness check, and is never proof of a login.
+RCP signs each machine account in and out of a provider from the product and
+keeps every credential on exactly one refresh path, per the
+[provider logins decision](../decisions/2026-09-14-provider-logins-are-kept-alive.md).
+It never switches accounts or creates alternate provider homes. RCP's server
+CLI checks executable, version, the account's durable login state, configured
+runtime, explicit model catalog entry, reasoning effort, and the provider-owned
+minimum version for that profile through the same launch abstraction used by
+tasks. The provider's own status command is a presence check, not a liveness
+check, and is never proof of a login.
+
+**Codex** keeps its native login under the execution account's own home. Sign-in
+(`POST /api/providers/codex/logins/sign-in`, polled at
+`GET /api/providers/codex/logins/sign-in/{login_id}`) runs `codex login
+--device-auth` as the execution account under the credential gate, parses the
+one-time code and verification URL from its output, shows both, and on exit
+runs the verify request below; one sign-in runs per account at a time, a second
+member joins it, and a watchdog ends an abandoned one. Sign-out runs `codex
+logout`.
+
+**Claude** runs on a long-lived `setup-token` instead of its browser login,
+because that login rotates a single-use refresh token on every process start.
+A member obtains the token on any machine with a browser and pastes it
+(`POST /api/providers/claude/logins/token`); RCP validates only its shape,
+stores it in the execution account's credential store at
+`<data dir>/providers/claude/<account>/setup-token` (directory 0700, file 0600,
+atomic write) beside a nonsecret record of who pasted it and when, places it on
+an SSH account at `~/.config/rcp/claude-setup-token` with the token on the
+transport's stdin, then runs the verify request. One environment builder
+(`ProviderCredentialStore.process_environment`) supplies every Claude process
+RCP starts, local or remote, with `CLAUDE_CODE_OAUTH_TOKEN` from that file and
+removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`: turns, the hidden
+report turn, readiness probes, the skill probe, and the readiness coordinator.
+A remote process reads the file inside its own login shell; the token never
+enters a command line, an event, a receipt, a response, or a log. The token's
+expiry is not readable; the UI shows the paste date and an estimated expiry, and
+a classified login failure is the truth. Sign-out deletes the stored token and
+the remote file. The `providers` directory is excluded from protected backups;
+at service start a Claude account recorded `signed_in` without its token file is
+marked `signed_out` with `source="restore"` before any launch.
+
+Sign-out (`POST /api/providers/{provider}/logins/sign-out`) marks the account
+`signed_out` with a new generation, `source="sign_out"`, and the acting member,
+and fences admission exactly as a failed login does.
 
 ### Login state and failure
 
@@ -582,11 +617,11 @@ member may verify; the acting member is recorded. Nothing on other providers or
 machines is touched. A catalog failure cannot approve an explicitly saved
 model, and an unexpected implementation error fails the command rather than
 being relabelled as a missing install. The later provider call uses the same
-native authentication and version rule. A failed check names the provider,
-machine/account, and provider-native action to perform, then waits for the
-operator to do it outside RCP. Provider credentials never enter a project
-manifest, provisioning request, prompt, backup, or member's desktop credential
-store.
+authentication and version rule. A failed check names the provider and
+machine/account and points at Settings, Provider logins, where any member signs
+the account in; it never prints a shell login command. Provider credentials
+never enter a project manifest, provisioning request, prompt, backup, or
+member's desktop credential store.
 
 For execution on the server itself, provider discovery first uses the service
 process `PATH`, then the executing account's conventional
@@ -707,6 +742,19 @@ while a turn holds until the provider writes a line of its own and a minimum
 stagger has passed. A broker readiness line is not the provider speaking. A hold
 expires on a generous bound, which prefers a rare unserialized start over one
 stalled startup closing the credential to everything else.
+
+RCP starts no provider process it does not need. The credential-touching
+readiness answer (login status, model catalog, Work probe) is stored durably per
+`(provider, host, executable)` with the version it was read from; a later
+readiness read runs only `--version`, which touches no credential and outside
+the gate, and reuses the stored answer while the version is unchanged. An
+explicit Refresh, a version change, a verify, a sign-in, or a sign-out probes
+again. The skill inventory is reused the same way while the executable, its
+version, and the probe command match the stored inventory. A provider process,
+probe, or turn is never signalled before the gate's minimum hold has elapsed
+since it started, so a login refresh begun at start can finish its write; a
+probe timeout is clamped to that hold, and a Pause of a young process waits it
+out before the signal.
 
 A local login is also held against other RCP processes through an advisory lock
 under the account's own RCP directory, because two data directories share one

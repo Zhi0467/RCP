@@ -11,22 +11,26 @@ import signal
 import stat
 import subprocess
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, model_validator
 
-from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
+    PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
     REMOTE_PROVIDER_PID_WAIT_SECONDS,
@@ -45,7 +49,7 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
-from rcp.storage.models import ProviderLoginStateRecord
+from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
 
@@ -200,6 +204,7 @@ class AgentProcessControl:
         self._remote_host: str | None = None
         self._remote_pid_file: str | None = None
         self._steering: LiveProviderSteering | None = None
+        self._started_at: float | None = None
 
     def steering_state(self) -> ProviderSteeringState:
         with self._lock:
@@ -240,22 +245,27 @@ class AgentProcessControl:
             process = self._process
             remote_host = self._remote_host
             remote_pid_file = self._remote_pid_file
+            started_at = self._started_at
         if remote_host and remote_pid_file:
             threading.Thread(
-                target=self._terminate_remote,
-                args=(remote_host, remote_pid_file),
+                target=self._terminate_remote_after_hold,
+                args=(remote_host, remote_pid_file, started_at),
                 name="rcp-remote-pause",
                 daemon=True,
             ).start()
         if loop is not None and process is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(self._terminate(process)))
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._terminate(process, started_at))
+            )
 
     def attach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
             self._loop = asyncio.get_running_loop()
             self._process = process
+            self._started_at = time.monotonic()
+            started_at = self._started_at
         if self.pause_requested.is_set():
-            asyncio.create_task(self._terminate(process))
+            asyncio.create_task(self._terminate(process, started_at))
 
     def detach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
@@ -265,7 +275,16 @@ class AgentProcessControl:
                 self._loop = None
 
     @staticmethod
-    async def _terminate(process: asyncio.subprocess.Process) -> None:
+    async def _terminate(
+        process: asyncio.subprocess.Process, started_at: float | None = None
+    ) -> None:
+        if process.returncode is not None:
+            return
+        # A provider signalled while it refreshes its login spends the single-use
+        # refresh token; a young process is left alone until the hold has passed.
+        if started_at is not None and (remaining := remaining_startup_hold(started_at)) > 0:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(process.wait(), timeout=remaining)
         if process.returncode is not None:
             return
         # A reaped child's pid can already belong to someone else, and signalling
@@ -319,6 +338,14 @@ class AgentProcessControl:
             AgentProcessControl._terminate_remote(host, pid_file)
         )
 
+    @classmethod
+    def _terminate_remote_after_hold(
+        cls, host: str, pid_file: str, started_at: float | None
+    ) -> bool:
+        if started_at is not None and (remaining := remaining_startup_hold(started_at)) > 0:
+            time.sleep(remaining)
+        return cls._terminate_remote(host, pid_file)
+
     @staticmethod
     def _terminate_remote(host: str, pid_file: str) -> bool:
         # Shared connection on purpose; see `remote_stopped`.
@@ -343,6 +370,20 @@ class AgentProcessControl:
             return result.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             return False
+
+
+class ProviderReadinessSnapshots(Protocol):
+    """The durable readiness answers the launcher reuses; `AppStore` implements it."""
+
+    def provider_readiness_snapshot(
+        self, provider: str, host: str, binary: str
+    ) -> ProviderReadinessSnapshotRecord | None: ...
+
+    def save_provider_readiness_snapshot(self, record: ProviderReadinessSnapshotRecord) -> None: ...
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -384,9 +425,19 @@ class AgentLauncher:
     _MAX_STDERR_BYTES = 1024 * 1024
 
     def __init__(
-        self, login_state: Callable[[str, str], ProviderLoginStateRecord] | None = None
+        self,
+        login_state: Callable[[str, str], ProviderLoginStateRecord] | None = None,
+        *,
+        credentials: ProviderCredentialStore | None = None,
+        readiness_snapshots: ProviderReadinessSnapshots | None = None,
     ) -> None:
         self.login_state = login_state
+        #: Where a Claude setup token lives; None means every provider inherits
+        #: RCP's own environment, as before a token was ever pasted.
+        self.credentials = credentials
+        #: Durable credential-touching readiness answers, keyed by exact
+        #: executable and version, so a restart re-probes nothing unchanged.
+        self.readiness_snapshots = readiness_snapshots
         self._readiness_lock = threading.Lock()
         self._readiness_cache: dict[tuple[str, str, str | None], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, bool], _ReadinessProbe] = {}
@@ -394,6 +445,13 @@ class AgentLauncher:
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
+
+    def process_environment(self, provider: str, host: str) -> ProviderProcessEnvironment:
+        """The environment for one provider process; every Claude start goes through it."""
+
+        if self.credentials is None:
+            return ProviderProcessEnvironment()
+        return self.credentials.process_environment(provider, host)
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
         state = self.login_state(provider, host) if self.login_state is not None else None
@@ -455,7 +513,7 @@ class AgentLauncher:
             return self._with_login_state(probe.result.model_copy(deep=True), host)
 
         try:
-            result = self._readiness_uncached(provider, host=host, binary=binary)
+            result = self._readiness_uncached(provider, host=host, binary=binary, refresh=refresh)
         except BaseException as exc:
             with self._readiness_lock:
                 if self._readiness_generations.get(key, 0) == generation:
@@ -538,6 +596,7 @@ class AgentLauncher:
         *,
         host: str,
         binary: str | None,
+        refresh: bool = False,
     ) -> ProviderReadiness:
         profile = profile_for(provider)
         configured = binary is not None
@@ -586,27 +645,37 @@ class AgentLauncher:
                 path_state="unconfigured",
                 reason=reason,
             )
-        # Every probe below runs the provider executable, and the ones that
-        # read its login can rotate the same token a turn does. One hold
-        # covers the sequence rather than handing the credential back
-        # between probes that belong to a single readiness answer.
-        with self.credential_gate.hold_blocking(provider, host):
-            version_result = self._probe(host, [candidate, "--version"])
-            if host and version_result.returncode == 255:
-                return ProviderReadiness(
-                    provider=provider,
-                    label=profile.label,
-                    installed=False,
-                    authenticated=False,
-                    binary_path=candidate,
-                    path_state="unreachable",
-                    reason=f"{host} became unreachable while checking {candidate}.",
-                )
-            version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
-            version = (
-                version_lines[-1] if version_result.returncode == 0 and version_lines else None
+        # `--version` reads no credential. It runs outside the gate and decides
+        # whether the stored, credential-touching answer below is still current.
+        environment = self.process_environment(provider, host)
+        version_result = self._probe(host, [candidate, "--version"], environment=environment)
+        if host and version_result.returncode == 255:
+            return ProviderReadiness(
+                provider=provider,
+                label=profile.label,
+                installed=False,
+                authenticated=False,
+                binary_path=candidate,
+                path_state="unreachable",
+                reason=f"{host} became unreachable while checking {candidate}.",
             )
-            auth = self._probe(host, profile.auth_command(candidate))
+        version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
+        version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
+        path_state: ProviderPathState = "resolved" if configured else "unconfigured"
+        if not refresh and version is not None and self.readiness_snapshots is not None:
+            snapshot = self.readiness_snapshots.provider_readiness_snapshot(
+                provider, host, candidate
+            )
+            if snapshot is not None and snapshot.version == version:
+                stored = ProviderReadiness.model_validate_json(snapshot.readiness_json)
+                return stored.model_copy(
+                    update={"version": version, "binary_path": candidate, "path_state": path_state}
+                )
+        # Every probe below reads the login and can rotate the same token a turn
+        # does. One hold covers the sequence rather than handing the credential
+        # back between probes that belong to a single readiness answer.
+        with self.credential_gate.hold_blocking(provider, host):
+            auth = self._probe(host, profile.auth_command(candidate), environment=environment)
             authenticated = profile.is_authenticated(auth)
             login_reason = self._login_refusal(provider, host)
             if login_reason is not None:
@@ -614,12 +683,16 @@ class AgentLauncher:
             # Enumerate only once the CLI is known to answer. An unauthenticated
             # catalog probe just costs a subprocess to learn what auth already said.
             catalog_command = profile.catalog_command(candidate) if authenticated else None
-            catalog = self._probe(host, catalog_command) if catalog_command else None
+            catalog = (
+                self._probe(host, catalog_command, environment=environment)
+                if catalog_command
+                else None
+            )
             work_like_available = None
             work_like_reason = None
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
-                work_probe = self._probe(host, work_command)
+                work_probe = self._probe(host, work_command, environment=environment)
                 if work_probe.returncode == 255:
                     where = f" on {host}" if host else ""
                     work_like_reason = (
@@ -634,7 +707,7 @@ class AgentLauncher:
                             or work_probe.stdout.strip()
                             or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
                         )
-        return ProviderReadiness(
+        result = ProviderReadiness(
             provider=provider,
             label=profile.label,
             installed=True,
@@ -643,7 +716,7 @@ class AgentLauncher:
             work_like_reason=work_like_reason,
             version=version,
             binary_path=candidate,
-            path_state="resolved" if configured else "unconfigured",
+            path_state=path_state,
             reason=login_reason
             or (
                 f"{provider} was found at {candidate}; using the discovered path until a saved path is provided."
@@ -656,6 +729,20 @@ class AgentLauncher:
             ),
             models=profile.models(catalog) if authenticated else [],
         )
+        # A durable sign-out is folded in at read time by `_with_login_state`;
+        # the snapshot keeps what the probes themselves said.
+        if version is not None and self.readiness_snapshots is not None and login_reason is None:
+            self.readiness_snapshots.save_provider_readiness_snapshot(
+                ProviderReadinessSnapshotRecord(
+                    provider=provider,
+                    host=host,
+                    binary=candidate,
+                    version=version,
+                    readiness_json=result.model_dump_json(),
+                    probed_at=_utc_now(),
+                )
+            )
+        return result
 
     def _configured_path_state(
         self,
@@ -884,11 +971,17 @@ class AgentLauncher:
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
+        environment = self.process_environment(provider, host)
         local_cwd: str | None = str(cwd)
         if host:
             command = ssh_arguments(
                 host,
-                self._remote_login_command(command, pid_file=remote_pid_file, cwd=cwd),
+                self._remote_login_command(
+                    command,
+                    pid_file=remote_pid_file,
+                    cwd=cwd,
+                    prefix=environment.remote_prefix,
+                ),
                 # This turn is the longest-lived call of its run, so it holds
                 # the run's own master rather than whichever short probe
                 # happened to open the host first.
@@ -923,6 +1016,7 @@ class AgentLauncher:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=local_cwd,
+                env=environment.local_env if not host else None,
                 limit=self._STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -1298,11 +1392,16 @@ class AgentLauncher:
         *,
         login_shell: bool = True,
         timeout: float = 10,
+        environment: ProviderProcessEnvironment | None = None,
     ) -> subprocess.CompletedProcess[str]:
         arguments = command
         if host:
             remote = (
-                AgentLauncher._remote_login_command(command) if login_shell else shlex.join(command)
+                AgentLauncher._remote_login_command(
+                    command, prefix=environment.remote_prefix if environment else None
+                )
+                if login_shell
+                else shlex.join(command)
             )
             arguments = ssh_arguments(host, remote)
         try:
@@ -1311,8 +1410,10 @@ class AgentLauncher:
                 capture_output=True,
                 text=True,
                 input="",
-                timeout=timeout,
+                # A timeout kills the probe; never inside the credential hold.
+                timeout=max(timeout, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
                 check=False,
+                env=environment.local_env if environment and not host else None,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess(arguments, 255, "", str(exc))
@@ -1323,6 +1424,7 @@ class AgentLauncher:
         *,
         pid_file: str | None = None,
         cwd: Path | None = None,
+        prefix: str | None = None,
     ) -> str:
         # Provider CLIs are commonly installed by nvm or a shell installer and
         # therefore exist only on the user's login-shell PATH. Interactive mode
@@ -1347,6 +1449,11 @@ class AgentLauncher:
             payload = f"cd {shlex.quote(str(cwd))} && {command_payload}"
         else:
             payload = command_payload
+        if prefix:
+            # The provider's environment is prepared inside the same login shell,
+            # so the credential is read on the remote account and never travels
+            # in this command line.
+            payload = f"{prefix}; {payload}"
         return shlex.join(["bash", "-lic", payload])
 
 

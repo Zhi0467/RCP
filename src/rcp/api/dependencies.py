@@ -9,12 +9,14 @@ from typing import Literal
 from fastapi import HTTPException, Request
 
 from rcp.agents import AgentLauncher
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.server_ops.backup import BackupArchiveReceipt
 from rcp.server_ops.doctor import ServerDoctorReport
 from rcp.server_runtime import ServerMetadata
@@ -65,6 +67,8 @@ class ApiServices:
     setup: ProjectSetupManager
     health_composition: HealthComposition
     server_status_composition: ServerStatusComposition
+    provider_credentials: ProviderCredentialStore
+    provider_sign_ins: ProviderSignInRunner
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -88,6 +92,14 @@ def get_identity_access(request: Request) -> IdentityAccess:
 
 def get_launcher(request: Request) -> AgentLauncher:
     return _api_services(request).launcher
+
+
+def get_provider_credentials(request: Request) -> ProviderCredentialStore:
+    return _api_services(request).provider_credentials
+
+
+def get_provider_sign_ins(request: Request) -> ProviderSignInRunner:
+    return _api_services(request).provider_sign_ins
 
 
 def get_setup(request: Request) -> ProjectSetupManager:

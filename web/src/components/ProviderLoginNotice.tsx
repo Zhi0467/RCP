@@ -55,7 +55,8 @@ function AccountNotice({
       <p>
         {provider} on {state.host || "local"} is signed out since{" "}
         <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>
-        {state.detail ? `: ${state.detail}.` : "."} Sign in on the machine, then verify.
+        {state.detail ? `: ${state.detail}.` : "."} Any member can sign it in again from Settings,
+        Provider logins; parked work resumes once the login is verified.
       </p>
       <button
         className="button secondary compact"

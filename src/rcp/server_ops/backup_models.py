@@ -56,6 +56,9 @@ BACKUP_APP_DATA_EXCLUSIONS = frozenset(
         "paper-snapshots",
         "project-caches",
         "project-snapshots",
+        # Provider credentials RCP holds for the execution account; a restored
+        # server signs in again rather than inheriting a token from an archive.
+        "providers",
         "rcp-server.json",
         "rcp.lock",
         "rcp.sqlite3-journal",

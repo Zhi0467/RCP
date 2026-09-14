@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
@@ -115,6 +116,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
+from rcp.runs.provider_sign_in import ProviderSignInRunner, reset_claude_logins_without_tokens
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -621,11 +623,21 @@ def create_app(
     )
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
+    provider_credentials = ProviderCredentialStore(app_data / "providers")
     launcher = (
         AcceptanceAgentLauncher()
         if acceptance_agent
-        else AgentLauncher(login_state=store.provider_login_state)
+        else AgentLauncher(
+            login_state=store.provider_login_state,
+            credentials=provider_credentials,
+            readiness_snapshots=store,
+        )
     )
+    # A restored data directory carries login state but no token: the backup
+    # excludes `providers`, so a Claude account the archive knew as signed in is
+    # signed out here before anything can launch on a credential that is gone.
+    reset_claude_logins_without_tokens(store, provider_credentials)
+    provider_sign_ins = ProviderSignInRunner(store, launcher, provider_credentials)
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
             store,
@@ -645,7 +657,11 @@ def create_app(
         backup_capture_coordinator = BackupCaptureCoordinator(store, app_data, identity)
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     # One gate, so a skill probe and a turn cannot rotate one login together.
-    provider_skills = ProviderSkillInventoryManager(store, credential_gate=launcher.credential_gate)
+    provider_skills = ProviderSkillInventoryManager(
+        store,
+        credential_gate=launcher.credential_gate,
+        process_environment=launcher.process_environment,
+    )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
@@ -1269,6 +1285,8 @@ def create_app(
         experiment_admission=experiment_admission,
         health_composition=health_composition,
         server_status_composition=server_status_composition,
+        provider_credentials=provider_credentials,
+        provider_sign_ins=provider_sign_ins,
     )
 
     async def warm_provider_capabilities() -> None:

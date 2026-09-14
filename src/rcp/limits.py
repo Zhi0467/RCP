@@ -300,6 +300,15 @@ SERVER_SUPERVISOR_CHILD_WAIT_MIN_SECONDS = 0.1
 SERVER_SUPERVISOR_PIPE_CHUNK_BYTES = 64 * 1024
 
 PROVIDER_LOGIN_DETAIL_MAX_CHARS = 500
+# A device-code sign-in the human never finishes is abandoned after this long;
+# the provider's own code expires on the same order.
+PROVIDER_SIGN_IN_TIMEOUT_SECONDS = 15 * 60
+PROVIDER_SIGN_OUT_TIMEOUT_SECONDS = 60
+PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS = 60
+PROVIDER_TOKEN_MAX_CHARS = 4096
+# A Claude setup token carries no expiry RCP can read; its documented lifetime
+# is about one year, so the UI warns from eleven months after the paste.
+PROVIDER_CLAUDE_TOKEN_ESTIMATED_LIFETIME_DAYS = 335
 
 # A minimal authenticated sign-in request can outlast a metadata probe.
 PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS = 60

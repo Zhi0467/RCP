@@ -671,13 +671,20 @@ wrap-up whose report account is signed out reads `wrapping_up` with
 `blocked_reason=sign_in`.
 
 Provider login state is published at `GET /api/providers/logins` (every
-machine account) and inside each project's readiness snapshot as
-`provider_logins` (the accounts that project uses). While any account is
-`signed_out`, the project Runs view and the space landing render one
-`ProviderLoginNotice` per account naming the provider, machine, time, bounded
-diagnostic, and a **Verify sign-in** control; the Experiment board's
-`reauthenticate_provider` copy points at it. Verify is available to any
-signed-in member and records that member. Task
+machine account, with the project machines that use it, a secret-free summary
+of a stored Claude token, and any running Codex sign-in) and inside each
+project's readiness snapshot as `provider_logins` (the accounts that project
+uses). While any account is `signed_out`, the project Runs view and the space
+landing render one `ProviderLoginNotice` per account naming the provider,
+machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
+at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
+copy points at it. Project Settings carries a **Provider logins** card
+(`ProviderLogins`) for both space kinds with one row per account: state, who
+changed it and when, **Sign in with device code** for Codex (the code and link
+render while `GET .../sign-in/{login_id}` is polled), a token field and **Save
+token** for Claude (the token is sent once and never read back), **Verify
+sign-in**, and **Sign out**. Every action is available to any signed-in member
+and records that member. Task
 status, phase, workers, and diagnostics remain supporting history rather than
 competing primary states.
 For a terminal Experiment episode, the owning node's human-authored closed status

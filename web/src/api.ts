@@ -15,7 +15,9 @@ import type {
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
+  ProviderLoginAccount,
   ProviderLoginState,
+  ProviderSignInStatus,
   ServerStatus,
   SpaceRunIndexEntry,
   SpaceUserSummary,
@@ -441,8 +443,39 @@ export function cancelWatcher(apiBase: string, watcherId: string): Promise<Exter
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
 }
 
-export function loadProviderLogins(): Promise<ProviderLoginState[]> {
+export function loadProviderLogins(): Promise<ProviderLoginAccount[]> {
   return api("/api/providers/logins");
+}
+
+export function startCodexSignIn(host: string): Promise<ProviderSignInStatus> {
+  return api("/api/providers/codex/logins/sign-in", {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
+}
+
+export function codexSignInStatus(loginId: string): Promise<ProviderSignInStatus> {
+  return api(`/api/providers/codex/logins/sign-in/${encodeURIComponent(loginId)}`);
+}
+
+export function saveClaudeToken(
+  host: string,
+  token: string,
+): Promise<{ state: ProviderLoginState; resumed: Record<string, number> }> {
+  return api("/api/providers/claude/logins/token", {
+    method: "POST",
+    body: JSON.stringify({ host, token }),
+  });
+}
+
+export function signOutProvider(
+  provider: string,
+  host: string,
+): Promise<{ state: ProviderLoginState }> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-out`, {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
 }
 
 export function verifyProviderLogin(

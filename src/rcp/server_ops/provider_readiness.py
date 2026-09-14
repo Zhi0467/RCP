@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shlex
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -614,34 +613,17 @@ class ProviderReadinessCoordinator:
         label = profile_for(target.provider).label
         if problem_kind == "transport":
             return self._transport_actions(target)
-        if problem_kind == "login" and readiness.binary_path:
-            login = tuple(profile_for(target.provider).login_command(readiness.binary_path))
-            command = (
-                (
-                    "sudo",
-                    "-u",
-                    self.layout.service_account,
-                    "-H",
-                    "ssh",
-                    "-t",
-                    target.host,
-                    shlex.join(login),
-                )
-                if target.host
-                else (
-                    "sudo",
-                    "-u",
-                    self.layout.service_account,
-                    "-H",
-                    *login,
-                )
-            )
+        if problem_kind == "login":
+            # The durable login state and RCP's own authenticated probe are the
+            # verdict; a provider status command is a presence check and is
+            # never cited as proof. Any member signs in from the product.
             return (
-                CommandAction(argv=command),
                 ExternalAction(
                     instruction=(
-                        f"Complete {label}'s native login directly as OS account "
-                        f"{target.os_account}; do not paste provider credentials into RCP."
+                        f"Sign {label} in for OS account {target.os_account} from Settings, "
+                        "Provider logins, as any signed-in member: Codex through its "
+                        "device code, Claude by saving a setup token. RCP verifies the "
+                        "login with one authenticated request and resumes parked work."
                     )
                 ),
             )

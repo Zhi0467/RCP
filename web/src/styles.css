@@ -11884,6 +11884,119 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .provider-login-notice p {
   margin: 0;
 }
+.provider-login-settings > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 12px;
+  padding: 18px 20px;
+}
+.provider-login-settings > header > span {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+  width: 28px;
+}
+.provider-login-settings h2 {
+  font-family: var(--editorial);
+  font-size: 21px;
+  font-weight: 550;
+  margin: 0;
+}
+.provider-login-intro {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 12px 20px 0;
+}
+.provider-login-list {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.provider-login-account {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.provider-login-account > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin: 0 -12px;
+  padding: 10px 12px;
+}
+.provider-login-account > header strong {
+  font-family: var(--editorial);
+  font-size: 16px;
+  font-weight: 550;
+}
+.provider-login-account > header > span:not(.provider-path-state) {
+  color: var(--muted);
+  font: 9px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-login-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+.provider-login-sign-in {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+.provider-login-sign-in p {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+.provider-login-code {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.provider-login-code code {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  font: 15px var(--mono);
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  user-select: all;
+}
+.provider-login-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.provider-login-token {
+  display: flex;
+  flex: 1 1 320px;
+  gap: 8px;
+  min-width: 0;
+}
+.provider-login-token input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  flex: 1 1 auto;
+  font: 9px var(--mono);
+  height: 31px;
+  min-width: 0;
+  padding: 0 8px;
+}
 .campaign-run-note {
   border-top: 1px solid var(--line);
   color: var(--muted);

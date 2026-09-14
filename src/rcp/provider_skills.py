@@ -6,14 +6,18 @@ import queue
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.launcher import AgentLauncher, ProviderReadiness
+from rcp.agents.provider_environment import ProviderProcessEnvironment
+from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderSkill, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
 from rcp.transport.ssh import ssh_arguments
@@ -57,12 +61,18 @@ class ProviderSkillInventoryManager:
         *,
         timeout: float = 30.0,
         credential_gate: ProviderCredentialGate | None = None,
+        process_environment: Callable[[str, str], ProviderProcessEnvironment] | None = None,
     ) -> None:
         self.store = store
         self.timeout = timeout
         # Shared with the launcher in composition, so a skill probe and a turn
         # cannot rotate one provider login at the same time.
         self.credential_gate = credential_gate or ProviderCredentialGate()
+        # The launcher's environment builder, so a Claude skill probe runs on
+        # the same stored token as a turn.
+        self.process_environment = process_environment or (
+            lambda _provider, _host: ProviderProcessEnvironment()
+        )
         self._lock = threading.Lock()
         self._pending_refreshes: dict[tuple[str, str, str], _PendingRefresh] = {}
 
@@ -87,7 +97,9 @@ class ProviderSkillInventoryManager:
 
         The first caller owns both its readiness verdict and the provider probe.
         Followers deliberately ignore their own readiness, wait for that owner,
-        and receive the same terminal snapshot.
+        and receive the same terminal snapshot. A stored inventory from the same
+        executable and version is reused without a probe: the probe starts the
+        provider, which reads the login, so it runs only when something changed.
         """
 
         with self._lock:
@@ -121,14 +133,27 @@ class ProviderSkillInventoryManager:
 
                     profile = profile_for(provider)
                     probe = profile.skill_probe(readiness.binary_path)
-                    payload = self._run_probe(
-                        host, probe.command, probe.protocol, provider=provider
-                    )
-                    skills = sorted(
-                        profile.parse_skills(payload), key=lambda item: (item.name, item.path or "")
-                    )
-                    inventory_hash = _inventory_hash(skills)
-                    refreshed_at = _now()
+                    stored = self.store.provider_skill_inventory(provider, host, configured_binary)
+                    if (
+                        stored is not None
+                        and stored.refreshed_at is not None
+                        and stored.resolved_binary == readiness.binary_path
+                        and stored.provider_version == readiness.version
+                        and stored.command == probe.command
+                    ):
+                        skills = stored.skills
+                        inventory_hash = stored.inventory_hash or _inventory_hash(skills)
+                        refreshed_at = stored.refreshed_at
+                    else:
+                        payload = self._run_probe(
+                            host, probe.command, probe.protocol, provider=provider
+                        )
+                        skills = sorted(
+                            profile.parse_skills(payload),
+                            key=lambda item: (item.name, item.path or ""),
+                        )
+                        inventory_hash = _inventory_hash(skills)
+                        refreshed_at = _now()
                     self.store.save_provider_skill_inventory_success(
                         provider,
                         host,
@@ -283,24 +308,32 @@ class ProviderSkillInventoryManager:
         provider: str,
     ) -> object:
         arguments = command
+        environment = self.process_environment(provider, host)
+        env = environment.local_env if not host else None
         if host:
-            arguments = ssh_arguments(host, AgentLauncher._remote_login_command(command))
+            arguments = ssh_arguments(
+                host,
+                AgentLauncher._remote_login_command(command, prefix=environment.remote_prefix),
+            )
         with self.credential_gate.hold_blocking(provider, host):
             if protocol == "jsonl":
                 result = subprocess.run(
                     arguments,
                     capture_output=True,
                     text=True,
-                    timeout=self.timeout,
+                    # A timeout kills the probe; never inside the credential hold.
+                    timeout=max(self.timeout, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
                     check=False,
+                    env=env,
                 )
                 if result.returncode:
                     detail = result.stderr.strip() or f"skill probe exited {result.returncode}"
                     raise ValueError(detail)
                 return result.stdout
-            return self._run_jsonrpc(arguments)
+            return self._run_jsonrpc(arguments, env=env)
 
-    def _run_jsonrpc(self, arguments: list[str]) -> object:
+    def _run_jsonrpc(self, arguments: list[str], *, env: dict[str, str] | None = None) -> object:
+        started_at = time.monotonic()
         process = subprocess.Popen(
             arguments,
             stdin=subprocess.PIPE,
@@ -311,6 +344,7 @@ class ProviderSkillInventoryManager:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=env,
         )
         assert process.stdin is not None
         assert process.stdout is not None
@@ -354,6 +388,12 @@ class ProviderSkillInventoryManager:
             return self._rpc_response(messages, request_id=2, deadline=deadline)
         finally:
             process.stdin.close()
+            if process.poll() is None:
+                # The app-server answered and is idle, but a process this young
+                # may still be refreshing its login; signalling it now would
+                # spend the single-use refresh token.
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=remaining_startup_hold(started_at))
             if process.poll() is None:
                 process.terminate()
             try:
