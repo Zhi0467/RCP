@@ -295,6 +295,8 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     )
 
     async def stream(_project, _kind, _request, execution):
+        # The real launch captures the generation under the credential gate.
+        execution.login_generation = store.provider_login_state("codex", "").generation
         if execution.continuation == "fresh":
             stage = tmp_path / execution.operation_id
             stage.mkdir()
