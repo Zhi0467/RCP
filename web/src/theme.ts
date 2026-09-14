@@ -14,14 +14,14 @@ export const THEME_CHOICES: ThemeChoice[] = ["classic", "aqua"];
 export const COLOR_MODE_CHOICES: ColorModeChoice[] = ["system", "light", "dark"];
 
 export function normalizeThemeChoice(value: unknown): ThemeChoice {
-  return value === "aqua" ? "aqua" : "classic";
+  return value === "classic" ? "classic" : "aqua";
 }
 
 export function normalizeColorModeChoice(value: unknown): ColorModeChoice {
   return value === "light" || value === "dark" ? value : "system";
 }
 
-/** Preserve the old painted appearance while separating its two choices. */
+/** Preserve saved themes and migrate mode-only preferences to the default theme. */
 export function readStoredAppearance(
   stored: string | null,
   legacy: string | null,
@@ -40,7 +40,7 @@ export function readStoredAppearance(
   }
   return legacy === "aqua"
     ? { theme: "aqua", mode: "light" }
-    : { theme: "classic", mode: normalizeColorModeChoice(legacy) };
+    : { theme: "aqua", mode: normalizeColorModeChoice(legacy) };
 }
 
 export function resolveColorMode(choice: ColorModeChoice, prefersDark: boolean): ResolvedColorMode {

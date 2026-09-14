@@ -88,11 +88,13 @@ async function badgeColors(page) {
 
 test("landing Display keeps theme and mode independent, persists them, and updates run badges immediately", async (t) => {
   const page = await openFixture(t);
-  await assertAppearance(page, "classic", "system", "light");
+  await assertAppearance(page, "aqua", "system", "light");
   const panel = await openDisplay(page);
   const mode = panel.getByRole("group", { name: "Color mode", exact: true });
   const theme = panel.getByRole("group", { name: "Theme", exact: true });
   assert.ok((await mode.boundingBox()).y < (await theme.boundingBox()).y, "Mode precedes Theme");
+  await theme.getByRole("button", { name: "Classic", exact: true }).click();
+  await assertAppearance(page, "classic", "system", "light");
   const colors = new Set([await badgeColors(page)]);
 
   await mode.getByRole("button", { name: "Dark", exact: true }).click();
@@ -134,21 +136,20 @@ test("landing Display keeps theme and mode independent, persists them, and updat
 test("legacy appearance migrates on mount and the new independent preference wins on reload", async (t) => {
   for (const legacy of ["system", "light", "dark", "aqua"]) {
     const page = await openFixture(t, { legacy, colorScheme: "dark" });
-    const theme = legacy === "aqua" ? "aqua" : "classic";
     const mode = legacy === "aqua" ? "light" : legacy;
-    await assertAppearance(page, theme, mode, mode === "system" ? "dark" : mode);
+    await assertAppearance(page, "aqua", mode, mode === "system" ? "dark" : mode);
     const panel = await openDisplay(page);
     await panel
       .getByRole("group", { name: "Theme", exact: true })
-      .getByRole("button", { name: "Aqua", exact: true })
+      .getByRole("button", { name: "Classic", exact: true })
       .click();
     await panel
       .getByRole("group", { name: "Color mode", exact: true })
       .getByRole("button", { name: "Dark", exact: true })
       .click();
-    await assertAppearance(page, "aqua", "dark");
+    await assertAppearance(page, "classic", "dark");
     await page.reload();
-    await assertAppearance(page, "aqua", "dark");
+    await assertAppearance(page, "classic", "dark");
   }
 });
 

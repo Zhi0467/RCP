@@ -24,7 +24,7 @@ function readChoice(): AppearanceChoice {
     );
   } catch {
     // Appearance is a convenience; storage failures must not affect the project.
-    return { theme: "classic", mode: "system" };
+    return readStoredAppearance(null, null);
   }
 }
 

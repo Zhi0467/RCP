@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f7f0e3" />
+    <meta name="theme-color" content="#e5e8ec" />
     <title>RCP</title>
     <script>
       // Stamp the theme before first paint so a dark reader never sees a light flash.
@@ -12,11 +12,10 @@
       (function () {
         // Storage and the OS preference are read independently: blocked storage
         // must not cost a dark reader the preference this script exists to honour.
-        var theme = "classic";
+        var theme = "aqua";
         var mode = "system";
         try {
           var legacy = localStorage.getItem("rcp:theme");
-          theme = legacy === "aqua" ? "aqua" : "classic";
           mode =
             legacy === "aqua"
               ? "light"
@@ -25,7 +24,7 @@
                 : "system";
           var stored = JSON.parse(localStorage.getItem("rcp:appearance") || "null");
           if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-            theme = stored.theme === "aqua" ? "aqua" : "classic";
+            theme = stored.theme === "classic" ? "classic" : "aqua";
             mode = stored.mode === "light" || stored.mode === "dark" ? stored.mode : "system";
           }
         } catch (error) {

@@ -17,11 +17,12 @@ import {
   themeChoiceLabel,
 } from "../src/theme.ts";
 
-test("theme and color mode normalize independently with Classic and System defaults", () => {
+test("theme and color mode normalize independently with Aqua and System defaults", () => {
   for (const value of [null, undefined, "", "sepia", "dark", "system"]) {
-    assert.equal(normalizeThemeChoice(value), "classic");
+    assert.equal(normalizeThemeChoice(value), "aqua");
   }
   assert.equal(normalizeThemeChoice("aqua"), "aqua");
+  assert.equal(normalizeThemeChoice("classic"), "classic");
   for (const value of [null, undefined, "", "aqua"]) {
     assert.equal(normalizeColorModeChoice(value), "system");
   }
@@ -31,13 +32,17 @@ test("theme and color mode normalize independently with Classic and System defau
   assert.deepEqual(COLOR_MODE_CHOICES.map(colorModeChoiceLabel), ["System", "Light", "Dark"]);
 });
 
-test("legacy preferences migrate without changing their previous appearance", () => {
+test("legacy preferences adopt Aqua while preserving mode, and saved themes take precedence", () => {
   for (const legacy of ["light", "dark", "system"]) {
-    assert.deepEqual(readStoredAppearance(null, legacy), { theme: "classic", mode: legacy });
+    assert.deepEqual(readStoredAppearance(null, legacy), { theme: "aqua", mode: legacy });
   }
   assert.deepEqual(readStoredAppearance(null, "aqua"), { theme: "aqua", mode: "light" });
-  assert.deepEqual(readStoredAppearance(null, null), { theme: "classic", mode: "system" });
-  assert.deepEqual(readStoredAppearance("broken", "dark"), { theme: "classic", mode: "dark" });
+  assert.deepEqual(readStoredAppearance(null, null), { theme: "aqua", mode: "system" });
+  assert.deepEqual(readStoredAppearance("broken", "dark"), { theme: "aqua", mode: "dark" });
+  assert.deepEqual(readStoredAppearance('{"theme":"classic","mode":"system"}', "aqua"), {
+    theme: "classic",
+    mode: "system",
+  });
   assert.deepEqual(readStoredAppearance('{"theme":"aqua","mode":"dark"}', "light"), {
     theme: "aqua",
     mode: "dark",
@@ -122,7 +127,7 @@ test("shipped pre-paint and runtime agree for both axes and legacy migration", (
 test("blocked storage still follows the OS before first paint", () => {
   for (const systemDark of [false, true]) {
     assert.deepEqual(stampedAppearance({ stored: new Error("blocked"), systemDark }), {
-      theme: "classic",
+      theme: "aqua",
       colorMode: systemDark ? "dark" : "light",
     });
   }

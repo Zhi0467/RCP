@@ -1,4 +1,4 @@
-/* Soft Aqua is opt-in. One upper-left light source makes controls rise from
+/* One upper-left light source makes Aqua controls rise from
    the pearl surface; fields and selected controls press back into it. */
 :root[data-theme="aqua"] {
   color-scheme: light;
