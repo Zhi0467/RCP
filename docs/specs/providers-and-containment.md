@@ -772,7 +772,9 @@ account gate, and reuses the stored answer while the version is unchanged. An
 explicit Refresh, a version change, a verify, a sign-in, or a sign-out probes
 again. The skill inventory is reused the same way while the executable, its
 version, and the probe command match the stored inventory on implicit reads.
-An explicit human skill Refresh always probes. A provider process,
+The explicit readiness Refresh also probes every target's skill inventory
+without reusing the stored one, so an edited provider-native skill becomes
+visible while nothing about the executable changed. A provider process,
 probe, or turn is never signalled before the gate's minimum hold has elapsed
 since it started, so a login refresh begun at start can finish its write; a
 probe timeout is clamped to that hold, and a Pause of a young process waits it
