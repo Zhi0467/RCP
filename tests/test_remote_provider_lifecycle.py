@@ -132,7 +132,7 @@ async def test_closing_at_runtime_checkpoint_awaits_remote_and_local_cleanup(
     monkeypatch.setattr(
         AgentProcessControl,
         "_confirm_remote_stopped",
-        lambda host, pid_file: confirmations.append((host, pid_file)) or True,
+        lambda host, pid_file, started_at: confirmations.append((host, pid_file)) or True,
     )
     control = AgentProcessControl()
     pid_file = str(tmp_path / "agent.pid")
@@ -189,7 +189,7 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
     monkeypatch.setattr(profile, "runtime", lambda runtime_id: runtime)
     monkeypatch.setattr(profile, "runtime_candidates", lambda configured: (runtime, runtime))
 
-    def confirm(host, pid_file):
+    def confirm(host, pid_file, started_at):
         actions.append("confirm")
         return confirmed
 
