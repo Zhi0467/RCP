@@ -102,7 +102,9 @@ Temporary outputs remain in their originating chats until kept.
 Reports appear as soon as their immutable bytes are captured; **Save copy** is
 not required to make them discoverable. Saving a repository copy does not add a
 duplicate report entry. Cards show the artifact title and a **Source chat** link
-when its originating conversation is available. The listing retains episode
+when its originating conversation is available. Outputs originating in an
+episode also carry one compact **Experiment** or **Auto-research** tag. Ordinary
+chat artifacts have no episode tag. The listing retains episode
 identity, creation time, and saved path in its data without displaying repeated
 type labels, timestamps, paths, or opaque episode IDs on each card.
 
@@ -110,9 +112,9 @@ Each new report's HTML document title names its research subject and main
 finding or unresolved outcome. RCP extracts that title when capturing or
 importing the report and stores it as display metadata. Existing reports receive
 the same extraction during storage migration. The inventory reads this metadata
-without loading report HTML. A missing document title uses the plain report type
-as its label, never a graph or episode identifier. This display metadata does not
-alter the immutable report bytes, digest, or episode outcome.
+without loading report HTML. A missing document title uses **Report** as its
+label; the tag supplies its episode type without repetition. This display
+metadata does not alter the immutable report bytes, digest, or episode outcome.
 
 Source chat preserves the exact project and graph target. Episode-owned branch
 conversations open through their existing Runs transcript, preserving its

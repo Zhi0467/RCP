@@ -37,6 +37,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: null,
         artifact_id: null,
         episode_id: "old-episode",
+        episode_mode: "experiment_loop",
         source_chat_href:
           "#/projects/project?view=runs&experiment=experiment%2Ftransfer&episode=old-episode&target=branch&branch=branch-one&parent=parent-episode",
         can_open: true,
@@ -52,6 +53,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: "task",
         artifact_id: "plot",
         episode_id: null,
+        episode_mode: "experiment_loop",
         source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
         can_open: true,
         unavailable_reason: null,
@@ -66,6 +68,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         operation_id: "task",
         artifact_id: "unavailable",
         episode_id: null,
+        episode_mode: null,
         source_chat_href: null,
         can_open: false,
         unavailable_reason: "Preview unavailable.",
@@ -73,13 +76,14 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
       },
       {
         id: "report:no-chat",
-        name: "Auto-research report",
+        name: "Report",
         kind: "report",
         created_at: "2026-09-10T12:00:00Z",
         path: null,
         operation_id: null,
         artifact_id: null,
         episode_id: "no-chat",
+        episode_mode: "auto_research",
         source_chat_href: null,
         can_open: true,
         unavailable_reason: null,
@@ -96,11 +100,24 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     assert.equal(await page.locator(".artifacts-list time").count(), 0);
     assert.equal(
       await page
-        .getByRole("link", { name: "Open originating chat for Auto-research report" })
+        .getByRole("link", { name: "Open originating chat for Report", exact: true })
         .count(),
       0,
     );
-    await page.getByRole("link", { name: "Open Auto-research report", exact: true }).waitFor();
+    await page.getByRole("link", { name: "Open Report", exact: true }).waitFor();
+    assert.deepEqual(await page.locator(".artifact-episode-tag").allTextContents(), [
+      "Experiment",
+      "Experiment",
+      "Auto-research",
+    ]);
+    assert.equal(
+      await page
+        .locator(".artifact-entry")
+        .filter({ hasText: "Unavailable plot" })
+        .locator(".artifact-episode-tag")
+        .count(),
+      0,
+    );
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");

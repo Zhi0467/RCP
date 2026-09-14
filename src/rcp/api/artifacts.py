@@ -17,7 +17,7 @@ from rcp.api.dependencies import (
 )
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.projects import ProjectCatalog
-from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage import AgentTaskRecord, AppStore, EpisodeMode
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -33,6 +33,7 @@ class SavedArtifactResponse(BaseModel):
     operation_id: str | None = None
     artifact_id: str | None = None
     episode_id: str | None = None
+    episode_mode: EpisodeMode | None = None
     source_chat_href: str | None = None
     viewer_url: str
     can_open: bool = True
@@ -136,6 +137,8 @@ def saved_artifacts(
         raw_artifacts = task.result.get("artifacts") if task.result else None
         if not isinstance(raw_artifacts, list):
             continue
+        episode = store.episode(task.episode_id) if task.episode_id else None
+        episode_mode = episode.mode if episode and episode.project_id == project_id else None
         for raw in raw_artifacts:
             try:
                 artifact = AgentArtifactDescriptor.model_validate(raw)
@@ -152,6 +155,7 @@ def saved_artifacts(
                     path=f"artifacts/{artifact.kept_filename}",
                     operation_id=task.operation_id,
                     artifact_id=artifact.artifact_id,
+                    episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
                     viewer_url=(
                         f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/"
@@ -164,14 +168,14 @@ def saved_artifacts(
     # satisfy _episode_report_viewer_response's availability prerequisites.
     for report in reports:
         origin = report_origins.get(report.episode_id)
-        label = "Experiment" if report.mode == "experiment_loop" else "Auto-research"
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
-                name=report.display_title or f"{label} report",
+                name=report.display_title or "Report",
                 kind="report",
                 created_at=report.created_at,
                 episode_id=report.episode_id,
+                episode_mode=report.mode,
                 source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
                 viewer_url=f"{base}/episodes/{quote(report.episode_id, safe='')}/report/viewer",
             )

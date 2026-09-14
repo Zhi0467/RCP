@@ -13138,6 +13138,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin: 0;
 }
 
+.artifact-entry-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.artifact-episode-tag {
+  background: var(--surface-cool);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
 .artifacts-list {
   list-style: none;
   padding: 0;

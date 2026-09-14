@@ -83,7 +83,14 @@ export function Artifacts({ projectId }: { projectId: string }) {
           {entries.map((entry) => (
             <li key={entry.id} className="artifact-entry">
               <div>
-                <h3>{entry.name}</h3>
+                <div className="artifact-entry-heading">
+                  <h3>{entry.name}</h3>
+                  {entry.episode_mode && (
+                    <span className="artifact-episode-tag">
+                      {entry.episode_mode === "experiment_loop" ? "Experiment" : "Auto-research"}
+                    </span>
+                  )}
+                </div>
                 {entry.source_chat_href && (
                   <a
                     className="artifact-entry-chat"

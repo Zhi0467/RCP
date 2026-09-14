@@ -92,7 +92,7 @@ def _source_chat_url(project_id, href):
     return url, {"branch_id": query["branch_id"][0]} if "branch_id" in query else {}
 
 
-def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None):
+def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_artifact=False):
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     now = store.now()
@@ -148,7 +148,25 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None):
         native_session_id=str(uuid.uuid4()),
         stage_root=str(tmp_path / f"stage-{episode_id}"),
     )
-    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    result = {}
+    if with_artifact:
+        store.record_agent_task_receipt(
+            task.operation_id,
+            "operation_created",
+            {"kind": "node_chat", "attempt": 1, "has_parent": False, "resumed": False},
+        )
+        data = b"<!doctype html><h1>Episode comparison</h1>"
+        artifact = descriptor_for(task.operation_id, "comparison.html", size_bytes=len(data))
+        workspace = app.state.catalog.open(project_id).history.workspace
+        filename = workspace.keep_artifact(
+            source_name=artifact.name,
+            project_name="Research",
+            data=data,
+            today=datetime.now(UTC).date(),
+        )
+        artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": now})
+        result = {"artifacts": [artifact.model_dump(mode="json")]}
+    store.complete_agent_task(task.operation_id, applied_revision=None, result=result)
     _save_source_chat(app, task)
     admission = begin_episode_report_wrapup(
         store,
@@ -234,6 +252,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert saved["artifact_id"] == artifact.artifact_id
         assert saved["path"] == f"artifacts/{artifact.kept_filename}"
         assert saved["can_open"] is True
+        assert saved["episode_mode"] is None
         chat_url, chat_params = _source_chat_url(project_id, saved["source_chat_href"])
         assert client.get(chat_url, params=chat_params).status_code == 200
         assert client.get(saved["viewer_url"]).status_code == 200
@@ -245,6 +264,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert retained_report["episode_id"] == episode.episode_id
         assert retained_report["created_at"] == report.created_at
         assert retained_report["source_chat_href"] is None
+        assert retained_report["episode_mode"] == "auto_research"
         assert store.project_episode_report_summaries(str(uuid.uuid4())) == []
         assert retained_report["name"] == "Compaction fidelity passes retrieval checks"
         assert client.get(retained_report["viewer_url"]).status_code == 200
@@ -353,6 +373,7 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     assert response.status_code == 200, response.text
     entry = next(entry for entry in response.json() if entry["id"] == f"report:{report.report_id}")
     assert entry["name"] == "Reset versus stream · Partial episode report"
+    assert entry["episode_mode"] == "experiment_loop"
     assert client.get(entry["viewer_url"]).status_code == 200
     if branch_owned:
         query = parse_qs(urlsplit(entry["source_chat_href"].removeprefix("#")).query)
@@ -439,5 +460,20 @@ def test_report_without_a_subject_uses_a_plain_title_instead_of_its_episode_hash
         report_html="<!doctype html><h1>Retained report</h1>",
     )
     entry = TestClient(app).get(f"/api/projects/{project_id}/artifacts").json()[0]
-    assert entry["name"] == "Auto-research report"
+    assert entry["name"] == "Report"
+    assert entry["episode_mode"] == "auto_research"
     assert entry["source_chat_href"] is None
+
+
+def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    task, _ = _create_chat_report(app, tmp_path, with_artifact=True)
+    client = TestClient(app)
+    entries = client.get(f"/api/projects/{project_id}/artifacts").json()
+    entry = next(item for item in entries if item["operation_id"] == task.operation_id)
+    assert entry["episode_mode"] == "experiment_loop"
+    assert entry["kind"] == "artifact"
+    assert entry["episode_id"] is None
+    assert "/tasks/" in entry["viewer_url"]
+    assert client.get(entry["viewer_url"]).status_code == 200
