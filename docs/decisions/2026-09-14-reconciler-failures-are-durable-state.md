@@ -30,15 +30,15 @@ change. The record is phase-specific:
   promise for report failures, and the episode's own controls stay available;
 - a login blockage parks the wrap-up as `pending` with `blocked_reason=sign_in`
   and spends no report attempt; it resumes after a verified sign-in;
-- a transient unavailability is retried with bounded backoff and, after it
-  repeats, recorded on the episode as a nonblocking note; it never ends the
-  report lifecycle by itself.
+- a transient unavailability is retried on the next poll with its diagnostic
+  receipt on the reconciling operation; it never ends the report lifecycle by
+  itself.
 
-The receipt itself is built once from one snapshot, compacts to its bound, is
-persisted at admission, and is reused afterwards, so this particular failure
-cannot recur. One warning is logged at the first durable transition of each
-kind and none on repeats; the service's journal route is inspected before any
-handler is added. There is no periodic logging.
+The receipt itself is built once, compacts to its bound, is persisted at
+admission, and is reused afterwards, so this particular failure cannot recur.
+One warning is logged per process for each episode and failure kind and none on
+repeats; the journal route was inspected and already carries warnings, at the
+journal's default priority. There is no periodic logging.
 
 ## What this costs, stated plainly
 

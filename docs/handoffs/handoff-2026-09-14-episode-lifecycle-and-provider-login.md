@@ -165,17 +165,16 @@ RCP starts a fresh provider process per turn and per probe.
 ### Episode lifecycle
 
 An ending fence writes `ending` and `status=wrapping_up`. Settlement admits the
-hidden report once. The receipt is built from one snapshot: the tasks, events,
-children, and notices read in one transaction at the moment the ending is
-fenced, with explicit tie-breakers, and it compacts in a fixed order until it
-fits: lifecycle payload text 800 to 240 to 80 characters, then drop oldest
+hidden report once. The receipt is built once, after the episode is quiescent
+so its reads are coherent, in a deterministic order with explicit tie-breakers,
+and it compacts in a fixed order until it fits: lifecycle payload text 800 to 240 to 80 characters, then drop oldest
 facts; child diagnostics 480 to 160, then drop oldest; list lengths 16 to 8 to 4
 to 0 for command facts, graph results, actors, and child work; starting
 instruction 1200 to 480 to 160; finally the meter and counts alone. Every count
 field stays honest. Size is measured on the complete stored envelope, mode,
 ending, episode id, partial flag, and diagnostic included, with the same
 encoder `compact_episode_receipt` uses. The persisted receipt is the fence;
-later attempts reuse it and never rebuild it.
+once a wrap-up row exists the reconciler reuses it and never rebuilds the spec.
 
 Failure policy by phase:
 
@@ -189,32 +188,37 @@ Failure policy by phase:
   `blocked_reason=sign_in`; it resumes after a verified sign-in and spends no
   report attempt.
 - **Transient unavailability** (database lock, canonical repository lock, SSH
-  to the stage host): retried with bounded backoff; after the third repeat the
-  diagnostic is recorded on the episode as a nonblocking note; it never becomes
-  terminal on its own.
+  to the stage host, any exception not classified as permanent): retried on the
+  next poll; the diagnostic receipt on the reconciling operation stays as today;
+  it never becomes terminal on its own.
 
-One warning line is logged at the first durable transition of each kind and none
-on repeats. Slice 1 first inspects how the service's stderr reaches the journal
-and adds a handler only if `logging.lastResort` output demonstrably does not.
+One warning line is logged per process for each episode and failure kind and
+none on repeats. The journal route was inspected: the service configures no
+root handler, so Python's last-resort handler writes warnings to stderr and
+systemd stores them at its default `info` priority, which is why a
+`--priority=warning` filter showed nothing. No logging change is needed.
 
 Health table. Rows are evaluated top to bottom; the first match wins. "Live
-turn" means a queued, running, or pausing visible task of the episode.
+turn" means a queued, running, or pausing visible task of the episode. "Settled"
+means the episode status is terminal (`completed`, `failed`, `needs_action`,
+`stopped`); `not_started` on a settled episode means the ending had no report
+to generate, as `end_episode_without_report` records it.
 
 | Ending | Wrap-up | Other facts | Health | Recommendation | blocked_reason |
 | --- | --- | --- | --- | --- | --- |
 | `stopped` | any | | `stopped` | `none` | |
-| any | `pending`, `running` | report blocked on login | `wrapping_up` | `wait` | `sign_in` |
-| any | `not_started`, `pending`, `running` | | `wrapping_up` | `wait` | |
+| any | `pending`, `running` | report blocked on login (slice 2) | `wrapping_up` | `wait` | `sign_in` |
+| any | `pending`, `running`, or `not_started` while status is `wrapping_up` | | `wrapping_up` | `wait` | |
 | `completed` | `ready` | | `completed` | `open_report` | |
-| `completed` | `failed`, `skipped`, `legacy_unavailable` | | `completed` | `none` (report error shown) | |
+| `completed` | `failed`, `skipped`, `legacy_unavailable`, settled `not_started` | | `completed` | `none` (report error shown when failed) | |
 | `failed` | `ready` | | `failed` | `open_report` | |
-| `failed` | `failed`, `skipped`, `legacy_unavailable` | | `failed` | `review` (report error shown) | |
+| `failed` | `failed`, `skipped`, `legacy_unavailable`, settled `not_started` | | `failed` | `review` (report error shown when failed) | |
 | `exhausted`, `human_pause` | `ready` | | `needs_action` | `reauthorize` | `reauthorize` |
-| `exhausted`, `human_pause` | `failed`, `skipped`, `legacy_unavailable` | | `needs_action` | `reauthorize` (report error shown) | `reauthorize` |
+| `exhausted`, `human_pause` | `failed`, `skipped`, `legacy_unavailable`, settled `not_started` | | `needs_action` | `reauthorize` (report error shown when failed) | `reauthorize` |
 | none | | Stop requested, turn finishing | `stopping` | `wait` | |
 | none | | recovery pending | `recovering` | `wait` | |
-| none | | control task failed with `provider_auth` | `needs_action` | `review` | `sign_in` |
-| none | | control task paused, interrupted, or failed | `needs_action` | the recovery control | |
+| none | | control task failed with `failure_kind=provider_auth` | `needs_action` | the recovery control | `sign_in` |
+| none | | control task paused, interrupted, or failed | `needs_action` | the recovery control, else `review` | |
 | none | | queued turn | `starting` | `wait` | |
 | none | | live turn | `active` | `wait` or `pause` | |
 | none | | no live turn, waiting on watchers, children, or mail | `active` | `continue` | |
@@ -383,16 +387,16 @@ Owners: `src/rcp/runs/auto_research.py`, `src/rcp/runs/episodes/reconcile.py`,
 `src/rcp/storage/models.py` (`blocked_reason`), `src/rcp/api/episodes.py`,
 `src/rcp/api/experiment_controls.py` (consumes the same table), `web/src/types.ts`,
 `web/src/campaigns.ts`, `web/src/runProjection.ts`, `web/src/components/CampaignRuns.tsx`,
-`web/src/components/ExperimentRunDetail.tsx`, `src/rcp/__main__.py` (logging,
-only if the inspection shows a lost route).
+`web/src/components/ExperimentRunDetail.tsx`.
 Invariants: canonical Patch logs untouched; one transition per mutation; health
 literals unchanged; report failure nonblocking.
 Checks: compaction tests with oversized payloads, Unicode, and equal
 timestamps; a persisted-receipt reuse test across two reconcile passes; a test
 per failure phase; a serialization test per row of the health table, including
-the production shape; a replay of the copied production database through the
-new code showing the stuck episode settle to `needs_action` with a visible
-wrap-up error and `blocked_reason=reauthorize`. `uv run pytest -n0` on the
+the production shape before and after repair; a replay of the copied production
+database through the new code showing the stuck episode's receipt compact under
+the bound and its wrap-up admit, and a forced permanent defect settle it to
+`needs_action` with a visible wrap-up error and `blocked_reason=reauthorize`. `uv run pytest -n0` on the
 touched test files, `uv run ruff check`, `npm --prefix web run build`.
 
 ### Slice 2: login failure handling
@@ -530,9 +534,10 @@ On codex 0.154.0, in a logged-out scratch `CODEX_HOME`, 2026-09-14:
 
 ## Closure criteria
 
-- The stuck production episode, replayed from a copy through slice 1, settles to
-  `needs_action` with a visible wrap-up error and `blocked_reason=reauthorize`,
-  and its card never says active.
+- The stuck production episode, replayed from a copy through slice 1, compacts
+  its receipt under the bound and admits its wrap-up; a forced permanent defect
+  settles it to `needs_action` with a visible wrap-up error and
+  `blocked_reason=reauthorize`; in neither state does its card say active.
 - A recorded login failure classifies as `provider_auth` on every row of the
   failure matrix, is never retried automatically, is refused before budget on
   every admission path, and is announced on every project.
