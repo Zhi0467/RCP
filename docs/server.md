@@ -323,9 +323,12 @@ that succeeds, resumes the parked work.
 (on the server and on the SSH account), then fences the account exactly as a
 failed login does until a member signs it in again.
 
-The `providers` directory is excluded from protected backups. After a restore
-onto a machine that does not have it, RCP marks each Claude account signed out
-at start with the reason recorded; a member pastes a token again.
+The `providers` directory is excluded from protected backups, and an archive's
+login state and probed readiness describe the archived machine. A restore marks
+every provider account signed out with the reason recorded and forgets every
+readiness probe; a member signs in or verifies each account again on the
+restored server. A data directory that arrives without a restore still resets
+each Claude account whose token did not come with it at start.
 
 ### Update provider CLIs
 

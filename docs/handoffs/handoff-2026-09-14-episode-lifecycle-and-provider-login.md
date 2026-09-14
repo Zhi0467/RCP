@@ -323,6 +323,10 @@ and the acting member; admission is fenced exactly as for a failed login. At
 service start, a Claude account whose durable state is `signed_in` but whose
 token file is absent (a restore onto a machine without the excluded provider
 directory) is marked `signed_out` with `source="restore"` before any launch.
+The restore transaction itself fences every `signed_in` account the same way,
+whatever its provider, and deletes every readiness snapshot: the archived rows
+describe the old machine's logins, so the restored server proves each account
+again before it launches on it.
 
 Sign-in from the UI: for Codex, RCP runs `codex login --device-auth` as the
 execution account, parses the user code and verification URL from its output,

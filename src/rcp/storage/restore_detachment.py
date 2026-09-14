@@ -69,3 +69,4 @@ class RestoreDetachmentStoreMixin:
                 now=now,
             )
             self.detach_space_authentication_for_restore(connection, now=now)
+            self.detach_provider_logins_for_restore(connection, now=now)

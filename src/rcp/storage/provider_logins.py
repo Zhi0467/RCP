@@ -7,6 +7,10 @@ from typing import Literal
 from rcp.limits import PROVIDER_LOGIN_DETAIL_MAX_CHARS
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 
+RESTORED_LOGIN_DETAIL = (
+    "This account was restored from an archive. Verify the sign-in on this machine."
+)
+
 
 class ProviderLoginStoreMixin:
     def provider_login_state(self, provider: str, host: str) -> ProviderLoginStateRecord:
@@ -160,6 +164,34 @@ class ProviderLoginStoreMixin:
                    probed_at=excluded.probed_at""",
                 tuple(record.model_dump().values()),
             )
+
+    def detach_provider_logins_for_restore(self, connection, *, now: str) -> None:
+        """Restored login rows and probed readiness describe the archived machine.
+
+        Every `signed_in` account is fenced with a new generation so nothing
+        launches on a login this machine never proved, and every readiness
+        snapshot is dropped so the next launch probes the real account.
+        """
+
+        rows = connection.execute(
+            "SELECT provider, host, generation FROM provider_login_states "
+            "WHERE state = 'signed_in' ORDER BY provider, host"
+        ).fetchall()
+        for row in rows:
+            self._write_provider_login_state(
+                connection,
+                ProviderLoginStateRecord(
+                    provider=row["provider"],
+                    host=row["host"],
+                    state="signed_out",
+                    generation=row["generation"] + 1,
+                    detail=RESTORED_LOGIN_DETAIL,
+                    source="restore",
+                    changed_at=now,
+                    changed_by=None,
+                ),
+            )
+        connection.execute("DELETE FROM provider_readiness_snapshots")
 
     def delete_provider_readiness_snapshots(self, provider: str, host: str) -> int:
         """Forget every probed answer for one account so the next readiness probes again."""
