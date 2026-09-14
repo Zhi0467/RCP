@@ -273,9 +273,10 @@ Turns and Mail sections in the Runs card for both modes.
 
 ## Slices
 
-Each slice is one PR off `main`, implemented with Codex (gpt-6-astra, medium),
-reviewed by Claude and by the Codex GitHub reviewer, verified as listed, then
-merged by the human. Slices 2 to 6 follow the order below; none is skipped.
+All six slices land on one branch and one pull request, as a sequence of
+commits in the order below, implemented with Codex (gpt-6-astra, medium),
+reviewed by Claude and by the Codex GitHub reviewer after each push, verified as
+listed, and merged by the human once. None is skipped.
 
 ### Slice 1: settle and honest state
 
