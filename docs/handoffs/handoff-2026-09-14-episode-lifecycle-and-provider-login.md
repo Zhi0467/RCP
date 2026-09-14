@@ -302,11 +302,12 @@ gate keeps covering Claude for the probes that still read its own login.
 
 Sign-in from the UI: for Codex, RCP runs `codex login --device-auth` as the
 execution account, parses the user code and verification URL from its output,
-shows both, and reports the exit; then verifies the login with one minimal real
-request before clearing any blockage. For Claude, the token paste is verified the
-same way. The state (`signed_in`, `signed_out`, `verifying`) and the last
-sign-in's member are shown in Settings and by `rcp server doctor`. The doctor
-stops reporting `codex login status` as proof of a login.
+shows both, and reports the exit; then runs slice 2's verify action, one
+minimal real request, before clearing any blockage. For Claude, the token paste
+ends in the same verify action. The durable state (`signed_in`, `signed_out`),
+an in-flight `verifying` indicator, and the last sign-in's member are shown in
+Settings and by `rcp server doctor`. The doctor stops reporting `codex login
+status` as proof of a login.
 
 ### Login failure handling
 
@@ -327,15 +328,27 @@ Codex signatures: `refresh_token_reused`, "refresh token was already used", plus
 the existing four. Claude signatures are added only from observed text; the first
 sample is recorded in the profile comment.
 
-The machine-account state records `signed_out` with a credential generation when
-a `provider_auth` outcome lands. Admission of any paid turn, child Work, child
-Experiment, wake, or report attempt for that provider on that machine is refused
-before task creation and budget debit while the state is `signed_out`; the
-refusal is recorded on the episode as `blocked_reason=sign_in`. A late failure
-carrying an older generation does not re-mark a repaired account. After a
-verified sign-in RCP claims each blocked allocation once, rechecks Stop,
-membership, ending, and target, and resumes it through its exact recovery path;
-nothing on other providers or machines is touched. One notice appears on every
+The machine-account state, one durable row per `(provider, host)`, records
+`signed_out` with a credential generation when a `provider_auth` outcome lands;
+a launch captures the generation before its process starts, so a late failure
+carrying an older generation does not re-mark a repaired account. Admission of
+any paid turn, child Work, child Experiment, wake, or report attempt for that
+account is refused before task creation and budget debit while the state is
+`signed_out`; human and API paths get the refusal text, reconcilers leave the
+durable input pending, and the projection derives `blocked_reason=sign_in`.
+An Auto-research recovery for a `provider_auth` failure is created `blocked`
+instead of `pending`. A **verify** action, callable by any member, runs one
+minimal real provider request as the execution account under the credential
+gate; success marks `signed_in`, bumps the generation, invalidates readiness,
+and resumes the parked work once: blocked `provider_auth` recoveries are
+released and claimed, pending lifecycle, mail, and watcher inputs are
+delivered, pending wrap-ups restart, and a failed Experiment turn with
+`provider_auth` is retried once through its exact path. Nothing on other
+providers or machines is touched. Readiness reads the durable state, so the
+Retry preflight, the project readiness snapshot, and the server readiness
+coordinator report a signed-out account truthfully instead of trusting
+`codex login status`. Slice 3 puts the device-code sign-in flow in front of
+the same verify action. One notice appears on every
 project's Runs view and in the project list while any machine account this
 project uses is `signed_out`.
 
@@ -406,15 +419,22 @@ Owners: `src/rcp/providers.py`, `src/rcp/agents/failure_kinds.py`,
 `src/rcp/runs/tasks/episode_report.py`, `src/rcp/runs/auto_research_recovery.py`,
 `src/rcp/runs/experiment_recovery.py`, `src/rcp/storage/auto_research.py` and
 `src/rcp/storage/auto_research_children.py` (admission refusal before debit),
-`src/rcp/storage/experiments.py`, new machine-account state in `src/rcp/storage/`
-and its API in `src/rcp/api/`, `src/rcp/api/episodes.py`, `src/rcp/api/index.py`,
-`src/rcp/projects.py`, `web/src/views/*Runs*`, `web/src/components/AttentionRail.tsx`.
+`src/rcp/storage/experiments.py`, new `src/rcp/storage/provider_logins.py`
+(migration 18), new `src/rcp/runs/provider_login.py` (refusal predicate), new
+`src/rcp/api/provider_login.py` (states and verify), `src/rcp/providers.py`
+(`login_probe_command`), `src/rcp/agents/launcher.py` (readiness reads the
+state), `src/rcp/api/episodes.py`, `src/rcp/projects.py` (readiness snapshot
+carries login states), new `web/src/components/ProviderLoginNotice.tsx`,
+`web/src/views/GraphViews.tsx`, `web/src/views/ProjectLanding.tsx`,
+`web/src/runProjection.ts`, `web/src/api.ts`, `web/src/types.ts`.
 Invariants: agent capability unchanged; classification from the provider's own
 text only; exact recovery spends no budget.
 Checks: signature tests with the recorded production text; the failure-path
 matrix as tests, one per row; admission refusal before debit for every paid
 admission path; a late old-generation failure not re-marking a repaired
-account; a served-app check that the notice appears on every project.
+account; verify releasing and claiming a blocked recovery exactly once; a
+served-app check that the notice appears on every project and on the space
+landing.
 
 ### Slice 3: provider login hardening and sign-in from the UI
 
