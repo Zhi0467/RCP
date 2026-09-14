@@ -21,6 +21,17 @@ class ProviderLoginStoreMixin:
             else ProviderLoginStateRecord(provider=provider, host=host)
         )
 
+    def queued_agent_task_ids(self, project_id: str) -> list[str]:
+        """Admitted tasks of one project that no dispatch has started yet."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE project_id = ? AND status = 'queued' "
+                "ORDER BY created_at, operation_id",
+                (project_id,),
+            ).fetchall()
+        return [str(row["operation_id"]) for row in rows]
+
     def provider_login_states(self) -> list[ProviderLoginStateRecord]:
         with self.connection() as connection:
             rows = connection.execute(

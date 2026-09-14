@@ -32,7 +32,11 @@ change. The record is phase-specific:
   and spends no report attempt; it resumes after a verified sign-in;
 - a transient unavailability is retried on the next poll with its diagnostic
   receipt on the reconciling operation; it never ends the report lifecycle by
-  itself.
+  itself;
+- an exception nobody classified, and a report launch that fails the same
+  non-transient way, are retried three times per process and then settled as a
+  permanent defect, because repeating a deterministic failure forever is the
+  incident itself.
 
 The receipt itself is built once, compacts to its bound, is persisted at
 admission, and is reused afterwards, so this particular failure cannot recur.

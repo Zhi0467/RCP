@@ -237,3 +237,138 @@ def test_signed_out_experiment_start_creates_no_task_or_budget(manifest, tmp_pat
     with pytest.raises(ValueError, match="sign"):
         tasks.start(PROJECT_ID, "node_chat", request, authorized_by=fabricated_authorizer())
     assert _counts(store) == before
+
+
+@pytest.mark.parametrize("kind", ["node_chat", "project_chat"])
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_signed_out_ordinary_chat_creates_no_task(tmp_path, kind, mode):
+    from rcp.runs.provider_login import ProviderSignedOut
+
+    from .helpers import fabricated_authorizer
+
+    store = _store(tmp_path)
+
+    async def stream(*_args):
+        raise AssertionError("A signed-out account must not launch")
+        yield ""
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _signed_out(store)
+    request = RunRequest(
+        provider="codex",
+        run_on="local",
+        chat_scope="node" if kind == "node_chat" else "project",
+        node_id="blk/result" if kind == "node_chat" else None,
+        message="Inspect the result.",
+        mode=mode,
+    )
+    assert _counts(store)[0] == 0
+    with pytest.raises(ProviderSignedOut):
+        tasks.start("project", kind, request, authorized_by=fabricated_authorizer())
+    assert _counts(store)[0] == 0
+
+
+@pytest.mark.parametrize("experiment", [False, True])
+def test_committed_task_waits_for_verify_without_poll_writes(
+    manifest, tmp_path, monkeypatch, experiment
+):
+    from .helpers import fabricated_authorizer, wait_for_task, wait_until
+    from .test_background import _experiment_request
+    from .test_provider_login_resume import _verify_client
+
+    store = _store(tmp_path)
+    store.upsert_project(
+        store.project("project").model_copy(update={"locator": str(manifest.path)})
+    )
+    calls = []
+
+    async def stream(_project, _kind, _request, execution):
+        calls.append(execution.operation_id)
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    request = (
+        _experiment_request()
+        if experiment
+        else RunRequest(
+            provider="codex",
+            run_on="laptop",
+            chat_scope="node",
+            node_id="blk/result",
+            chat_id="ordinary-chat",
+            run_truth_scope=["repo-a"],
+            message="Inspect the result.",
+            mode="work",
+        )
+    )
+    with monkeypatch.context() as admission:
+        admission.setattr(tasks, "launch_admitted", store.agent_task)
+        queued = tasks.start("project", "node_chat", request, authorized_by=fabricated_authorizer())
+    _signed_out(store)
+    before = store.agent_task_receipts(queued.operation_id)
+    for _ in range(2):
+        assert tasks.launch_admitted(queued.operation_id) == queued
+        assert store.agent_task(queued.operation_id) == queued
+        assert store.agent_task_receipts(queued.operation_id) == before
+        assert calls == []
+        assert not tasks._workers
+    client = _verify_client(store, tasks, monkeypatch)
+    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert response.status_code == 200, response.text
+    assert response.json()["resumed"]["queued"] == 1
+    wait_for_task(store, queued.operation_id, expect="succeeded")
+    wait_until(lambda: queued.operation_id not in tasks._workers)
+    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert again.status_code == 200, again.text
+    assert again.json()["resumed"]["queued"] == 0
+    assert calls == [queued.operation_id]
+
+
+def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, monkeypatch):
+    from .helpers import wait_for_task, wait_until
+    from .test_provider_login_resume import _verify_client
+
+    tasks, episode, root = _idle_root(tmp_path)
+    store = tasks.store
+    store.upsert_project(
+        store.project("project").model_copy(update={"locator": str(manifest.path)})
+    )
+    wait_until(lambda: root.operation_id not in tasks._workers)
+    store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="queued-result",
+            episode_id=episode.episode_id,
+            source_kind="worker",
+            source_id="worker-result",
+            source_event="succeeded",
+            payload={},
+            created_at=store.now(),
+        )
+    )
+    after_grace = _required_timestamp(store.now()) + timedelta(minutes=1)
+    monkeypatch.setattr(store, "now", lambda: after_grace.isoformat())
+    with monkeypatch.context() as admission:
+        admission.setattr(tasks, "launch_admitted", store.agent_task)
+        operation_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
+    assert operation_id is not None
+    queued = store.agent_task(operation_id)
+    assert queued.status == "queued"
+    _signed_out(store)
+    receipts = store.agent_task_receipts(operation_id)
+    before = _counts(store)
+    for _ in range(2):
+        assert tasks.launch_admitted(operation_id) == queued
+        assert store.agent_task_receipts(operation_id) == receipts
+        assert not tasks._workers
+    client = _verify_client(store, tasks, monkeypatch)
+    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert response.status_code == 200, response.text
+    assert response.json()["resumed"]["lifecycle"] == 1
+    assert response.json()["resumed"]["queued"] == 0
+    wait_for_task(store, operation_id, expect="succeeded")
+    wait_until(lambda: operation_id not in tasks._workers)
+    assert _counts(store) == before
+    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert again.status_code == 200, again.text
+    assert again.json()["resumed"]["lifecycle"] == 0
+    assert _counts(store) == before

@@ -21,9 +21,9 @@ from rcp.config import load_manifest
 from rcp.limits import PROVIDER_LOGIN_DETAIL_MAX_CHARS, PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS
 from rcp.providers import ProviderId, profile_for
 from rcp.runs.auto_research_delivery import (
-    deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
     pending_auto_research_mail_recipients,
+    reconcile_pending_auto_research_lifecycle,
 )
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 from rcp.runs.episodes.reconcile import EpisodeReconciler
@@ -117,20 +117,36 @@ def _resume_account(request: Request, provider: str, host: str) -> dict[str, int
     background = get_background_tasks(request)
     store = background.store
     counts = dict.fromkeys(
-        ("recoveries", "lifecycle", "mail", "reports", "experiments", "watchers"), 0
+        ("recoveries", "lifecycle", "mail", "reports", "experiments", "watchers", "queued"), 0
     )
     contexts = []
+    queued = []
     operation_ids: set[str] = set()
     for project in store.projects():
-        manifest = _project_manifest(project)
-        if manifest is None:
-            continue
+        for operation_id in store.queued_agent_task_ids(project.project_id):
+            task = store.agent_task(operation_id)
+            if task is None or task.request.get("provider") != provider:
+                continue
+            if task.stage_host is not None or task.stage_root is not None:
+                task_host = task.stage_host or ""
+            else:
+                manifest = _project_manifest(project)
+                if manifest is None:
+                    continue
+                try:
+                    task_host = provider_login_host(manifest, task.request.get("run_on"))
+                except (OSError, ValueError):
+                    logging.getLogger(__name__).warning(
+                        "Provider login resume skipped an unavailable queued execution target."
+                    )
+                    continue
+            if task_host == host:
+                queued.append(task)
         for episode in store.episodes(project.project_id, limit=None):
             matching = [
                 task
                 for task in store.episode_tasks(episode.episode_id, include_hidden=True)
-                if task.request.get("provider") == provider
-                and provider_login_host(manifest, task.request.get("run_on")) == host
+                if task.request.get("provider") == provider and (task.stage_host or "") == host
             ]
             wrapup = store.episode_wrapup(episode.episode_id)
             if not matching and not (
@@ -156,11 +172,12 @@ def _resume_account(request: Request, provider: str, host: str) -> dict[str, int
         if episode.mode == "auto_research" and episode.root_operation_id:
             root = store.auto_research_actor_binding(episode.root_operation_id)
             if any(task.operation_id == root.current_operation_id for task in matching):
-                counts["lifecycle"] += int(
-                    deliver_pending_auto_research_lifecycle(
-                        background, episode_id=episode.episode_id
-                    )
-                    is not None
+                started = reconcile_pending_auto_research_lifecycle(
+                    background, episode_id=episode.episode_id
+                )
+                counts["lifecycle"] += sum(
+                    store.agent_task_has_receipt(operation_id, "operation_dispatch_started")
+                    for operation_id in started
                 )
             for _, recipient in pending_auto_research_mail_recipients(
                 store, episode_id=episode.episode_id
@@ -218,14 +235,26 @@ def _resume_account(request: Request, provider: str, host: str) -> dict[str, int
                 )
             else:
                 reconciler.reconcile_experiment_episode(episode.episode_id, source="login_verify")
+    for task in queued:
+        if store.agent_task_has_receipt(task.operation_id, "operation_dispatch_started"):
+            continue
+        background.launch_admitted(task.operation_id)
+        counts["queued"] += int(
+            store.agent_task_has_receipt(task.operation_id, "operation_dispatch_started")
+        )
     for group in store.completed_watcher_groups():
         first = group[0]
         manifest = _project_manifest(store.project(first.project_id))
-        if (
-            manifest is not None
-            and first.continuation.provider == provider
-            and provider_login_host(manifest, first.continuation.run_on) == host
-        ):
+        if manifest is None or first.continuation.provider != provider:
+            continue
+        try:
+            group_host = provider_login_host(manifest, first.continuation.run_on)
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Provider login resume skipped an unavailable watcher execution target."
+            )
+            continue
+        if group_host == host:
             get_watcher_delivery(request).deliver_watcher_group(group)
             counts["watchers"] += int(
                 all(store.watcher(item.watcher_id).notified for item in group)

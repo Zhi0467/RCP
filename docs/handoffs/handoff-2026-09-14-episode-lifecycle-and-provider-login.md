@@ -194,7 +194,10 @@ Failure policy by phase:
   receipt on the reconciling operation stays as today. An exception that is
   neither classified permanent nor transient is retried three times per
   process, then settled as a permanent defect, because repeating an
-  unclassified deterministic failure forever is the incident itself.
+  unclassified deterministic failure forever is the incident itself. A launch
+  of the admitted report allocation that fails the same non-transient way
+  three times settles the allocation as unlaunchable through the existing
+  path, for the same reason.
 
 One warning line is logged per process for each episode and failure kind and
 none on repeats. The journal route was inspected: the service configures no

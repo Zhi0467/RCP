@@ -5,6 +5,7 @@ import subprocess
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -56,7 +57,10 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
             background,
             project_id,
             AutoResearchStartRequest(
-                invocation_ceiling=4, run_truth_scope=["repo"], provider=provider
+                invocation_ceiling=4,
+                run_truth_scope=["repo"],
+                provider=provider,
+                run_on="removed-alias",
             ),
             authorized_by=fabricated_authorizer(),
             graph_base_head=GraphHeadRef(revision=0),
@@ -238,3 +242,95 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     assert report_launcher.calls == 2
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+
+
+@pytest.mark.parametrize("run_on", ["removed-alias", "laptop"])
+def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
+    manifest, tmp_path, monkeypatch, run_on
+):
+    import hashlib
+
+    from .helpers import wait_until
+    from .test_background import _experiment_request
+
+    store = _store(tmp_path)
+    store.upsert_project(
+        store.project("project").model_copy(update={"locator": str(manifest.path)})
+    )
+
+    async def stream(_project, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            stage = tmp_path / execution.operation_id
+            stage.mkdir()
+            execution.checkpoint_stage("", str(stage))
+            store.record_agent_task_contract(
+                execution.operation_id,
+                "experiment_episode_context_candidate",
+                "{}",
+                hashlib.sha256(b"{}").hexdigest(),
+            )
+        yield _sse(
+            AgentEvent(event="session", session_id=_request.session_id or execution.operation_id)
+        )
+        if execution.continuation == "fresh":
+            yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
+        else:
+            yield _sse(AgentEvent(event="done"))
+
+    background = BackgroundAgentTasks(store, stream)
+    roots = []
+    for index in range(2):
+        store.mark_provider_login_verified("codex", "", member_id="member", detail="Verified.")
+        request = _experiment_request().model_copy(
+            update={
+                "run_on": run_on,
+                "control_episode_id": f"00000000-0000-4000-8000-00000000050{index}",
+                "control_node_id": f"exp/target-{index}",
+                "node_id": f"exp/target-{index}",
+                "chat_id": f"chat-{index}",
+            }
+        )
+        task = background.start(
+            "project", "node_chat", request, authorized_by=fabricated_authorizer()
+        )
+        roots.append(wait_for_task(store, task.operation_id, expect="failed"))
+        wait_until(lambda operation_id=task.operation_id: operation_id not in background._workers)
+    store.checkpoint_agent_task(
+        roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
+    )
+    client = _verify_client(store, background, monkeypatch)
+    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert response.status_code == 200, response.text
+    assert response.json()["resumed"]["experiments"] == 1
+    children = [
+        task
+        for task in store.episode_tasks(roots[0].episode_id)
+        if task.parent_operation_id == roots[0].operation_id
+    ]
+    assert len(children) == 1
+    wait_for_task(store, children[0].operation_id, expect="succeeded")
+    wait_until(lambda: children[0].operation_id not in background._workers)
+    assert len(store.episode_tasks(roots[1].episode_id)) == 1
+
+
+def test_verify_skips_watcher_with_removed_alias(manifest, tmp_path, monkeypatch, caplog):
+    from .test_auto_research_delivery import _arm_completed_graph_condition
+    from .test_provider_login_admission import _idle_root
+
+    background, episode, root = _idle_root(tmp_path)
+    store = background.store
+    store.upsert_project(
+        store.project("project").model_copy(update={"locator": str(manifest.path)})
+    )
+    watcher = _arm_completed_graph_condition(store, episode, root)
+    stale = watcher.model_copy(
+        update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed-alias"})}
+    )
+    monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale]])
+    client = _verify_client(store, background, monkeypatch)
+    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    assert response.status_code == 200, response.text
+    assert response.json()["resumed"]["watchers"] == 0
+    assert store.watcher(watcher.watcher_id).notified is False
+    warnings = [record for record in caplog.records if "watcher execution target" in record.message]
+    assert len(warnings) == 1

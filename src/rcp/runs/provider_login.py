@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from rcp.config import Manifest, load_manifest
@@ -95,22 +94,6 @@ def release_provider_auth_recoveries(
         task = store.agent_task(recovery.operation_id)
         if task is None or task.request.get("provider") != provider:
             continue
-        if task.request.get("run_on") in {None, "local"}:
-            if host == "":
-                matches.append((recovery.episode_id, recovery.operation_id))
-            continue
-        project = store.project(task.project_id)
-        if project is None:
-            continue
-        try:
-            resolved_host = provider_login_host(
-                load_manifest(project.locator), task.request.get("run_on")
-            )
-        except (OSError, ValueError):
-            logging.getLogger(__name__).warning(
-                "Provider login recovery skipped an unavailable execution target."
-            )
-            continue
-        if resolved_host == host:
+        if (task.stage_host or "") == host:
             matches.append((recovery.episode_id, recovery.operation_id))
     return store.release_provider_auth_recoveries(matches)

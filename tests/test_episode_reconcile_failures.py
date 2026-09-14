@@ -207,3 +207,21 @@ def test_transient_errors_are_never_settled_by_repetition(tmp_path, monkeypatch)
     for _ in range(5):
         assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
     assert store.episode(signal.episode_id).status == "wrapping_up"
+
+
+def test_repeated_launch_failures_settle_the_allocation_as_unlaunchable(tmp_path, monkeypatch):
+    store, signal, owner, launch = _ending(tmp_path, monkeypatch)
+    launch.side_effect = ValueError("the persisted report request never validates")
+    for _ in range(2):
+        assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+        assert store.episode(signal.episode_id).status == "wrapping_up"
+        assert store.episode_wrapup(signal.episode_id).state == "pending"
+    assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+    settled = store.episode(signal.episode_id)
+    assert settled.status == "needs_action"
+    assert settled.wrapup_state == "failed"
+    assert "never validates" in (settled.wrapup_error or "")
+    assert store.episode_wrapup(signal.episode_id).state == "failed"
+    launch.side_effect = None
+    assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+    assert store.episode(signal.episode_id) == settled

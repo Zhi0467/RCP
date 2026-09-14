@@ -119,6 +119,7 @@ class EpisodeReconciler:
         episode: EpisodeRecord | None = None
         spec: EpisodeWrapupSpec | None = None
         admitting = False
+        launching = False
         try:
             episode = self.store.episode(signal.episode_id)
             if episode is None or episode.status not in {"queued", "running", "wrapping_up"}:
@@ -136,10 +137,14 @@ class EpisodeReconciler:
                 admission = begin_episode_report_wrapup(self.store, spec)
             admitting = False
             if admission.launchable:
+                launching = True
                 start_episode_report(self.background, signal.episode_id)
             return True
         except Exception as exc:
             self._record_report_failure(signal.episode_id, source, operation_id, exc)
+            if launching and self._launch_failure_is_permanent(signal.episode_id, exc):
+                self._settle_unlaunchable_report(signal.episode_id, source, operation_id, exc)
+                return False
             if (
                 admitting
                 and episode is not None
@@ -197,6 +202,36 @@ class EpisodeReconciler:
         self._unclassified_report_failures[key] = repeats
         return repeats >= _UNCLASSIFIED_ADMISSION_RETRIES
 
+    def _launch_failure_is_permanent(self, episode_id: str, exc: Exception) -> bool:
+        """A launch that fails the same way three times is a defect in the allocation.
+
+        A launch error has no permanent class of its own: a `ValueError` here can be
+        a persisted request that will never validate or an allocation briefly
+        unavailable during shutdown. Repetition is what separates them.
+        """
+
+        if isinstance(exc, _TRANSIENT_ADMISSION_ERRORS):
+            return False
+        key = (episode_id, type(exc))
+        repeats = self._unclassified_report_failures.get(key, 0) + 1
+        self._unclassified_report_failures[key] = repeats
+        return repeats >= _UNCLASSIFIED_ADMISSION_RETRIES
+
+    def _settle_unlaunchable_report(
+        self,
+        episode_id: str,
+        source: str,
+        operation_id: str | None,
+        exc: Exception,
+    ) -> None:
+        try:
+            self.store.fail_episode_report_allocation_unlaunchable(episode_id, str(exc))
+        except EpisodeNotRunning:
+            # A concurrent Stop or settlement wins over the failed allocation.
+            return
+        except Exception as settlement_error:
+            self._record_report_failure(episode_id, source, operation_id, settlement_error)
+
     def _record_report_failure(
         self,
         episode_id: str,
@@ -250,6 +285,8 @@ class EpisodeReconciler:
                 start_episode_report(self.background, episode_id)
             except Exception as exc:
                 self._record_report_failure(episode_id, source, operation_id, exc)
+                if self._launch_failure_is_permanent(episode_id, exc):
+                    self._settle_unlaunchable_report(episode_id, source, operation_id, exc)
             return
         if signal is None and episode.ending is None:
             if (

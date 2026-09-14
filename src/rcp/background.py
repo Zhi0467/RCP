@@ -54,7 +54,10 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
-from rcp.runs.provider_login import require_project_provider_login
+from rcp.runs.provider_login import (
+    project_provider_login_block,
+    require_project_provider_login,
+)
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -951,6 +954,12 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task admission")
+        require_project_provider_login(
+            self.store,
+            project_id,
+            getattr(request, "provider", None),
+            getattr(request, "run_on", None),
+        )
         episode: EpisodeRecord | None = None
         task_graph_target = (
             parent.graph_target if parent is not None else graph_target or GraphTargetRef()
@@ -1109,9 +1118,6 @@ class BackgroundAgentTasks:
                 raise ValueError("Auto-research wake admission returned another task lineage.")
         elif isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
             if request.trigger == "experiment_run" and parent is None:
-                require_project_provider_login(
-                    self.store, project_id, request.provider, request.run_on
-                )
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
                     request.watcher_ids,
@@ -1201,6 +1207,14 @@ class BackgroundAgentTasks:
             ) from exc
         if request.model_dump(mode="json") != record.request:
             raise ValueError("The admitted task request failed its persisted roundtrip.")
+
+        if project_provider_login_block(
+            self.store,
+            record.project_id,
+            getattr(request, "provider", None),
+            getattr(request, "run_on", None),
+        ):
+            return record
 
         intent = self.store.agent_task_admission_intent(operation_id)
         if intent is None:
