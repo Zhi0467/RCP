@@ -251,6 +251,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
             (14,),
             (15,),
             (16,),
+            (17,),
         ]
 
     reopened = AppStore(path)

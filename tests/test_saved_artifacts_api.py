@@ -18,6 +18,7 @@ from rcp.storage import AgentTaskRecord, AutoResearchChildExperimentRecord, Epis
 from rcp.transport import StateUnavailable
 
 from .helpers import authorized_human, create_named_app
+from .test_auto_research_commands import _routed_worker
 from .test_branch_chats import _app_branch
 from .test_episode_api import create_terminal_auto_episode
 from .test_project_membership import _create_project, _team_app
@@ -92,6 +93,27 @@ def _source_chat_url(project_id, href):
     return url, {"branch_id": query["branch_id"][0]} if "branch_id" in query else {}
 
 
+def _keep_task_artifact(app, task):
+    """Retain one real HTML output on a finished Work turn; returns its task result."""
+    store = app.state.background_tasks.store
+    store.record_agent_task_receipt(
+        task.operation_id,
+        "operation_created",
+        {"kind": "node_chat", "attempt": 1, "has_parent": False, "resumed": False},
+    )
+    data = b"<!doctype html><h1>Episode comparison</h1>"
+    artifact = descriptor_for(task.operation_id, "comparison.html", size_bytes=len(data))
+    workspace = app.state.catalog.open(task.project_id).history.workspace
+    filename = workspace.keep_artifact(
+        source_name=artifact.name,
+        project_name="Research",
+        data=data,
+        today=datetime.now(UTC).date(),
+    )
+    artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": store.now()})
+    return {"artifacts": [artifact.model_dump(mode="json")]}
+
+
 def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_artifact=False):
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -148,24 +170,7 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_ar
         native_session_id=str(uuid.uuid4()),
         stage_root=str(tmp_path / f"stage-{episode_id}"),
     )
-    result = {}
-    if with_artifact:
-        store.record_agent_task_receipt(
-            task.operation_id,
-            "operation_created",
-            {"kind": "node_chat", "attempt": 1, "has_parent": False, "resumed": False},
-        )
-        data = b"<!doctype html><h1>Episode comparison</h1>"
-        artifact = descriptor_for(task.operation_id, "comparison.html", size_bytes=len(data))
-        workspace = app.state.catalog.open(project_id).history.workspace
-        filename = workspace.keep_artifact(
-            source_name=artifact.name,
-            project_name="Research",
-            data=data,
-            today=datetime.now(UTC).date(),
-        )
-        artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": now})
-        result = {"artifacts": [artifact.model_dump(mode="json")]}
+    result = _keep_task_artifact(app, task) if with_artifact else {}
     store.complete_agent_task(task.operation_id, applied_revision=None, result=result)
     _save_source_chat(app, task)
     admission = begin_episode_report_wrapup(
@@ -393,6 +398,60 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     else:
         url, params = _source_chat_url(project_id, entry["source_chat_href"])
         assert client.get(url, params=params).status_code == 200
+
+
+@pytest.mark.parametrize("routed", [True, False])
+def test_auto_research_worker_artifact_opens_its_parent_episode_in_runs(manifest, tmp_path, routed):
+    app, _, parent, parent_root = _app_branch(manifest, tmp_path)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    worker_id = str(uuid.uuid4())
+    task = _routed_worker(
+        store,
+        parent,
+        admitted_by=parent_root,
+        worker_id=worker_id,
+        seat_node_id="rq/learning-after-shift",
+        instruction="Measure recall after the shift.",
+    )
+    store.checkpoint_agent_task(
+        task.operation_id,
+        native_session_id=str(uuid.uuid4()),
+        stage_root=str(tmp_path / "worker-stage"),
+    )
+    store.complete_agent_task(
+        task.operation_id, applied_revision=None, result=_keep_task_artifact(app, task)
+    )
+    _save_source_chat(app, task)
+    if not routed:
+        # Damaged provenance: the episode still claims the turn, but its worker
+        # route is gone. Fail closed rather than open the branch composer for it.
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM auto_research_child_work_attempts WHERE operation_id = ?",
+                (task.operation_id,),
+            )
+    client = TestClient(app)
+    entries = client.get(f"/api/projects/{project_id}/artifacts").json()
+    entry = next(item for item in entries if item["operation_id"] == task.operation_id)
+    assert entry["episode_mode"] == "auto_research"
+    assert client.get(entry["viewer_url"]).status_code == 200
+    if not routed:
+        assert entry["source_chat_href"] is None
+        return
+    route = urlsplit(entry["source_chat_href"].removeprefix("#"))
+    assert route.path == f"/projects/{project_id}"
+    assert parse_qs(route.query) == {
+        "view": ["runs"],
+        "mode": ["auto_research"],
+        "episode": [parent.episode_id],
+    }
+    transcript = client.get(
+        f"/api/projects/{project_id}/chats/{worker_id}",
+        params={"branch_id": parent.episode_id},
+    )
+    assert transcript.status_code == 200, transcript.text
+    assert transcript.json()["graph_target"] == parent.graph_target.model_dump(mode="json")
 
 
 def test_saved_preview_survives_missing_or_unavailable_source_chat(

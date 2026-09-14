@@ -118,7 +118,9 @@ metadata does not alter the immutable report bytes, digest, or episode outcome.
 
 Source chat preserves the exact project and graph target. Episode-owned branch
 conversations open through their existing Runs transcript, preserving its
-read-only boundary. Missing or non-chat origins have no source link; their
+read-only boundary; Work that an Auto-research episode spawned opens that
+episode's Runs entry, which lists the worker turn and inspects its transcript.
+Missing or non-chat origins have no source link; their
 artifact preview remains available. The source link is independent of the
 card's preview click target. Opening an entry uses the existing bounded artifact
 viewer in both browser and desktop. Listing grants no new filesystem or graph

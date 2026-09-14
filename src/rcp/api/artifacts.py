@@ -40,6 +40,52 @@ class SavedArtifactResponse(BaseModel):
     unavailable_reason: str | None = None
 
 
+def _episode_runs_query(
+    store: AppStore,
+    project_id: str,
+    task: AgentTaskRecord,
+    branch_id: str,
+) -> dict[str, str] | None:
+    """Name the Runs surface that owns one episode-bound branch conversation."""
+    episode = store.episode(task.episode_id) if task.episode_id else None
+    if (
+        episode is None
+        or episode.project_id != project_id
+        or episode.graph_target != task.graph_target
+    ):
+        return None
+    if episode.mode == "auto_research":
+        # Ordinary Work the Auto-research parent spawned on its own branch. Its
+        # turns are listed under that episode in Runs, where each transcript is
+        # inspected without a composer.
+        work = store.auto_research_child_work_for_operation(task.operation_id)
+        if (
+            episode.episode_id != branch_id
+            or work is None
+            or work.project_id != project_id
+            or work.episode_id != episode.episode_id
+        ):
+            return None
+        return {"view": "runs", "mode": "auto_research", "episode": episode.episode_id}
+    experiment = store.auto_research_child_experiment(episode.episode_id)
+    if (
+        not episode.control_node_id
+        or experiment is None
+        or experiment.project_id != project_id
+        or experiment.control_node_id != episode.control_node_id
+        or experiment.auto_research_episode_id != branch_id
+    ):
+        return None
+    return {
+        "view": "runs",
+        "experiment": episode.control_node_id,
+        "episode": episode.episode_id,
+        "target": "branch",
+        "branch": branch_id,
+        "parent": experiment.auto_research_episode_id,
+    }
+
+
 def _saved_chat_origins(
     catalog: ProjectCatalog,
     store: AppStore,
@@ -79,30 +125,12 @@ def _saved_chat_origins(
             if branch_id is not None:
                 query["branch_id"] = branch_id
                 if task.episode_id is not None:
-                    episode = store.episode(task.episode_id)
-                    route = store.auto_research_child_experiment(task.episode_id)
-                    if (
-                        episode is None
-                        or episode.project_id != project_id
-                        or episode.mode != "experiment_loop"
-                        or episode.graph_target != task.graph_target
-                        or not episode.control_node_id
-                        or route is None
-                        or route.project_id != project_id
-                        or route.control_node_id != episode.control_node_id
-                        or route.auto_research_episode_id != branch_id
-                    ):
-                        continue
                     # This session belongs to a bounded episode. Runs owns its
                     # read-only transcript; ordinary Chats would expose a composer.
-                    query = {
-                        "view": "runs",
-                        "experiment": episode.control_node_id,
-                        "episode": episode.episode_id,
-                        "target": "branch",
-                        "branch": branch_id,
-                        "parent": route.auto_research_episode_id,
-                    }
+                    runs_query = _episode_runs_query(store, project_id, task, branch_id)
+                    if runs_query is None:
+                        continue
+                    query = runs_query
             origins[task.operation_id] = (
                 f"#/projects/{quote(project_id, safe='')}?{urlencode(query)}"
             )
