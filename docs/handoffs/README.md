@@ -2,6 +2,13 @@
 
 Active:
 
+- [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
+  — design confirmed 2026-09-14, nothing implemented: ending receipts compact
+  and wrap-up failures settle visibly; login failures stop retries and block
+  launches; one credential-holding provider process per machine account with
+  UI sign-in; reauthorization continues the same episode and branch; wake
+  policy; a typed episode timeline. Six slices, none optional.
+
 - [External job and watcher simplification](handoff-2026-09-06-external-job-simplification.md)
   — direct Slurm submission, one shell-watcher contract, human Cancel, and an
   OS-owned helper for ordinary processes. Integrated checks and the real
