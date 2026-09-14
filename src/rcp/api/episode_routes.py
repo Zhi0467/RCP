@@ -326,7 +326,7 @@ def reauthorize_episode(
         episode.mode == "auto_research"
         and episode.status == "needs_action"
         and episode.ending == "exhausted"
-        and episode.wrapup_state in {"ready", "failed", "legacy_unavailable"}
+        and episode.wrapup_state in {"ready", "failed", "legacy_unavailable", "not_started"}
     ):
         raise HTTPException(
             status_code=409,

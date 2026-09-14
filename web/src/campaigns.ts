@@ -1,6 +1,7 @@
 import type {
   AgentTask,
   Episode,
+  EpisodeBlockedReason,
   EpisodeEnding,
   EpisodeHealth,
   EpisodeRecommendationKind,
@@ -110,6 +111,30 @@ const EPISODE_RECOMMENDATION_LABELS_BY_HEALTH: Partial<
   needs_action: { review: "Review the blocked turn" },
 };
 
+/**
+ * One lead sentence naming what blocks the episode, before the recommendation.
+ * The backend decides the block; the ending only chooses the wording for it.
+ */
+export function blockedReasonLead(
+  reason: EpisodeBlockedReason | null | undefined,
+  ending: string | null | undefined,
+  label: string,
+): string {
+  if (reason === "sign_in") {
+    return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  }
+  if (reason === "reauthorize") {
+    const lead =
+      ending === "human_pause"
+        ? "The episode paused for human authority."
+        : ending === "exhausted"
+          ? "The authorized turns are spent."
+          : "More authorized turns are needed.";
+    return `${lead} ${label}`;
+  }
+  return label;
+}
+
 export function episodeProjection(
   episode: Episode,
   tasks: AgentTask[] = episode.tasks,
@@ -129,12 +154,7 @@ export function episodeProjection(
     healthLabel: EPISODE_HEALTH_LABELS[episode.health],
     recommendation: {
       kind: episode.recommendation,
-      label:
-        episode.blocked_reason === "sign_in"
-          ? `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`
-          : episode.blocked_reason === "reauthorize"
-            ? `The authorized turns are spent. ${label}`
-            : label,
+      label: blockedReasonLead(episode.blocked_reason, episode.ending, label),
       task,
     },
     taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,

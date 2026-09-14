@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,29 @@ from rcp.storage.episodes import compact_episode_receipt
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 
+# A wrap-up admission that raises one of these cannot succeed on a later poll:
+# the ledger, the fence, or the spec is what it is. It is settled once as a
+# failed wrap-up so the episode leaves `wrapping_up`.
+_PERMANENT_ADMISSION_ERRORS: tuple[type[Exception], ...] = (
+    ValueError,
+    KeyError,
+    ValidationError,
+    EpisodeReportConflict,
+    EpisodeNotRunning,
+)
+# These name a resource that can come back: a database lock, a socket, a
+# host. They are retried on every poll without bound.
+_TRANSIENT_ADMISSION_ERRORS: tuple[type[Exception], ...] = (
+    sqlite3.OperationalError,
+    OSError,
+    TimeoutError,
+)
+# Any other exception is a programming error or a shape nobody classified. It
+# is retried a few times in case it was incidental, then settled like a
+# permanent defect, because repeating it forever is the incident this module
+# exists to end.
+_UNCLASSIFIED_ADMISSION_RETRIES = 3
+
 
 class EpisodeReconciler:
     """Settle episode tasks, endings, recovery, and hidden report admission."""
@@ -62,6 +86,7 @@ class EpisodeReconciler:
         self.background = background
         self.logger = logger
         self._report_failure_warnings: set[tuple[str, type[Exception]]] = set()
+        self._unclassified_report_failures: dict[tuple[str, type[Exception]], int] = {}
 
     def _has_unsettled_visible_episode_task(self, episode_id: str) -> bool:
         """Whether already-admitted visible work still owns an unfinished turn."""
@@ -118,16 +143,7 @@ class EpisodeReconciler:
             if (
                 admitting
                 and episode is not None
-                and isinstance(
-                    exc,
-                    (
-                        ValueError,
-                        KeyError,
-                        ValidationError,
-                        EpisodeReportConflict,
-                        EpisodeNotRunning,
-                    ),
-                )
+                and self._admission_failure_is_permanent(signal.episode_id, exc)
             ):
                 try:
                     receipt_json, receipt_sha256 = compact_episode_receipt(
@@ -170,6 +186,16 @@ class EpisodeReconciler:
                         signal.episode_id, source, operation_id, settlement_error
                     )
             return False
+
+    def _admission_failure_is_permanent(self, episode_id: str, exc: Exception) -> bool:
+        if isinstance(exc, _PERMANENT_ADMISSION_ERRORS):
+            return True
+        if isinstance(exc, _TRANSIENT_ADMISSION_ERRORS):
+            return False
+        key = (episode_id, type(exc))
+        repeats = self._unclassified_report_failures.get(key, 0) + 1
+        self._unclassified_report_failures[key] = repeats
+        return repeats >= _UNCLASSIFIED_ADMISSION_RETRIES
 
     def _record_report_failure(
         self,

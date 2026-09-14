@@ -176,3 +176,34 @@ def test_launch_exception_is_not_a_permanent_admission_defect(tmp_path, monkeypa
     assert store.episode_wrapup(signal.episode_id).state == "pending"
     launch.side_effect = None
     assert owner.reconcile_auto_research_wrapup(signal, source="poll")
+
+
+class _UnclassifiedDefect(Exception):
+    """A programming error nobody classified as permanent or transient."""
+
+
+def test_unclassified_defect_is_retried_three_times_then_settled(tmp_path, monkeypatch):
+    store, signal, owner, launch = _ending(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        reconcile, "auto_research_wrapup_spec", Mock(side_effect=_UnclassifiedDefect("bug"))
+    )
+    for _ in range(2):
+        assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+        assert store.episode(signal.episode_id).status == "wrapping_up"
+        assert store.episode_wrapup(signal.episode_id) is None
+    assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+    settled = store.episode(signal.episode_id)
+    assert settled.status == "needs_action"
+    assert settled.wrapup_state == "failed"
+    assert settled.wrapup_error == "bug"
+    launch.assert_not_called()
+
+
+def test_transient_errors_are_never_settled_by_repetition(tmp_path, monkeypatch):
+    store, signal, owner, _ = _ending(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        store, "episode_wrapup", Mock(side_effect=sqlite3.OperationalError("locked"))
+    )
+    for _ in range(5):
+        assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
+    assert store.episode(signal.episode_id).status == "wrapping_up"
