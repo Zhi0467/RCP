@@ -69,6 +69,7 @@ class ApiServices:
     server_status_composition: ServerStatusComposition
     provider_credentials: ProviderCredentialStore
     provider_sign_ins: ProviderSignInRunner
+    episode_reconciliation: Callable[[], int]
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -100,6 +101,10 @@ def get_provider_credentials(request: Request) -> ProviderCredentialStore:
 
 def get_provider_sign_ins(request: Request) -> ProviderSignInRunner:
     return _api_services(request).provider_sign_ins
+
+
+def get_episode_reconciliation(request: Request) -> Callable[[], int]:
+    return _api_services(request).episode_reconciliation
 
 
 def get_setup(request: Request) -> ProjectSetupManager:

@@ -613,9 +613,11 @@ recoveries are released and claimed, pending lifecycle, mail, and watcher
 inputs are delivered, pending wrap-ups restart, and one Experiment-loop turn
 that failed with `provider_auth` is retried through its exact path. Failure
 keeps `signed_out` and records the probe's bounded diagnostic. Any signed-in
-member may verify; the acting member is recorded. Nothing on other providers or
-machines is touched. A catalog failure cannot approve an explicitly saved
-model, and an unexpected implementation error fails the command rather than
+member may verify; the acting member is recorded. Recovery release, Experiment
+Retry, queued launches, and watcher delivery target the verified account. The
+ordinary episode reconciliation pass also runs once, with its existing login
+gates keeping other signed-out accounts parked. A catalog failure cannot approve
+an explicitly saved model, and an unexpected implementation error fails the command rather than
 being relabelled as a missing install. The later provider call uses the same
 authentication and version rule. A failed check names the provider and
 machine/account and points at Settings, Provider logins, where any member signs

@@ -1183,12 +1183,13 @@ def create_app(
 
     graph_watcher_retry_worker = WatcherRetryWorker(retry_graph_wakes_after_poll)
 
-    def after_watcher_poll() -> None:
-        graph_watcher_retry_worker.signal()
+    def reconcile_episodes() -> int:
         reconcile_auto_research_recovery_pass()
         auto_research_episode_ids: list[str] = []
+        checked = 0
         for project in store.projects():
             for episode in store.episodes(project.project_id, limit=None):
+                checked += 1
                 if episode.mode == "auto_research":
                     auto_research_episode_ids.append(episode.episode_id)
                     try:
@@ -1225,6 +1226,12 @@ def create_app(
                     episode_id,
                     exc,
                 )
+
+        return checked
+
+    def after_watcher_poll() -> None:
+        graph_watcher_retry_worker.signal()
+        reconcile_episodes()
 
     watcher_poller = WatcherPoller(
         store,
@@ -1287,6 +1294,7 @@ def create_app(
         server_status_composition=server_status_composition,
         provider_credentials=provider_credentials,
         provider_sign_ins=provider_sign_ins,
+        episode_reconciliation=reconcile_episodes,
     )
 
     async def warm_provider_capabilities() -> None:

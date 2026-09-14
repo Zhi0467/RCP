@@ -315,12 +315,12 @@ def test_committed_task_waits_for_verify_without_poll_writes(
     client = _verify_client(store, tasks, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["queued"] == 1
+    assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, queued.operation_id, expect="succeeded")
     wait_until(lambda: queued.operation_id not in tasks._workers)
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["queued"] == 0
+    assert again.json()["resumed"]["checked"] == int(experiment)
     assert calls == [queued.operation_id]
 
 
@@ -363,12 +363,11 @@ def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, mon
     client = _verify_client(store, tasks, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
-    assert response.json()["resumed"]["lifecycle"] == 1
-    assert response.json()["resumed"]["queued"] == 0
+    assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, operation_id, expect="succeeded")
     wait_until(lambda: operation_id not in tasks._workers)
     assert _counts(store) == before
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
-    assert again.json()["resumed"]["lifecycle"] == 0
+    assert again.json()["resumed"]["checked"] >= 1
     assert _counts(store) == before

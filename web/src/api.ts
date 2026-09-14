@@ -18,6 +18,7 @@ import type {
   ProviderLoginAccount,
   ProviderLoginState,
   ProviderSignInStatus,
+  ProviderResumeSummary,
   ServerStatus,
   SpaceRunIndexEntry,
   SpaceUserSummary,
@@ -461,7 +462,7 @@ export function codexSignInStatus(loginId: string): Promise<ProviderSignInStatus
 export function saveClaudeToken(
   host: string,
   token: string,
-): Promise<{ state: ProviderLoginState; resumed: Record<string, number> }> {
+): Promise<{ state: ProviderLoginState; resumed: ProviderResumeSummary }> {
   return api("/api/providers/claude/logins/token", {
     method: "POST",
     body: JSON.stringify({ host, token }),
@@ -483,7 +484,7 @@ export function verifyProviderLogin(
   host: string,
 ): Promise<{
   state: ProviderLoginState;
-  resumed: Record<string, number>;
+  resumed: ProviderResumeSummary;
 }> {
   return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
     method: "POST",

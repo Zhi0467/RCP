@@ -937,3 +937,12 @@ execution account and is not owned by another RCP layer. Client-generated ids,
 cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
+
+## Provider sign-in resume response
+
+Verified sign-in, Claude token save, and successful Codex device sign-in retain
+`resumed`, now `{ "checked": N }`. This is a coarse count of episodes inspected
+by the ordinary periodic reconciliation pass, plus queued tasks and completed
+watcher groups checked for the verified account. It is not a launch count:
+already-settled episodes and inputs still waiting on other conditions may be
+included. The web reports items rechecked for resumption.

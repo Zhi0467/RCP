@@ -1,4 +1,9 @@
-import type { ClaudeTokenSummary, ProviderLoginAccount, ProviderSignInStatus } from "./types";
+import type {
+  ClaudeTokenSummary,
+  ProviderLoginAccount,
+  ProviderSignInStatus,
+  ProviderResumeSummary,
+} from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -38,4 +43,10 @@ export function signInNote(status: ProviderSignInStatus): string {
     return `Open the link, sign in to ChatGPT, and enter the code. The code expires in 15 minutes.`;
   }
   return "Starting Codex and waiting for its device code…";
+}
+
+export function resumedNote(resumed: ProviderResumeSummary): string {
+  return resumed.checked
+    ? `Verified. Rechecked ${resumed.checked} ${resumed.checked === 1 ? "item" : "items"} for resumption.`
+    : "Verified.";
 }

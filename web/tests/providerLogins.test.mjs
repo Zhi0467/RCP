@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { accountLabel, providerLabel, signInNote, tokenNote } from "../src/providerLogins.ts";
+import {
+  accountLabel,
+  providerLabel,
+  resumedNote,
+  signInNote,
+  tokenNote,
+} from "../src/providerLogins.ts";
 
 test("the account label names the machine account and the project aliases that use it", () => {
   assert.equal(accountLabel({ host: "", machines: [] }, "team"), "Team server");
@@ -59,4 +65,10 @@ test("the sign-in note follows the device-code flow", () => {
     signInNote({ ...base, state: "failed", detail: "denied" }),
     "Sign-in failed: denied",
   );
+});
+
+test("verification reports checks without claiming every item launched", () => {
+  assert.equal(resumedNote({ checked: 0 }), "Verified.");
+  assert.equal(resumedNote({ checked: 1 }), "Verified. Rechecked 1 item for resumption.");
+  assert.equal(resumedNote({ checked: 3 }), "Verified. Rechecked 3 items for resumption.");
 });

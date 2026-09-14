@@ -302,3 +302,59 @@ def test_experiment_repeated_launch_failures_settle_the_allocation(tmp_path, mon
     assert settled.wrapup_state == "failed"
     assert "never validates" in (settled.wrapup_error or "")
     assert store.episode_wrapup(episode_id).state == "failed"
+
+
+@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
+def test_admission_and_launch_failures_have_separate_repeat_counters(
+    tmp_path, monkeypatch, caplog, mode
+):
+    if mode == "auto_research":
+        store, signal, owner, launch = _ending(tmp_path, monkeypatch)
+        episode_id = signal.episode_id
+
+        def poll():
+            owner.reconcile_auto_research_wrapup(signal, source="poll")
+
+    else:
+        store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+
+        def poll():
+            owner.reconcile_experiment_episode(episode_id, source="poll")
+
+    with caplog.at_level(logging.WARNING):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                reconcile,
+                "begin_episode_report_wrapup",
+                Mock(side_effect=_UnclassifiedDefect("admission defect")),
+            )
+            for _ in range(2):
+                poll()
+                assert store.episode_wrapup(episode_id) is None
+        launch.side_effect = _UnclassifiedDefect("launch defect")
+        for _ in range(2):
+            poll()
+            assert store.episode(episode_id).status == "wrapping_up"
+            assert store.episode_wrapup(episode_id).state == "pending"
+        poll()
+    assert store.episode(episode_id).wrapup_state == "failed"
+    assert store.episode(episode_id).wrapup_error == "launch defect"
+    assert launch.call_count == 3
+    assert len(caplog.records) == 1
+
+
+def test_experiment_existing_admission_never_rebuilds_the_receipt(tmp_path, monkeypatch):
+    store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    admitted = store.episode_wrapup(episode_id)
+    assert admitted.state == "pending"
+    launch.reset_mock()
+    builder = Mock(side_effect=AssertionError("must reuse immutable admission"))
+    admission = Mock(side_effect=AssertionError("must reuse durable allocation"))
+    monkeypatch.setattr(reconcile, "experiment_loop_wrapup_spec", builder)
+    monkeypatch.setattr(reconcile, "begin_episode_report_wrapup", admission)
+    owner.reconcile_experiment_episode(episode_id, source="poll")
+    assert store.episode_wrapup(episode_id) == admitted
+    builder.assert_not_called()
+    admission.assert_not_called()
+    launch.assert_called_once()

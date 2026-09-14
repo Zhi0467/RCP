@@ -9,7 +9,7 @@ import {
   startCodexSignIn,
   verifyProviderLogin,
 } from "../api";
-import { accountLabel, providerLabel, signInNote, tokenNote } from "../providerLogins";
+import { accountLabel, providerLabel, resumedNote, signInNote, tokenNote } from "../providerLogins";
 import type { ProviderLoginAccount, ProviderSignInStatus } from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
@@ -154,12 +154,6 @@ function ProviderLoginRow({
 
   const label = providerLabel(account.provider);
   const disabled = writesDisabled || busy !== null || signIn?.state === "pending";
-  const resumedNote = (resumed: Record<string, number>) => {
-    const total = Object.values(resumed).reduce((sum, count) => sum + count, 0);
-    return total
-      ? `Verified. Resumed ${total} parked ${total === 1 ? "item" : "items"}.`
-      : "Verified.";
-  };
 
   return (
     <article className={`provider-login-account ${account.state}`}>

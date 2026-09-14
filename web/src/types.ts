@@ -2804,7 +2804,7 @@ export interface ProviderSignInStatus {
   started_at: string;
   started_by: string;
   finished_at: string | null;
-  resumed: Record<string, number> | null;
+  resumed: ProviderResumeSummary | null;
 }
 
 /** One `(provider, execution account)` pair every project on this server may launch on. */
@@ -2812,4 +2812,9 @@ export interface ProviderLoginAccount extends ProviderLoginState {
   machines: string[];
   token: ClaudeTokenSummary | null;
   sign_in: ProviderSignInStatus | null;
+}
+
+/** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
+export interface ProviderResumeSummary {
+  checked: number;
 }
