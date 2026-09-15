@@ -18,7 +18,7 @@ repos:
       # scrolls past the later passing hooks. Fail first, in one line, instead.
       - id: web-dist-present
         name: web/dist present
-        entry: "bash -c 'test -d web/dist || { echo \"web/dist is missing. Run: npm --prefix web run build\"; exit 1; }'"
+        entry: "bash -c 'test -d web/dist || { echo \"web/dist is missing. Run: npm --prefix web ci && npm --prefix web run build\"; exit 1; }'"
         language: system
         types_or: [python, pyi]
         pass_filenames: false
