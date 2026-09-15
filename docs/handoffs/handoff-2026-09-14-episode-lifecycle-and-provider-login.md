@@ -6,9 +6,13 @@ production database, then revised the same day after an xhigh design review and
 two further protocol spikes. All six slices are implemented on this branch;
 slice 4 landed last with two recorded deviations (see its section). Every
 decision below is settled. All six slices land on one branch and one pull
-request as ordered commits. What remains before closure is the team-server and
-desktop verification named under closure criteria, plus the provider-boundary
-review follow-up running as its own slice on this branch.
+request as ordered commits. On 2026-09-14 the copied production data (database
+plus the two state repositories, no project trees) was served from this branch
+and driven in a browser; the criteria that need no provider login held (see
+"Verified on the copy" under the closure criteria). What remains is the
+provider-dependent verification on the team server and the desktop after the
+release ships: device-code sign-in, the Claude token journey, a real
+continuation turn, and a merge that runs to completion.
 
 Close this handoff when every closure criterion at the end holds on the team
 server and on the desktop, and the four decision records this handoff cites are
@@ -560,8 +564,10 @@ Deviations from the plan above, both deliberate: (1) only pending or running
 child **Experiment** routes move to the continuation; child Work routes, notices,
 mail, and watchers stay on the source, because carrying worker lineage across
 episodes would touch every actor-binding validation for no journey that needs
-it yet; (2) the served-app check against the copied production episode has not
-been run from this worktree and remains under closure criteria.
+it yet; (2) the served-app check against the copied production episode was run
+on 2026-09-14 for everything a copy without provider logins can show (offer and
+gate agree, merge admitted on branch facts, chain and timeline rendered); the
+continuation turn itself and the merge run remain under closure criteria.
 
 ### Slice 5: wake provenance and mail harvest
 
@@ -665,3 +671,18 @@ On codex 0.154.0, in a logged-out scratch `CODEX_HOME`, 2026-09-14:
   labelled by cause and five retries nested under their turns, and the Turns and
   Mail sections are gone.
 - Every document and prompt listed above says what the code does.
+
+Verified on the copy (2026-09-14, this branch, schema 17 migrated to 22 on the
+production copy): the incident episode's card reads needs action with the
+wrap-up lead "The authorized turns are spent. Add turns" and never active; a
+running episode with a queued merge reads active (a queued `branch_merge` had
+made it read starting, fixed in the same drive); `can_continue` is withheld
+while another live episode owns the project slot and offered on the terminal
+episodes; a merge on the incident branch is admitted (202) while its episode is
+running and the episode is not ended; the Runs card shows the timeline with six
+wakes labelled by cause and the retries nested under their turns, and no Turns
+or Mail sections. Not driven on the copy because it has no provider login and
+never will: device-code sign-in, the Claude token journey, the continuation turn
+running in the source session, the merge completing, and mail-harvest wake
+suppression. Those hold in the automated suites and are checked live on the
+team server after the release.
