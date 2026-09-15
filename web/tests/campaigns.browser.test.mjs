@@ -218,13 +218,13 @@ test("a served login notice parks verification, shows failure, then clears after
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
     );
-    await page.getByRole("button", { name: "Verify sign-in" }).click();
-    assert.equal(await page.getByRole("button", { name: "Verifying…" }).isDisabled(), true);
+    await page.getByRole("button", { name: "Already signed in? Check again" }).click();
+    assert.equal(await page.getByRole("button", { name: "Checking…" }).isDisabled(), true);
     finishProbe();
     await page.getByRole("alert").waitFor();
     assert.equal(await page.getByRole("alert").textContent(), "Please sign in again");
-    await page.getByRole("button", { name: "Verify sign-in" }).click();
-    await page.getByRole("button", { name: "Verifying…" }).waitFor();
+    await page.getByRole("button", { name: "Already signed in? Check again" }).click();
+    await page.getByRole("button", { name: "Checking…" }).waitFor();
     finishProbe();
     await page.getByRole("status").waitFor({ state: "detached" });
     assert.equal(requests, 2);
@@ -264,7 +264,10 @@ test("an open space landing refreshes login notices with its Runs poll", async (
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/appearance.html`,
     );
     await firstLoad;
-    assert.equal(await page.getByRole("button", { name: "Verify sign-in" }).count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "Already signed in? Check again" }).count(),
+      0,
+    );
     states = [
       {
         provider: "codex",
@@ -276,7 +279,7 @@ test("an open space landing refreshes login notices with its Runs poll", async (
       },
     ];
     await page.evaluate(() => window.refreshSpaceRuns());
-    await page.getByRole("button", { name: "Verify sign-in" }).waitFor();
+    await page.getByRole("button", { name: "Already signed in? Check again" }).waitFor();
     const timestamp = page.locator(".provider-login-notice time");
     assert.equal(await timestamp.getAttribute("datetime"), states[0].changed_at);
     assert.notEqual(await timestamp.textContent(), states[0].changed_at);

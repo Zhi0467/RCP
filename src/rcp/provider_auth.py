@@ -194,8 +194,13 @@ class CodexDeviceLogin(DeviceLogin):
             return DeviceLoginStep()
         if params.get("success") is True:
             return DeviceLoginStep(finished=True)
+        # A refusal the provider did not explain is still a refusal: without a
+        # failure here the caller would go on to verify, and a still-valid old
+        # credential would report the replacement login as signed in.
         return DeviceLoginStep(
-            finished=True, failure=_protocol_error_text(params.get("error")) or None
+            finished=True,
+            failure=_protocol_error_text(params.get("error"))
+            or "The provider reported the sign-in as unsuccessful.",
         )
 
     def cancel_input(self) -> bytes:
@@ -230,7 +235,7 @@ class ProviderAuthentication:
     supports_sign_out = False
     methods: tuple[str, ...] = ()
     token_instructions: str | None = None
-    missing_credential_detail = "A managed credential is required. Sign in in Settings."
+    missing_credential_detail = "No managed credential is saved."
 
     def credential_available(self, credentials: ProviderCredentialStore, host: str) -> bool:
         return True
@@ -300,9 +305,9 @@ class ClaudeAuthentication(ProviderAuthentication):
     credential_namespace = "claude"
     methods = ("token_entry",)
     token_instructions = "Run claude setup-token, then paste the setup token here."
-    missing_credential_detail = (
-        "The Claude setup token is missing. Save a setup token in Settings to sign in."
-    )
+    # Where to go is the surface's sentence, not this one; saying it twice made
+    # the signed-out notice read as two instructions.
+    missing_credential_detail = "No Claude setup token is saved."
 
     def verification_succeeded(self, result: subprocess.CompletedProcess[str]) -> bool:
         from rcp.providers import ClaudeProfile

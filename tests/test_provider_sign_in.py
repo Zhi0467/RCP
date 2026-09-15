@@ -688,3 +688,76 @@ def test_the_device_code_is_read_from_protocol_fields_not_console_prose() -> Non
         )
     )
     assert done.finished and done.failure is None
+
+
+def test_cancelling_before_the_gate_opens_starts_no_login_and_leaves_the_account_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancellation while the worker waits for the credential gate stops the attempt.
+
+    Nothing is fenced and no provider process runs, so an account that was
+    signed in stays signed in.
+    """
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    signed_in = runner.store.mark_provider_login_verified(
+        "codex", "", member_id="member", detail="Authenticated request succeeded."
+    )
+
+    with runner.launcher.credential_gate.hold_blocking("codex", ""):
+        started = runner.start_sign_in("codex", "", member_id="member")
+        runner.cancel_sign_in(started.login_id)
+
+    ended = _status_when(runner, started.login_id, lambda status: status.state != "pending")
+    assert ended.state == "failed"
+    assert ended.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
+    after = runner.store.provider_login_state("codex", "")
+    assert (after.state, after.generation) == (signed_in.state, signed_in.generation)
+    assert not (tmp_path / "argv.jsonl").exists(), "a cancelled sign-in launched the provider"
+
+
+def test_an_unexplained_refusal_is_still_a_refusal() -> None:
+    """`success: false` without error text must not read as a completed sign-in.
+
+    Treating it as success would hand the attempt to verification, where a still
+    usable older credential would report the replacement login as signed in.
+    """
+
+    login = CodexDeviceLogin()
+    login.receive_line(
+        json.dumps(
+            {
+                "id": CodexDeviceLogin.START_ID,
+                "result": {
+                    "loginId": "login-1",
+                    "verificationUrl": VERIFICATION_URL,
+                    "userCode": USER_CODE,
+                },
+            }
+        )
+    )
+    step = login.receive_line(
+        json.dumps(
+            {
+                "method": "account/login/completed",
+                "params": {"loginId": "login-1", "success": False, "error": None},
+            }
+        )
+    )
+    assert step.finished and step.failure
+
+
+def test_claude_reports_a_rejected_setup_token_as_an_authentication_failure() -> None:
+    """The exact diagnostic Claude Code 2.1.270 prints for a token the service rejects.
+
+    Without this the card called a rejected token a verification that could not
+    complete, which reads like a transport problem and invites a pointless retry.
+    """
+
+    from rcp.providers import ClaudeProfile
+
+    observed = "Failed to authenticate. API Error: 401 OAuth access token is invalid."
+    assert ClaudeProfile().credential_failure(observed)
+    assert ClaudeProfile().credential_failure("RCP managed credential is missing")
+    # A dropped connection is worth retrying and must not fence the login.
+    assert not ClaudeProfile().credential_failure("error: connection reset by peer")

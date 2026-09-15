@@ -276,6 +276,15 @@ class ProviderSignInRunner:
         ).start()
         return status
 
+    def _take_cancellation(self, login_id: str) -> bool:
+        """Whether this sign-in was cancelled; a cancellation is consumed once."""
+
+        with self._lock:
+            if login_id not in self._canceled:
+                return False
+            self._canceled.discard(login_id)
+            return True
+
     def cancel_sign_in(self, login_id: str) -> ProviderSignInStatus:
         """Ask the provider to abandon a running device sign-in, then stop its process."""
 
@@ -308,6 +317,8 @@ class ProviderSignInRunner:
         fields, and only the protocol's completion ends the wait.
         """
 
+        if self._take_cancellation(status.login_id):
+            raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
         argv = login.command(binary)
         arguments = (
             ssh_arguments(
@@ -351,8 +362,7 @@ class ProviderSignInRunner:
             returncode = process.wait()
             with self._lock:
                 self._logins.pop(status.login_id, None)
-                canceled = status.login_id in self._canceled
-                self._canceled.discard(status.login_id)
+            canceled = self._take_cancellation(status.login_id)
         if canceled:
             raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
         if not finished:
@@ -373,6 +383,11 @@ class ProviderSignInRunner:
         auth = profile_for(provider).authentication
         try:
             with self.launcher.credential_gate.hold_blocking(provider, host):
+                # A member who cancels while this thread waits for the gate must
+                # stop the attempt, not start one: nothing has been fenced or
+                # launched yet, so the account keeps the state it already had.
+                if self._take_cancellation(status.login_id):
+                    raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(

@@ -997,8 +997,15 @@ class ClaudeProfile(ProviderProfile):
 
     def credential_failure(self, stderr: str) -> bool:
         # Emitted by this provider's remote environment fence when its managed
-        # token disappeared. No unobserved Claude CLI signature is guessed.
-        return "RCP managed credential is missing" in stderr
+        # token disappeared.
+        if "RCP managed credential is missing" in stderr:
+            return True
+        # Observed from Claude Code 2.1.270 on 2026-09-15, verifying a setup
+        # token the service rejected: "Failed to authenticate. API Error: 401
+        # OAuth access token is invalid." The status code carries the meaning,
+        # so the sentence around it may be reworded without breaking this.
+        reported = " ".join(stderr.casefold().split())
+        return "401" in reported and ("authenticate" in reported or "oauth" in reported)
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
         if runtime_id == self.legacy_runtime_id:

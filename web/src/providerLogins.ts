@@ -48,7 +48,8 @@ export function signedOutNote(state: {
   host: string;
   detail: string | null;
 }): string {
-  const provider = state.label ?? state.provider;
+  const named = state.label ?? state.provider;
+  const provider = named.charAt(0).toUpperCase() + named.slice(1);
   const where = state.host ? ` on ${state.host}` : "";
   const reason = state.detail ? ` ${state.detail.replace(/\.*$/, "")}.` : "";
   return `${provider} is signed out${where}.${reason}`;
