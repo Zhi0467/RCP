@@ -313,7 +313,16 @@ class ClaudeAuthentication(ProviderAuthentication):
     supports_sign_out = True
     credential_namespace = "claude"
     methods = ("token_entry",)
-    token_instructions = "Run claude setup-token, then paste the setup token here."
+    # A member cannot act on "run claude setup-token" alone: the command says
+    # nothing about which machine to run it on, which account it mints for, or
+    # that Claude's other sign-in is the one that breaks a shared account.
+    token_instructions = (
+        "Run claude setup-token on any machine with a browser, signed in as the Claude "
+        "account this login should use. The token is not tied to the machine that made "
+        "it, so paste it here. Do not use claude auth login for an account other people "
+        "share: that credential rotates on every process start, and one lost write signs "
+        "out every member."
+    )
     # Where to go is the surface's sentence, not this one; saying it twice made
     # the signed-out notice read as two instructions.
     missing_credential_detail = "No Claude setup token is saved."
