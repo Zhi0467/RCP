@@ -799,3 +799,41 @@ def test_a_sign_in_interrupted_by_a_restart_stops_asking_a_member_to_finish_it(
     assert detail == provider_sign_in.SIGN_IN_INTERRUPTED_DETAIL
     # A second start must not rewrite an account that no longer claims a sign-in.
     assert runner.settle_interrupted_sign_ins() == []
+
+
+def test_a_cancellation_names_the_member_who_asked_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One member may end a sign-in another started; the record must say who did."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    started = runner.start_sign_in("codex", "", member_id="starter")
+    _status_when(runner, started.login_id, lambda status: status.user_code is not None)
+
+    runner.cancel_sign_in(started.login_id, member_id="canceller")
+
+    _status_when(runner, started.login_id, lambda status: status.state != "pending")
+    state = runner.store.provider_login_state("codex", "")
+    assert state.changed_by == "canceller"
+    assert state.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
+
+
+def test_cancelling_after_the_provider_accepted_the_login_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sign-in being verified is already real; cancelling must not contradict it."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    started = runner.start_sign_in("codex", "", member_id="member")
+    _status_when(runner, started.login_id, lambda status: status.user_code is not None)
+    (tmp_path / "signed-in").write_text("")
+    _status_when(runner, started.login_id, lambda status: status.state == "succeeded")
+
+    # The window itself is narrow, so drive the state the window leaves behind.
+    runner._verifying.add(started.login_id)
+    runner._sign_ins[started.login_id] = runner._sign_ins[started.login_id].model_copy(
+        update={"state": "pending"}
+    )
+    with pytest.raises(ProviderLoginRefused) as refusal:
+        runner.cancel_sign_in(started.login_id, member_id="member")
+    assert "already accepted" in refusal.value.detail

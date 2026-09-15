@@ -204,12 +204,12 @@ def cancel_provider_sign_in(
     request: Request,
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
-    get_identity_access(request).acting_user(request)
+    member = get_identity_access(request).acting_user(request)
     status = sign_ins.sign_in_status(login_id)
     if status is None or status.provider != provider:
         raise HTTPException(status_code=404, detail="Unknown sign-in.")
     try:
-        return sign_ins.cancel_sign_in(login_id)
+        return sign_ins.cancel_sign_in(login_id, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
 

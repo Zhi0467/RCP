@@ -45,6 +45,14 @@ class ProviderLoginRefused(ValueError):
         self.status_code = status_code
 
 
+class SignInCanceled(ProviderLoginRefused):
+    """A member ended a sign-in before it completed; the record names that member."""
+
+    def __init__(self, member_id: str | None) -> None:
+        super().__init__(SIGN_IN_CANCELED_DETAIL)
+        self.member_id = member_id
+
+
 class ProviderSignInStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     login_id: str
@@ -86,7 +94,8 @@ class ProviderSignInRunner:
         self._recovery_lock = threading.Lock()
         self._sign_ins: dict[str, ProviderSignInStatus] = {}
         self._logins: dict[str, tuple[subprocess.Popen[str], DeviceLogin]] = {}
-        self._canceled: set[str] = set()
+        self._verifying: set[str] = set()
+        self._canceled: dict[str, str | None] = {}
         self._recovered: dict[tuple[str, str], int] = {}
         self._resume_counts: dict[tuple[str, str], dict[str, int]] = {}
         self.resume_account: Callable[[str, str], dict[str, int]] | None = None
@@ -301,17 +310,23 @@ class ProviderSignInRunner:
                 )
         return settled
 
-    def _take_cancellation(self, login_id: str) -> bool:
-        """Whether this sign-in was cancelled; a cancellation is consumed once."""
+    def _take_cancellation(self, login_id: str) -> SignInCanceled | None:
+        """Consume this sign-in's cancellation, once, naming who asked for it."""
 
         with self._lock:
             if login_id not in self._canceled:
-                return False
-            self._canceled.discard(login_id)
-            return True
+                return None
+            return SignInCanceled(self._canceled.pop(login_id))
 
-    def cancel_sign_in(self, login_id: str) -> ProviderSignInStatus:
-        """Ask the provider to abandon a running device sign-in, then stop its process."""
+    def cancel_sign_in(
+        self, login_id: str, *, member_id: str | None = None
+    ) -> ProviderSignInStatus:
+        """Ask the provider to abandon a running device sign-in, then stop its process.
+
+        Once the provider has accepted the login there is nothing left to
+        abandon, so a cancellation arriving during verification is refused
+        rather than recorded: the account really is signed in.
+        """
 
         with self._lock:
             status = self._sign_ins.get(login_id)
@@ -319,8 +334,12 @@ class ProviderSignInRunner:
                 raise ProviderLoginRefused("No such sign-in.", status_code=404)
             if status.state != "pending":
                 return status
+            if login_id in self._verifying:
+                raise ProviderLoginRefused(
+                    "The provider already accepted this sign-in; it is being verified."
+                )
             entry = self._logins.get(login_id)
-            self._canceled.add(login_id)
+            self._canceled[login_id] = member_id
         if entry is not None:
             process, login = entry
             _write(process, login.cancel_input())
@@ -342,8 +361,9 @@ class ProviderSignInRunner:
         fields, and only the protocol's completion ends the wait.
         """
 
-        if self._take_cancellation(status.login_id):
-            raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
+        canceled = self._take_cancellation(status.login_id)
+        if canceled:
+            raise canceled
         argv = login.command(binary)
         arguments = (
             ssh_arguments(
@@ -362,7 +382,20 @@ class ProviderSignInRunner:
             env=environment.local_env if not status.host else None,
         )
         with self._lock:
-            self._logins[status.login_id] = (process, login)
+            # Registering and consuming settle under one lock: a cancellation
+            # that lands between the check above and this line would otherwise
+            # find no process to stop and leave one running to the watchdog.
+            canceled = (
+                SignInCanceled(self._canceled.pop(status.login_id))
+                if status.login_id in self._canceled
+                else None
+            )
+            if canceled is None:
+                self._logins[status.login_id] = (process, login)
+        if canceled:
+            _kill(process)
+            process.wait()
+            raise canceled
         watchdog = threading.Timer(PROVIDER_SIGN_IN_TIMEOUT_SECONDS, _kill, args=(process,))
         watchdog.daemon = True
         watchdog.start()
@@ -389,7 +422,7 @@ class ProviderSignInRunner:
                 self._logins.pop(status.login_id, None)
             canceled = self._take_cancellation(status.login_id)
         if canceled:
-            raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
+            raise canceled
         if not finished:
             # Naming the exit status is what separates "the member walked away"
             # from "this build of the provider has no such command".
@@ -398,6 +431,8 @@ class ProviderSignInRunner:
             )
         if failure:
             raise ProviderLoginRefused(failure)
+        with self._lock:
+            self._verifying.add(status.login_id)
 
     def _update(self, login_id: str, **changes: object) -> None:
         with self._lock:
@@ -411,8 +446,9 @@ class ProviderSignInRunner:
                 # A member who cancels while this thread waits for the gate must
                 # stop the attempt, not start one: nothing has been fenced or
                 # launched yet, so the account keeps the state it already had.
-                if self._take_cancellation(status.login_id):
-                    raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
+                canceled = self._take_cancellation(status.login_id)
+                if canceled:
+                    raise canceled
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(
@@ -430,10 +466,12 @@ class ProviderSignInRunner:
                 except ProviderLoginRefused as exc:
                     # The fence above says a sign-in is running; once it is not,
                     # the account must say why, not keep describing the attempt.
+                    # A cancellation names whoever asked for it, not whoever
+                    # started the sign-in.
                     self.store.mark_provider_login_signed_out(
                         provider,
                         host,
-                        member_id=status.started_by,
+                        member_id=getattr(exc, "member_id", None) or status.started_by,
                         source="sign_out",
                         detail=exc.detail,
                     )
@@ -458,6 +496,12 @@ class ProviderSignInRunner:
                 detail="The provider sign-in process could not complete.",
                 finished_at=self.store.now(),
             )
+        finally:
+            # Nothing outlives the attempt: a stale marker would refuse the next
+            # cancellation, and a stale cancellation would end an unrelated one.
+            with self._lock:
+                self._verifying.discard(status.login_id)
+                self._canceled.pop(status.login_id, None)
 
     def save_token(
         self, provider: str, host: str, token: str, *, member_id: str
