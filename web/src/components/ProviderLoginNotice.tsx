@@ -55,10 +55,12 @@ function AccountNotice({
         {signedOutNote(state)} Sign it in from Settings, Provider logins; parked work resumes once
         the login is verified.
       </p>
-      <p className="provider-login-notice-since">
-        Signed out since{" "}
-        <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>.
-      </p>
+      {state.changed_at ? (
+        <p className="provider-login-notice-since">
+          Signed out since{" "}
+          <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>.
+        </p>
+      ) : null}
       <button
         className="button secondary compact"
         type="button"
