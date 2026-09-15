@@ -11,6 +11,20 @@ exclude: '(^|/)\.research/|^\.recovery/|^web/dist/'
 repos:
   - repo: local
     hooks:
+      # `uv run` below syncs this checkout's environment, which builds the
+      # editable `rcp` install, and `pyproject.toml` force-includes `web/dist`.
+      # A checkout that has never run the Web build (a fresh clone or a new
+      # worktree) therefore fails inside hatchling with a long traceback that
+      # scrolls past the later passing hooks. Fail first, in one line, instead.
+      - id: web-dist-present
+        name: web/dist present
+        entry: "bash -c 'test -d web/dist || { echo \"web/dist is missing. Run: npm --prefix web run build\"; exit 1; }'"
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
+        fail_fast: true
+
       - id: ruff-check
         name: ruff check
         entry: uv run ruff check --fix --force-exclude

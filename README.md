@@ -70,6 +70,13 @@ The Playwright command installs the managed Chromium binary used by the web
 interaction tests and is needed once after `npm ci`. The build order matters
 because the Python build includes `web/dist`.
 
+Every `uv run` command rebuilds this checkout's editable install, so the same
+order applies to each new checkout, including a new Git worktree. Run
+`npm --prefix web run build` there before the first `uv run` in it. The
+`web/dist present` hook in `.pre-commit-config.yaml` stops a commit with that
+instruction if you forget, because otherwise the build failure appears as a long
+traceback above the later passing hooks.
+
 ## Run the local Web app
 
 For development with backend reload and automatic Web rebuild:
