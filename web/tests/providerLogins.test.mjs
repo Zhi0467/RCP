@@ -166,3 +166,40 @@ test("a signed-out account reads as one sentence, with no doubled full stop", ()
     "Codex is signed out on gpu-1. The sign-in was canceled before it completed.",
   );
 });
+
+test("the landing notice omits the since line when no login change was recorded", async () => {
+  const { createServer } = await import("vite");
+  const React = (await import("react")).default;
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    configFile: false,
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
+  });
+  try {
+    const { ProviderLoginNotice } = await server.ssrLoadModule(
+      "/src/components/ProviderLoginNotice.tsx",
+    );
+    const state = {
+      provider: "claude",
+      host: "",
+      state: "signed_out",
+      generation: 0,
+      changed_at: "",
+      detail: "No Claude setup token is saved.",
+    };
+    const render = (overrides = {}) =>
+      renderToStaticMarkup(
+        React.createElement(ProviderLoginNotice, { states: [{ ...state, ...overrides }] }),
+      );
+    const unrecorded = render();
+    assert.doesNotMatch(unrecorded, /Signed out since/);
+    assert.doesNotMatch(unrecorded, /Not recorded/);
+    assert.match(unrecorded, /No Claude setup token is saved\./);
+    assert.match(render({ changed_at: "2026-09-14T00:00:00Z" }), /Signed out since/);
+  } finally {
+    await server.close();
+  }
+});
