@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { verifyProviderLogin } from "../api";
+import { signedOutNote } from "../providerLogins";
 import type { ProviderLoginState } from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
@@ -35,7 +36,6 @@ function AccountNotice({
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (verified) return null;
-  const provider = state.label ?? state.provider;
   async function verify() {
     setPending(true);
     setError(null);
@@ -52,10 +52,12 @@ function AccountNotice({
   return (
     <div className="provider-login-notice" role="status">
       <p>
-        {provider} on {state.host || "local"} is signed out since{" "}
-        <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>
-        {state.detail ? `: ${state.detail}.` : "."} Any member can sign it in again from Settings,
-        Provider logins; parked work resumes once the login is verified.
+        {signedOutNote(state)} Sign it in from Settings, Provider logins; parked work resumes once
+        the login is verified.
+      </p>
+      <p className="provider-login-notice-since">
+        Signed out since{" "}
+        <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>.
       </p>
       <button
         className="button secondary compact"
@@ -63,7 +65,7 @@ function AccountNotice({
         disabled={pending}
         onClick={() => void verify()}
       >
-        {pending ? "Verifying…" : "Verify sign-in"}
+        {pending ? "Checking…" : "Already signed in? Check again"}
       </button>
       {error && <p role="alert">{error}</p>}
     </div>

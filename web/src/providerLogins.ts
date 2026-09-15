@@ -36,9 +36,22 @@ export function signInNote(status: ProviderSignInStatus): string {
   if (status.state === "failed")
     return status.detail ? `Sign-in failed: ${status.detail}` : "Sign-in failed.";
   if (status.user_code && status.verification_url) {
-    return `Open the link, sign in, and enter the code.`;
+    return "Open the link below, sign in there, and enter this code. This page finishes on its own.";
   }
-  return "Starting sign-in and waiting for its device code…";
+  return "Asking the provider for a device code…";
+}
+
+/** One sentence that says what a signed-out account needs, without naming internals. */
+export function signedOutNote(state: {
+  label?: string;
+  provider: string;
+  host: string;
+  detail: string | null;
+}): string {
+  const provider = state.label ?? state.provider;
+  const where = state.host ? ` on ${state.host}` : "";
+  const reason = state.detail ? ` ${state.detail.replace(/\.*$/, "")}.` : "";
+  return `${provider} is signed out${where}.${reason}`;
 }
 
 export function resumedNote(resumed: ProviderResumeSummary): string {

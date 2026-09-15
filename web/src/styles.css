@@ -13384,3 +13384,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
     margin-left: calc(52% + 18px);
   }
 }
+
+.provider-login-notice-since {
+  opacity: 0.75;
+  font-size: 0.85em;
+}

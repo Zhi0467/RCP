@@ -15,7 +15,7 @@ from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
 from rcp.agents.provider_accounts import ProviderAccounts, reset_logins_without_credentials
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
+from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE, CodexDeviceLogin
 from rcp.runs import provider_sign_in
 from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
@@ -27,39 +27,83 @@ VERIFICATION_URL = "https://auth.example/device"
 USER_CODE = "ABCD-EFGH"
 
 
+SCRIPT = """\
+import json, pathlib, sys, threading, time
+args = sys.argv[1:]
+root = pathlib.Path(__ROOT__)
+with (root / 'argv.jsonl').open('a') as f:
+    f.write(json.dumps(args) + '\\n')
+
+
+def send(value):
+    sys.stdout.write(json.dumps(value) + '\\n')
+    sys.stdout.flush()
+
+
+def settle(login_id):
+    for _ in range(400):
+        if (root / 'signed-in').exists():
+            send({'method': 'account/login/completed',
+                  'params': {'loginId': login_id, 'success': True,
+                             'error': None, 'onboardingEntrypoint': None}})
+            return
+        time.sleep(0.05)
+    send({'method': 'account/login/completed',
+          'params': {'loginId': login_id, 'success': False, 'error': 'timed out'}})
+
+
+if args == ['app-server']:
+    login_id = None
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        method = message.get('method')
+        if method == 'initialize':
+            send({'id': message['id'],
+                  'result': {'userAgent': 'fake/0 (test)', 'codexHome': str(root),
+                             'platformFamily': 'unix', 'platformOs': 'macos'}})
+        elif method == 'account/login/start':
+            if (root / 'deny').exists():
+                send({'id': message['id'],
+                      'error': {'code': -32000, 'message': 'device authorization was denied'}})
+                break
+            login_id = 'login-1'
+            send({'id': message['id'],
+                  'result': {'type': 'chatgptDeviceCode', 'loginId': login_id,
+                             'verificationUrl': __URL__, 'userCode': __CODE__}})
+            threading.Thread(target=settle, args=(login_id,), daemon=True).start()
+        elif method == 'account/login/cancel':
+            send({'id': message['id'], 'result': {'status': 'canceled'}})
+            send({'method': 'account/login/completed',
+                  'params': {'loginId': login_id, 'success': False,
+                             'error': 'Login was not completed'}})
+    sys.exit(0)
+if args[:1] == ['exec']:
+    print('OK')
+elif args == ['logout']:
+    print('Successfully logged out')
+elif args == ['--version']:
+    print('codex-cli 0.154.0')
+"""
+
+
 def _fake_codex(tmp_path: Path) -> Path:
-    """A `codex` whose device-code login waits for a marker file before it finishes."""
+    """A `codex` whose app-server answers the frames the real binary answers.
+
+    The frames mirror a transcript captured from codex-cli 0.154.0: the code and
+    link arrive as `account/login/start` result fields and the outcome as the
+    `success` flag on `account/login/completed`. Console prose is deliberately
+    absent, so any dependence on provider wording fails here.
+    """
 
     binary = tmp_path / "codex"
     binary.write_text(
         f"#!{sys.executable}\n"
-        "import json, pathlib, sys, time\n"
-        "args = sys.argv[1:]\n"
-        f"root = pathlib.Path({str(tmp_path)!r})\n"
-        "with (root / 'argv.jsonl').open('a') as f: f.write(json.dumps(args) + '\\n')\n"
-        "if args == ['login', '--device-auth']:\n"
-        "    if (root / 'deny').exists():\n"
-        "        print('Error: device authorization was denied', flush=True)\n"
-        "        sys.exit(1)\n"
-        "    print('Follow these steps to sign in with ChatGPT using device code"
-        " authorization:', flush=True)\n"
-        "    print('1. Open this link in your browser and sign in', flush=True)\n"
-        f"    print('   {VERIFICATION_URL}', flush=True)\n"
-        "    print('2. Enter this one-time code after you are signed in"
-        " (expires in 15 minutes)', flush=True)\n"
-        f"    print('   {USER_CODE}', flush=True)\n"
-        "    for _ in range(400):\n"
-        "        if (root / 'signed-in').exists():\n"
-        "            print('Successfully logged in', flush=True)\n"
-        "            sys.exit(0)\n"
-        "        time.sleep(0.05)\n"
-        "    sys.exit(2)\n"
-        "if args[:1] == ['exec']:\n"
-        "    print('OK')\n"
-        "elif args == ['logout']:\n"
-        "    print('Successfully logged out')\n"
-        "elif args == ['--version']:\n"
-        "    print('codex-cli 0.154.0')\n"
+        + SCRIPT.replace("__ROOT__", repr(str(tmp_path)))
+        .replace("__URL__", repr(VERIFICATION_URL))
+        .replace("__CODE__", repr(USER_CODE))
     )
     binary.chmod(0o755)
     return binary
@@ -139,7 +183,7 @@ def test_codex_device_sign_in_shows_the_code_holds_the_gate_and_verifies(
     assert state.state == "signed_in"
     assert state.generation == 2 and state.changed_by == "member" and state.source == "verify"
     argv = _argv_log(tmp_path)
-    assert argv[0] == ["login", "--device-auth"]
+    assert argv[0] == ["app-server"]
     assert argv[1][:2] == ["exec", "--ignore-user-config"], "success was not proven by a request"
     assert wait_until(lambda: gate.acquire(False) or None), "the gate was never released"
     gate.release()
@@ -159,7 +203,7 @@ def test_a_denied_device_sign_in_fails_with_the_provider_detail_and_stays_signed
     assert failed.state == "failed"
     assert "denied" in (failed.detail or "")
     assert runner.store.provider_login_state("codex", "").state == "signed_out"
-    assert _argv_log(tmp_path) == [["login", "--device-auth"]]
+    assert _argv_log(tmp_path) == [["app-server"]]
     # The account is free for another attempt.
     assert runner.start_sign_in("codex", "", member_id="member").login_id != started.login_id
 
@@ -312,7 +356,7 @@ def test_third_provider_device_sign_in_completes_recovery_without_polling(
     assert runner.store.provider_login_state(TestProvider.id, "").state == "signed_in"
     runner.reconcile_recovery()
     assert calls == [(TestProvider.id, "")]
-    assert len([argv for argv in _argv_log(tmp_path) if argv == ["login", "--device-auth"]]) == 1
+    assert len([argv for argv in _argv_log(tmp_path) if argv == ["app-server"]]) == 1
 
 
 def test_verified_generation_replays_recovery_after_interruption(
@@ -515,7 +559,7 @@ def test_device_credential_change_interrupted_before_verification_stays_fenced(
     assert state.state == "signed_out" and state.generation > previous.generation
     assert state.changed_by == "other"
     assert runner.refusal("codex", "") is not None
-    assert _argv_log(tmp_path) == [["login", "--device-auth"]]
+    assert _argv_log(tmp_path) == [["app-server"]]
 
 
 @pytest.mark.parametrize(
@@ -576,3 +620,71 @@ def test_zero_exit_provider_errors_cannot_verify_replacement_credentials(
         assert done.state == "failed"
     state = runner.store.provider_login_state(provider, "")
     assert state.state == "signed_out" and state.generation > original.generation
+
+
+def test_a_member_can_cancel_a_running_device_sign_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling ends the attempt, stops the process, and says so on the account."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    started = runner.start_sign_in("codex", "", member_id="member")
+    _status_when(runner, started.login_id, lambda status: status.user_code is not None)
+
+    runner.cancel_sign_in(started.login_id)
+
+    ended = _status_when(runner, started.login_id, lambda status: status.state != "pending")
+    assert ended.state == "failed"
+    assert ended.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
+    state = runner.store.provider_login_state("codex", "")
+    # The account must stop describing an attempt that is over.
+    assert state.state == "signed_out"
+    assert state.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
+    assert runner.running_sign_in("codex", "") is None
+
+
+def test_the_device_code_is_read_from_protocol_fields_not_console_prose() -> None:
+    """Codex may reword or restyle everything it prints; RCP reads only protocol fields.
+
+    The prose lines below are the real console output of codex-cli 0.154.0,
+    colour escapes included.
+    """
+
+    login = CodexDeviceLogin()
+    prose = [
+        "Follow these steps to sign in with ChatGPT using device code authorization:",
+        "1. Open this link in your browser and sign in to your account",
+        "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m",
+        "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m",
+        "   \x1b[94mE03Y-3H5MN\x1b[0m",
+    ]
+    for line in prose:
+        step = login.receive_line(line)
+        assert step.fields == {} and not step.finished
+
+    started = login.receive_line(
+        json.dumps(
+            {
+                "id": CodexDeviceLogin.START_ID,
+                "result": {
+                    "type": "chatgptDeviceCode",
+                    "loginId": "login-1",
+                    "verificationUrl": VERIFICATION_URL,
+                    "userCode": USER_CODE,
+                },
+            }
+        )
+    )
+    assert started.fields == {"user_code": USER_CODE, "verification_url": VERIFICATION_URL}
+
+    # Only the protocol's own completion ends the wait, whatever it says.
+    assert not login.receive_line("Successfully logged in").finished
+    done = login.receive_line(
+        json.dumps(
+            {
+                "method": "account/login/completed",
+                "params": {"loginId": "login-1", "success": True, "error": None},
+            }
+        )
+    )
+    assert done.finished and done.failure is None

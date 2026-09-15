@@ -516,6 +516,12 @@ checks exercise a third fixture provider through shared account actions and
 rendered interactions. Live real-provider and remote journeys remain closure
 checks; local served verification uses a disposable account and data directory.
 
+Revised (2026-09-15) after the first live attempt on the team server produced
+no code: Codex device sign-in now runs over the app-server protocol rather than
+reading `codex login --device-auth` console output, whose code and link are
+colour-escaped prose. The account publishes why a sign-in ended, a member can
+cancel one, and the tests drive frames captured from codex-cli 0.154.0.
+
 ### Slice 4: continuation episode and branch merge on branch facts
 
 Owners: `src/rcp/api/episode_routes.py`, `src/rcp/api/episodes.py`,

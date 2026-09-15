@@ -16,18 +16,25 @@ from rcp.agents import launcher as launcher_module
 from rcp.agents.provider_accounts import (
     ProviderAccounts,
 )
+from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.config import load_manifest
 from rcp.limits import (
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
+    PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS,
     PROVIDER_SIGN_IN_TIMEOUT_SECONDS,
     PROVIDER_SIGN_OUT_TIMEOUT_SECONDS,
 )
+from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
 from rcp.storage import AppStore
 from rcp.storage.models import ProviderLoginStateRecord
 from rcp.transport.ssh import ssh_arguments
 
 _LOGGER = logging.getLogger(__name__)
+
+#: What the account says while a member is completing a device sign-in.
+SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Provider logins."
+SIGN_IN_CANCELED_DETAIL = "The sign-in was canceled before it completed."
 
 
 class ProviderLoginRefused(ValueError):
@@ -77,6 +84,8 @@ class ProviderSignInRunner:
         self._lock = threading.Lock()
         self._recovery_lock = threading.Lock()
         self._sign_ins: dict[str, ProviderSignInStatus] = {}
+        self._logins: dict[str, tuple[subprocess.Popen[str], DeviceLogin]] = {}
+        self._canceled: set[str] = set()
         self._recovered: dict[tuple[str, str], int] = {}
         self._resume_counts: dict[tuple[str, str], dict[str, int]] = {}
         self.resume_account: Callable[[str, str], dict[str, int]] | None = None
@@ -267,6 +276,90 @@ class ProviderSignInRunner:
         ).start()
         return status
 
+    def cancel_sign_in(self, login_id: str) -> ProviderSignInStatus:
+        """Ask the provider to abandon a running device sign-in, then stop its process."""
+
+        with self._lock:
+            status = self._sign_ins.get(login_id)
+            if status is None:
+                raise ProviderLoginRefused("No such sign-in.", status_code=404)
+            if status.state != "pending":
+                return status
+            entry = self._logins.get(login_id)
+            self._canceled.add(login_id)
+        if entry is not None:
+            process, login = entry
+            _write(process, login.cancel_input())
+            grace = threading.Timer(PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS, _kill, args=(process,))
+            grace.daemon = True
+            grace.start()
+        return status
+
+    def _device_login(
+        self,
+        status: ProviderSignInStatus,
+        login: DeviceLogin,
+        binary: str,
+        environment: ProviderProcessEnvironment,
+    ) -> None:
+        """Run one device sign-in to its protocol's own completion.
+
+        Nothing here reads the provider's prose: the code and link are protocol
+        fields, and only the protocol's completion ends the wait.
+        """
+
+        argv = login.command(binary)
+        arguments = (
+            ssh_arguments(
+                status.host,
+                AgentLauncher._remote_login_command(argv, prefix=environment.remote_prefix),
+            )
+            if status.host
+            else argv
+        )
+        process = self._popen(
+            arguments,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=environment.local_env if not status.host else None,
+        )
+        with self._lock:
+            self._logins[status.login_id] = (process, login)
+        watchdog = threading.Timer(PROVIDER_SIGN_IN_TIMEOUT_SECONDS, _kill, args=(process,))
+        watchdog.daemon = True
+        watchdog.start()
+        failure: str | None = None
+        finished = False
+        try:
+            _write(process, login.initial_input())
+            assert process.stdout is not None
+            for line in process.stdout:
+                step = login.receive_line(line)
+                if step.fields:
+                    self._update(status.login_id, **step.fields)
+                if step.send:
+                    _write(process, step.send)
+                if step.finished:
+                    failure, finished = step.failure, True
+                    break
+        finally:
+            watchdog.cancel()
+            # The protocol is over; never leave the provider process behind.
+            _kill(process)
+            process.wait()
+            with self._lock:
+                self._logins.pop(status.login_id, None)
+                canceled = status.login_id in self._canceled
+                self._canceled.discard(status.login_id)
+        if canceled:
+            raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
+        if not finished:
+            raise ProviderLoginRefused("The provider ended the sign-in before it completed.")
+        if failure:
+            raise ProviderLoginRefused(failure)
+
     def _update(self, login_id: str, **changes: object) -> None:
         with self._lock:
             self._sign_ins[login_id] = self._sign_ins[login_id].model_copy(update=changes)
@@ -283,44 +376,24 @@ class ProviderSignInRunner:
                     host,
                     member_id=status.started_by,
                     source="sign_out",
-                    detail="A replacement login is awaiting verification.",
+                    detail=SIGN_IN_IN_PROGRESS_DETAIL,
                 )
                 self._forget_readiness(provider, host, set())
                 environment = self.launcher.process_environment(provider, host)
-                argv = auth.device_command(binary)
-                arguments = (
-                    ssh_arguments(
-                        host,
-                        AgentLauncher._remote_login_command(argv, prefix=environment.remote_prefix),
-                    )
-                    if host
-                    else argv
-                )
-                process = self._popen(
-                    arguments,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=environment.local_env if not host else None,
-                )
-                watchdog = threading.Timer(PROVIDER_SIGN_IN_TIMEOUT_SECONDS, _kill, args=(process,))
-                watchdog.daemon = True
-                watchdog.start()
                 try:
-                    assert process.stdout is not None
-                    for line in process.stdout:
-                        fields = auth.device_fields(line.strip())
-                        if fields:
-                            self._update(status.login_id, **fields)
-                    returncode = process.wait()
-                finally:
-                    watchdog.cancel()
-                if returncode:
-                    raise ProviderLoginRefused(
-                        "Device authorization was denied or could not complete."
+                    self._device_login(status, auth.device_login(), binary, environment)
+                    state = self._verify_locked(provider, host, binary, set(), status.started_by)
+                except ProviderLoginRefused as exc:
+                    # The fence above says a sign-in is running; once it is not,
+                    # the account must say why, not keep describing the attempt.
+                    self.store.mark_provider_login_signed_out(
+                        provider,
+                        host,
+                        member_id=status.started_by,
+                        source="sign_out",
+                        detail=exc.detail,
                     )
-                state = self._verify_locked(provider, host, binary, set(), status.started_by)
+                    raise
             self.reconcile_recovery()
             self._update(
                 status.login_id,
@@ -409,6 +482,16 @@ class ProviderSignInRunner:
                     provider, host, member_id=member_id, source="sign_out", detail=detail
                 )
         return state
+
+
+def _write(process: subprocess.Popen[str], data: bytes) -> None:
+    if not data or process.stdin is None:
+        return
+    try:
+        process.stdin.write(data.decode("utf-8"))
+        process.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        _LOGGER.warning("A provider sign-in process closed its input early.")
 
 
 def _kill(process: subprocess.Popen[str]) -> None:
