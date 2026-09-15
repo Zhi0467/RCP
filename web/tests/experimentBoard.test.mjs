@@ -726,6 +726,114 @@ test("an explicit main route becomes history when the Experiment advances concur
   );
 });
 
+test("adding turns keeps the route on its run instead of sending it to History", () => {
+  const experiment = node("experiment/main", "active");
+  const chain = [
+    {
+      episode_id: "episode-exhausted",
+      created_at: "2026-08-06T01:00:00Z",
+      status: "needs_action",
+      ending: "exhausted",
+      invocation_ceiling: 10,
+      invocations_used: 10,
+      report: null,
+    },
+    {
+      episode_id: "episode-continuation",
+      created_at: "2026-08-06T03:00:00Z",
+      status: "running",
+      ending: null,
+      invocation_ceiling: 5,
+      invocations_used: 1,
+      report: null,
+    },
+  ];
+  const exhaustedEpisode = episode({
+    episode_id: "episode-exhausted",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+    status: "needs_action",
+    ending: "exhausted",
+    continued_by_episode_id: "episode-continuation",
+    chain,
+  });
+  const continuationEpisode = episode({
+    episode_id: "episode-continuation",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+    status: "running",
+    ending: null,
+    continues_episode_id: "episode-exhausted",
+    chain,
+  });
+  const continuationControl = control({
+    episode_id: continuationEpisode.episode_id,
+    episode: continuationEpisode,
+  });
+  // The human opened Runs by the episode that spent its ceiling, then added turns.
+  const route = {
+    experiment_id: experiment.id,
+    episode_id: exhaustedEpisode.episode_id,
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  };
+  const projection = projectExperimentExecution(
+    [experiment],
+    [],
+    [],
+    { [experiment.id]: continuationControl },
+    route,
+    null,
+  );
+
+  assert.equal(projection.staleMainRoute, null);
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: {
+        revision: 5,
+        nodes: { [experiment.id]: experiment },
+        edges: {},
+        proposals: {},
+        ambiguities: {},
+        glossary: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+        ontology: { types: [], fields: [], relations: [] },
+      },
+      episodes: [continuationEpisode, exhaustedEpisode],
+      episodeMessages: {},
+      episodeAction: null,
+      tasks: [],
+      watchers: [],
+      experimentControl: { [experiment.id]: continuationControl },
+      exactExperimentRoute: route,
+      exactExperimentEntry: null,
+      selectedExperimentId: experiment.id,
+      focusExperimentId: experiment.id,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onOpenHistory() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onStopExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
+    }),
+  );
+
+  assert.doesNotMatch(html, /The requested Experiment episode is now in History\./);
+  assert.match(html, /Experiment experiment\/main/);
+});
+
 test("a stale main index entry cannot duplicate the current Experiment card", () => {
   const experiment = node("experiment/main", "active");
   const previousEpisode = episode({
