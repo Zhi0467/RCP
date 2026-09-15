@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import threading
@@ -16,12 +17,15 @@ from rcp.agents import launcher as launcher_module
 from rcp.agents.provider_accounts import (
     ProviderAccounts,
 )
+from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.config import load_manifest
 from rcp.limits import (
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
+    PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS,
     PROVIDER_SIGN_IN_TIMEOUT_SECONDS,
     PROVIDER_SIGN_OUT_TIMEOUT_SECONDS,
 )
+from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
 from rcp.storage import AppStore
 from rcp.storage.models import ProviderLoginStateRecord
@@ -29,12 +33,32 @@ from rcp.transport.ssh import ssh_arguments
 
 _LOGGER = logging.getLogger(__name__)
 
+#: What the account says while a member is completing a device sign-in.
+SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Provider logins."
+SIGN_IN_CANCELED_DETAIL = "The sign-in was canceled before it completed."
+SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to get a new code."
+#: What releases before this one wrote while a device sign-in was running. An
+#: account upgraded mid-attempt still carries it, and would otherwise keep
+#: describing a sign-in that no process is running.
+LEGACY_SIGN_IN_IN_PROGRESS_DETAIL = "A replacement login is awaiting verification."
+INTERRUPTED_SIGN_IN_MARKERS = frozenset(
+    {SIGN_IN_IN_PROGRESS_DETAIL, LEGACY_SIGN_IN_IN_PROGRESS_DETAIL}
+)
+
 
 class ProviderLoginRefused(ValueError):
     def __init__(self, detail: str, *, status_code: int = 409) -> None:
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
+
+
+class SignInCanceled(ProviderLoginRefused):
+    """A member ended a sign-in before it completed; the record names that member."""
+
+    def __init__(self, member_id: str | None) -> None:
+        super().__init__(SIGN_IN_CANCELED_DETAIL)
+        self.member_id = member_id
 
 
 class ProviderSignInStatus(BaseModel):
@@ -77,6 +101,9 @@ class ProviderSignInRunner:
         self._lock = threading.Lock()
         self._recovery_lock = threading.Lock()
         self._sign_ins: dict[str, ProviderSignInStatus] = {}
+        self._logins: dict[str, tuple[subprocess.Popen[str], DeviceLogin]] = {}
+        self._verifying: set[str] = set()
+        self._canceled: dict[str, str | None] = {}
         self._recovered: dict[tuple[str, str], int] = {}
         self._resume_counts: dict[tuple[str, str], dict[str, int]] = {}
         self.resume_account: Callable[[str, str], dict[str, int]] | None = None
@@ -222,7 +249,8 @@ class ProviderSignInRunner:
         )
         if failed_auth or not auth.verification_succeeded(result):
             detail = (
-                "Provider authentication failed. Sign in again in Settings."
+                # Where to sign in is the surface's own sentence, not this one.
+                "Provider authentication failed; the credential was rejected."
                 if failed_auth
                 else "The provider could not complete the verification request."
             )
@@ -267,6 +295,161 @@ class ProviderSignInRunner:
         ).start()
         return status
 
+    def settle_interrupted_sign_ins(self) -> list[ProviderLoginStateRecord]:
+        """Retire a fence left by a sign-in this process cannot still be running.
+
+        A sign-in lives in one process. After a restart none is running, so an
+        account still advertising one would tell a member to finish something
+        that no longer exists. The marker compared here is RCP's own, never a
+        provider's wording.
+        """
+
+        settled = []
+        for state in self.store.provider_login_states():
+            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
+                settled.append(
+                    self.store.mark_provider_login_signed_out(
+                        state.provider,
+                        state.host,
+                        member_id=None,
+                        source="restore",
+                        detail=SIGN_IN_INTERRUPTED_DETAIL,
+                    )
+                )
+        return settled
+
+    def _take_cancellation(self, login_id: str) -> SignInCanceled | None:
+        """Consume this sign-in's cancellation, once, naming who asked for it."""
+
+        with self._lock:
+            if login_id not in self._canceled:
+                return None
+            return SignInCanceled(self._canceled.pop(login_id))
+
+    def cancel_sign_in(
+        self, login_id: str, *, member_id: str | None = None
+    ) -> ProviderSignInStatus:
+        """Ask the provider to abandon a running device sign-in, then stop its process.
+
+        Once the provider has accepted the login there is nothing left to
+        abandon, so a cancellation arriving during verification is refused
+        rather than recorded: the account really is signed in.
+        """
+
+        with self._lock:
+            status = self._sign_ins.get(login_id)
+            if status is None:
+                raise ProviderLoginRefused("No such sign-in.", status_code=404)
+            if status.state != "pending":
+                return status
+            if login_id in self._verifying:
+                raise ProviderLoginRefused(
+                    "The provider already accepted this sign-in; it is being verified."
+                )
+            entry = self._logins.get(login_id)
+            self._canceled[login_id] = member_id
+        if entry is not None:
+            process, login = entry
+            _write(process, login.cancel_input())
+            grace = threading.Timer(PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS, _kill, args=(process,))
+            grace.daemon = True
+            grace.start()
+        return status
+
+    def _device_login(
+        self,
+        status: ProviderSignInStatus,
+        login: DeviceLogin,
+        binary: str,
+        environment: ProviderProcessEnvironment,
+    ) -> None:
+        """Run one device sign-in to its protocol's own completion.
+
+        Nothing here reads the provider's prose: the code and link are protocol
+        fields, and only the protocol's completion ends the wait.
+        """
+
+        canceled = self._take_cancellation(status.login_id)
+        if canceled:
+            raise canceled
+        argv = login.command(binary)
+        arguments = (
+            ssh_arguments(
+                status.host,
+                AgentLauncher._remote_login_command(argv, prefix=environment.remote_prefix),
+            )
+            if status.host
+            else argv
+        )
+        process = self._popen(
+            arguments,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=environment.local_env if not status.host else None,
+        )
+        with self._lock:
+            # Registering and consuming settle under one lock: a cancellation
+            # that lands between the check above and this line would otherwise
+            # find no process to stop and leave one running to the watchdog.
+            canceled = (
+                SignInCanceled(self._canceled.pop(status.login_id))
+                if status.login_id in self._canceled
+                else None
+            )
+            if canceled is None:
+                self._logins[status.login_id] = (process, login)
+        if canceled:
+            _kill(process)
+            process.wait()
+            raise canceled
+        watchdog = threading.Timer(PROVIDER_SIGN_IN_TIMEOUT_SECONDS, _kill, args=(process,))
+        watchdog.daemon = True
+        watchdog.start()
+        failure: str | None = None
+        finished = False
+        try:
+            _write(process, login.initial_input())
+            assert process.stdout is not None
+            for line in process.stdout:
+                step = login.receive_line(line)
+                if step.fields:
+                    self._update(status.login_id, **step.fields)
+                if step.send:
+                    _write(process, step.send)
+                if step.finished:
+                    failure, finished = step.failure, True
+                    break
+        finally:
+            watchdog.cancel()
+            # The protocol is over; never leave the provider process behind.
+            _kill(process)
+            returncode = process.wait()
+            with self._lock:
+                # Retiring the process, consuming a cancellation, and claiming
+                # the verification window happen together. A cancellation that
+                # landed between them would otherwise be acknowledged to the
+                # member and then contradicted by a successful sign-in.
+                self._logins.pop(status.login_id, None)
+                canceled = (
+                    SignInCanceled(self._canceled.pop(status.login_id))
+                    if status.login_id in self._canceled
+                    else None
+                )
+                if canceled is None and finished and not failure:
+                    self._verifying.add(status.login_id)
+        if canceled:
+            raise canceled
+        if not finished:
+            # Naming the exit status is what separates "the member walked away"
+            # from "this build of the provider has no such command".
+            raise ProviderLoginRefused(
+                f"The provider ended the sign-in before it completed (exit status {returncode})."
+            )
+        if failure:
+            raise ProviderLoginRefused(failure)
+
     def _update(self, login_id: str, **changes: object) -> None:
         with self._lock:
             self._sign_ins[login_id] = self._sign_ins[login_id].model_copy(update=changes)
@@ -276,6 +459,12 @@ class ProviderSignInRunner:
         auth = profile_for(provider).authentication
         try:
             with self.launcher.credential_gate.hold_blocking(provider, host):
+                # A member who cancels while this thread waits for the gate must
+                # stop the attempt, not start one: nothing has been fenced or
+                # launched yet, so the account keeps the state it already had.
+                canceled = self._take_cancellation(status.login_id)
+                if canceled:
+                    raise canceled
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(
@@ -283,44 +472,33 @@ class ProviderSignInRunner:
                     host,
                     member_id=status.started_by,
                     source="sign_out",
-                    detail="A replacement login is awaiting verification.",
+                    detail=SIGN_IN_IN_PROGRESS_DETAIL,
                 )
                 self._forget_readiness(provider, host, set())
                 environment = self.launcher.process_environment(provider, host)
-                argv = auth.device_command(binary)
-                arguments = (
-                    ssh_arguments(
-                        host,
-                        AgentLauncher._remote_login_command(argv, prefix=environment.remote_prefix),
-                    )
-                    if host
-                    else argv
-                )
-                process = self._popen(
-                    arguments,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=environment.local_env if not host else None,
-                )
-                watchdog = threading.Timer(PROVIDER_SIGN_IN_TIMEOUT_SECONDS, _kill, args=(process,))
-                watchdog.daemon = True
-                watchdog.start()
                 try:
-                    assert process.stdout is not None
-                    for line in process.stdout:
-                        fields = auth.device_fields(line.strip())
-                        if fields:
-                            self._update(status.login_id, **fields)
-                    returncode = process.wait()
-                finally:
-                    watchdog.cancel()
-                if returncode:
-                    raise ProviderLoginRefused(
-                        "Device authorization was denied or could not complete."
+                    self._device_login(status, auth.device_login(), binary, environment)
+                    state = self._verify_locked(provider, host, binary, set(), status.started_by)
+                except Exception as exc:
+                    # The fence above says a sign-in is running. However this
+                    # attempt ended, the account must say so rather than keep
+                    # asking a member to finish it. A cancellation names whoever
+                    # asked for it, not whoever started the sign-in.
+                    detail = (
+                        exc.detail
+                        if isinstance(exc, ProviderLoginRefused)
+                        else "The sign-in could not complete."
                     )
-                state = self._verify_locked(provider, host, binary, set(), status.started_by)
+                    # Publishing must not replace the failure being reported.
+                    with contextlib.suppress(Exception):
+                        self.store.mark_provider_login_signed_out(
+                            provider,
+                            host,
+                            member_id=getattr(exc, "member_id", None) or status.started_by,
+                            source="sign_out",
+                            detail=detail,
+                        )
+                    raise
             self.reconcile_recovery()
             self._update(
                 status.login_id,
@@ -341,6 +519,12 @@ class ProviderSignInRunner:
                 detail="The provider sign-in process could not complete.",
                 finished_at=self.store.now(),
             )
+        finally:
+            # Nothing outlives the attempt: a stale marker would refuse the next
+            # cancellation, and a stale cancellation would end an unrelated one.
+            with self._lock:
+                self._verifying.discard(status.login_id)
+                self._canceled.pop(status.login_id, None)
 
     def save_token(
         self, provider: str, host: str, token: str, *, member_id: str
@@ -367,12 +551,25 @@ class ProviderSignInRunner:
             )
             self._forget_readiness(provider, host, binaries)
             try:
-                auth.save_token(
-                    self.credentials, host, token, member_id=member_id, now=self.store.now()
+                try:
+                    auth.save_token(
+                        self.credentials, host, token, member_id=member_id, now=self.store.now()
+                    )
+                except (OSError, ValueError) as exc:
+                    raise ProviderLoginRefused("Could not persist the credential.") from exc
+                state = self._verify_locked(provider, host, binary, binaries, member_id)
+            except ProviderLoginRefused as exc:
+                # The fence above says a credential is awaiting verification;
+                # once it is not, the account must say why rather than keep
+                # describing an attempt that is over.
+                self.store.mark_provider_login_signed_out(
+                    provider,
+                    host,
+                    member_id=member_id,
+                    source="sign_out",
+                    detail=exc.detail,
                 )
-            except (OSError, ValueError) as exc:
-                raise ProviderLoginRefused("Could not persist the credential.") from exc
-            state = self._verify_locked(provider, host, binary, binaries, member_id)
+                raise
         self.reconcile_recovery()
         return state
 
@@ -409,6 +606,16 @@ class ProviderSignInRunner:
                     provider, host, member_id=member_id, source="sign_out", detail=detail
                 )
         return state
+
+
+def _write(process: subprocess.Popen[str], data: bytes) -> None:
+    if not data or process.stdin is None:
+        return
+    try:
+        process.stdin.write(data.decode("utf-8"))
+        process.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        _LOGGER.warning("A provider sign-in process closed its input early.")
 
 
 def _kill(process: subprocess.Popen[str]) -> None:

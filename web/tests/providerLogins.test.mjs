@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { accountLabel, resumedNote, signInNote, tokenNote } from "../src/providerLogins.ts";
+import {
+  accountLabel,
+  resumedNote,
+  signInNote,
+  tokenNote,
+  signedOutNote,
+} from "../src/providerLogins.ts";
 
 test("the account label names the machine account and the project aliases that use it", () => {
   assert.equal(accountLabel({ host: "", machines: [] }, "team"), "Team server");
@@ -47,10 +53,10 @@ test("the sign-in note follows the device-code flow", () => {
     finished_at: null,
     resumed: null,
   };
-  assert.match(signInNote(base), /waiting for its device code/);
+  assert.match(signInNote(base), /device code/);
   assert.match(
     signInNote({ ...base, user_code: "ABCD-EFGH", verification_url: "https://auth.example/d" }),
-    /enter the code/,
+    /enter this code/,
   );
   assert.match(signInNote({ ...base, state: "succeeded" }), /verified/);
   assert.equal(
@@ -143,4 +149,20 @@ test("shared account API sends a third provider through the generic routes", asy
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("a signed-out account reads as one sentence, with no doubled full stop", () => {
+  assert.equal(
+    signedOutNote({ label: "Codex", provider: "codex", host: "", detail: null }),
+    "Codex is signed out.",
+  );
+  assert.equal(
+    signedOutNote({
+      label: "Codex",
+      provider: "codex",
+      host: "gpu-1",
+      detail: "The sign-in was canceled before it completed.",
+    }),
+    "Codex is signed out on gpu-1. The sign-in was canceled before it completed.",
+  );
 });

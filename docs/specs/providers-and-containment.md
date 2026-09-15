@@ -560,8 +560,15 @@ lossy character replacement. Tokens stored under the old remote account paths
 must be pasted again; RCP does not guess which account owned an ambiguous old
 path. Local token paths remain unchanged.
 
-**Codex** owns native device sign-in (`codex login --device-auth`), parsing its
-one-time code and verification URL, native logout, and verification commands.
+**Codex** owns native device sign-in over the app-server protocol
+(`codex app-server`, `account/login/start` with the ChatGPT device-code type).
+The one-time code and verification URL are that reply's own fields, the outcome
+is the `success` flag on the `account/login/completed` notification, and a
+member's cancellation is `account/login/cancel`; RCP reads no console prose, so
+reworded provider output cannot stall a sign-in. Codex also owns native logout
+and verification commands. A sign-in that ends without its protocol's completion
+publishes the reason on the account, which never keeps describing an attempt
+that is over.
 **Claude** owns setup-token validation, the estimated lifetime metadata,
 `CLAUDE_CODE_OAUTH_TOKEN` injection, removal of conflicting inherited credential
 sources, and remote token placement and removal. Tokens travel on transport

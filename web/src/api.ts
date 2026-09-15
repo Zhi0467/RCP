@@ -466,6 +466,18 @@ export function providerSignInStatus(
   );
 }
 
+export function cancelProviderSignIn(
+  provider: string,
+  loginId: string,
+): Promise<ProviderSignInStatus> {
+  return api(
+    `/api/providers/${encodeURIComponent(provider)}/logins/sign-in/${encodeURIComponent(
+      loginId,
+    )}/cancel`,
+    { method: "POST" },
+  );
+}
+
 export function saveProviderToken(
   provider: string,
   host: string,

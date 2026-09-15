@@ -303,6 +303,8 @@ PROVIDER_LOGIN_DETAIL_MAX_CHARS = 500
 # A device-code sign-in the human never finishes is abandoned after this long;
 # the provider's own code expires on the same order.
 PROVIDER_SIGN_IN_TIMEOUT_SECONDS = 15 * 60
+#: How long a canceled device sign-in may take to end before RCP stops it.
+PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS = 5
 PROVIDER_SIGN_OUT_TIMEOUT_SECONDS = 60
 PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS = 60
 PROVIDER_TOKEN_MAX_CHARS = 4096

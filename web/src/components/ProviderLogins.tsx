@@ -1,6 +1,7 @@
 import { KeyRound, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  cancelProviderSignIn,
   providerSignInStatus,
   loadProviderLogins,
   loadSpaceUsers,
@@ -99,7 +100,9 @@ export function ProviderLoginRow({
   memberName: (id: string) => string;
   onChanged: () => Promise<void>;
 }) {
-  const [busy, setBusy] = useState<"verify" | "sign-in" | "token" | "sign-out" | null>(null);
+  const [busy, setBusy] = useState<"verify" | "sign-in" | "token" | "sign-out" | "cancel" | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [token, setToken] = useState("");
@@ -207,7 +210,32 @@ export function ProviderLoginRow({
               <code>{signIn.user_code}</code>
             </p>
           ) : null}
+          {signIn.state === "pending" ? (
+            <button
+              className="button secondary compact"
+              type="button"
+              disabled={writesDisabled || busy === "cancel"}
+              onClick={() =>
+                void (async () => {
+                  setBusy("cancel");
+                  try {
+                    setSignIn(await cancelProviderSignIn(account.provider, signIn.login_id));
+                  } catch (failure) {
+                    setError(failure instanceof Error ? failure.message : String(failure));
+                  } finally {
+                    setBusy(null);
+                  }
+                })()
+              }
+            >
+              {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : null}
+              Cancel sign-in
+            </button>
+          ) : null}
         </div>
+      ) : null}
+      {account.sign_in_methods.includes("token_entry") && account.token_instructions ? (
+        <p className="provider-login-detail">{account.token_instructions}</p>
       ) : null}
       <div className="provider-login-actions">
         {account.sign_in_methods.includes("device_code") ? (
@@ -244,7 +272,7 @@ export function ProviderLoginRow({
               type="password"
               autoComplete="off"
               aria-label={`${label} token for ${accountLabel(account, spaceKind)}`}
-              placeholder={account.token_instructions ?? "Paste token"}
+              placeholder="Paste token"
               value={token}
               disabled={disabled}
               onChange={(event) => setToken(event.target.value)}

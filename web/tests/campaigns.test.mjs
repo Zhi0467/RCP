@@ -770,9 +770,9 @@ test("the login notice names each signed-out account once and offers verificatio
     },
   ];
   const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
-  assert.match(html, /codex on local is signed out since/);
+  assert.match(html, /Codex is signed out\./);
   assert.match(html, /Please sign in again/);
-  assert.match(html, /Any member can sign it in again from Settings/);
-  assert.equal((html.match(/Verify sign-in/g) ?? []).length, 1);
+  assert.match(html, /Sign it in from Settings, Provider logins/);
+  assert.equal((html.match(/Check again/g) ?? []).length, 1);
   assert.doesNotMatch(html, /remote.example/);
 });
