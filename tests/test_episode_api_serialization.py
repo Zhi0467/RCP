@@ -612,6 +612,25 @@ def test_can_continue_is_withheld_while_another_episode_owns_the_slot(tmp_path) 
     assert not can_continue()
 
 
+def test_a_queued_branch_merge_is_not_one_of_the_episode_turns(tmp_path) -> None:
+    """Merging on branch facts can queue a merge under a running episode; it stays active."""
+
+    from .test_branch_target_storage import _merge_task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "quiet", root_status="succeeded")
+    merge = store.create_branch_merge_task(_merge_task(store, episode, "merge"))
+    stored = store.episode(episode.episode_id)
+    assert stored is not None
+    response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
+
+    assert response.status == "running"
+    assert response.health == "active"
+    assert [task.operation_id for task in response.tasks] == [root.operation_id]
+    assert merge.operation_id not in {task.operation_id for task in response.tasks}
+
+
 def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)

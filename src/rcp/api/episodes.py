@@ -647,7 +647,10 @@ def operational_episode_tasks(
     for task in store.episode_tasks(episode.episode_id, newest=newest):
         if task.episode_id != episode.episode_id or task.project_id != episode.project_id:
             raise ValueError("episode task lineage crosses its parent boundary")
-        if not task.visible or task.kind == "episode_report":
+        # Hidden wrap-up work and branch merges are not the episode's turns: the
+        # graph branch summary narrates merges, and a queued merge must not read
+        # as the episode starting.
+        if not task.visible or task.kind in {"episode_report", "branch_merge"}:
             continue
         tasks.append(task)
     return tasks
