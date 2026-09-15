@@ -58,3 +58,62 @@ test("a pending sign-in keeps polling past a transient status failure", async ()
     await liveServer.close();
   }
 });
+
+test("a settled sign-in stops contradicting the account state the row now shows", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await page.route("**/api/providers/codex/logins/sign-in/login-1/cancel", (route) =>
+      route.fulfill({
+        json: {
+          login_id: "login-1",
+          provider: "codex",
+          host: "",
+          state: "failed",
+          user_code: null,
+          verification_url: null,
+          detail: "The sign-in was canceled before it completed.",
+          started_at: "2026-09-14T00:00:00Z",
+        },
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLoginRow.html`,
+    );
+    await page.getByText("ABCD-1234", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Cancel sign-in" }).click();
+    // Cancelling refreshes the account, so the row speaks for itself immediately.
+    await page.waitForFunction(() => window.loginChanges >= 1);
+    await page.getByText("Sign-in failed: The sign-in was canceled before it completed.").waitFor();
+    // The account is signed in again; a settled sign-in must not survive to contradict it.
+    await page.evaluate(() =>
+      window.setLoginAccount({
+        state: "signed_in",
+        generation: 1,
+        detail: "Authenticated request succeeded.",
+        sign_in: null,
+      }),
+    );
+    await page
+      .getByText("Sign-in failed: The sign-in was canceled before it completed.")
+      .waitFor({ state: "detached" });
+    assert.match(await page.locator(".provider-login-detail").first().innerText(), /Signed in/);
+    assert.equal(await page.locator(".provider-login-sign-in").count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
+});
