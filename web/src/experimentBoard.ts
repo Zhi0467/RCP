@@ -2,6 +2,7 @@ import { graphTargetFromHash, graphViewHash } from "./graphTarget";
 import type {
   AgentTask,
   AppView,
+  Episode,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
   GraphNode,
@@ -151,6 +152,30 @@ export function exactAutoResearchEpisodeHref(
   if (!activeProjectId || activeProjectId !== episodeProjectId) return null;
   if (!episodeId || !exactAutoResearchEpisodeId) return null;
   return experimentBoardHref(episodeProjectId, `${AUTO_RESEARCH_ROUTE_PREFIX}${episodeId}`);
+}
+
+// Adding turns ends one episode and starts its successor, so an exact route pinned
+// to the episode being continued follows the run into that successor. Only that
+// pinned predecessor is replaced: a Runs view not opened by exact episode keeps what
+// it was showing, an unrelated pin is left alone, and an episode whose project is no
+// longer the active tab routes nothing. Every other advance still hands off to History.
+export function continuedExperimentRoute(
+  activeProjectId: string | null,
+  episode: Episode,
+  exactExperimentRoute: ExperimentRouteIdentity | null,
+): ExperimentRouteIdentity | null {
+  if (!activeProjectId || activeProjectId !== episode.project_id) return null;
+  if (!episode.control_node_id || !episode.continues_episode_id) return null;
+  if (!exactExperimentRoute) return null;
+  if (exactExperimentRoute.experiment_id !== episode.control_node_id) return null;
+  if (exactExperimentRoute.episode_id !== episode.continues_episode_id) return null;
+  if (!graphTargetsEqual(exactExperimentRoute.graph_target, episode.graph_target)) return null;
+  return {
+    experiment_id: episode.control_node_id,
+    episode_id: episode.episode_id,
+    graph_target: exactExperimentRoute.graph_target,
+    parent_episode_id: exactExperimentRoute.parent_episode_id,
+  };
 }
 
 export function parseProjectHash(hash: string): ProjectHashRoute {
@@ -347,16 +372,11 @@ export function mainExperimentRouteMatchesControl(
   route: ExperimentRouteIdentity,
   control: ExperimentControlState | undefined,
 ): boolean {
-  const episode = control?.episode;
-  if (route.graph_target.kind !== "main" || !episode) return false;
-  if (control?.episode_id !== episode.episode_id) return false;
-  if (!graphTargetsEqual(episode.graph_target, route.graph_target)) return false;
-  // A continuation chain is one run. Adding turns starts a successor episode, so
-  // a route naming an earlier member still addresses the run the control carries
-  // and must not read as History while that run is live.
-  return (
-    episode.episode_id === route.episode_id ||
-    episode.chain.some((member) => member.episode_id === route.episode_id)
+  return Boolean(
+    route.graph_target.kind === "main" &&
+    control?.episode_id === route.episode_id &&
+    control.episode?.episode_id === route.episode_id &&
+    graphTargetsEqual(control.episode.graph_target, route.graph_target),
   );
 }
 
