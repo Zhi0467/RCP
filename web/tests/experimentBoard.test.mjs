@@ -15,6 +15,7 @@ const server = await createServer({
 const {
   experimentBoardHref,
   experimentBoardRouteToken,
+  continuedExperimentRoute,
   experimentIndexEntryForRoute,
   experimentStopPath,
   experimentTerminalLabel,
@@ -724,6 +725,105 @@ test("an explicit main route becomes history when the Experiment advances concur
     html,
     /campaign-run-detail|Expand Experiment loop episode|Start episode|Stop loop|episode-current/,
   );
+});
+
+test("adding turns moves the exact route onto the successor episode", () => {
+  const pinned = {
+    experiment_id: "experiment/main",
+    episode_id: "episode-exhausted",
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  };
+  const continuation = episode({
+    episode_id: "episode-continuation",
+    project_id: "project-one",
+    control_node_id: "experiment/main",
+    graph_target: { kind: "main" },
+    status: "running",
+    continues_episode_id: "episode-exhausted",
+  });
+
+  assert.deepEqual(continuedExperimentRoute("project-one", continuation, pinned), {
+    experiment_id: "experiment/main",
+    episode_id: "episode-continuation",
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  });
+  assert.equal(
+    experimentBoardHref(
+      "project-one",
+      continuedExperimentRoute("project-one", continuation, pinned),
+    ),
+    "#/projects/project-one?view=runs&experiment=experiment%2Fmain&episode=episode-continuation&target=main",
+  );
+  // The pinned parent identity of an Auto-research child survives the successor.
+  assert.equal(
+    continuedExperimentRoute(
+      "project-one",
+      { ...continuation, graph_target: { kind: "branch", branch_id: "parent-episode" } },
+      {
+        ...pinned,
+        graph_target: { kind: "branch", branch_id: "parent-episode" },
+        parent_episode_id: "parent-episode",
+      },
+    )?.parent_episode_id,
+    "parent-episode",
+  );
+});
+
+test("only the pinned predecessor follows a continuation into its successor", () => {
+  const pinned = {
+    experiment_id: "experiment/main",
+    episode_id: "episode-exhausted",
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  };
+  const continuation = episode({
+    episode_id: "episode-continuation",
+    project_id: "project-one",
+    control_node_id: "experiment/main",
+    graph_target: { kind: "main" },
+    status: "running",
+    continues_episode_id: "episode-exhausted",
+  });
+
+  // A Runs view that was not opened by exact episode keeps what it was showing.
+  assert.equal(continuedExperimentRoute("project-one", continuation, null), null);
+  // A pin on another Experiment or another episode is not the run that continued.
+  assert.equal(
+    continuedExperimentRoute("project-one", continuation, {
+      ...pinned,
+      experiment_id: "experiment/other",
+    }),
+    null,
+  );
+  assert.equal(
+    continuedExperimentRoute("project-one", continuation, {
+      ...pinned,
+      episode_id: "episode-unrelated",
+    }),
+    null,
+  );
+  // A pin on another graph target addresses different work under the same id.
+  assert.equal(
+    continuedExperimentRoute("project-one", continuation, {
+      ...pinned,
+      graph_target: { kind: "branch", branch_id: "parent-episode" },
+    }),
+    null,
+  );
+  // A fresh episode is not a continuation, and it hands the pinned route to History.
+  assert.equal(
+    continuedExperimentRoute(
+      "project-one",
+      { ...continuation, continues_episode_id: null },
+      pinned,
+    ),
+    null,
+  );
+  // The human switched project tabs before the continuation settled.
+  assert.equal(continuedExperimentRoute("project-two", continuation, pinned), null);
+  assert.equal(continuedExperimentRoute(null, continuation, pinned), null);
 });
 
 test("a stale main index entry cannot duplicate the current Experiment card", () => {

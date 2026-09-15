@@ -980,6 +980,7 @@ export default function App() {
     dockNode,
     restoreDockedNode: restoreDockedGraphNode,
     replaceExactAutoResearchSelection,
+    replaceExactExperimentEpisode,
     selectExperiment,
     clearExperimentFocus,
     showExperiment,
@@ -3325,7 +3326,13 @@ export default function App() {
       const nextEpisode = await continueEpisode(apiBase, episodeId, invocationCeiling, requestId);
       continuationRequestIds.current.delete(episodeId);
       replaceEpisode(nextEpisode);
-      replaceExactAutoResearchSelection(nextEpisode.project_id, nextEpisode.episode_id);
+      // Continuing ends one episode and starts its successor, so an exact route
+      // pinned to the predecessor follows the run instead of handing off to History.
+      if (nextEpisode.mode === "auto_research") {
+        replaceExactAutoResearchSelection(nextEpisode.project_id, nextEpisode.episode_id);
+      } else {
+        replaceExactExperimentEpisode(nextEpisode);
+      }
       await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });

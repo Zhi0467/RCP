@@ -2,15 +2,17 @@ import { graphSessionKey, graphTargetFromHash, graphTargetUrl, MAIN_GRAPH } from
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
+  continuedExperimentRoute,
   exactAutoResearchEpisodeHref,
   exactRunExperimentSelectionHref,
+  experimentBoardHref,
   projectHashAfterViewChange,
   type ExperimentRouteIdentity,
   type ProjectHashRoute,
 } from "../experimentBoard";
 import type { DetailWindowSlot } from "../floatingWindow";
 import { projectViewportRef, type ProjectViewState, type ProjectViewportRef } from "../projectTabs";
-import type { AppView, GraphNode, GraphState, ProjectSnapshot, TrustView } from "../types";
+import type { AppView, Episode, GraphNode, GraphState, ProjectSnapshot, TrustView } from "../types";
 import type { DagViewport } from "./dagZoom";
 
 export const emptyGraph: GraphState = {
@@ -469,6 +471,36 @@ export function useGraphSelection({
     },
     [changeView, getActiveProjectId],
   );
+  const replaceExactExperimentEpisode = useCallback(
+    (episode: Episode) => {
+      // A continuation can settle after the human switched project tabs, so the live
+      // active project and pinned route decide, never the ones this render captured.
+      const route = continuedExperimentRoute(
+        getActiveProjectId(),
+        episode,
+        selectionSnapshotRef.current.selectedExperimentRoute,
+      );
+      if (!route) return;
+      window.history.replaceState(
+        null,
+        "",
+        graphTargetUrl(
+          experimentBoardHref(episode.project_id, route),
+          graphTargetFromHash(window.location.hash),
+        ),
+      );
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId: route.experiment_id,
+        experimentRoute: route,
+        autoResearchEpisodeId: null,
+      });
+      // The pinned route survives leaving Runs, so show the view this new URL describes
+      // rather than leaving another view rendered under a Runs address.
+      changeView("execution");
+    },
+    [changeView, getActiveProjectId],
+  );
   const selectExperiment = useCallback(
     (nodeId: string | null) => {
       replaceExactRunExperimentSelection(nodeId, "select");
@@ -554,6 +586,7 @@ export function useGraphSelection({
     dockNode,
     restoreDockedNode,
     replaceExactAutoResearchSelection,
+    replaceExactExperimentEpisode,
     selectExperiment,
     clearExperimentFocus,
     showExperiment,
