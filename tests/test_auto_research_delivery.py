@@ -1099,7 +1099,8 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
     )
 
 
-def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
+@pytest.mark.parametrize("suppressed", [None, "self_caused", "provider_auth"])
+def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path, suppressed) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "auto_research-stage"
     stage.mkdir()
@@ -1126,6 +1127,7 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
             source_kind="worker",
             source_id="worker-one",
             source_event="succeeded",
+            wake_suppressed=suppressed,
             payload={"kind": "work", "status": "succeeded"},
             created_at=(
                 _required_timestamp(store.now())
@@ -1147,8 +1149,19 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
     assert pending_auto_research_lifecycle_episodes(
         store,
         episode_id=auto_research.episode_id,
-    ) == [auto_research.episode_id]
-    wake_ids = reconcile_pending_auto_research_lifecycle(
+    ) == ([] if suppressed else [auto_research.episode_id])
+    if suppressed:
+        assert (
+            reconcile_pending_auto_research_lifecycle(tasks, episode_id=auto_research.episode_id)
+            == []
+        )
+        assert store.episode_budget_meter(auto_research.episode_id) == before
+    reconcile = (
+        reconcile_pending_auto_research_mail
+        if suppressed
+        else reconcile_pending_auto_research_lifecycle
+    )
+    wake_ids = reconcile(
         tasks,
         episode_id=auto_research.episode_id,
     )
@@ -1157,7 +1170,7 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
     wake = wait_for_task(store, wake_ids[0], expect="succeeded")
     assert [
         item.notice_id for item in store.auto_research_lifecycle_delivery(wake.operation_id)
-    ] == [notice.notice_id]
+    ] == ([] if suppressed else [notice.notice_id])
     claimed_message = store.auto_research_message(message.message_id)
     assert claimed_message is not None
     assert claimed_message.delivery_operation_id == wake.operation_id
@@ -1166,13 +1179,18 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path) -> None:
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
         before.invocations_used + 1
     )
-    assert wake.request["wake_cause"] == "lifecycle"
+    cause = "message" if suppressed else "lifecycle"
+    assert wake.request["wake_cause"] == cause
+    if suppressed:
+        remaining = store.auto_research_lifecycle_notices(auto_research.episode_id)
+        assert remaining == [notice]
+        assert remaining[0].state == "pending"
     assert wake.request["role"] == "orchestrator"
     assert wake.request["actor_operation_id"] == root.operation_id
-    assert store.agent_task_continuation_cause(wake.operation_id) == "lifecycle_wake"
+    assert store.agent_task_continuation_cause(wake.operation_id) == f"{cause}_wake"
     assert observed == [
         (root.operation_id, "fresh", None),
-        (wake.operation_id, "lifecycle_wake", "lifecycle"),
+        (wake.operation_id, f"{cause}_wake", cause),
     ]
 
 
@@ -1869,3 +1887,47 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
     wait_for_task(store, retried.operation_id, expect="succeeded")
     categories = [receipt.category for receipt in store.agent_task_receipts(retried.operation_id)]
     assert "operation_dispatch_started" in categories
+
+
+def test_newest_notices_and_messages_are_a_bounded_suffix_in_order(tmp_path):
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, request, _execution):
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    for index in range(3):
+        store.record_auto_research_lifecycle_notice(
+            AutoResearchLifecycleNoticeRecord(
+                notice_id=f"notice-{index}",
+                episode_id=episode.episode_id,
+                source_kind="worker",
+                source_id=f"worker-{index}",
+                source_event="succeeded",
+                payload={},
+                created_at=f"2026-09-14T10:00:0{index}+00:00",
+            )
+        )
+        record_auto_research_message(
+            store,
+            message_id=f"message-{index}",
+            episode_id=episode.episode_id,
+            sender_role="human",
+            sender_task_id=None,
+            authorized_by=episode.authorized_by,
+            recipient_task_id=root.operation_id,
+            body=f"mail {index}",
+        )
+
+    notices = store.auto_research_lifecycle_notices(episode.episode_id, newest=2)
+    assert [notice.notice_id for notice in notices] == ["notice-1", "notice-2"]
+    assert [n.notice_id for n in store.auto_research_lifecycle_notices(episode.episode_id)] == [
+        "notice-0",
+        "notice-1",
+        "notice-2",
+    ]
+    messages = store.auto_research_messages(episode.episode_id, newest=2)
+    assert [message.message_id for message in messages] == ["message-1", "message-2"]
+    assert len(store.auto_research_messages(episode.episode_id)) == 3

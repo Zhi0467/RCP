@@ -767,6 +767,7 @@ class ProjectTransferStoreMixin:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             ended_at=row["ended_at"],
+            continues_episode_id=row["continues_episode_id"],
             archive=(
                 {
                     "archived_by": {
@@ -2014,8 +2015,11 @@ class ProjectTransferStoreMixin:
                     invocations_used, authorized_space_id, authorized_user_id,
                     authorized_display_name, stop_requested_at, stop_settled_at,
                     ending, ending_diagnostic, wrapup_state, wrapup_error,
-                    report_attempts_used, created_at, updated_at, ended_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                    report_attempts_used, created_at, updated_at, ended_at,
+                    continues_episode_id
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     episode.episode_id,
@@ -2043,6 +2047,7 @@ class ProjectTransferStoreMixin:
                     episode.created_at,
                     episode.updated_at,
                     episode.ended_at,
+                    episode.continues_episode_id,
                 ),
             )
             if episode.archive is not None:

@@ -34,7 +34,7 @@ function Fixture() {
             setBusyAction(null);
           }
         }}
-        onReauthorize={idle}
+        onContinue={idle}
         onSendMessage={idle}
         onOperateTask={idle}
         onArchive={idle}

@@ -491,7 +491,7 @@ def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path
             ordinary_tasks.start(
                 "project-one",
                 "paper_coach",
-                CoachRequest(message="Review this introduction."),
+                CoachRequest(provider="codex", message="Review this introduction."),
             )
     finally:
         tasks.shutdown()

@@ -2330,6 +2330,7 @@ class EpisodeRecord(BaseModel):
     invocations_used: int = Field(default=0, ge=0)
     authorized_by: AuthorizedHuman | None = None
     stop_requested_at: str | None = None
+    stop_initiated_by: str | None = None
     stop_settled_at: str | None = None
     ending: EpisodeEnding | None = None
     ending_diagnostic: str | None = None
@@ -2339,6 +2340,12 @@ class EpisodeRecord(BaseModel):
     created_at: str
     updated_at: str
     ended_at: str | None = None
+    #: The ended episode this one adds turns to. A continuation runs on the
+    #: source's graph branch and native session; the branch keeps the chain
+    #: root's id as its ``branch_id`` forever.
+    continues_episode_id: str | None = None
+    #: The client's idempotency key for the continuation request.
+    continuation_request_id: str | None = None
 
     @model_validator(mode="after")
     def lifecycle_is_coherent(self) -> EpisodeRecord:
@@ -2357,8 +2364,16 @@ class EpisodeRecord(BaseModel):
         if self.graph_target.kind == "branch":
             if self.graph_base_head is None or self.graph_base_head.target.kind != "main":
                 raise ValueError("a branch-target episode requires its immutable main base head")
-            if self.mode == "auto_research" and self.graph_target.branch_id != self.episode_id:
+            if (
+                self.mode == "auto_research"
+                and self.graph_target.branch_id != self.episode_id
+                and self.continues_episode_id is None
+            ):
                 raise ValueError("an Auto-research episode must own its same-id graph branch")
+        if self.continues_episode_id == self.episode_id:
+            raise ValueError("an episode cannot continue itself")
+        if self.continuation_request_id is not None and self.continues_episode_id is None:
+            raise ValueError("only a continuation episode carries a continuation request id")
         if self.wrapup_state in {"ready", "failed"} and self.ending is None:
             raise ValueError("a terminal episode wrap-up requires its semantic ending")
         return self
@@ -2404,6 +2419,7 @@ class AutoResearchSpaceRunTaskState(BaseModel):
 
     operation_id: str
     status: AgentTaskStatus
+    failure_kind: AgentFailureKind | None
     created_at: str
     last_activity_at: str | None
     attempt: int = Field(ge=1)
@@ -2680,12 +2696,16 @@ class AutoResearchLifecycleNoticeRecord(BaseModel):
     source_event: str
     source_attempt: int = Field(default=1, ge=1)
     state: AutoResearchLifecycleNoticeState = "pending"
+    wake_suppressed: Literal["self_caused", "provider_auth"] | None = None
     payload: dict[str, object]
     created_at: str
     delivered_at: str | None = None
     delivery_operation_id: str | None = None
     acknowledged_at: str | None = None
     acknowledged_by: str | None = None
+    #: The turn whose in-turn harvest consumed this notice; `acknowledged_by` is
+    #: the stable actor, which is not the same turn once the orchestrator wakes.
+    acknowledged_operation_id: str | None = None
 
     @model_validator(mode="after")
     def delivery_state_is_coherent(self) -> AutoResearchLifecycleNoticeRecord:
@@ -2705,8 +2725,38 @@ class AutoResearchLifecycleNoticeRecord(BaseModel):
         return self
 
 
+class AutoResearchMessageRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str
+    episode_id: str
+    sender_role: AutoResearchMessageRole
+    sender_task_id: str | None = None
+    authorized_by: AuthorizedHuman | None = None
+    recipient_task_id: str
+    control_node_id: str | None = None
+    body: str = Field(min_length=1, max_length=16_000)
+    created_at: str
+    delivered_at: str | None = None
+    delivery_operation_id: str | None = None
+
+    @field_validator("body")
+    @classmethod
+    def message_body_is_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Auto-research message body must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
+        if self.sender_role != "human" and self.authorized_by is not None:
+            raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
+        return self
+
+
 class AutoResearchInboxReceiptRecord(BaseModel):
-    """The exact lifecycle-notice snapshot acknowledged by one keyed inbox effect."""
+    """The exact notice and mail snapshot consumed by one keyed inbox effect."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2714,6 +2764,8 @@ class AutoResearchInboxReceiptRecord(BaseModel):
     episode_id: str
     mode: AutoResearchInboxReceiptMode
     notice_ids: list[str]
+    message_ids: list[str] = Field(default_factory=list)
+    messages: list[AutoResearchMessageRecord] = Field(default_factory=list)
     count: int = Field(ge=0)
     notices: list[AutoResearchLifecycleNoticeRecord] = Field(default_factory=list)
     acknowledged_by: str
@@ -2721,12 +2773,21 @@ class AutoResearchInboxReceiptRecord(BaseModel):
 
     @model_validator(mode="after")
     def result_matches_mode(self) -> AutoResearchInboxReceiptRecord:
-        if self.count != len(self.notice_ids) or len(set(self.notice_ids)) != self.count:
-            raise ValueError("an inbox receipt count must match its unique notice ids")
-        if self.mode == "clear" and self.notices:
-            raise ValueError("a clear receipt must not retain notice bodies")
+        if (
+            self.count != len(self.notice_ids) + len(self.message_ids)
+            or len(set(self.notice_ids)) != len(self.notice_ids)
+            or len(set(self.message_ids)) != len(self.message_ids)
+        ):
+            raise ValueError("an inbox receipt count must match its unique notice and message ids")
+        if self.mode == "clear" and (self.notices or self.messages):
+            raise ValueError("a clear receipt must not retain notice or message bodies")
         if self.mode == "harvest" and [item.notice_id for item in self.notices] != self.notice_ids:
             raise ValueError("a harvest receipt body must match its notice ids in order")
+        if (
+            self.mode == "harvest"
+            and [item.message_id for item in self.messages] != self.message_ids
+        ):
+            raise ValueError("a harvest receipt body must match its message ids in order")
         return self
 
 
@@ -2847,36 +2908,6 @@ class AutoResearchRecoveryRecord(BaseModel):
     admitted_operation_id: str | None = None
     created_at: str
     updated_at: str
-
-
-class AutoResearchMessageRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    message_id: str
-    episode_id: str
-    sender_role: AutoResearchMessageRole
-    sender_task_id: str | None = None
-    authorized_by: AuthorizedHuman | None = None
-    recipient_task_id: str
-    control_node_id: str | None = None
-    body: str = Field(min_length=1, max_length=16_000)
-    created_at: str
-    delivered_at: str | None = None
-    delivery_operation_id: str | None = None
-
-    @field_validator("body")
-    @classmethod
-    def message_body_is_not_blank(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("Auto-research message body must not be blank")
-        return stripped
-
-    @model_validator(mode="after")
-    def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
-        if self.sender_role != "human" and self.authorized_by is not None:
-            raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
-        return self
 
 
 class AutoResearchActorBinding(BaseModel):
@@ -3637,7 +3668,41 @@ def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
     return data
 
 
+class ProviderLoginStateRecord(BaseModel):
+    """Whether one machine account's shared provider login is known to be alive."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    host: str
+    state: Literal["signed_in", "signed_out"] = "signed_in"
+    generation: int = 0
+    detail: str | None = None
+    source: Literal["turn", "report", "probe", "verify", "sign_out", "restore"] | None = None
+    changed_at: str = ""
+    changed_by: str | None = None
+
+
+class ProviderReadinessSnapshotRecord(BaseModel):
+    """The last credential-touching readiness answer for one exact executable version.
+
+    Reused until the executable or its version changes or a human asks for a
+    re-probe, so a service restart starts no process that reads the login.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    host: str
+    binary: str
+    version: str
+    readiness_json: str
+    probed_at: str
+
+
 __all__ = [
+    "ProviderLoginStateRecord",
+    "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",
     "ArtifactRevisionCandidateStatus",
     "ArtifactRevisionConflict",

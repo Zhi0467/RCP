@@ -906,6 +906,26 @@ def _open_worker_stage(
     )
 
 
+def _orchestrator_stage_actor_id(
+    execution: AgentTaskExecution,
+    turn: _CanonicalOrchestratorTurn,
+) -> str:
+    """The actor whose stage this orchestrator turn reopens.
+
+    A continuation episode resumes the chain root's native session inside the
+    stage that session was opened in, so its stage is named after the root
+    orchestrator rather than the continuation's own root task.
+    """
+
+    episode = execution.store.episode(turn.task.episode_id or "")
+    if episode is None or episode.continues_episode_id is None:
+        return turn.binding.actor_operation_id
+    root = execution.store.episode(episode.graph_target.branch_id or "")
+    if root is None or root.root_operation_id is None:
+        raise ValueError("The continued Auto-research episode lost its chain root.")
+    return root.root_operation_id
+
+
 def _open_orchestrator_stage(
     service: ProjectService,
     data_dir: Path,
@@ -919,7 +939,7 @@ def _open_orchestrator_stage(
         turn,
         stage_name=_orchestrator_stage_name(
             turn.task.project_id,
-            turn.binding.actor_operation_id,
+            _orchestrator_stage_actor_id(execution, turn),
         ),
         actor_label="orchestrator",
         allow_new_stage=turn.clean_session_retry,

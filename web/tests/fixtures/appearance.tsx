@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useTheme } from "../../src/hooks/useTheme";
 import { ProjectLanding } from "../../src/views/ProjectLanding";
@@ -44,6 +45,8 @@ const runs: SpaceRunIndexEntry[] = [
 
 function Fixture() {
   const appearance = useTheme();
+  const [spaceRuns, setSpaceRuns] = useState(runs);
+  Object.assign(window, { refreshSpaceRuns: () => setSpaceRuns((current) => [...current]) });
   return (
     <ProjectLanding
       themeChoice={appearance.theme}
@@ -54,7 +57,7 @@ function Fixture() {
       projects={[]}
       invitations={[]}
       onAnswerInvitation={resolved}
-      spaceRuns={runs}
+      spaceRuns={spaceRuns}
       onOpen={noop}
       onOpenExperiment={noop}
       onArchiveEpisode={resolved}

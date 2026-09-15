@@ -52,6 +52,11 @@ class AppStoreBase:
         (15, "team_device_pairings_v1"),
         (16, "agent_task_failure_kind_v1"),
         (17, "episode_report_titles_v1"),
+        (18, "provider_login_states_v1"),
+        (19, "episode_stop_provenance_v1"),
+        (20, "lifecycle_notice_acknowledging_turn_v1"),
+        (21, "provider_readiness_snapshots_v1"),
+        (22, "episode_continuations_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -538,6 +543,36 @@ class AppStoreBase:
             version=17,
             name="episode_report_titles_v1",
             migration=self._migrate_episode_report_titles,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=18,
+            name="provider_login_states_v1",
+            migration=self._migrate_provider_login_states,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=19,
+            name="episode_stop_provenance_v1",
+            migration=self._migrate_episode_stop_provenance,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=20,
+            name="lifecycle_notice_acknowledging_turn_v1",
+            migration=self._migrate_lifecycle_notice_acknowledging_turn,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=21,
+            name="provider_readiness_snapshots_v1",
+            migration=self._migrate_provider_readiness_snapshots,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=22,
+            name="episode_continuations_v1",
+            migration=self._migrate_episode_continuations,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1975,6 +2010,11 @@ class AppStoreBase:
         self._migrate_team_device_pairings(connection)
         self._migrate_team_session_ids(connection)
         self._ensure_column(connection, "episode_reports", "display_title", "TEXT")
+        self._migrate_provider_login_states(connection)
+        self._migrate_episode_stop_provenance(connection)
+        self._migrate_lifecycle_notice_acknowledging_turn(connection)
+        self._migrate_provider_readiness_snapshots(connection)
+        self._migrate_episode_continuations(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1993,6 +2033,68 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @classmethod
+    def _migrate_episode_stop_provenance(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "episodes", "stop_initiated_by", "TEXT")
+        cls._ensure_column(
+            connection,
+            "auto_research_lifecycle_notices",
+            "wake_suppressed",
+            "TEXT CHECK (wake_suppressed IN ('self_caused', 'provider_auth'))",
+        )
+
+    @classmethod
+    def _migrate_lifecycle_notice_acknowledging_turn(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "auto_research_lifecycle_notices", "acknowledged_operation_id", "TEXT"
+        )
+
+    @classmethod
+    def _migrate_episode_continuations(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "episodes", "continues_episode_id", "TEXT")
+        cls._ensure_column(connection, "episodes", "continuation_request_id", "TEXT")
+        # One continuation per source keeps a chain linear; the request id makes
+        # a repeated POST return the same continuation instead of a second one.
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS episodes_one_continuation_per_source "
+            "ON episodes(continues_episode_id) WHERE continues_episode_id IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS episodes_continuation_request "
+            "ON episodes(project_id, continuation_request_id) "
+            "WHERE continuation_request_id IS NOT NULL"
+        )
+
+    @staticmethod
+    def _migrate_provider_readiness_snapshots(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS provider_readiness_snapshots (
+                provider TEXT NOT NULL,
+                host TEXT NOT NULL,
+                binary TEXT NOT NULL,
+                version TEXT NOT NULL,
+                readiness_json TEXT NOT NULL,
+                probed_at TEXT NOT NULL,
+                PRIMARY KEY (provider, host, binary)
+            )
+        """)
+
+    @staticmethod
+    def _migrate_provider_login_states(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS provider_login_states (
+                provider TEXT NOT NULL,
+                host TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('signed_in', 'signed_out')),
+                generation INTEGER NOT NULL,
+                detail TEXT,
+                source TEXT,
+                changed_at TEXT NOT NULL,
+                changed_by TEXT,
+                PRIMARY KEY (provider, host)
+            )
+        """)
 
     @classmethod
     def _migrate_episode_report_titles(cls, connection: sqlite3.Connection) -> None:

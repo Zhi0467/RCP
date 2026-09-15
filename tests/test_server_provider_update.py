@@ -11,13 +11,11 @@ import pytest
 
 from rcp.__main__ import build_parser
 from rcp.server_ops.cli import (
-    SERVER_CLI_EXIT_OPERATOR_ACTION,
     CallerIdentity,
     run_server_command,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.provider_update import (
-    _server_login_command,
     _success_message,
     prepare_provider_update_command,
 )
@@ -70,7 +68,7 @@ def _parse(provider: str):
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
-def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
+def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_login(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
@@ -107,10 +105,8 @@ def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
             binary.chmod(0o755)
             state["updated"] = True
             return subprocess.CompletedProcess(argv, 0, "installed", "")
-        if argv[-2:] == ("login", "status"):
-            return subprocess.CompletedProcess(argv, 0, "Logged in using ChatGPT", "")
-        if argv[-2:] == ("auth", "status"):
-            return subprocess.CompletedProcess(argv, 0, json.dumps({"loggedIn": True}), "")
+        # A status command is a presence check, not proof, and reads the
+        # credential file; an update runs none.
         raise AssertionError(f"unexpected provider command: {argv}")
 
     output = StringIO()
@@ -132,8 +128,9 @@ def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
     assert events[-1]["step"]["state"] == "succeeded"
     assert events[-1]["step"]["fields"][-1] == {
         "name": "authentication",
-        "value": "ready",
+        "value": "unchanged by this update",
     }
+    assert not any(call[-2:] in {("login", "status"), ("auth", "status")} for call in calls)
     if provider == "codex":
         assert any(call[0] == "/usr/bin/curl" for call in calls)
         assert any(
@@ -144,63 +141,6 @@ def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
         assert (str(binary), "update") in calls
 
 
-def test_provider_update_preserves_success_and_prints_login_recovery(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    layout = _layout(tmp_path)
-    account = _account(layout)
-    binary = layout.service_home / ".local" / "bin" / "claude"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("#!/bin/sh\n", encoding="utf-8")
-    binary.chmod(0o755)
-    monkeypatch.setattr("rcp.server_ops.provider_update.pwd.getpwnam", lambda _name: account)
-
-    def runner(_account, argv: tuple[str, ...], _timeout: float):
-        if argv[-1] == "--version":
-            return subprocess.CompletedProcess(argv, 0, "2.1.253", "")
-        if argv[-1] == "update":
-            return subprocess.CompletedProcess(argv, 0, "updated", "")
-        return subprocess.CompletedProcess(argv, 1, json.dumps({"loggedIn": False}), "")
-
-    output = StringIO()
-    exit_code = run_server_command(
-        _parse("claude"),
-        handler=lambda request, identity: prepare_provider_update_command(
-            request,
-            identity,
-            runner=runner,
-            layout=layout,
-        ),
-        identity=CallerIdentity(uid=0, username="root", host="lab"),
-        stream=output,
-    )
-
-    assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
-    events = [json.loads(line) for line in output.getvalue().splitlines()]
-    final = events[-1]["step"]
-    assert final["state"] == "operator_action_needed"
-    assert final["actions"][0]["argv"] == [
-        "sudo",
-        "-u",
-        "rcp",
-        "-H",
-        str(binary),
-        "auth",
-        "login",
-    ]
-
-
-def test_codex_recovery_uses_headless_device_login() -> None:
-    binary = Path("/home/rcp/.local/bin/codex")
-
-    assert _server_login_command("codex", binary) == (
-        str(binary),
-        "login",
-        "--device-auth",
-    )
-
-
 def test_changed_provider_command_path_names_the_member_owned_resolve_step() -> None:
     message = _success_message(
         "codex",
@@ -208,5 +148,6 @@ def test_changed_provider_command_path_names_the_member_owned_resolve_step() -> 
         Path("/home/rcp/.local/bin/codex"),
     )
 
-    assert "updated and authenticated as rcp" in message
+    assert "updated as rcp" in message
+    assert "does not change its login" in message
     assert "authenticated member uses Resolve in Project Settings" in message

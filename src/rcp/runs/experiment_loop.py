@@ -326,6 +326,7 @@ def experiment_watcher_delivery_request(
 
     An automatic wake carries the episode's session id; a human Run that
     reauthorizes pending completion carries none, because it is a fresh episode.
+    A continuation adds the source session afterwards; see ``continue_experiment_episode``.
     """
 
     if trigger == "experiment_run" and session_id:
@@ -1223,7 +1224,7 @@ def experiment_loop_phase(request: RunRequest, continuation: str) -> ExperimentL
         return "resume"
     if continuation in {"retry", "handoff"}:
         return "retry"
-    if request.trigger == "experiment_run" and request.watcher_ids:
+    if request.trigger == "experiment_run" and (request.watcher_ids or request.session_id):
         return "human_reauthorization"
     if request.trigger == "watcher":
         return "watcher_wake"

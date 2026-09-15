@@ -17,21 +17,23 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
-from rcp.api.episodes import _episode_for_http
+from rcp.api.episodes import _episode_for_http, episode_on_branch
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.control import ExperimentControlState
-from rcp.core.models import Experiment
+from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs.experiment_admission import (
     experiment_start_message,
     fresh_experiment_run_request,
     resolve_experiment_node_work_request,
+    start_experiment_continuation,
 )
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request
+from rcp.runs.provider_login import provider_login_host
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeNotRunning, EpisodeRecord
@@ -200,6 +202,7 @@ def stop_bound_experiment_episode(
     *,
     store: AppStore,
     catalog: ProjectCatalog,
+    initiated_by: str | None = None,
 ) -> ExperimentControlState:
     """Stop one exact current loop against the graph target it actually controls."""
 
@@ -230,7 +233,9 @@ def stop_bound_experiment_episode(
         raise HTTPException(status_code=404, detail="Experiment not found")
     if episode.graph_target.kind == "branch":
         route = store.auto_research_child_experiment(episode.episode_id)
-        if route is not None and route.auto_research_episode_id != episode.graph_target.branch_id:
+        if route is not None and not episode_on_branch(
+            store, route.auto_research_episode_id, episode.graph_target.branch_id
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="The branch Experiment lost its Auto-research parent binding.",
@@ -251,6 +256,7 @@ def stop_bound_experiment_episode(
             node_id,
             episode_id=episode.episode_id,
             graph_target=episode.graph_target,
+            initiated_by=initiated_by,
         )
     except EpisodeNotRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -262,6 +268,136 @@ def stop_bound_experiment_episode(
         graph_target=episode.graph_target,
     )
     return control
+
+
+def continue_experiment_episode(
+    project_id: str,
+    source: EpisodeRecord,
+    *,
+    invocation_ceiling: int,
+    request_id: str,
+    authorized_by: AuthorizedHuman,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    background_tasks: BackgroundAgentTasks,
+) -> EpisodeRecord:
+    """Add turns to an ended Experiment episode by resuming its bound session.
+
+    The continuation is a new episode with its own ceiling, invocation 1 of
+    which resumes the source's native session inside the source's stage. It
+    reuses the Run path: the source's last turn request, re-pinned to the
+    current graph revision and Decision bundle, and any pending watcher group
+    is delivered with it. The caller holds the Experiment operation lock.
+    """
+
+    node_id = source.control_node_id
+    if source.mode != "experiment_loop" or node_id is None:
+        raise HTTPException(status_code=409, detail="This is not an Experiment-loop episode.")
+    existing = store.episode_continuation(source.episode_id)
+    if existing is not None:
+        if existing.continuation_request_id != request_id:
+            raise HTTPException(status_code=409, detail="This episode has already been continued.")
+        return existing
+    experiment = store.experiment_episode(source.episode_id)
+    if (
+        experiment is None
+        or not experiment.session_bound
+        or not experiment.native_session_id
+        or not experiment.stage_root
+        or not experiment.chat_id
+        or experiment.last_turn_operation_id is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This episode never committed a native session to continue. "
+                "Start a new episode instead."
+            ),
+        )
+    last_turn = store.agent_task(experiment.last_turn_operation_id)
+    if last_turn is None:
+        raise HTTPException(status_code=409, detail="The episode lost its last turn record.")
+    main_service = get_project_service(catalog, project_id)
+    target_service = (
+        main_service
+        if source.graph_target.kind == "main"
+        else main_service.for_graph_target(
+            source.graph_target,
+            expected_episode_id=source.graph_target.branch_id,
+        )
+    )
+    state = target_service.history.state()
+    node = state.nodes.get(node_id)
+    if not isinstance(node, Experiment):
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    _, control = _experiment_control_for_target(
+        store,
+        project_id,
+        state,
+        node_id,
+        graph_target=source.graph_target,
+    )
+    if not control.ready:
+        raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+    pending_group = store.completed_experiment_watcher_group(
+        project_id,
+        node_id,
+        graph_target=source.graph_target,
+    )
+    episode_id = str(uuid.uuid4())
+    request = RunRequest.model_validate(last_turn.request).model_copy(
+        update={
+            "message": (
+                f"Continue the bounded Experiment-loop for {node_id} in this same session "
+                "with the additional turns the human authorized."
+            ),
+            "session_id": experiment.native_session_id,
+            "chat_id": experiment.chat_id,
+            "trigger": "experiment_run",
+            "control_revision": state.revision,
+            "control_episode_id": episode_id,
+            "control_invocation": 1,
+            "control_invocation_ceiling": invocation_ceiling,
+            "control_decision_bundle": control.governing_decisions,
+            "control_completion_criteria": list(node.completion_criteria),
+            "watcher_ids": [item.watcher_id for item in pending_group or []],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "result_view": None,
+        }
+    )
+    request = target_service.resolve_compute_request(request)
+    # The saved stage is frozen on one machine; the worker checks the alias
+    # against it. A repointed alias must refuse here, before the source is chained.
+    try:
+        current_host = provider_login_host(target_service.manifest, request.run_on)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if current_host != (experiment.stage_host or ""):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The saved stage is not on the machine its execution alias names now, so the "
+                "session cannot be resumed. Start a new episode instead."
+            ),
+        )
+    try:
+        start_experiment_continuation(
+            background_tasks,
+            project_id,
+            request,
+            source=source,
+            authorized_by=authorized_by,
+            stage_host=experiment.stage_host,
+            stage_root=experiment.stage_root,
+            continuation_request_id=request_id,
+        )
+    except AgentTaskAdmissionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    continuation = store.episode(episode_id)
+    if continuation is None:
+        raise HTTPException(status_code=409, detail="The continuation was not recorded.")
+    return continuation
 
 
 # Register this after ``.../watchers/stop``: ``{node_id:path}`` is greedy, so
@@ -287,7 +423,7 @@ def stop_experiment_loop(
     again changes nothing.
     """
 
-    identity_access.require_patch_capable_identity(request)
+    actor = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     target = get_graph_service(catalog, project_id, branch_id).history.graph_target
     with experiment_operation_lock(project_id):
@@ -319,6 +455,7 @@ def stop_experiment_loop(
             episode,
             store=store,
             catalog=catalog,
+            initiated_by=f"human:{actor.user_id}",
         )
     return control.model_dump(mode="json")
 

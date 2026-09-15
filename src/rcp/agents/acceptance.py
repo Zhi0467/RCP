@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +21,7 @@ from rcp.agents.launcher import (
     AgentProcessControl,
     ProviderReadiness,
 )
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
@@ -110,8 +111,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
     server restart exercises the same recovery path as a real provider session.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, accounts: ProviderAccounts | None = None) -> None:
+        super().__init__(accounts=accounts)
         self._records_lock = threading.Lock()
         self._launch_records: list[AcceptanceLaunchRecord] = []
 
@@ -174,6 +175,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         capability: AgentCapability,
         binary: str | None = None,
         runtime_id: str | None = None,
+        before_start: Callable[[], Awaitable[None]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -195,6 +197,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     capability=capability,
                     binary=binary,
                     runtime_id=runtime_id,
+                    before_start=before_start,
                 ):
                     yield event
             return
@@ -233,6 +236,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before acceptance fixture work started.")
             return
+
+        if before_start is not None:
+            hold = await self.credential_gate.hold(provider, host)
+            try:
+                await before_start()
+            finally:
+                hold.release()
 
         state = _read_state(resolved_cwd)
         contract = (

@@ -15,6 +15,7 @@ from rcp.api.dependencies import (
     require_project_membership,
     require_registered_project,
 )
+from rcp.api.episodes import episode_on_branch
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.projects import ProjectCatalog
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeMode
@@ -60,7 +61,7 @@ def _episode_runs_query(
         # inspected without a composer.
         work = store.auto_research_child_work_for_operation(task.operation_id)
         if (
-            episode.episode_id != branch_id
+            episode.graph_target.branch_id != branch_id
             or work is None
             or work.project_id != project_id
             or work.episode_id != episode.episode_id
@@ -73,7 +74,7 @@ def _episode_runs_query(
         or experiment is None
         or experiment.project_id != project_id
         or experiment.control_node_id != episode.control_node_id
-        or experiment.auto_research_episode_id != branch_id
+        or not episode_on_branch(store, experiment.auto_research_episode_id, branch_id)
     ):
         return None
     return {

@@ -48,6 +48,18 @@ from rcp.limits import (
 )
 
 
+def remaining_startup_hold(started_at: float) -> float:
+    """Seconds a provider process started at `started_at` must still be left alone.
+
+    A process killed while it refreshes its login spends the single-use refresh
+    token and leaves the credential dead. Nothing reports when the refresh runs,
+    so every kill of a young provider process waits out the same minimum stagger
+    the startup gate uses; a process that has already exited owes nothing.
+    """
+
+    return max(0.0, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS - (time.monotonic() - started_at))
+
+
 class CredentialStartupHold:
     """One admitted startup.
 
@@ -77,6 +89,21 @@ class CredentialStartupHold:
             self._expiry = _start_timer(
                 PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self._release_now
             )
+
+    def restart_minimum(self, minimum: float | None = None) -> None:
+        """Measure the minimum stagger from now: the provider only just started.
+
+        A remote launch acquires the hold before its SSH handshake, so the
+        stagger counted from acquisition can already have elapsed when the
+        provider process itself starts refreshing the login.
+        """
+
+        if minimum is None:
+            minimum = PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+        with self._guard:
+            if self._lock is None or self._pending is not None:
+                return
+            self._earliest = max(self._earliest, time.monotonic() + minimum)
 
     def release(self) -> None:
         """End this startup, no earlier than the minimum stagger allows."""
@@ -161,11 +188,12 @@ class ProviderCredentialGate:
         claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
         while not claim.try_acquire():
             pass
-        hold = CredentialStartupHold(claim.lock, minimum=0.0, across_processes=claim.descriptor)
         try:
             yield
         finally:
-            hold.release()
+            if claim.descriptor is not None:
+                _drop_account_lock(claim.descriptor)
+            claim.lock.release()
 
     def _account_lock_path(self, provider: str, host: str) -> Path | None:
         """Where this OS account's lock for one provider login lives.

@@ -66,10 +66,19 @@ class ExperimentStoreMixin:
         *,
         auto_research_route: AutoResearchChildExperimentRecord | None = None,
         auto_research_admission_id: str | None = None,
+        continues_episode_id: str | None = None,
+        continuation_request_id: str | None = None,
     ) -> AgentTaskRecord:
-        """Atomically create the Experiment parent, mode child, and invocation 1."""
+        """Atomically create the Experiment parent, mode child, and invocation 1.
+
+        A continuation names the ended episode whose native session and stage
+        its first invocation resumes; the source must be continuable under
+        ``_require_continuable_source`` and control the same Experiment.
+        """
 
         ids = list(watcher_ids or [])
+        if continues_episode_id is not None and auto_research_route is not None:
+            raise ValueError("an orchestrator Experiment start cannot continue an episode")
         parent_episode = (
             self.episode(auto_research_route.auto_research_episode_id)
             if auto_research_route is not None
@@ -97,6 +106,8 @@ class ExperimentStoreMixin:
             record,
             auto_research_route=auto_research_route,
             graph_base_head=(graph_branch.graph_base_head if graph_branch else None),
+            continues_episode_id=continues_episode_id,
+            continuation_request_id=continuation_request_id,
         )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)
@@ -117,6 +128,21 @@ class ExperimentStoreMixin:
                     raise ValueError("This Experiment episode id is already in use.")
                 if self._live_episode_row(connection, episode) is not None:
                     raise ValueError("This Experiment already has a live episode.")
+                if continues_episode_id is not None:
+                    source_row = connection.execute(
+                        "SELECT * FROM episodes WHERE episode_id = ?", (continues_episode_id,)
+                    ).fetchone()
+                    if source_row is None:
+                        raise ValueError("The continued Experiment episode no longer exists.")
+                    source = self._episode_record(source_row)
+                    if (
+                        source.mode != "experiment_loop"
+                        or source.control_node_id != episode.control_node_id
+                    ):
+                        raise ValueError(
+                            "a continuation controls the same Experiment as its source"
+                        )
+                    self._require_continuable_source(connection, source, episode)
                 watchers = self._ready_experiment_watchers(connection, record, ids)
                 if ids:
                     self._validate_watcher_notification_scope(connection, record, watchers)
@@ -169,7 +195,9 @@ class ExperimentStoreMixin:
                 )
                 self._claim_experiment_watchers(connection, record.operation_id, ids)
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Could not create the Experiment episode.") from exc
+            raise ValueError(
+                "Could not create the Experiment episode; an episode is continued at most once."
+            ) from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
@@ -449,6 +477,8 @@ class ExperimentStoreMixin:
         *,
         auto_research_route: AutoResearchChildExperimentRecord | None = None,
         graph_base_head: GraphHeadRef | None = None,
+        continues_episode_id: str | None = None,
+        continuation_request_id: str | None = None,
     ) -> EpisodeRecord:
         request = record.request
         episode_id = request.get("control_episode_id")
@@ -485,6 +515,8 @@ class ExperimentStoreMixin:
             authorized_by=record.authorized_by,
             created_at=record.created_at,
             updated_at=record.created_at,
+            continues_episode_id=continues_episode_id,
+            continuation_request_id=continuation_request_id,
         )
         ExperimentStoreMixin._validate_new_experiment_episode(episode)
         return episode
@@ -2224,6 +2256,7 @@ class ExperimentStoreMixin:
         project_id: str,
         control_node_id: str,
         *,
+        initiated_by: str | None = None,
         episode_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
     ) -> ExperimentEpisodeRecord | None:
@@ -2248,7 +2281,7 @@ class ExperimentStoreMixin:
         if selected is None:
             return None
         selected_episode_id, selected_target = selected
-        self.request_episode_stop(selected_episode_id)
+        self.request_episode_stop(selected_episode_id, initiated_by=initiated_by)
         return self.settle_experiment_loop_stop(
             project_id,
             control_node_id,

@@ -160,9 +160,23 @@ Sleeping-actor delivery claims a bounded notice batch atomically with one B
 allocation. A graph-condition wake of the root orchestrator also claims pending
 lifecycle notices and root-addressed mail within the delivery bounds. Lifecycle
 wakes wait a short grace window so notices arriving together share one allocation.
-A running orchestrator may harvest or clear its inbox without a separate wake.
-Budget exhaustion retains notices but cannot create an unauthorized turn. Clear
-refuses before acknowledgment if even its compact full response exceeds the bound.
+A running orchestrator may harvest or clear its inbox without a separate wake;
+the harvest returns and consumes, in one transaction, the pending lifecycle
+notices and the pending mail addressed to the orchestrator, attributing the
+consumption to the running turn, so mail that arrives before a turn's last
+harvest never costs a wake. Budget exhaustion retains notices but cannot create
+an unauthorized turn. Clear refuses before acknowledgment if even its compact
+full response exceeds the bound.
+
+Every Stop and every replacement records who initiated it (`human:<member>`,
+`orchestrator:<operation>`, or `system:<reason>`) in the same transaction as
+the fence. A notice born from a stop the orchestrator itself requested, or from
+a replacement it created advancing, carries `wake_suppressed=self_caused`; a
+child task failure classified as a revoked login carries
+`wake_suppressed=provider_auth`. A suppressed notice never admits a paid wake
+and never holds ordinary mail; the running orchestrator still learns of it
+through the harvest, it still counts in the ending receipt, and it never blocks
+quiescence or an ending. A failed replacement is new information and wakes.
 
 A completed child watcher group wakes the same child route and native session,
 never the root. Watchers retain the episode id and route worker id. One atomic
@@ -246,9 +260,32 @@ repeating an uncertain submission.
 
 At budget exhaustion or non-Stop ending, admitted children settle, the parent
 fences new work, and the common visual report resumes the exact branch-bound
-session with one immutable receipt. Human Stop uses the common graceful fence
-and skips the report. Reauthorization always creates a new episode, native
-session, and branch; it never reopens an exhausted parent.
+session with one immutable receipt. The receipt compacts to its storage bound
+and never blocks settlement; a permanent admission defect settles the episode
+with a visible nonblocking report error instead of leaving it in `wrapping_up`.
+Human Stop uses the common graceful fence and skips the report.
+
+Reauthorization is a **continuation episode**: a new episode record chained to
+the ended one by `continues_episode_id`, on the same graph branch, with the
+orchestrator resumed in its exact native session and told how many turns it now
+has (the human's number is the continuation's ceiling). The branch keeps the
+chain root's id as its `branch_id`; every chain member's graph target names that
+branch, and a branch resolves to the newest member of its chain wherever the
+current writer matters. Child Experiment routes still pending or running move to
+the continuation, so their endings reach the resumed orchestrator; child Work
+routes, notices, mail, and watchers stay on the source. The continuation's first
+turn is a `lifecycle_wake` that claims a `reauthorized` notice naming the source
+and the new ceiling. The source episode is otherwise untouched: its ending,
+receipt, report, attempts, watchers, and notices stay as they were. A
+continuation is offered (`can_continue`) only where the source's orchestrator
+session and stage are still bound; otherwise the human starts a new episode. `POST .../episodes/{id}/continue` with
+`invocation_ceiling` and a client `request_id` serves both modes; it refuses
+while the source has a live turn, is not terminal, is already continued, a merge
+runs on its branch, or a newer live episode occupies the project or node. The
+same `request_id` replays the same continuation. A continuation records the
+member who made it; the source keeps its own authorizer. Stopped watchers stay
+stopped. See
+[reauthorization continues on the same branch](../decisions/2026-09-14-reauthorization-continues-on-the-same-branch.md).
 
 Parent settlement and report launch, including restart of an allocated report,
 wait for unfinished child Experiment turns and their exact recovery. A parent
@@ -270,33 +307,27 @@ wake. These fences do not cancel compute jobs.
 
 ## Branch lifecycle and merge eligibility
 
-A branch remains writable while its episode accepts graph work. It is eligible
-to merge when:
+A branch remains writable while any episode of its chain accepts graph work.
+It is eligible to merge on branch facts alone: its head is exact and newer than
+its base, no successful receipt covers that head, and no queued, running, or
+pausing graph-capable task is writing to the branch (a `branch_merge` task is
+not a writer). Nothing about the episode is a condition: not its status, ending,
+wrap-up state, quiescence, or whether its orchestrator is paused. Merging ends
+nothing; there is no **End and merge to main**. Ending an episode is Stop,
+merging is Merge, and a human may do either. See
+[a branch merges on branch facts](../decisions/2026-09-14-a-branch-merges-on-branch-facts.md).
 
-- the episode has a durable completed, exhausted, stopped, failed, or
-  human-pause ending and no unsettled branch writer; or
-- its current orchestrator is paused and every unsettled branch turn is a
-  paused Auto-research turn owned by that same episode.
-
-The second case exposes **End and merge to main**. Human dispatch atomically
-ends the paused episode, retires its paused recovery and watchers, and admits
-the merge. Resume and Retry cannot reopen the episode, including if the merge
-fails; the human may retry the merge. Retained stages and Patch history remain
-intact. A queued, running, or pausing writer still blocks this action, as does an
-unsettled child Work or Experiment with its own lifecycle. An active orchestrator
-waiting for mail or watchers is not a paused episode.
-
-Eligibility and merge state derive from canonical branch head, episode state,
+Eligibility and merge state derive from the canonical branch head, the branch's
 task state, and successful receipts. Recovered or explicitly abandoned historical
-attempts do not count as active writers. Unresolved paused turns must settle or
-be ended by the explicit action above. The branch is never deleted. A newer branch
-head after a prior receipt may be merged again; a head already covered by a
-successful receipt cannot.
+attempts do not count as active writers. The branch is never deleted. A newer
+branch head after a prior receipt may be merged again; a head already covered by
+a successful receipt cannot. An active merge fences new graph work on the branch
+until it settles.
 
-Only a human project member can dispatch **Merge to main** or **End and merge
-to main**, from the exact Auto-research episode detail. Active/nonquiescent, already-merged,
-cross-project/cross-episode, or concurrently merging requests fail closed. The
-merge task does not spend the concluded episode budget.
+Only a human project member can dispatch **Merge to main**, from any card of the
+branch's episode chain. Already-merged, cross-project, cross-branch, or
+concurrently merging requests fail closed, as does a branch with a live writer,
+which is named. The merge task does not spend any episode budget.
 
 ## Semantic rebase and merge
 

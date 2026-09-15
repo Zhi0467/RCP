@@ -27,6 +27,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.agents.provider_accounts import ProviderAccounts
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
@@ -59,6 +61,7 @@ from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
+from rcp.api.provider_login import router as provider_login_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
 from rcp.api.sync import router as sync_router
@@ -77,6 +80,7 @@ from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -114,6 +118,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
+from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -620,7 +625,19 @@ def create_app(
     )
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
-    launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
+    provider_credentials = ProviderCredentialStore.for_data_dir(app_data)
+    # One account owner for the launcher, sign-in, and skill probing.
+    provider_accounts = ProviderAccounts(store, provider_credentials)
+    launcher = (
+        AcceptanceAgentLauncher(accounts=provider_accounts)
+        if acceptance_agent
+        else AgentLauncher(accounts=provider_accounts, readiness_snapshots=store)
+    )
+    # A restored data directory carries login state but no token: the backup
+    # excludes `providers`; reset accounts whose implementation requires a
+    # managed credential before anything can launch on one that is gone.
+    provider_accounts.reset_logins_without_credentials()
+    provider_sign_ins = ProviderSignInRunner(store, launcher, provider_accounts)
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
             store,
@@ -640,7 +657,12 @@ def create_app(
         backup_capture_coordinator = BackupCaptureCoordinator(store, app_data, identity)
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     # One gate, so a skill probe and a turn cannot rotate one login together.
-    provider_skills = ProviderSkillInventoryManager(store, credential_gate=launcher.credential_gate)
+    provider_skills = ProviderSkillInventoryManager(
+        store,
+        accounts=provider_accounts,
+        credential_gate=launcher.credential_gate,
+        process_environment=launcher.process_environment,
+    )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
@@ -960,15 +982,21 @@ def create_app(
             identity,
             layout=server_layout,
         )
+
+    def _branch_service(graph_target: GraphTargetRef, project_id: str) -> ProjectService:
+        # The branch is named after the chain root; a continuation episode
+        # shares it, so the expected episode is the branch id, not the member.
+        return _project_service(catalog, project_id).for_graph_target(
+            graph_target,
+            expected_episode_id=graph_target.branch_id,
+        )
+
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
         background_tasks,
-        project_service=lambda project_id, episode_id: _project_service(
-            catalog,
-            project_id,
-        ).for_graph_target(
+        project_service=lambda project_id, episode_id: _branch_service(
             _episode_for_http(store, catalog, project_id, episode_id).graph_target,
-            expected_episode_id=episode_id,
+            project_id,
         ),
         operation_lock=experiment_operation_lock,
     )
@@ -979,10 +1007,7 @@ def create_app(
         instruction: str,
         worker_id: str,
     ) -> RunRequest:
-        service = _project_service(catalog, context.task.project_id).for_graph_target(
-            context.episode.graph_target,
-            expected_episode_id=context.episode.episode_id,
-        )
+        service = _branch_service(context.episode.graph_target, context.task.project_id)
         return _auto_research_worker_request(
             service,
             context,
@@ -1162,12 +1187,13 @@ def create_app(
 
     graph_watcher_retry_worker = WatcherRetryWorker(retry_graph_wakes_after_poll)
 
-    def after_watcher_poll() -> None:
-        graph_watcher_retry_worker.signal()
+    def reconcile_episodes() -> int:
         reconcile_auto_research_recovery_pass()
         auto_research_episode_ids: list[str] = []
+        checked = 0
         for project in store.projects():
             for episode in store.episodes(project.project_id, limit=None):
+                checked += 1
                 if episode.mode == "auto_research":
                     auto_research_episode_ids.append(episode.episode_id)
                     try:
@@ -1204,6 +1230,23 @@ def create_app(
                     episode_id,
                     exc,
                 )
+
+        return checked
+
+    from rcp.runs.provider_login import resume_provider_account
+
+    provider_sign_ins.resume_account = lambda provider, host: resume_provider_account(
+        background_tasks,
+        provider,
+        host,
+        reconcile_episodes=reconcile_episodes,
+        watcher_delivery=watcher_delivery,
+    )
+
+    def after_watcher_poll() -> None:
+        provider_sign_ins.reconcile_recovery()
+        graph_watcher_retry_worker.signal()
+        reconcile_episodes()
 
     watcher_poller = WatcherPoller(
         store,
@@ -1264,6 +1307,9 @@ def create_app(
         experiment_admission=experiment_admission,
         health_composition=health_composition,
         server_status_composition=server_status_composition,
+        provider_credentials=provider_credentials,
+        provider_sign_ins=provider_sign_ins,
+        episode_reconciliation=reconcile_episodes,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1290,9 +1336,9 @@ def create_app(
                         path_state="unreachable" if host else "missing",
                         reason=str(exc),
                     )
-                    provider_skills.refresh(provider, host, binary, readiness)
+                    provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
                     raise
-                provider_skills.refresh(provider, host, binary, readiness)
+                provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
 
             # Mark the whole startup inventory before beginning any provider
             # process so the UI never mistakes a prior process's cache for a
@@ -1825,6 +1871,7 @@ def create_app(
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
 
+    app.include_router(provider_login_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(team_router)

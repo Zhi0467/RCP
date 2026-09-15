@@ -1,3 +1,5 @@
+import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
+import { loadProviderLogins } from "../api";
 import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
@@ -10,6 +12,7 @@ import { isDesktopRuntime } from "../desktopRuntime";
 import type { ProjectTab } from "../projectTabs";
 import type { ResolvedTheme } from "../theme";
 import type {
+  ProviderLoginState,
   IdentityResponse,
   ProjectCard,
   ProjectCreationControl,
@@ -201,6 +204,25 @@ export function ProjectLanding({
   onColorModeChoiceChange,
   palette,
 }: Props) {
+  const [providerLogins, setProviderLogins] = useState<ProviderLoginState[]>([]);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    loadProviderLogins().then(
+      (states) => {
+        if (active) {
+          setProviderLogins(states);
+          setLoginError(null);
+        }
+      },
+      (error) => {
+        if (active) setLoginError(String(error));
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [spaceRuns]);
   const desktop = isDesktopRuntime();
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
   const [openMenuProject, setOpenMenuProject] = useState<string | null>(null);
@@ -296,6 +318,8 @@ export function ProjectLanding({
       </header>
 
       <main className="landing-main">
+        <ProviderLoginNotice states={providerLogins} />
+        {loginError && <p role="alert">{loginError}</p>}
         {identity?.space_kind === "personal" && (
           <h1 className="space-group-title">Personal space</h1>
         )}

@@ -56,11 +56,17 @@ checkouts and project keys, and service-owned checkpoint payloads. Root owns
 operation and adoption journals, restore preparation receipts, and bounded logs.
 Provider-native state stays in each provider's normal per-account home path
 (currently `/home/rcp/.codex` and `/home/rcp/.claude`), and SSH state stays in
-`/home/rcp/.ssh`; RCP does not relocate or manage provider authentication. A
-later provider retains its own native path rather than joining an RCP credential
-store. The root-entered `server provider update <codex|claude>` command is a
-bounded operator wrapper around the provider's native update under `rcp`; it
-does not take ownership of provider releases or credentials. The installed
+`/home/rcp/.ssh`; RCP does not relocate provider credentials. The one credential
+RCP itself keeps is the Claude setup token, under the application data
+directory at `providers/claude/<account>/setup-token` (0700 directory, 0600
+file, excluded from protected backups). RCP records each machine account's login
+state from real provider results, refuses new provider work while an account is
+signed out, and signs an account in, verifies it with one real request, and
+signs it out from the product, as any member, per the
+[provider logins decision](../decisions/2026-09-14-provider-logins-are-kept-alive.md).
+The root-entered `server provider update <codex|claude>` command is a bounded
+operator wrapper around the provider's native update under `rcp`; it does not
+take ownership of provider releases or credentials and never reads the login. The installed
 service and root-to-service subprocess environment put `/home/rcp/.local/bin`
 first so a provider's account-local installation wins over a stale system-wide
 copy. Provider discovery persists that stable command path rather than resolving
@@ -431,8 +437,10 @@ an initialized team before admission. The application's `create_app` reads no
 deployment journal and makes no release, checkpoint or rollback decision.
 
 `server doctor` is read-only. It reports selected/current/running identities,
-private control availability and the root-owned observational status projection;
-that projection cannot authorize startup or replace the private journals.
+private control availability, the root-owned observational status projection,
+and each machine account's durable provider login state (`provider_logins`,
+read from the application database without opening it for writing); that
+projection cannot authorize startup or replace the private journals.
 
 Team Settings reads release and backup status without opening the supervisor's
 private restore journals. The current public projection has no completed-restore
@@ -1208,7 +1216,8 @@ A fresh host remains stopped and needs no dummy team initialization.
 
 It preserves `space_id`, converts captured active work to interrupted, and never
 claims that RCP itself can prove the old authority is offline. Because provider
-homes, run stages, and provider-native conversation state are excluded, restore
+homes, the `providers` credential directory, run stages, and provider-native
+conversation state are excluded, restore
 marks every pre-restore task history-only, clears `writing_sessions` and
 `chat_session_contexts`, and exposes no old native-session id as an executable
 continuation. Task answers, receipts, RCP chat text, and Paper content remain

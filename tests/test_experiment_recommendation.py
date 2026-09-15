@@ -95,3 +95,38 @@ def test_a_live_turn_is_still_only_worth_waiting_for() -> None:
     )
 
     assert recommendation == "wait"
+
+
+def test_signed_out_experiment_retry_creates_no_task_or_budget(tmp_path):
+    from rcp.agents import AgentEvent
+    from rcp.background import BackgroundAgentTasks
+
+    from .helpers import fabricated_authorizer, wait_for_task
+    from .test_background import _experiment_request, _sse, _store
+
+    store = _store(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="experiment-session"))
+        yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    root = tasks.start(
+        "project",
+        "node_chat",
+        _experiment_request().model_copy(update={"run_on": "local"}),
+        authorized_by=fabricated_authorizer(),
+    )
+    root = wait_for_task(store, root.operation_id, expect="failed")
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    with store.connection() as connection:
+        before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    budget = store.episode(root.episode_id).invocations_used
+    with pytest.raises(ValueError, match="signed out"):
+        tasks.retry(root.operation_id)
+    assert store.episode(root.episode_id).invocations_used == budget
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before

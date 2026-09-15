@@ -6,8 +6,8 @@ import uuid
 import pytest
 
 from rcp.api.episodes import (
+    ContinueEpisodeBody,
     EpisodeMessageBody,
-    ReauthorizeEpisodeBody,
     StartEpisodeBody,
     _episode_task_metadata,
     episode_for_project,
@@ -116,6 +116,12 @@ def _auto_episode(
         ),
         root,
     )
+    # A continuation resumes the root's session, so the fixture binds one.
+    store.checkpoint_agent_task(
+        stored_root.operation_id,
+        native_session_id=f"{episode_id}-session",
+        stage_root=f"/tmp/{episode_id}-stage",
+    )
     if root_status == "succeeded":
         store.complete_agent_task(stored_root.operation_id, applied_revision=None, result={})
     elif root_status == "failed":
@@ -134,6 +140,7 @@ def _branch_summary(episode: EpisodeRecord) -> GraphBranchSummary:
     return GraphBranchSummary(
         branch_id=episode.episode_id,
         episode_id=episode.episode_id,
+        current_episode_id=episode.episode_id,
         base_head=episode.graph_base_head,
         head=GraphHeadRef(
             target=episode.graph_target,
@@ -151,6 +158,7 @@ def _begin_report(
     root: AgentTaskRecord,
     *,
     ending: str,
+    provider: str = "codex",
 ) -> tuple[str, str]:
     now = store.now()
     allocation_operation_id = f"{episode.episode_id}-report"
@@ -167,7 +175,7 @@ def _begin_report(
         partial=ending != "completed",
         concluding_operation_id=root.operation_id,
         allocation_operation_id=allocation_operation_id,
-        provider="codex",
+        provider=provider,
         run_on="local",
         execution_host="",
         native_session_id="native-session",
@@ -189,7 +197,7 @@ def _begin_report(
         graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
-        request={"provider": "codex", "run_on": "local", "execution_host": ""},
+        request={"provider": provider, "run_on": "local", "execution_host": ""},
         created_at=now,
         updated_at=now,
         status_message="Wrapping up visualization and report",
@@ -479,16 +487,23 @@ def test_episode_route_bodies_are_strict_and_normalize_only_text() -> None:
         is None
     )
     assert EpisodeMessageBody.model_validate({"body": "  Status?  "}).body == "Status?"
-    assert ReauthorizeEpisodeBody.model_validate({"invocation_ceiling": 1}).invocation_ceiling == 1
+    continue_body = ContinueEpisodeBody.model_validate(
+        {"invocation_ceiling": 1, "request_id": "8b6d1c4e-2f5a-4b8e-9c3d-1a2b3c4d5e6f"}
+    )
+    assert continue_body.invocation_ceiling == 1
 
     with pytest.raises(ValueError):
         StartEpisodeBody.model_validate(
             {"mode": "auto_research", "invocation_ceiling": 1, "campaign_id": "legacy"}
         )
     with pytest.raises(ValueError):
-        ReauthorizeEpisodeBody.model_validate({"additional_invocations": 2})
+        ContinueEpisodeBody.model_validate({"invocation_ceiling": 2})
     with pytest.raises(ValueError):
-        ReauthorizeEpisodeBody.model_validate({"invocation_ceiling": "2"})
+        ContinueEpisodeBody.model_validate({"invocation_ceiling": 2, "request_id": "not-a-uuid"})
+    with pytest.raises(ValueError):
+        ContinueEpisodeBody.model_validate(
+            {"invocation_ceiling": "2", "request_id": "8b6d1c4e-2f5a-4b8e-9c3d-1a2b3c4d5e6f"}
+        )
     with pytest.raises(ValueError):
         EpisodeMessageBody.model_validate({"body": " \n "})
 
@@ -524,7 +539,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     }
     assert [task.operation_id for task in response.tasks] == [root.operation_id]
     assert response.budget.invocations_used == 1
-    assert response.can_reauthorize
+    assert response.can_continue
     assert response.run_section == "actionable"
     assert "report_attempts_used" not in payload
     assert "stop_settled_at" not in payload
@@ -554,9 +569,66 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert response.tasks[0].can_retry is False
     assert response.tasks[0].can_resume is False
     assert not response.can_stop
-    assert not response.can_reauthorize
+    # A failed episode is ended, and its root bound a session, so it can be
+    # continued; the missing report never blocks that offer.
+    assert response.can_continue
     assert response.run_section == "actionable"
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
+
+
+def test_can_continue_is_withheld_while_another_episode_owns_the_slot(tmp_path) -> None:
+    """The offer mirrors admission: a live project episode or an active merge refuses it."""
+
+    from .test_branch_target_storage import _merge_task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    ended, root = _auto_episode(store, "ended", root_status="failed")
+    _, attempt_id = _begin_report(store, ended, root, ending="failed")
+    store.finish_episode_report_error(attempt_id, "The report output was invalid.")
+
+    def can_continue() -> bool:
+        stored = store.episode(ended.episode_id)
+        assert stored is not None
+        return serialize_episode(
+            store, "project", stored, branch_summary=_branch_summary
+        ).can_continue
+
+    assert can_continue()
+    live, live_root = _auto_episode(store, "live", root_status="queued")
+    assert not can_continue()
+    assert not serialize_episode(
+        store, "project", live, branch_summary=_branch_summary
+    ).can_continue
+    # A wrapping-up episode still owns the slot; only its settled report frees it.
+    store.fail_agent_task(live_root.operation_id, "provider failed")
+    assert not can_continue()
+    live_root = store.agent_task(live_root.operation_id)
+    assert live_root is not None
+    _, live_attempt_id = _begin_report(store, live, live_root, ending="failed")
+    store.finish_episode_report_error(live_attempt_id, "The report output was invalid.")
+    assert can_continue()
+    store.create_branch_merge_task(_merge_task(store, ended, "merge"))
+    assert not can_continue()
+
+
+def test_a_queued_branch_merge_is_not_one_of_the_episode_turns(tmp_path) -> None:
+    """Merging on branch facts can queue a merge under a running episode; it stays active."""
+
+    from .test_branch_target_storage import _merge_task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "quiet", root_status="succeeded")
+    merge = store.create_branch_merge_task(_merge_task(store, episode, "merge"))
+    stored = store.episode(episode.episode_id)
+    assert stored is not None
+    response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
+
+    assert response.status == "running"
+    assert response.health == "active"
+    assert [task.operation_id for task in response.tasks] == [root.operation_id]
+    assert merge.operation_id not in {task.operation_id for task in response.tasks}
 
 
 def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None:
@@ -648,59 +720,199 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
         )
 
 
-def test_the_projection_decides_lifecycle_state_so_no_surface_has_to() -> None:
-    """Health, next step, and control come from one place, on backend inputs only.
-
-    Four different situations reach `needs_action`, which is why the
-    recommendation travels beside the health rather than being re-derived from
-    `status` wherever it is needed.
-    """
+@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
+@pytest.mark.parametrize(
+    ("episode_fields", "task_fields", "recovering", "expected"),
+    [
+        pytest.param(
+            {"ending": "stopped", "status": "stopped", "wrapup_state": "running"},
+            {},
+            False,
+            ("stopped", "none", None, None),
+            id="stopped-wins",
+        ),
+        *[
+            pytest.param(
+                {"wrapup_state": state, "report_login_blocked": True},
+                {},
+                False,
+                ("wrapping_up", "wait", None, "sign_in"),
+                id=f"report-{state}-signed-out",
+            )
+            for state in ["pending", "running"]
+        ],
+        pytest.param(
+            {"wrapup_state": "pending"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="report-pending",
+        ),
+        pytest.param(
+            {"wrapup_state": "running"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="report-running",
+        ),
+        pytest.param(
+            {"status": "wrapping_up", "ending": "exhausted"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="production-before-admission",
+        ),
+        pytest.param(
+            {"status": "wrapping_up", "ending": "exhausted", "wrapup_state": "failed"},
+            {},
+            False,
+            ("wrapping_up", "wait", None, None),
+            id="wrapping-status-any-report-state",
+        ),
+        *[
+            pytest.param(
+                {
+                    "status": status,
+                    "ending": ending,
+                    "wrapup_state": wrapup,
+                    "wrapup_error": "Report admission failed." if wrapup == "failed" else None,
+                },
+                {},
+                False,
+                (health, recommendation, None, blocked),
+                id=f"{ending}-{wrapup}",
+            )
+            for ending, status, health, fallback, blocked in [
+                ("completed", "completed", "completed", "none", None),
+                ("failed", "failed", "failed", "review", None),
+                ("exhausted", "needs_action", "needs_action", "reauthorize", "reauthorize"),
+                ("human_pause", "needs_action", "needs_action", "reauthorize", "reauthorize"),
+            ]
+            for wrapup in ["ready", "failed", "skipped", "legacy_unavailable", "not_started"]
+            for recommendation in [
+                "open_report"
+                if wrapup == "ready" and ending in {"completed", "failed"}
+                else fallback
+            ]
+        ],
+        pytest.param(
+            {"status": "stopping", "stop_requested_at": "2026-08-24T00:00:00Z"},
+            {"status": "running"},
+            True,
+            ("stopping", "wait", None, None),
+            id="stop-finishing-before-recovery",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "failure_kind": "provider_auth"},
+            True,
+            ("recovering", "wait", None, None),
+            id="recovery-pending",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "failure_kind": "provider_auth"},
+            False,
+            ("needs_action", "retry", "retry", "sign_in"),
+            id="provider-auth",
+        ),
+        pytest.param(
+            {},
+            {"status": "paused", "native_session_id": "session"},
+            False,
+            ("needs_action", "resume", "resume", None),
+            id="paused",
+        ),
+        pytest.param(
+            {},
+            {"status": "interrupted"},
+            False,
+            ("needs_action", "retry", "retry", None),
+            id="interrupted",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed"},
+            False,
+            ("needs_action", "retry", "retry", None),
+            id="failed-control",
+        ),
+        pytest.param(
+            {},
+            {"status": "failed", "history_only": True},
+            False,
+            ("needs_action", "review", None, None),
+            id="failed-without-recovery",
+        ),
+        pytest.param(
+            {}, {"status": "queued"}, False, ("starting", "wait", None, None), id="queued-turn"
+        ),
+        pytest.param(
+            {}, {"status": "pausing"}, False, ("active", "wait", None, None), id="pausing-turn"
+        ),
+        pytest.param(
+            {},
+            {"status": "running"},
+            False,
+            ("active", "continue", "pause", None),
+            id="running-turn",
+        ),
+        pytest.param(
+            {}, {}, False, ("active", "continue", None, None), id="waiting-without-live-turn"
+        ),
+    ],
+)
+def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
+    mode,
+    episode_fields,
+    task_fields,
+    recovering,
+    expected,
+) -> None:
+    from types import SimpleNamespace
 
     from rcp.api.episodes import _episode_projection
 
-    def episode(**fields: object) -> EpisodeRecord:
-        base = {
+    record = EpisodeRecord.model_validate(
+        {
             "episode_id": str(uuid.uuid4()),
             "project_id": "project",
-            "mode": "auto_research",
+            "mode": mode,
+            "control_node_id": "exp/one" if mode == "experiment_loop" else None,
             "status": "running",
             "invocation_ceiling": 4,
             "invocations_used": 1,
             "created_at": "2026-08-24T00:00:00Z",
             "updated_at": "2026-08-24T00:00:00Z",
         }
-        return EpisodeRecord.model_validate({**base, **fields})
-
-    def project(record: EpisodeRecord, **kwargs: object) -> tuple[str, str, str | None]:
-        return _episode_projection(
-            record,
-            [],
-            control_task_id=None,
-            recovery=None,
-            has_report=False,
-            can_reauthorize=False,
-            **kwargs,  # type: ignore[arg-type]
-        )
-
-    assert project(episode(wrapup_state="running")) == ("wrapping_up", "wait", None)
-    assert project(episode(status="stopped", ending="stopped", wrapup_state="skipped")) == (
-        "stopped",
-        "none",
-        None,
     )
-    assert project(episode(status="failed", ending="failed")) == ("failed", "review", None)
-    assert project(episode(status="queued")) == ("starting", "wait", None)
-    assert project(episode()) == ("active", "continue", None)
-
-    reauthorizable = _episode_projection(
-        episode(status="needs_action", ending="exhausted", wrapup_state="ready"),
-        [],
-        control_task_id=None,
-        recovery=None,
-        has_report=False,
-        can_reauthorize=True,
+    record = record.model_copy(update=episode_fields)
+    tasks = (
+        [
+            SimpleNamespace(
+                operation_id="control",
+                failure_kind=task_fields.get("failure_kind"),
+                status=task_fields["status"],
+                can_pause=task_fields["status"] == "running",
+                can_resume=task_fields["status"] == "paused",
+                can_retry=not task_fields.get("history_only", False),
+            )
+        ]
+        if task_fields
+        else []
     )
-    assert reauthorizable == ("needs_action", "reauthorize", None)
+    result = _episode_projection(
+        record,
+        tasks,
+        control_task_id="control",
+        recovery=SimpleNamespace(status="pending") if recovering else None,
+        report_login_blocked=episode_fields.get("report_login_blocked", False),
+    )
+    assert result == expected
+    if record.ending is not None:
+        assert result[0] != "active"
+    if record.wrapup_state == "failed":
+        assert record.wrapup_error == episode_fields.get("wrapup_error")
 
 
 def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> None:
@@ -729,3 +941,101 @@ def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> No
     assert response.report is None
     assert response.can_message is False
     assert (response.health, response.recommendation) == ("stopped", "none")
+
+
+def test_auth_failure_reaches_both_full_and_compact_episode_tasks(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "auth", root_status="failed")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET failure_kind = 'provider_auth' WHERE operation_id = ?",
+            (root.operation_id,),
+        )
+    response = serialize_episode(store, "project", episode, branch_summary=_branch_summary)
+    assert response.tasks[0].failure_kind == "provider_auth"
+    assert response.blocked_reason == "sign_in"
+    snapshots = store.auto_research_space_run_projection_snapshots(
+        {"project"}, completed_since=episode.created_at
+    )
+    assert snapshots[0].tasks[0].failure_kind == "provider_auth"
+    assert space_auto_research_episode_projection(snapshots[0])[:2] == (
+        "needs_action",
+        "actionable",
+    )
+
+
+@pytest.mark.parametrize("wrapup_state", ["not_started", "failed"])
+def test_exhausted_serialization_carries_reauthorization_and_report_error(
+    tmp_path, wrapup_state
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, _root = _auto_episode(store, "exhausted")
+    ended = episode.model_copy(
+        update={
+            "status": "needs_action",
+            "ending": "exhausted",
+            "wrapup_state": wrapup_state,
+            "wrapup_error": "Report admission failed." if wrapup_state == "failed" else None,
+        }
+    )
+    response = serialize_episode(store, "project", ended, branch_summary=_branch_summary)
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "needs_action",
+        "reauthorize",
+        "reauthorize",
+    )
+    assert response.wrapup_error == ended.wrapup_error
+
+
+def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "signed-out-report")
+    _begin_report(store, episode, root, ending="completed")
+    store.mark_provider_login_failed(
+        "codex", "", generation=0, detail="Sign in again.", source="report"
+    )
+    response = serialize_episode(
+        store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
+    )
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "wrapping_up",
+        "wait",
+        "sign_in",
+    )
+
+
+def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "tokenless-report")
+    _begin_report(store, episode, root, ending="completed", provider="claude")
+    # The durable row still says signed in; the token the launch needs is gone.
+    store.mark_provider_login_verified("claude", "", member_id="member", detail="Verified.")
+    response = serialize_episode(
+        store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
+    )
+    assert (response.health, response.recommendation, response.blocked_reason) == (
+        "wrapping_up",
+        "wait",
+        "sign_in",
+    )
+
+
+def test_project_readiness_includes_only_its_machine_account_logins(manifest, tmp_path) -> None:
+    from rcp.agents import AgentLauncher
+    from rcp.service import ProjectService
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.mark_provider_login_failed("codex", "", generation=0, detail="Sign in", source="turn")
+    store.mark_provider_login_failed(
+        "codex", "other.example", generation=0, detail="Sign in", source="turn"
+    )
+    states = ProjectService.provider_logins_for(manifest, AgentLauncher(store.provider_login_state))
+    assert {(state["provider"], state["host"]) for state in states} == {
+        ("codex", ""),
+        ("claude", ""),
+    }
+    assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"

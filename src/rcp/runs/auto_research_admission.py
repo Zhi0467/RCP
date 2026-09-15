@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.launcher import work_like_launch_problem
+from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import (
@@ -35,6 +36,7 @@ from rcp.runs.auto_research import (
     pending_auto_research_mail as _episode_pending_mail,
 )
 from rcp.runs.experiment_admission import experiment_start_message
+from rcp.runs.provider_login import provider_login_host
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
 from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -42,6 +44,7 @@ from rcp.storage import (
     AgentTaskRecord,
     AutoResearchChildExperimentRecord,
     AutoResearchChildWorkRecord,
+    AutoResearchLifecycleNoticeRecord,
     AutoResearchStateRecord,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
@@ -112,6 +115,159 @@ def start_auto_research(
     return episode, tasks.launch_admitted(task.operation_id)
 
 
+def continue_auto_research(
+    tasks: BackgroundAgentTasks,
+    source: EpisodeRecord,
+    *,
+    invocation_ceiling: int,
+    request_id: str,
+    authorized_by: AuthorizedHuman,
+) -> tuple[EpisodeRecord, AgentTaskRecord]:
+    """Add turns to an ended Auto-research episode on its branch and session.
+
+    The continuation is a new episode chained to ``source``; its first turn
+    resumes the source orchestrator's exact native session and stage as a
+    lifecycle wake carrying the ``reauthorized`` notice. Storage refuses a
+    source that is live, already continued, merging, or on another branch, and a
+    repeated ``request_id`` returns the continuation it already made.
+    """
+
+    if not authorized_by.display_name.strip():
+        raise ValueError("Auto-research requires a named human authorizer snapshot.")
+    store = tasks.store
+    if source.mode != "auto_research" or source.root_operation_id is None:
+        raise ValueError("Only an Auto-research episode with a root turn can be continued.")
+    state = store.auto_research_state(source.episode_id)
+    if state is None:
+        raise ValueError("Auto-research state is unavailable.")
+    replay = store.episode_continuation(source.episode_id)
+    if replay is not None:
+        if replay.continuation_request_id != request_id or replay.root_operation_id is None:
+            raise ValueError("this episode has already been continued")
+        root = store.agent_task(replay.root_operation_id)
+        assert root is not None
+        return replay, root
+    binding = store.auto_research_actor_binding(source.root_operation_id)
+    if (
+        binding.episode_id != source.episode_id
+        or binding.role != "orchestrator"
+        or binding.actor_operation_id != source.root_operation_id
+    ):
+        raise ValueError("The Auto-research source has no root orchestrator binding.")
+    if not binding.native_session_id or not binding.stage_root:
+        raise ValueError(
+            "The orchestrator never saved a native session and stage, so there is nothing to "
+            "continue. Start a new Auto-research episode instead."
+        )
+    previous_root = AutoResearchRunRequest.model_validate(
+        tasks._require_operation(binding.current_operation_id).request
+    )
+    # The saved stage is frozen on one machine. Launch checks the alias against
+    # it; a repointed alias must refuse here, before the source is chained.
+    project = tasks.store.project(source.project_id)
+    if project is None:
+        raise KeyError(source.project_id)
+    current_host = provider_login_host(load_manifest(project.locator), previous_root.run_on)
+    if current_host != (binding.stage_host or ""):
+        raise ValueError(
+            "The orchestrator's saved stage is not on the machine its execution alias names "
+            "now, so its session cannot be resumed. Start a new Auto-research episode instead."
+        )
+    tasks.admit_provider_task(
+        source.project_id, previous_root, execution_host=binding.stage_host or ""
+    )
+    episode_id = str(uuid.uuid4())
+    operation_id = str(uuid.uuid4())
+    run_request = previous_root.model_copy(
+        update={
+            "episode_id": episode_id,
+            "role": "orchestrator",
+            "actor_operation_id": operation_id,
+            "control_node_id": None,
+            "session_id": binding.native_session_id,
+            "instruction": None,
+            "wake_cause": "lifecycle",
+            "watcher_ids": [],
+        }
+    )
+    dispatch_authority = resolved_dispatch_authority(
+        store,
+        tasks.dispatch_authority_resolver,
+        "auto_research",
+        run_request,
+        project_id=source.project_id,
+        operation_id=operation_id,
+        continuation="lifecycle_wake",
+    )
+    assert dispatch_authority is not None
+    request_data = run_request.model_dump(mode="json")
+    estimate, samples = store.agent_task_estimate(source.project_id, "auto_research", request_data)
+    now = store.now()
+    episode = EpisodeRecord(
+        episode_id=episode_id,
+        project_id=source.project_id,
+        mode="auto_research",
+        graph_target=source.graph_target,
+        graph_base_head=source.graph_base_head,
+        status="queued",
+        invocation_ceiling=invocation_ceiling,
+        authorized_by=authorized_by,
+        created_at=now,
+        updated_at=now,
+        continues_episode_id=source.episode_id,
+        continuation_request_id=request_id,
+    )
+    task = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=source.project_id,
+        episode_id=episode_id,
+        graph_target=source.graph_target,
+        kind="auto_research",
+        status="queued",
+        request=request_data,
+        created_at=now,
+        updated_at=now,
+        status_message="Waiting for the background worker to resume the orchestrator.",
+        native_session_id=binding.native_session_id,
+        stage_host=binding.stage_host,
+        stage_root=binding.stage_root,
+        estimate_seconds=estimate,
+        estimate_samples=samples,
+        phase="queued",
+        last_activity_at=now,
+        authorized_by=authorized_by,
+        dispatch_authority=dispatch_authority,
+    )
+    notice = AutoResearchLifecycleNoticeRecord(
+        notice_id=str(uuid.uuid4()),
+        episode_id=episode_id,
+        source_kind="episode",
+        source_id=source.episode_id,
+        source_event="reauthorized",
+        payload={
+            "ceiling": invocation_ceiling,
+            "continues_episode_id": source.episode_id,
+            "source_ending": source.ending,
+            "authorized_by": authorized_by.display_name,
+        },
+        created_at=now,
+    )
+    stored_episode, stored_task, replayed = store.create_auto_research_continuation(
+        episode,
+        AutoResearchStateRecord(
+            episode_id=episode_id,
+            starting_instruction=state.starting_instruction,
+            created_at=now,
+            updated_at=now,
+        ),
+        task,
+        notice,
+    )
+    if replayed:
+        return stored_episode, stored_task
+    return stored_episode, tasks.launch_admitted(stored_task.operation_id)
+
+
 def reserve_auto_research(
     tasks: BackgroundAgentTasks,
     project_id: str,
@@ -180,6 +336,7 @@ def reserve_auto_research(
         authorized_by=authorized_by,
         dispatch_authority=dispatch_authority,
     )
+    tasks.admit_provider_task(project_id, run_request)
     stored_episode, stored_task = tasks.store.create_auto_research_episode_with_root_task(
         episode,
         AutoResearchStateRecord(
@@ -431,6 +588,9 @@ def start_auto_research_turn(
         raise ValueError("Only an Auto-research message wake may claim a mail batch.")
     elif wake_admission is not None:
         raise ValueError("Only an Auto-research watcher wake may use wake admission.")
+    tasks.admit_provider_task(
+        episode.project_id, request, execution_host=(stage_host or "") if stage_root else None
+    )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
         episode.project_id,
@@ -746,6 +906,7 @@ def start_auto_research_child_work(
         created_at=now,
         updated_at=now,
     )
+    tasks.admit_provider_task(episode.project_id, request)
     _, stored = tasks.store.create_auto_research_child_work(
         route,
         task,
@@ -955,6 +1116,7 @@ def _start_auto_research_child_work_wake(
         authorized_by=episode.authorized_by,
         dispatch_authority=dispatch_authority,
     )
+    tasks.admit_provider_task(episode.project_id, request)
     if continuation == "watcher_wake":
         stored = tasks.store.create_auto_research_child_work_watcher_wake_task(
             task,
@@ -1226,6 +1388,7 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
+    tasks.admit_provider_task(route.project_id, request)
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,
@@ -1388,13 +1551,15 @@ def resume_auto_research_child_experiment(
     )
 
 
-def stop_auto_research(tasks: BackgroundAgentTasks, episode_id: str) -> EpisodeRecord:
+def stop_auto_research(
+    tasks: BackgroundAgentTasks, episode_id: str, *, initiated_by: str | None = None
+) -> EpisodeRecord:
     """Persist Stop without cancelling the already-authorized actor turn."""
 
     before = tasks.store.episode(episode_id)
     if before is None or before.mode != "auto_research":
         raise KeyError(episode_id)
-    stopped = request_auto_research_stop(tasks.store, episode_id)
+    stopped = request_auto_research_stop(tasks.store, episode_id, initiated_by=initiated_by)
     if (
         before.stop_requested_at is None
         and stopped.stop_requested_at is not None
@@ -1449,6 +1614,11 @@ def retry_auto_research_task(
         raise ValueError(
             "Auto-research recovery cannot change its pinned " + ", ".join(changed) + "."
         )
+    tasks.admit_provider_task(
+        previous.project_id,
+        original,
+        execution_host=(previous.stage_host or "") if previous.stage_root else None,
+    )
     session_limit = tasks._failure_is_session_limit(previous)
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
     owned_checkpoint = bool(
@@ -1675,7 +1845,6 @@ def auto_research_for_request(
         raise KeyError(episode_id)
     if (
         episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
         or episode.graph_base_head is None
         or episode.graph_base_head.target.kind != "main"
     ):
@@ -1693,7 +1862,6 @@ def _auto_research_parent_episode(tasks: BackgroundAgentTasks, episode_id: str) 
         raise KeyError(episode_id)
     if (
         episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
         or episode.graph_base_head is None
         or episode.graph_base_head.target.kind != "main"
     ):

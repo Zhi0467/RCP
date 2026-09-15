@@ -782,13 +782,14 @@ def test_project_readiness_does_not_open_or_materialize_project(
             or {"laptop": {}}
         ),
     )
-    monkeypatch.setattr(
-        app.state.provider_skills,
-        "refresh",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("manual readiness must not refresh provider skills")
-        ),
-    )
+    skill_refreshes: list[tuple[str, str, str | None]] = []
+
+    def refresh_skills(provider: str, host: str, binary: str | None, _readiness, *, reuse_cached):
+        # The explicit Refresh is the product path that re-probes skills uncached.
+        assert reuse_cached is False
+        skill_refreshes.append((provider, host, binary))
+
+    monkeypatch.setattr(app.state.provider_skills, "refresh", refresh_skills)
     monkeypatch.setattr(
         app.state.provider_skills,
         "wait",
@@ -828,6 +829,8 @@ def test_project_readiness_does_not_open_or_materialize_project(
         ("codex", "", None),
         ("claude", "", None),
     ]
+    # Only the explicit refresh probed skills; the two implicit reads started none.
+    assert sorted(skill_refreshes) == [("claude", "", None), ("codex", "", None)]
     assert project_id not in app.state.catalog._services
 
 

@@ -1,6 +1,7 @@
 import type {
   AgentTask,
   Episode,
+  EpisodeBlockedReason,
   EpisodeEnding,
   EpisodeHealth,
   EpisodeRecommendationKind,
@@ -66,8 +67,11 @@ export function runsEpisodeCards(
   currentExperimentEpisodeIds: ReadonlySet<string>,
   showArchived = false,
 ): Episode[] {
+  // A continuation chain is one run whose newest member is the card, so the
+  // newest member decides the chain's visibility; archiving it hides the run.
   return [...episodes]
     .sort(compareEpisodesNewestFirst)
+    .filter((episode) => !episode.continued_by_episode_id)
     .filter(
       (episode) =>
         (!episode.archived || showArchived) &&
@@ -90,7 +94,7 @@ const EPISODE_RECOMMENDATION_LABELS: Record<EpisodeRecommendationKind, string> =
   wait: "Wait for the current step",
   resume: "Resume the current turn",
   retry: "Retry the current turn",
-  reauthorize: "Start a new authorized episode",
+  reauthorize: "Add turns",
   open_report: "Open report",
   review: "Review the episode state",
   none: "No further action is needed",
@@ -110,6 +114,30 @@ const EPISODE_RECOMMENDATION_LABELS_BY_HEALTH: Partial<
   needs_action: { review: "Review the blocked turn" },
 };
 
+/**
+ * One lead sentence naming what blocks the episode, before the recommendation.
+ * The backend decides the block; the ending only chooses the wording for it.
+ */
+export function blockedReasonLead(
+  reason: EpisodeBlockedReason | null | undefined,
+  ending: string | null | undefined,
+  label: string,
+): string {
+  if (reason === "sign_in") {
+    return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  }
+  if (reason === "reauthorize") {
+    const lead =
+      ending === "human_pause"
+        ? "The episode paused for human authority."
+        : ending === "exhausted"
+          ? "The authorized turns are spent."
+          : "More authorized turns are needed.";
+    return `${lead} ${label}`;
+  }
+  return label;
+}
+
 export function episodeProjection(
   episode: Episode,
   tasks: AgentTask[] = episode.tasks,
@@ -127,7 +155,11 @@ export function episodeProjection(
   return {
     health: episode.health,
     healthLabel: EPISODE_HEALTH_LABELS[episode.health],
-    recommendation: { kind: episode.recommendation, label, task },
+    recommendation: {
+      kind: episode.recommendation,
+      label: blockedReasonLead(episode.blocked_reason, episode.ending, label),
+      task,
+    },
     taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
   };
 }

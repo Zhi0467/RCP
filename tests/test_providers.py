@@ -87,7 +87,7 @@ def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None
     launcher = AgentLauncher()
     calls: list[tuple[str, str, str | None]] = []
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         calls.append((provider, host, binary))
         return _ready_capability(provider, binary=binary or "/opt/agents/codex")
 
@@ -117,7 +117,7 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
     release = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         entered.set()
@@ -150,7 +150,7 @@ def test_invalidation_during_probe_does_not_restore_stale_capability(monkeypatch
     release = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -179,7 +179,7 @@ def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
     calls = 0
     ready = True
 
-    def probe(provider: str, *, host: str, binary: str | None) -> ProviderReadiness:
+    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if ready:
@@ -569,7 +569,7 @@ def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
 
     calls: list[list[str]] = []
 
-    def probe(_self, _host: str, command: list[str]):
+    def probe(_self, _host: str, command: list[str], **_kwargs):
         calls.append(command)
         if command[-2:] == ["login", "status"]:
             return _result("Logged in using ChatGPT")
@@ -609,7 +609,7 @@ def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
 
     calls: list[list[str]] = []
 
-    def probe(_self, _host: str, command: list[str]):
+    def probe(_self, _host: str, command: list[str], **_kwargs):
         calls.append(command)
         return _result(returncode=returncode)
 
@@ -670,10 +670,10 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
     # binary is merely absent. Conflating them tells the human to go install
     # something on a machine that never answered.
     launcher = AgentLauncher()
-    monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd: _result("", 255))
+    monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 255))
     assert "unreachable" in (launcher.readiness("codex", host="offline").reason or "")
 
-    monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd: _result("", 1))
+    monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 1))
     assert "not installed" in (launcher.readiness("codex", host="online").reason or "")
 
 

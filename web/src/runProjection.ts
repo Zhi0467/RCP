@@ -9,6 +9,7 @@ import type {
   GraphNode,
   WatcherRecord,
 } from "./types";
+import { blockedReasonLead } from "./campaigns.ts";
 
 export interface AgentTaskGroup {
   rootId: string;
@@ -130,11 +131,11 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
       ? "Resume this episode, or switch provider"
       : "Resume this episode",
     retry: "Retry this episode, or switch provider",
-    reauthenticate_provider: `Sign in to ${run.control.operational?.session?.provider ?? "the provider"} again, then retry`,
+    reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
     keep_loop: "Keep loop running; check now if needed",
     start_episode:
       run.health === "paused_at_limit"
-        ? "Reauthorize more invocations"
+        ? "Add turns or start a new episode"
         : run.control.episode_id
           ? "Start a new episode"
           : "Start an episode",
@@ -150,7 +151,15 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
           ? "Episode ended"
           : "No action needed",
   };
-  return { step, label: labels[step] };
+  const blockedReason = run.control.episode?.blocked_reason;
+  const label = labels[step];
+  return {
+    step,
+    label:
+      blockedReason === "sign_in" && step === "reauthenticate_provider"
+        ? label
+        : blockedReasonLead(blockedReason, run.control.episode?.ending ?? null, label),
+  };
 }
 
 export function buildExperimentRun(

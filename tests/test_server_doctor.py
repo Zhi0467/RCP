@@ -128,12 +128,13 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 50
+    assert len(fields) == 51
     assert fields["overall_state"] == "healthy"
     assert fields["configured_authentication"] == "public"
     assert fields["candidate_commit"] == "none"
     assert fields["running_commit"] == COMMIT
     assert fields["provider_check_status"] == "available"
+    assert fields["provider_logins"] == "none recorded"
     assert fields["update_operation_state"] == "none"
     assert fields["problems"] == "none"
 
@@ -145,7 +146,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     for name, value in list(fields.items())[:8]:
         assert f"{name.replace('_', ' ')}: {value}" in interactive
     assert "source public key fingerprint: none" not in interactive
-    assert "42 more field(s); use --machine-readable for the complete record" in interactive
+    assert "43 more field(s); use --machine-readable for the complete record" in interactive
 
 
 def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:
@@ -790,3 +791,30 @@ def _tree_snapshot(root: Path) -> tuple[tuple[str, int, int], ...]:
         info = path.lstat()
         entries.append((str(path.relative_to(root)), stat.S_IFMT(info.st_mode), info.st_mtime_ns))
     return tuple(entries)
+
+
+def test_provider_login_summary_reads_the_durable_state_read_only(tmp_path: Path) -> None:
+    from rcp.server_ops.doctor import provider_login_summary
+    from rcp.storage import AppStore
+
+    assert provider_login_summary(tmp_path / "missing.sqlite3") == "unavailable"
+    foreign = tmp_path / "foreign.sqlite3"
+    foreign.write_text("fixture\n", encoding="utf-8")
+    assert provider_login_summary(foreign) == "unavailable"
+    assert not (tmp_path / "foreign.sqlite3-wal").exists()
+
+    database = tmp_path / "rcp.sqlite3"
+    store = AppStore(database)
+    assert provider_login_summary(database) == "none recorded"
+    failed = store.mark_provider_login_failed(
+        "codex", "", generation=0, detail="refresh_token_reused " + "x" * 400, source="turn"
+    )
+    verified = store.mark_provider_login_verified(
+        "claude", "gpu.example", member_id="member", detail="Authenticated request succeeded."
+    )
+    summary = provider_login_summary(database)
+    assert summary == (
+        f"claude@gpu.example=signed_in(verify,{verified.changed_at});"
+        f"codex@local=signed_out(turn,{failed.changed_at})"
+    )
+    assert "xxxx" not in summary

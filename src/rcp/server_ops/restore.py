@@ -59,6 +59,8 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "d7530fb1961b8c0d002bc39b92b354e7d3f34681845beeef15caa62b5713132a",
         "46e5a2762be47bff427ae3e240dd61e7c8048c0c24f78c14e5595d749765a4b7",
         "198c440b01783e09952742b56efb2b1e4987e405e88e7a59707ab5896f60af69",
+        "829a8ff118a7a676b2b05b7de5ab836c8108158930d3bc50c95a257798888686",
+        "ee8e7875b3786940ef8570ebc0042ec24600ec9792c21f7af42265e4523a9d78",
         "0e76145bb3316c6b193792982f894b14c7c2f25ff85b2fa91f7e2d6cb6db8859",
         "a69f2c7990077b1ea150e6977f370bd5614e9711527662772c55acced0f98cf0",
         "192554f3171d2758042cafe337c0c76ca67496f72a6107b5fbd5aa6bebf54e63",
@@ -86,6 +88,16 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # a fresh install and an installation that upgraded in place.
         "b35f70af4a53d4bac03d7af45eca7ccb9ec2343460cae1b4810250979ab6077b",
         "2342bd789302cab58123ce9cfec4c39a2e2a92ac86ff7d8839327afac8d3ab8b",
+        # Episode Stop provenance and lifecycle wake suppression, fresh and upgraded.
+        "cebd2eeb1227eea61c56d9fc96c953e60a12902273ef79a3be76014cbfea1655",
+        "54df9d9d1875cced1d511ebe2586df022959ae438a7c620e4eb3fe789a7aa429",
+        # provider_readiness_snapshots: the credential-touching readiness answer
+        # kept per executable version, so a restart runs only `--version`. One
+        # CREATE TABLE on both paths, so a fresh install shares this shape with
+        # a database that upgraded from the previous release; an installation
+        # whose graph_runs kept the rebuilt column order has the second.
+        "657bf07e3bdb4358fdb7d243a774d3596b2c91c9b65445b648e85426559484cc",
+        "25b83f855aa94e284a3e41efd60b222977c3f3a5cea94a402bee35cfdcf127fa",
     }
 )
 

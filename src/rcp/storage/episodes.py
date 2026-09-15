@@ -7,6 +7,7 @@ import uuid
 
 from rcp.artifacts import html_document_title
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
@@ -145,6 +146,55 @@ class EpisodeStoreMixin:
                 (episode_id,),
             ).fetchone()
         return self._episode_record(row) if row is not None else None
+
+    def episode_continuation(self, episode_id: str) -> EpisodeRecord | None:
+        """The one episode that added turns to this one, if a member continued it."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE continues_episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+        return self._episode_record(row) if row is not None else None
+
+    def episodes_by_ids(self, episode_ids: list[str]) -> dict[str, EpisodeRecord]:
+        """Exactly the named episodes, keyed by id, without scanning the project."""
+
+        found: dict[str, EpisodeRecord] = {}
+        with self.connection() as connection:
+            for start in range(0, len(episode_ids), 500):
+                chunk = episode_ids[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                for row in connection.execute(
+                    f"SELECT * FROM episodes WHERE episode_id IN ({placeholders})", chunk
+                ).fetchall():
+                    found[str(row["episode_id"])] = self._episode_record(row)
+        return found
+
+    def episode_chain(self, root_episode_id: str) -> list[EpisodeRecord]:
+        """The chain root followed by each continuation, oldest first.
+
+        A graph branch keeps its chain root's id as ``branch_id`` forever, so the
+        root is also the branch; the last member is the branch's current writer.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (root_episode_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(root_episode_id)
+            chain = [self._episode_record(row)]
+            seen = {root_episode_id}
+            while True:
+                row = connection.execute(
+                    "SELECT * FROM episodes WHERE continues_episode_id = ?",
+                    (chain[-1].episode_id,),
+                ).fetchone()
+                if row is None or row["episode_id"] in seen:
+                    return chain
+                seen.add(str(row["episode_id"]))
+                chain.append(self._episode_record(row))
 
     def episodes(self, project_id: str, *, limit: int | None = 50) -> list[EpisodeRecord]:
         """List recent history, or all episodes for runtime reconciliation."""
@@ -357,7 +407,7 @@ class EpisodeStoreMixin:
                 episode_placeholders = ", ".join("?" for _ in lifecycle_episode_ids)
                 task_rows = connection.execute(
                     f"""
-                    SELECT run.operation_id, run.episode_id, run.kind, run.status,
+                    SELECT run.operation_id, run.episode_id, run.kind, run.status, run.failure_kind,
                            run.created_at, run.last_activity_at, run.attempt,
                            run.parent_operation_id, run.native_session_id,
                            run.history_only, run.stage_host, run.stage_root, run.visible,
@@ -425,6 +475,7 @@ class EpisodeStoreMixin:
                 AutoResearchSpaceRunTaskState(
                     operation_id=str(data["operation_id"]),
                     status=data["status"],
+                    failure_kind=data["failure_kind"],
                     created_at=str(data["created_at"]),
                     last_activity_at=data["last_activity_at"],
                     attempt=int(data["attempt"]),
@@ -626,6 +677,8 @@ class EpisodeStoreMixin:
                 """
                 UPDATE episodes
                 SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                    stop_initiated_by = CASE WHEN stop_requested_at IS NULL
+                        THEN 'system:restore' ELSE stop_initiated_by END,
                     stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
                     ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
                     updated_at = ?, ended_at = COALESCE(ended_at, ?)
@@ -661,13 +714,17 @@ class EpisodeStoreMixin:
             observed_generated_tokens=int(usage["generated_tokens"]),
         )
 
-    def request_episode_stop(self, episode_id: str) -> EpisodeRecord:
+    def request_episode_stop(
+        self, episode_id: str, *, initiated_by: str | None = None
+    ) -> EpisodeRecord:
         """Persist the common Stop fence before a mode adapter settles its work."""
 
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._request_episode_stop_in_connection(connection, episode_id, now=now)
+            self._request_episode_stop_in_connection(
+                connection, episode_id, now=now, initiated_by=initiated_by
+            )
         stopped = self.episode(episode_id)
         assert stopped is not None
         return stopped
@@ -678,6 +735,7 @@ class EpisodeStoreMixin:
         episode_id: str,
         *,
         now: str,
+        initiated_by: str | None,
     ) -> EpisodeRecord:
         row = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -701,10 +759,10 @@ class EpisodeStoreMixin:
         connection.execute(
             """
             UPDATE episodes
-            SET status = 'stopping', stop_requested_at = ?, updated_at = ?
+            SET status = 'stopping', stop_requested_at = ?, stop_initiated_by = ?, updated_at = ?
             WHERE episode_id = ?
             """,
-            (now, now, episode_id),
+            (now, initiated_by, now, episode_id),
         )
         updated = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -858,14 +916,23 @@ class EpisodeStoreMixin:
         assert stored_episode is not None and stored_task is not None
         return stored_episode, invocation, stored_task
 
-    def episode_invocations(self, episode_id: str) -> list[EpisodeInvocationRecord]:
+    def episode_invocations(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[EpisodeInvocationRecord]:
+        """The episode's invocations in order; ``newest`` keeps only that suffix."""
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM episode_invocations
-                WHERE episode_id = ? ORDER BY invocation_number
+                SELECT * FROM (
+                    SELECT * FROM episode_invocations
+                    WHERE episode_id = ? ORDER BY invocation_number DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY invocation_number
                 """,
-                (episode_id,),
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._episode_invocation_record(row) for row in rows]
 
@@ -1046,6 +1113,8 @@ class EpisodeStoreMixin:
                 if stored != wrapup:
                     raise EpisodeReportConflict("the episode wrap-up restart fence is immutable")
                 return episode, stored
+            if episode.stop_requested_at is not None or episode.ending == "stopped":
+                raise EpisodeNotRunning("Stop already fenced this episode")
             if episode.status not in {"queued", "running", "wrapping_up"}:
                 raise EpisodeNotRunning("the episode has already ended")
             if wrapup.concluding_operation_id is not None:
@@ -1296,7 +1365,7 @@ class EpisodeStoreMixin:
         self,
         episode_id: str,
     ) -> AgentTaskRecord:
-        """Requeue only the same hidden allocation interrupted or paused at restart."""
+        """Requeue the same hidden allocation after interruption or verified sign-in."""
 
         now = self.now()
         with self.connection() as connection:
@@ -1330,13 +1399,18 @@ class EpisodeStoreMixin:
                 raise EpisodeReportConflict("the hidden report allocation lost its restart fence")
             if task_row["status"] == "queued":
                 return self._agent_task_record(task_row)
-            if task_row["status"] not in {"interrupted", "paused"}:
+            login_failure = (
+                task_row["status"] == "failed" and task_row["failure_kind"] == "provider_auth"
+            )
+            if task_row["status"] not in {"interrupted", "paused"} and not login_failure:
                 raise EpisodeNotRunning(
-                    "only an interrupted or shutdown-paused report allocation may be requeued"
+                    "only an interrupted, shutdown-paused, or login-blocked report may be requeued"
                 )
             prior_status = str(task_row["status"])
             diagnostic = (
-                "The report provider call was interrupted by an RCP restart."
+                "The report spent all three attempts before sign-in was verified."
+                if login_failure
+                else "The report provider call was interrupted by an RCP restart."
                 if prior_status == "interrupted"
                 else "The report provider call was paused during RCP shutdown."
             )
@@ -1351,16 +1425,17 @@ class EpisodeStoreMixin:
             if int(episode.report_attempts_used) >= _REPORT_ATTEMPT_LIMIT and (
                 current is None or current["status"] != "queued"
             ):
-                if current is None or current["status"] != "running":
+                if not login_failure and (current is None or current["status"] != "running"):
                     raise EpisodeNotRunning("the episode has spent all report attempts")
-                connection.execute(
-                    """
-                    UPDATE episode_report_attempts
-                    SET status = 'failed', error = ?, updated_at = ?, finished_at = ?
-                    WHERE attempt_id = ?
-                    """,
-                    (diagnostic, now, now, current["attempt_id"]),
-                )
+                if current is not None and current["status"] == "running":
+                    connection.execute(
+                        """
+                        UPDATE episode_report_attempts
+                        SET status = 'failed', error = ?, updated_at = ?, finished_at = ?
+                        WHERE attempt_id = ?
+                        """,
+                        (diagnostic, now, now, current["attempt_id"]),
+                    )
                 final_status = self._status_for_ending(str(episode.ending))
                 connection.execute(
                     """
@@ -1414,7 +1489,7 @@ class EpisodeStoreMixin:
                 """
                 UPDATE graph_runs
                 SET status = 'queued', status_message = 'Wrapping up visualization and report',
-                    error = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
+                    error = NULL, failure_kind = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
                     last_activity_at = NULL, phase = 'queued', write_scope_fingerprint = NULL
                 WHERE operation_id = ? AND status = ?
                 """,
@@ -1647,10 +1722,14 @@ class EpisodeStoreMixin:
         self,
         attempt_id: str,
         error: str,
+        *,
+        provider_auth: bool = False,
     ) -> tuple[EpisodeRecord, EpisodeReportAttemptRecord]:
-        """Record a retryable error; the third error closes wrap-up automatically."""
+        """Count the attempt, parking authentication failures until verification."""
 
-        return self._finish_episode_report_attempt_error(attempt_id, error, force_final=False)
+        return self._finish_episode_report_attempt_error(
+            attempt_id, error, force_final=False, provider_auth=provider_auth
+        )
 
     def finish_episode_report_error(
         self,
@@ -1667,6 +1746,7 @@ class EpisodeStoreMixin:
         error: str,
         *,
         force_final: bool,
+        provider_auth: bool = False,
     ) -> tuple[EpisodeRecord, EpisodeReportAttemptRecord]:
         if not error.strip():
             raise ValueError("a report attempt error must explain the failure")
@@ -1690,7 +1770,19 @@ class EpisodeStoreMixin:
                     """,
                     (error, now, now, attempt_id),
                 )
-            final = force_final or int(row["attempt_number"]) >= _REPORT_ATTEMPT_LIMIT
+            if provider_auth:
+                connection.execute(
+                    """
+                    UPDATE graph_runs
+                    SET status = 'failed', failure_kind = 'provider_auth', error = ?,
+                        status_message = ?, updated_at = ?, finished_at = ?, phase = 'failed'
+                    WHERE operation_id = ?
+                    """,
+                    (error, error, now, now, row["allocation_operation_id"]),
+                )
+            final = not provider_auth and (
+                force_final or int(row["attempt_number"]) >= _REPORT_ATTEMPT_LIMIT
+            )
             if final:
                 episode_row = connection.execute(
                     "SELECT ending FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -1988,8 +2080,9 @@ class EpisodeStoreMixin:
                 invocation_ceiling, invocations_used, authorized_space_id,
                 authorized_user_id, authorized_display_name, stop_requested_at,
                 stop_settled_at, ending, ending_diagnostic, wrapup_state,
-                wrapup_error, report_attempts_used, created_at, updated_at, ended_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                wrapup_error, report_attempts_used, created_at, updated_at, ended_at,
+                continues_episode_id, continuation_request_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
@@ -2015,6 +2108,8 @@ class EpisodeStoreMixin:
                 record.created_at,
                 record.updated_at,
                 record.ended_at,
+                record.continues_episode_id,
+                record.continuation_request_id,
             ),
         )
 
@@ -2086,6 +2181,38 @@ class EpisodeStoreMixin:
         )
         return all(
             getattr(stored, field) == getattr(requested, field) for field in immutable_fields
+        )
+
+    def continuation_slot_open(self, episode: EpisodeRecord) -> bool:
+        """Whether a continuation of ``episode`` would be admitted right now.
+
+        The same two facts refuse it at admission: another live episode owns the
+        project (Auto-research) or the control node (Experiment), or the branch is
+        being merged. The projection asks first so it offers only a callable control.
+        """
+
+        with self.connection() as connection:
+            return self._live_episode_row(
+                connection, episode
+            ) is None and not self._active_branch_merge_exists(
+                connection, episode.project_id, episode.graph_target
+            )
+
+    @staticmethod
+    def _active_branch_merge_exists(
+        connection: sqlite3.Connection, project_id: str, graph_target: GraphTargetRef
+    ) -> bool:
+        return (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND graph_target_json = ? AND kind = 'branch_merge'
+                  AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (project_id, graph_target.model_dump_json()),
+            ).fetchone()
+            is not None
         )
 
     @staticmethod

@@ -37,6 +37,9 @@ resources.
 State why the episode ended and distinguish observations from interpretation.
 If it exhausted its operational ceiling, failed, or paused for human authority,
 make the partial boundary conspicuous and never imply unfinished work happened.
+A continuation episode, one a human started by adding turns to an ended episode,
+gets its own report: cover only this episode's turns and name the episode it
+continued when the receipt says so.
 Use only the compact immutable episode receipt supplied for this continuation
 and the native session's existing context. Do not seek or rebuild graph,
 research, transcript, or repository context during wrap-up.

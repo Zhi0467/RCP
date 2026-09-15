@@ -255,11 +255,15 @@ def auto_research_failure_signal(
     )
 
 
-def request_auto_research_stop(store: AppStore, episode_id: str) -> EpisodeRecord:
+def request_auto_research_stop(
+    store: AppStore, episode_id: str, *, initiated_by: str | None = None
+) -> EpisodeRecord:
     """Persist Stop and retain every Auto watcher as one atomic boundary."""
 
     _auto_research_episode(store, episode_id)
-    return store.request_auto_research_stop_and_settle_watchers(episode_id)
+    return store.request_auto_research_stop_and_settle_watchers(
+        episode_id, initiated_by=initiated_by
+    )
 
 
 def settle_auto_research_stop(
@@ -334,7 +338,10 @@ def project_auto_research_episode(
 
     episode = _auto_research_episode(store, episode_id)
     meter = store.episode_budget_meter(episode_id)
-    work_routes = store.auto_research_child_works(episode_id)
+    work_routes = sorted(
+        store.auto_research_child_works(episode_id),
+        key=lambda route: (route.created_at, route.worker_id),
+    )
     waiting_work = store.auto_research_waiting_child_work_ids(episode_id)
     work: list[dict[str, object]] = []
     for route in work_routes[-16:]:
@@ -353,7 +360,10 @@ def project_auto_research_episode(
                 "stop_requested": route.stop_requested_at is not None,
             }
         )
-    experiment_routes = store.auto_research_child_experiments(episode_id)
+    experiment_routes = sorted(
+        store.auto_research_child_experiments(episode_id),
+        key=lambda route: (route.created_at, route.child_episode_id),
+    )
     experiments: list[dict[str, object]] = []
     for route in experiment_routes[-16:]:
         child = store.episode(route.child_episode_id)
@@ -368,8 +378,14 @@ def project_auto_research_episode(
                 "diagnostic": route.terminal_diagnostic,
             }
         )
-    admissions = store.pending_auto_research_child_admissions(episode_id)
-    notices = store.auto_research_lifecycle_notices(episode_id)
+    admissions = sorted(
+        store.pending_auto_research_child_admissions(episode_id),
+        key=lambda item: (item.created_at, item.admission_id),
+    )
+    notices = sorted(
+        store.auto_research_lifecycle_notices(episode_id),
+        key=lambda notice: (notice.created_at, notice.notice_id),
+    )
     lifecycle_counts = {"pending": 0, "delivered": 0, "acknowledged": 0}
     for notice in notices:
         lifecycle_counts[notice.state] += 1
@@ -403,23 +419,43 @@ def auto_research_wrapup_spec(
 ) -> EpisodeWrapupSpec:
     """Build a compact receipt and select the root actor's exact latest task."""
 
-    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import (
+        EpisodeReportAdmissionInvalid,
+        EpisodeWrapupSpec,
+        episode_wrapup_receipt,
+    )
+    from rcp.storage.episodes import compact_episode_receipt
 
-    episode = _auto_research_episode(store, signal.episode_id)
+    episode = store.episode(signal.episode_id)
+    if episode is None or episode.mode != "auto_research":
+        raise EpisodeReportAdmissionInvalid("The Auto-research episode no longer exists.")
+    if store.auto_research_state(signal.episode_id) is None:
+        raise EpisodeReportAdmissionInvalid("The Auto-research episode lost its durable state.")
     if episode.ending != signal.ending or episode.ending_diagnostic != signal.diagnostic:
-        raise ValueError("the Auto-research ending signal differs from its durable fence")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research ending signal differs from its durable fence"
+        )
     if episode.root_operation_id is None:
-        raise ValueError("the Auto-research episode has no root orchestrator actor")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research episode has no root orchestrator actor"
+        )
+    if store.auto_research_invocation(episode.root_operation_id) is None:
+        raise EpisodeReportAdmissionInvalid("The Auto-research root actor lost its invocation.")
     binding = store.auto_research_actor_binding(episode.root_operation_id)
     if binding.episode_id != episode.episode_id or binding.role != "orchestrator":
-        raise ValueError("the Auto-research root actor binding is inconsistent")
+        raise EpisodeReportAdmissionInvalid("the Auto-research root actor binding is inconsistent")
     continuation = store.agent_task(binding.current_operation_id)
     if continuation is None:
-        raise ValueError("the Auto-research root actor lost its latest continuation task")
+        raise EpisodeReportAdmissionInvalid(
+            "the Auto-research root actor lost its latest continuation task"
+        )
 
     state = store.auto_research_state(episode.episode_id)
     projection = project_auto_research_episode(store, episode.episode_id)
-    tasks = store.auto_research_tasks(episode.episode_id)
+    tasks = sorted(
+        store.auto_research_tasks(episode.episode_id),
+        key=lambda task: (task.created_at, task.operation_id),
+    )
     task_statuses: dict[str, int] = {}
     actor_rows: dict[str, dict[str, object]] = {}
     graph_results: list[dict[str, object]] = []
@@ -453,7 +489,7 @@ def auto_research_wrapup_spec(
             "phase": event.command_phase,
             "level": event.level,
         }
-        for event in events
+        for event in sorted(events, key=lambda event: (event.created_at, event.event_id))
         if event.event_kind == "command"
     ][-16:]
     child_work = [
@@ -475,7 +511,10 @@ def auto_research_wrapup_spec(
         }
         for item in projection.experiments
     ]
-    lifecycle_notices = store.auto_research_lifecycle_notices(episode.episode_id)
+    lifecycle_notices = sorted(
+        store.auto_research_lifecycle_notices(episode.episode_id),
+        key=lambda notice: (notice.created_at, notice.notice_id),
+    )
     lifecycle_facts = [
         {
             "notice_id": _receipt_text(notice.notice_id, 160),
@@ -534,24 +573,60 @@ def auto_research_wrapup_spec(
             projection.pending_admission_count - len(projection.pending_admission_ids),
         ),
     }
-    if _receipt_size(receipt) > AGENT_TASK_RECEIPT_MAX_BYTES:
-        receipt["actors"] = list(actor_rows.values())[-8:]
-        receipt["command_facts"] = command_facts[-8:]
-        receipt["graph_results"] = graph_results[-8:]
-        receipt["child_work"] = child_work[-8:]
-        receipt["omitted_child_work_count"] = max(0, projection.work_count - 8)
-        receipt["child_experiments"] = child_experiments[-8:]
-        receipt["omitted_child_experiment_count"] = max(0, projection.experiment_count - 8)
-        lifecycle = receipt["lifecycle"]
-        assert isinstance(lifecycle, dict)
-        lifecycle["facts"] = lifecycle_facts[-8:]
-        lifecycle["omitted_fact_count"] = max(0, len(lifecycle_notices) - 8)
-        receipt["starting_instruction"] = _receipt_text(
-            state.starting_instruction if state is not None else None,
-            480,
+
+    def fits() -> bool:
+        stored, _ = compact_episode_receipt(
+            episode_wrapup_receipt(
+                receipt=receipt,
+                episode_id=episode.episode_id,
+                mode=episode.mode,
+                ending=signal.ending,
+                partial=signal.partial,
+                diagnostic=signal.diagnostic,
+                compact_diagnostic=False,
+            )
         )
-    if _receipt_size(receipt) > AGENT_TASK_RECEIPT_MAX_BYTES:
-        raise ValueError("the compact Auto-research ending receipt exceeds its storage boundary")
+        return len(stored.encode("utf-8")) <= AGENT_TASK_RECEIPT_MAX_BYTES
+
+    lifecycle = receipt["lifecycle"]
+    assert isinstance(lifecycle, dict)
+    for limit in (240, 80):
+        if fits():
+            break
+        for fact in lifecycle_facts:
+            fact["payload"] = _receipt_text(fact["payload"], limit)
+    while not fits() and lifecycle_facts:
+        lifecycle_facts.pop(0)
+        lifecycle["omitted_fact_count"] = len(lifecycle_notices) - len(lifecycle_facts)
+    if not fits():
+        for child in child_experiments:
+            child["diagnostic"] = _receipt_text(child["diagnostic"], 160)
+    while not fits() and child_experiments:
+        child_experiments.pop(0)
+        receipt["omitted_child_experiment_count"] = projection.experiment_count - len(
+            child_experiments
+        )
+    for limit in (8, 4, 0):
+        for key in ("command_facts", "graph_results", "actors", "child_work"):
+            if fits():
+                break
+            items = receipt[key]
+            assert isinstance(items, list)
+            receipt[key] = items[-limit:] if limit else []
+            if key == "actors":
+                receipt["omitted_actor_count"] = len(actor_rows) - len(receipt[key])
+            elif key == "child_work":
+                receipt["omitted_child_work_count"] = projection.work_count - len(receipt[key])
+    for limit in (480, 160):
+        if fits():
+            break
+        receipt["starting_instruction"] = _receipt_text(receipt["starting_instruction"], limit)
+    if not fits():
+        # Preserve the receipt shape and exact accounting while dropping all detail.
+        receipt["starting_instruction"] = None
+        receipt["pending_child_admission_ids"] = []
+        receipt["omitted_pending_child_admission_count"] = projection.pending_admission_count
+
     return EpisodeWrapupSpec(
         episode_id=episode.episode_id,
         ending=signal.ending,
@@ -576,17 +651,6 @@ def _receipt_text(value: object, limit: int) -> str | None:
         return None
     normalized = " ".join(value.split())
     return normalized if len(normalized) <= limit else f"{normalized[: limit - 1]}…"
-
-
-def _receipt_size(value: dict[str, object]) -> int:
-    return len(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    )
 
 
 class PendingAutoResearchMail(BaseModel):

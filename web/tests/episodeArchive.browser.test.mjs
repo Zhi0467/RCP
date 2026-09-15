@@ -43,7 +43,18 @@ function episode(fields) {
     tasks: [],
     report: null,
     can_stop: false,
-    can_reauthorize: false,
+    can_continue: false,
+    chain: [
+      {
+        episode_id: "parent",
+        created_at: "2026-09-01T12:00:00Z",
+        status: "failed",
+        ending: "failed",
+        invocation_ceiling: 3,
+        invocations_used: 1,
+        report: null,
+      },
+    ],
     can_message: false,
     archived: false,
     can_archive: true,
@@ -302,6 +313,22 @@ test("active and unresolved episodes archive without stopping work and restore a
         await route.fulfill({ json: item });
         return;
       }
+      const timelineMatch = url.pathname.match(/\/episodes\/([^/]+)\/timeline$/);
+      if (timelineMatch) {
+        // Turn history moved to the typed timeline; this journey exercises cards.
+        const item = records.find(
+          (record) => record.episode_id === decodeURIComponent(timelineMatch[1]),
+        );
+        await route.fulfill({
+          json: {
+            episode_id: item?.episode_id ?? decodeURIComponent(timelineMatch[1]),
+            mode: item?.mode ?? "auto_research",
+            events: [],
+            truncated: false,
+          },
+        });
+        return;
+      }
       const isEpisodes = url.pathname === "/api/projects/project-one/episodes";
       const isIndex = url.pathname.endsWith("/experiment-episodes");
       const isSpace = url.pathname === "/api/space/runs";
@@ -331,7 +358,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     const space = page.locator('[data-surface="space"]');
     const projectCard = (id) => project.locator(`[data-episode-id="${id}"]`);
     const spaceCard = (id) => space.locator(`[data-episode-id="${id}"]`);
-    await project.getByRole("link", { name: /Reproduce the baseline/ }).waitFor();
+    await projectCard("child").waitFor();
     await projectCard("child").getByRole("button", { name: "Archive", exact: true }).waitFor();
     await projectCard("main-current")
       .getByRole("button", { name: "Archive", exact: true })
@@ -448,7 +475,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     await projectCard("parent").getByRole("button", { name: "Unarchive", exact: true }).click();
     await spaceCard("parent").getByRole("button", { name: "Archive", exact: true }).waitFor();
     await project.getByRole("checkbox", { name: "Show archived" }).uncheck();
-    await project.getByRole("link", { name: /Reproduce the baseline/ }).waitFor();
+    await projectCard("child").waitFor();
 
     holdReads = true;
     const readsHeld = new Promise((resolve) => {
@@ -459,7 +486,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     await projectCard("child").getByRole("button", { name: "Archive", exact: true }).click();
     await projectCard("child").waitFor({ state: "detached" });
     await spaceCard("child").waitFor({ state: "detached" });
-    assert.equal(await project.getByRole("link", { name: /Reproduce the baseline/ }).count(), 0);
+    assert.equal(await projectCard("child").count(), 0);
     assert.equal(await projectCard("parent").count(), 1);
     await Promise.all(held.map((release) => release()));
     await page.evaluate(() => new Promise(requestAnimationFrame));
@@ -492,7 +519,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     await spaceCard("child").getByRole("button", { name: "Unarchive", exact: true }).click();
     await projectCard("child").getByRole("button", { name: "Archive", exact: true }).waitFor();
     await project.getByRole("checkbox", { name: "Show archived" }).uncheck();
-    await project.getByRole("link", { name: /Reproduce the baseline/ }).waitFor();
+    await projectCard("child").waitFor();
     await projectCard("main-current").getByRole("button", { name: "Archive", exact: true }).click();
     await projectCard("main-current").waitFor({ state: "detached" });
     assert.equal(await projectCard("child").count(), 1);

@@ -3,7 +3,14 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import { chromium } from "playwright";
+import {
+  rootTask,
+  episode,
+  branchId,
+  baseHead,
+  branchHead,
+  withGraphBranch,
+} from "./fixtures/campaigns.mjs";
 
 import {
   archiveEpisode,
@@ -13,7 +20,7 @@ import {
   loadProjectExperimentEpisodes,
   loadSpaceRuns,
   mergeEpisodeToMain,
-  reauthorizeEpisode,
+  continueEpisode,
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
@@ -35,77 +42,10 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
+const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
-
-const rootTask = {
-  operation_id: "turn-root",
-  role: "orchestrator",
-  depth: 0,
-  project_id: "project one",
-  kind: "auto_research",
-  status: "running",
-  request: { role: "orchestrator", actor_operation_id: "turn-root" },
-  created_at: "2026-08-12T08:00:00Z",
-  updated_at: "2026-08-12T08:00:00Z",
-  status_message: "Reviewing the graph",
-  attempt: 1,
-  parent_operation_id: null,
-  episode_id: "episode/alpha",
-  estimate_seconds: 10,
-  estimate_samples: 1,
-  phase: "running",
-  elapsed_seconds: 1,
-  progress: 0.3,
-  can_pause: true,
-  can_resume: false,
-  can_retry: false,
-};
-
-const episode = {
-  episode_id: "episode/alpha",
-  project_id: "project one",
-  mode: "auto_research",
-  control_node_id: null,
-  graph_target: { kind: "main" },
-  graph_base_head: null,
-  graph_branch: null,
-  root_operation_id: rootTask.operation_id,
-  current_operation_id: rootTask.operation_id,
-  current_orchestrator_task_id: rootTask.operation_id,
-  current_control_task_id: rootTask.operation_id,
-  recovery: null,
-  status: "running",
-  starting_instruction: "Begin with the unresolved **Blocker**.",
-  budget: {
-    invocation_ceiling: 8,
-    invocations_used: 3,
-    invocations_remaining: 5,
-    observed_input_tokens: 12_345,
-    observed_generated_tokens: 678,
-  },
-  authorized_by: { space_id: "space", user_id: "human", display_name: "Ada" },
-  stop_requested_at: null,
-  ending: null,
-  ending_diagnostic: null,
-  wrapup_state: "not_started",
-  wrapup_error: null,
-  created_at: "2026-08-12T08:00:00Z",
-  updated_at: "2026-08-12T08:02:00Z",
-  ended_at: null,
-  tasks: [rootTask],
-  report: null,
-  archived: false,
-  can_archive: false,
-  can_stop: true,
-  can_reauthorize: false,
-  can_message: true,
-  live: true,
-  health: "active",
-  recommendation: "continue",
-  task_control: "pause",
-};
 
 test("the Auto-research dialog meters only operational invocations", () => {
   const html = renderToStaticMarkup(
@@ -142,7 +82,7 @@ function renderEpisodes(values, { busyAction = null } = {}) {
           async onLoadMessages() {},
           async onStop() {},
           async onMerge() {},
-          async onReauthorize() {},
+          async onContinue() {},
           async onSendMessage() {},
           async onOperateTask() {},
           key: value.episode_id,
@@ -164,15 +104,40 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /12345|12,345/);
 });
 
-test("an episode turn that lost part of its launch says so on its row", () => {
-  // The turn succeeded, so its status pill reads as untroubled and nothing else
-  // on the row contradicts it. The backend authors the sentence; the row shows
-  // it verbatim rather than deciding anything about it.
+test("an episode turn that lost part of its launch says so on its timeline row", () => {
   const note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default.";
-  const degraded = { ...episode, tasks: [{ ...rootTask, degradation: note }] };
-
-  assert.match(renderEpisodes([degraded]), /ignored the requested reasoning effort/);
-  assert.doesNotMatch(renderEpisodes([episode]), /run-history-degraded/);
+  const event = {
+    event_id: `turn:${rootTask.operation_id}`,
+    kind: "turn",
+    at: rootTask.created_at,
+    actor: { kind: "orchestrator", id: rootTask.operation_id, label: "Orchestrator", member: null },
+    parent_event_id: null,
+    title: "Orchestrator turn",
+    detail: note,
+    status: "succeeded",
+    cause: null,
+    links: {
+      task_id: rootTask.operation_id,
+      message_id: null,
+      notice_id: null,
+      episode_id: episode.episode_id,
+      control_node_id: null,
+    },
+    provenance: "recorded",
+  };
+  const render = (detail) =>
+    renderToStaticMarkup(
+      React.createElement(EpisodeTimeline, {
+        events: [{ ...event, detail }],
+        apiBase: "/api/projects/demo",
+        episodeId: episode.episode_id,
+        onInspectTask() {},
+      }),
+    );
+  const html = render(note);
+  assert.match(html, /ignored the requested reasoning effort/);
+  assert.match(html, /status-pill succeeded/);
+  assert.doesNotMatch(render(null), /ignored the requested reasoning effort/);
 });
 
 test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
@@ -269,7 +234,7 @@ test("a final report error is visible, terminal, and has no task recovery contro
     tasks: [failedTask],
     can_stop: false,
     can_message: false,
-    can_reauthorize: true,
+    can_continue: true,
     health: "needs_action",
     recommendation: "reauthorize",
     task_control: null,
@@ -279,8 +244,65 @@ test("a final report error is visible, terminal, and has no task recovery contro
 
   assert.equal(projection.taskControl, null);
   assert.match(html, /Report generation error: The visual report could not be written\./);
-  assert.match(html, /New episode invocation ceiling/);
+  assert.match(html, /Turns to add/);
   assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
+});
+
+test("a continuation chain is one run card listing each member's ceiling, ending, and report", () => {
+  const sourceMember = {
+    episode_id: "episode/source",
+    created_at: "2026-08-11T08:00:00Z",
+    status: "needs_action",
+    ending: "exhausted",
+    invocation_ceiling: 3,
+    invocations_used: 3,
+    report: { report_id: "report-1", ending: "exhausted", created_at: "2026-08-11T09:00:00Z" },
+  };
+  const source = {
+    ...episode,
+    episode_id: "episode/source",
+    status: "needs_action",
+    live: false,
+    ending: "exhausted",
+    can_continue: false,
+    continued_by_episode_id: "episode/continuation",
+    health: "needs_action",
+    recommendation: "review",
+    chain: [sourceMember],
+  };
+  const continuationMember = {
+    episode_id: "episode/continuation",
+    created_at: episode.created_at,
+    status: "running",
+    ending: null,
+    invocation_ceiling: 2,
+    invocations_used: 1,
+    report: null,
+  };
+  const continuation = {
+    ...episode,
+    episode_id: "episode/continuation",
+    continues_episode_id: "episode/source",
+    can_continue: false,
+    // The server publishes the whole chain; the card never rebuilds it from the list.
+    chain: [sourceMember, continuationMember],
+  };
+
+  assert.deepEqual(runsEpisodeCards([source, continuation], new Set()), [continuation]);
+  assert.deepEqual(runsEpisodeCards([continuation], new Set()), [continuation]);
+  // Archiving the displayed newest member removes the whole run from default Runs.
+  const archivedContinuation = { ...continuation, archived: true };
+  assert.deepEqual(runsEpisodeCards([source, archivedContinuation], new Set()), []);
+  assert.deepEqual(runsEpisodeCards([source, archivedContinuation], new Set(), true), [
+    archivedContinuation,
+  ]);
+  const html = renderEpisodes([continuation]);
+
+  assert.match(html, /Continued 1 time/);
+  assert.match(html, /3 of 3 turns[^]*?Exhausted[^]*?1 of 2 turns[^]*?Current/);
+  assert.match(html, new RegExp(`${encodeURIComponent("episode/source")}/report/viewer`));
+  assert.doesNotMatch(html, /Continued by|Continues /);
+  assert.doesNotMatch(html, /Turns to add/);
 });
 
 test("a report error does not downgrade a completed episode", () => {
@@ -338,7 +360,7 @@ test("reauthorization keeps the immutable old episode and inserts the fresh pare
     ending: "exhausted",
     wrapup_state: "ready",
     can_stop: false,
-    can_reauthorize: true,
+    can_continue: true,
   };
   const freshEpisode = {
     ...episode,
@@ -397,40 +419,6 @@ test("Show archived retains an archived Experiment after a newer episode replace
   );
 });
 
-const branchId = "8ba94d42-4d42-4ccb-9d2a-f299340dd3b8";
-const baseHead = {
-  target: { kind: "main" },
-  revision: 4,
-  transition_id: "transition-main-base-0004",
-};
-const branchHead = {
-  target: { kind: "branch", branch_id: branchId },
-  revision: 2,
-  transition_id: "transition-branch-head-0002",
-};
-
-function withGraphBranch(overrides = {}) {
-  return {
-    ...episode,
-    graph_target: { kind: "branch", branch_id: branchId },
-    graph_base_head: baseHead,
-    graph_branch: {
-      branch_id: branchId,
-      episode_id: episode.episode_id,
-      base_head: baseHead,
-      head: branchHead,
-      merge_eligible: true,
-      merge_blocked_reason: null,
-      merge_requires_end: false,
-      merge_state: "unmerged",
-      latest_successful_merge: null,
-      active_merge_task_id: null,
-      merge_diagnostic: null,
-      ...overrides,
-    },
-  };
-}
-
 test("an eligible episode shows its graph branch base, head, and merge action", () => {
   const html = renderEpisodes([withGraphBranch()]);
 
@@ -464,100 +452,11 @@ test("ineligible and running branches retain merge controls; an in-flight action
   assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
 });
 
-test("a paused episode explicitly ends when its branch is merged", () => {
-  const html = renderEpisodes([withGraphBranch({ merge_requires_end: true })]);
+test("the merge control merges on branch facts and never ends the episode", () => {
+  const html = renderEpisodes([withGraphBranch({ current_episode_id: "episode/alpha" })]);
 
-  assert.match(html, />End and merge to main</);
-  assert.doesNotMatch(html, />Merge to main</);
-});
-
-test("a stopped ineligible branch submits a deliberate merge and shows the server refusal beside it", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("console", (message) => {
-      if (message.type() === "error" && !message.text().includes("409 (Conflict)")) {
-        errors.push(message.text());
-      }
-    });
-    const stopped = {
-      ...withGraphBranch({ merge_eligible: false }),
-      status: "stopped",
-      ending: "stopped",
-      health: "stopped",
-      recommendation: "none",
-      can_stop: false,
-      can_message: false,
-      task_control: null,
-      tasks: [],
-    };
-    const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
-    let polledEpisode = stopped;
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
-    let requests = 0;
-    await page.route("**/api/projects/**/merge", async (route) => {
-      assert.equal(route.request().method(), "POST");
-      requests += 1;
-      await route.fulfill(
-        requests === 1
-          ? { status: 409, json: { detail: reason } }
-          : {
-              status: 202,
-              json: {
-                ...stopped,
-                graph_branch: {
-                  ...stopped.graph_branch,
-                  merge_state: "running",
-                  active_merge_task_id: "merge-task",
-                },
-              },
-            },
-      );
-    });
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
-    );
-    const merge = page.getByRole("button", { name: "Merge to main", exact: true });
-    await merge.click();
-    const branch = page.getByRole("region", { name: "Episode graph branch" });
-    await branch.getByRole("alert").waitFor();
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
-    assert.equal(requests, 1);
-    assert.equal(await merge.isEnabled(), true);
-    // Polling identical state retains the refusal, but a newly eligible snapshot retires it.
-    await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
-    polledEpisode = {
-      ...stopped,
-      graph_branch: { ...stopped.graph_branch, merge_eligible: true },
-    };
-    await page.evaluate(() => window.refreshMergeEpisode());
-    await branch.getByRole("alert").waitFor({ state: "detached" });
-    assert.equal(requests, 1);
-    // Returning to the earlier snapshot must not resurrect an obsolete refusal.
-    polledEpisode = stopped;
-    await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    // Eligibility can change after the last snapshot; the second click must reach the server.
-    await merge.click();
-    await branch.getByText("Merge running", { exact: true }).waitFor();
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    assert.equal(requests, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
+  assert.match(html, />Merge to main</);
+  assert.doesNotMatch(html, /End and merge/);
 });
 
 test("merged and failed branch summaries stay visible without branch-management controls", () => {
@@ -678,7 +577,7 @@ test("retries and continuations stay at their canonical actor depth", () => {
   );
 });
 
-test("episode API calls use only the generic endpoints and new-parent reauthorization body", async () => {
+test("episode API calls use only the generic endpoints and the continuation body", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
   globalThis.fetch = async (path, init = {}) => {
@@ -704,7 +603,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     await stopEpisode("/api/projects/demo", "episode/alpha");
     await archiveEpisode("/api/projects/demo", "episode/alpha", true);
     await archiveEpisode("/api/projects/demo", "episode/alpha", false);
-    await reauthorizeEpisode("/api/projects/demo", "episode/alpha", 4);
+    await continueEpisode("/api/projects/demo", "episode/alpha", 4, "request-1");
     await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
@@ -751,9 +650,9 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       body: JSON.stringify({ archived: false }),
     },
     {
-      path: "/api/projects/demo/episodes/episode%2Falpha/reauthorize",
+      path: "/api/projects/demo/episodes/episode%2Falpha/continue",
       method: "POST",
-      body: JSON.stringify({ invocation_ceiling: 4 }),
+      body: JSON.stringify({ invocation_ceiling: 4, request_id: "request-1" }),
     },
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/merge",
@@ -786,4 +685,94 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     requests.some(({ path }) => path.includes("experiment-loops")),
     false,
   );
+});
+
+for (const mode of ["auto_research", "experiment_loop"]) {
+  for (const wrapupState of ["not_started", "failed"]) {
+    test(`${mode} exhausted ${wrapupState} card uses the settled projection`, () => {
+      const ended = {
+        ...episode,
+        mode,
+        status: "needs_action",
+        ending: "exhausted",
+        wrapup_state: wrapupState,
+        wrapup_error: wrapupState === "failed" ? "Receipt admission failed." : null,
+        live: false,
+        health: "needs_action",
+        recommendation: "reauthorize",
+        blocked_reason: "reauthorize",
+        task_control: null,
+        can_stop: false,
+        can_message: false,
+      };
+      const projection = episodeProjection(ended);
+      assert.equal(projection.healthLabel, "Needs action");
+      assert.equal(projection.recommendation.label, "The authorized turns are spent. Add turns");
+      const html = renderEpisodes([ended]);
+      assert.match(html, /Needs action/);
+      assert.doesNotMatch(html, /Let auto-research continue/);
+      if (wrapupState === "failed")
+        assert.match(html, /Report generation error: Receipt admission failed\./);
+    });
+  }
+}
+
+test("an exhausted episode waiting for admission says wrapping up", () => {
+  const wrapping = {
+    ...episode,
+    status: "wrapping_up",
+    ending: "exhausted",
+    wrapup_state: "not_started",
+    health: "wrapping_up",
+    recommendation: "wait",
+    blocked_reason: null,
+    task_control: null,
+  };
+  assert.equal(episodeProjection(wrapping).health, "wrapping_up");
+  const html = renderEpisodes([wrapping]);
+  assert.match(html, /Wrapping up visualization and report/);
+  assert.doesNotMatch(html, /Let auto-research continue/);
+});
+
+test("a blocked login leads the recovery instruction", () => {
+  const blocked = {
+    ...episode,
+    health: "needs_action",
+    recommendation: "retry",
+    blocked_reason: "sign_in",
+  };
+  assert.equal(
+    episodeProjection(blocked).recommendation.label,
+    "The provider login is dead. Sign in again, then retry the current turn",
+  );
+});
+
+test("the login notice names each signed-out account once and offers verification", async () => {
+  const { ProviderLoginNotice } = await server.ssrLoadModule(
+    "/src/components/ProviderLoginNotice.tsx",
+  );
+  const states = [
+    {
+      provider: "codex",
+      host: "",
+      state: "signed_out",
+      generation: 0,
+      changed_at: "2026-09-14T00:00:00Z",
+      detail: "Please sign in again",
+    },
+    {
+      provider: "claude",
+      host: "remote.example",
+      state: "signed_in",
+      generation: 1,
+      changed_at: "2026-09-14T00:00:00Z",
+      detail: null,
+    },
+  ];
+  const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
+  assert.match(html, /codex on local is signed out since/);
+  assert.match(html, /Please sign in again/);
+  assert.match(html, /Any member can sign it in again from Settings/);
+  assert.equal((html.match(/Verify sign-in/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /remote.example/);
 });

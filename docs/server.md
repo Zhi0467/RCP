@@ -250,15 +250,18 @@ does not change global `sshd_config`.
 
 ## 11. Provider authentication
 
-RCP does not log in to Codex, Claude, or a later provider. Authenticate with the
-provider's native command under the operating-system account that will execute
-it. For server-local execution that account is `rcp`.
+Provider logins are signed in, verified, and signed out from the product, in
+**Settings, Provider logins**, by any signed-in member; the server records who
+did it and shows the result to everyone. The operator installs the provider
+executables under the service account; nothing else about a login needs a
+shell. This reverses the earlier rule that RCP never logs in to a provider; the
+reasoning is in the
+[provider logins decision](decisions/2026-09-14-provider-logins-are-kept-alive.md).
 
-Stay in the ordinary operator SSH session. You do not need to log in directly as
-`rcp`, enable its password, or open an interactive shell as it. Prefix each
-provider command with `sudo -u rcp -H`; `-H` makes the provider store its binary,
-settings, sessions, and credential under `/home/rcp` instead of the operator's
-home.
+Stay in the ordinary operator SSH session for the installs. You do not need to
+log in directly as `rcp`, enable its password, or open an interactive shell as
+it. Prefix each provider command with `sudo -u rcp -H`; `-H` makes the provider
+store its binary and settings under `/home/rcp` instead of the operator's home.
 
 ### Codex
 
@@ -270,18 +273,13 @@ sudo -u rcp -H /bin/bash -lc \
   'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
 ```
 
-On a remote or headless server, use device-code login. Open the displayed URL in
-the operator's local browser and enter the displayed one-time code there:
-
-```bash
-sudo -u rcp -H /bin/bash -lc 'codex login --device-auth'
-```
-
-Confirm that a credential is stored for `rcp`:
-
-```bash
-sudo -u rcp -H /bin/bash -lc 'command -v codex && codex login status'
-```
+Then, in **Settings, Provider logins**, choose **Sign in with device code** for
+the Codex account. RCP runs `codex login --device-auth` as `rcp`, shows the
+verification link and the one-time code, and waits for the browser flow to
+finish. Open the link in any browser, sign in to ChatGPT, and enter the code.
+When the CLI reports success, RCP runs one minimal real request as `rcp`; only
+that answer marks the account signed in, and it resumes the work a dead login
+had parked. The code expires after fifteen minutes; start again if it lapses.
 
 ### Claude Code
 
@@ -292,33 +290,45 @@ sudo -u rcp -H /bin/bash -lc \
   'curl -fsSL https://claude.ai/install.sh | bash'
 ```
 
-Start the Claude subscription login. Open the displayed URL in the operator's
-local browser. If Claude asks for a returned code, paste it only into this
-terminal prompt:
+Claude does not run on the browser login under `/home/rcp`. That login rotates a
+single-use refresh token on every process start, and one lost write kills it for
+every member. Instead, on any machine with a browser and a Claude subscription,
+run `claude setup-token` and copy the long-lived token it prints. In **Settings,
+Provider logins**, paste it into the Claude account's token field and choose
+**Save token**. RCP stores it as `rcp`, readable by the service alone, under the
+application data directory (`providers/claude/<account>/setup-token`, mode 0600)
+beside a record of who pasted it and when; for an SSH execution account it also
+places the file on that account. Every Claude process RCP starts receives the
+token as `CLAUDE_CODE_OAUTH_TOKEN`, and the variables that would make Claude bill
+an API key instead are removed. Saving ends in the same one real request as
+Codex; only its answer marks the account signed in. The token lasts about a year;
+RCP shows the paste date and an estimated expiry, and a classified login failure
+is the truth when they disagree. Paste a new token to replace it.
 
-```bash
-sudo -u rcp -H /bin/bash -lc 'claude auth login --claudeai'
-```
+The token travels once, from the browser to the token field. Never put it in a
+command argument, a log, an issue, chat, or a project file; RCP never prints it.
 
-Confirm the installed binary and the stored credential:
+### Verify and sign out
 
-```bash
-sudo -u rcp -H /bin/bash -lc \
-  'command -v claude && claude --version && claude auth status'
-```
+`codex login status` and `claude auth status` read the stored credential and
+report the auth mode. Neither contacts the provider, so they prove that a
+credential exists and nothing about whether it still works; RCP does not trust
+them and never shows them as proof. When a real provider process reports a dead
+login, RCP marks that machine account signed out, refuses to start new provider
+work on it, and shows one notice on every project's Runs view and on the space
+landing. **Verify sign-in** runs one minimal real request as `rcp` and, when
+that succeeds, resumes the parked work.
 
-Both status commands read the stored credential and report the auth mode. Neither
-contacts the provider, so they prove a credential exists under `/home/rcp` and
-nothing about whether it still works. A login can be present and dead at once: a
-rotating refresh token that was already spent leaves a complete file on disk.
-The symptom is a task failing with `401` while the status command reports
-success, and the remedy is rerunning the login command above. RCP checks the
-same provider-reported status and inherits the same limit.
+**Sign out** runs `codex logout` as `rcp`, or deletes the stored Claude token
+(on the server and on the SSH account), then fences the account exactly as a
+failed login does until a member signs it in again.
 
-The login commands may be rerun safely if the SSH connection closes before the
-browser flow finishes. Never paste a provider token, returned login code, or a
-provider credential file into RCP, a command argument, a log, an issue, or chat.
-RCP only invokes the provider-native executable and checks its native status.
+The `providers` directory is excluded from protected backups, and an archive's
+login state and probed readiness describe the archived machine. A restore marks
+every provider account signed out with the reason recorded and forgets every
+readiness probe; a member signs in or verifies each account again on the
+restored server. A data directory that arrives without a restore still resets
+each Claude account whose token did not come with it at start.
 
 ### Update provider CLIs
 
@@ -326,7 +336,7 @@ Stay in the ordinary operator SSH session for updates too. Do not enable a
 password or direct login for `rcp`, and do not run provider maintenance under
 the operator's home. RCP wraps each supported provider's native update, runs it
 under the `rcp` account, keeps its output bounded, and verifies the resulting
-executable, version, and existing login:
+executable and version; the login is untouched:
 
 ```bash
 sudo /usr/local/bin/rcp server provider update codex
@@ -337,24 +347,23 @@ The Codex command reruns OpenAI's supported standalone installer under
 `/home/rcp`; the Claude command runs `claude update`. These are the current
 provider-owned update paths documented by
 [OpenAI](https://learn.chatgpt.com/docs/codex/cli) and
-[Anthropic](https://code.claude.com/docs/en/cli-usage). RCP does not download or
-store provider credentials and an update never substitutes for login.
+[Anthropic](https://code.claude.com/docs/en/cli-usage). An update never
+substitutes for a sign-in and never reads the login.
 
 RCP runs the Codex installer in its supported noninteractive mode, so it does
 not ask whether to launch Codex or remove an older npm-managed installation.
 RCP leaves that older installation in place, gives the account-local standalone
-command in `/home/rcp/.local/bin` precedence, then checks that command and the
-existing login before reporting success. The older system installation can be
-removed separately after the server is qualified; it does not need to be
-removed during this update.
+command in `/home/rcp/.local/bin` precedence, then checks that command's version
+before reporting success. The older system installation can be removed
+separately after the server is qualified; it does not need to be removed during
+this update.
 
-If the provider updated but its native login is unavailable, the same command
-stops with the exact `sudo -u rcp -H ... login` recovery command. Complete that
-browser/device flow in the operator terminal, then use the printed Continue
-command. If an older project recorded a version-numbered executable before RCP
-preserved provider symlink paths, use **Resolve** once for that provider in
-Project Settings, then rerun `server provider check --project <project-id>`.
-Future native updates retain the stable command path.
+If the account's login is dead, the readiness check names it and points at
+**Settings, Provider logins**, where any member signs it in again. If an older
+project recorded a version-numbered executable before RCP preserved provider
+symlink paths, use **Resolve** once for that provider in Project Settings, then
+rerun `server provider check --project <project-id>`. Future native updates
+retain the stable command path.
 
 After the project wizard names its project id, run the exact readiness command
 it prints:

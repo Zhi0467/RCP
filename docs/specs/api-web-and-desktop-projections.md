@@ -656,8 +656,53 @@ foldable lists, ordered **Experiment loop** then **Auto-research**. Seed/Refresh
 remain in project History; Blocker judgment remains in Inbox.
 
 Experiment and Auto-research parents each expose one backend-decided health and
-one separately labelled **Recommended next step**. Task status, phase, workers,
-and diagnostics remain supporting history rather than competing primary states.
+one separately labelled **Recommended next step**. Health, recommendation, and
+`blocked_reason` come from one exhaustive table in the episode projection,
+evaluated in precedence order: an episode with an ending is never `active`; a
+`wrapping_up` status or a pending or running wrap-up reads `wrapping_up`; an
+exhausted or human-pause ending reads `needs_action` with
+`blocked_reason=reauthorize`; a failed control task whose failure kind is a
+revoked login reads `needs_action` with `blocked_reason=sign_in` beside its
+recovery control. `blocked_reason` names the one human action that clears a
+block and is `null` otherwise; the card renders it as one lead sentence before
+the recommendation. `continues_episode_id`, `continued_by_episode_id`, and
+`can_continue` publish the continuation chain, and `chain` lists every member
+oldest first with its ceiling, turns used, ending, and report summary, so the
+card never rebuilds a chain from the bounded episode list; the card shows a
+chain as one run with each member's ceiling, ending, and report in sequence,
+offers **Add N turns** only where `can_continue`, and the timeline spans the
+chain with a `continued` boundary. The branch summary names the chain root as `episode_id` and the
+newest member as `current_episode_id`; `merge_requires_end` is gone. A wrap-up state of `not_started` on a settled episode means
+the ending had no report to generate and reads like a skipped report. A
+wrap-up whose report account is signed out reads `wrapping_up` with
+`blocked_reason=sign_in`.
+
+Provider login state is published at `GET /api/providers/logins` (every
+machine account, with the project machines that use it, a secret-free summary
+of a stored credential, provider-owned labels and supported sign-in methods,
+and any running sign-in) and inside each
+project's readiness snapshot as `provider_logins` (the accounts that project
+uses). While any account is `signed_out`, the project Runs view and the space
+landing render one `ProviderLoginNotice` per account naming the provider,
+machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
+at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
+copy points at it. Project Settings carries a **Provider logins** card
+(`ProviderLogins`) for both space kinds with one row per account: state, who
+changed it and when, **Sign in with device code** when `device_code` is supported
+(the code and link render while `GET .../sign-in/{login_id}` is polled), a token
+field and **Save token** when `token_entry` is supported (the token is sent once
+and never read back), **Verify sign-in**, and **Sign out**. Unknown interactions
+do not inherit another provider's form. The backend supplies the provider label,
+token instructions, and safe credential metadata; React never selects login
+behavior from a provider name. Generic provider routes reject unsupported
+actions and unknown request fields. Status GET reads status only: verification
+completion resumes eligible parked work through the shared account lifecycle
+and existing recovery owners even when the member leaves Settings or closes
+the page. Durable reconciliation repairs interruption before resumption without
+duplicate launches. Every action is available to any signed-in member
+and records that member. Task
+status, phase, workers, and diagnostics remain supporting history rather than
+competing primary states.
 For a terminal Experiment episode, the owning node's human-authored closed status
 is authoritative: the run is Completed and fresh-start control is absent until
 the node is edited back to a nonterminal status. A control is absent unless
@@ -713,10 +758,30 @@ an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
 `/api/projects/{project_id}/experiment-episodes` path restricts projection work
 to that visible project. The same child appears once as a linked, subordinate
-**Experiment** row in the owning Auto-research card's **Turns** list. That row is
+`child` event on the owning Auto-research card's timeline. That event is
 navigational provenance, not a second lifecycle or budget: its label and status
 consume the indexed node and control, while the child card retains its own
 episode budget, transcript, and valid controls.
+
+### Episode timeline
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/timeline` is a read-only
+projection of one episode's causal record as typed events on one time axis:
+`turn`, `retry`, `wake`, `mail`, `notice`, `child`, `lifecycle`, and `human`.
+Each event carries its time, an actor (orchestrator, worker, wake, human
+member, RCP, or child), a `parent_event_id` that nests a retry under its turn,
+a delivered notice or message under the wake or harvesting turn that consumed
+it, and a child under the turn that admitted it, plus a cause (wake cause,
+retry cause, notice source event, `wake_suppressed`), bounded detail, links to
+the task, message, notice, or episode, and a `provenance` flag that is
+`unknown` when the record cannot say who or what caused an event; nothing is
+guessed. The response is bounded and says when it was truncated. The web holds
+one `EpisodeTimeline` model class and one `TimelineRenderConfig` that maps event
+kinds to lane, glyph, tone, and fold behavior; the component renders what the
+model decides. Mail is folded and opens on click; a task event opens the task
+inspector; a child event opens the child. The timeline replaces the Turns and
+Mail lists on the Auto-research card and the turn list on the Experiment run
+detail; the message composer stays beneath it.
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable
 objective separately from retained stale guidance. When the backend finds the
@@ -883,8 +948,18 @@ picks a default itself.
 
 The browser may stage human drafts and render backend projections; it is not the
 owner of authority, tasks, graph rules, provider authentication, watcher
-delivery, or canonical state. Provider authentication stays native to the
-execution account and is not owned by another RCP layer. Client-generated ids,
+delivery, or canonical state. Provider implementations own authentication
+mechanics for the execution account; the shared account lifecycle owns durable
+state and recovery. Client-generated ids,
 cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
+
+## Provider sign-in resume response
+
+Verified sign-in, token save, and successful device sign-in retain
+`resumed`, now `{ "checked": N }`. This is a coarse count of episodes inspected
+by the ordinary periodic reconciliation pass, plus queued tasks and completed
+watcher groups checked for the verified account. It is not a launch count:
+already-settled episodes and inputs still waiting on other conditions may be
+included. The web reports items rechecked for resumption.

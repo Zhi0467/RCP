@@ -41,7 +41,18 @@ const episode = {
   tasks: [],
   report: null,
   can_stop: false,
-  can_reauthorize: false,
+  can_continue: false,
+  chain: [
+    {
+      episode_id: "child-experiment-episode",
+      created_at: "2026-09-03T12:00:00Z",
+      status: "needs_action",
+      ending: "human_pause",
+      invocation_ceiling: 3,
+      invocations_used: 1,
+      report: null,
+    },
+  ],
   can_message: false,
   live: false,
   health: "needs_action",
@@ -173,7 +184,18 @@ const parentEpisode = {
   tasks: [],
   report: null,
   can_stop: false,
-  can_reauthorize: false,
+  can_continue: false,
+  chain: [
+    {
+      episode_id: parentEpisodeId,
+      created_at: "2026-09-03T11:00:00Z",
+      status: "needs_action",
+      ending: "human_pause",
+      invocation_ceiling: 5,
+      invocations_used: 1,
+      report: null,
+    },
+  ],
   can_message: false,
   live: false,
   health: "needs_action",
@@ -229,7 +251,7 @@ function Fixture() {
       onLoadEpisodeMessages={() => Promise.resolve()}
       onStopEpisode={() => Promise.resolve()}
       onMergeEpisode={() => Promise.resolve()}
-      onReauthorizeEpisode={() => Promise.resolve()}
+      onContinueEpisode={() => Promise.resolve()}
       onSendEpisodeMessage={() => Promise.resolve()}
       onOperateEpisodeTask={() => Promise.resolve()}
       onSelectExperiment={setSelectedExperimentId}

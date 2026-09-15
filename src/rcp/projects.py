@@ -1664,7 +1664,9 @@ class ProjectCatalog:
         if record is None:
             raise KeyError(project_id)
         manifest = load_manifest(record.locator)
-        snapshot = ProjectService.readiness_for(manifest, self.launcher, refresh=refresh)
+        snapshot = ProjectService.readiness_for(
+            manifest, self.launcher, refresh=refresh, provider_skills=self.provider_skills
+        )
         snapshot["agent_profiles"] = ProjectService.effective_profiles(manifest, self.launcher)
         snapshot["compute_status"] = self._compute_status_snapshot(
             project_id,

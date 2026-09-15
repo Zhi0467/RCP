@@ -265,6 +265,14 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
         else if (path.endsWith("/revision"))
           json = { revision: 1, graph_head: project().graph_head };
+        else if (path === "/api/providers/logins") json = [];
+        else if (path.endsWith("/timeline"))
+          json = {
+            episode_id: episode().episode_id,
+            mode: episode().mode,
+            events: [],
+            truncated: false,
+          };
         else if (
           ![
             "/api/projects/demo/watchers",

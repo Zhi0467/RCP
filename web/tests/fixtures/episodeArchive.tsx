@@ -104,7 +104,7 @@ function Fixture() {
           onStopEpisode={resolved}
           onArchiveEpisode={onArchive}
           onMergeEpisode={resolved}
-          onReauthorizeEpisode={resolved}
+          onContinueEpisode={resolved}
           onSendEpisodeMessage={resolved}
           onOperateEpisodeTask={resolved}
           onSelectExperiment={noop}

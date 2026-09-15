@@ -132,7 +132,6 @@ def _context(
         metadata=metadata,
         eligibility=BranchMergeEligibility(
             branch_head=branch_head,
-            episode_ending="completed",
         ),
         base_graph=_state(2),
         branch_graph=_state(

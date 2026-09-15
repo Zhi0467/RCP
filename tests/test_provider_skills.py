@@ -5,7 +5,6 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
@@ -66,7 +65,11 @@ def test_success_replaces_inventory_and_failure_preserves_it(
 
     monkeypatch.setattr(subprocess, "run", fail)
     manager.mark_refreshing("claude", "", "/opt/claude")
-    stale = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    # A new provider version is what makes the manager probe again; the same
+    # executable at the same version reuses the stored inventory without one.
+    stale = manager.refresh(
+        "claude", "", "/opt/claude", _ready("claude", "/opt/claude", version="provider 1.2.4")
+    )
 
     assert stale.status == "stale"
     assert stale.stale is True
@@ -78,6 +81,44 @@ def test_success_replaces_inventory_and_failure_preserves_it(
     references = manager.resolve("claude", "", "/opt/claude", "laptop", ["review", "plugin:triage"])
     assert [reference.name for reference in references] == ["review", "plugin:triage"]
     assert all(reference.stale for reference in references)
+
+
+def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    manager = ProviderSkillInventoryManager(store)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("review"), ""),
+    )
+    manager.mark_refreshing("claude", "", "/opt/claude")
+    first = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    assert [skill.name for skill in first.skills] == ["review"]
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the skill probe started the provider for an unchanged inventory")
+
+    # A new process (or a later startup) reads the same executable at the same
+    # version: the stored inventory stands and the provider is not started.
+    monkeypatch.setattr(subprocess, "run", never)
+    again = ProviderSkillInventoryManager(store)
+    again.mark_refreshing("claude", "", "/opt/claude")
+    reused = again.refresh(
+        "claude", "", "/opt/claude", _ready("claude", "/opt/claude"), reuse_cached=True
+    )
+    assert reused.status == "fresh"
+    assert reused.skills == first.skills
+    assert reused.inventory_hash == first.inventory_hash
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("new-skill"), ""),
+    )
+    refreshed = again.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    assert [skill.name for skill in refreshed.skills] == ["new-skill"]
+    assert refreshed.inventory_hash != first.inventory_hash
 
 
 def test_first_failure_has_no_native_skills(tmp_path: Path) -> None:
@@ -130,8 +171,7 @@ def test_concurrent_refreshes_share_owner_probe_and_readiness(
 
     def run_probe(
         _host: str,
-        _command: list[str],
-        _protocol: Literal["jsonrpc", "jsonl"],
+        _probe: ProviderSkillProbe,
         *,
         provider: str = "",
     ) -> object:
@@ -254,7 +294,7 @@ def test_codex_probe_waits_for_initialize_before_listing_skills(
                                     "skills": [
                                         {
                                             "name": "audit",
-                                            "description": "Audit the graph",
+                                            "description": "Audit refresh_token_reused failures",
                                             "enabled": True,
                                             "scope": "user",
                                             "path": "/skills/audit/SKILL.md",
@@ -290,6 +330,7 @@ def test_codex_probe_waits_for_initialize_before_listing_skills(
 
     assert snapshot.status == "fresh"
     assert [skill.name for skill in snapshot.skills] == ["audit"]
+    assert manager.store.provider_login_states() == []
     assert [(value.get("method"), value.get("id")) for value in writes] == [
         ("initialize", 1),
         ("initialized", None),
@@ -335,8 +376,111 @@ def test_refresh_command_is_owned_by_provider_profile() -> None:
     codex = profile_for("codex").skill_probe("/opt/codex")
     claude = profile_for("claude").skill_probe("/opt/claude")
 
-    assert codex == ProviderSkillProbe(command=["/opt/codex", "app-server"], protocol="jsonrpc")
+    assert codex.command == ["/opt/codex", "app-server"]
+    assert codex.protocol == "jsonrpc"
+    assert [message["method"] for message in codex.messages] == [
+        "initialize",
+        "initialized",
+        "skills/list",
+    ]
     assert claude.command[0] == "/opt/claude"
     assert claude.protocol == "jsonl"
     assert "--no-session-persistence" in claude.command
     assert '{"disableAllHooks":true}' in claude.command
+
+
+@pytest.mark.parametrize(
+    "diagnostic,blocked",
+    [
+        ("refresh_token_reused", True),
+        ("connection refused", False),
+        ("unsupported configuration", False),
+    ],
+)
+def test_skill_probe_auth_failure_is_durable(tmp_path, monkeypatch, diagnostic, blocked):
+    store = AppStore(tmp_path / "app.sqlite3")
+    manager = ProviderSkillInventoryManager(store)
+    monkeypatch.setattr(
+        profile_for("codex"),
+        "skill_probe",
+        lambda binary: ProviderSkillProbe(command=[binary, "skills"], protocol="jsonl"),
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 1, "", diagnostic)
+    )
+    snapshot = manager.refresh("codex", "", "/test/claude", _ready("codex", "/test/claude"))
+    assert snapshot.status == "unavailable"
+    assert (store.provider_login_state("codex", "").state == "signed_out") is blocked
+
+
+def test_third_provider_owns_skill_messages_over_shared_jsonrpc_transport(tmp_path, monkeypatch):
+    import sys
+
+    from rcp.providers import PROVIDERS, ProviderProfile, ProviderSkill
+
+    class ThirdProvider(ProviderProfile):
+        id = "test-provider"
+        label = "Test Provider"
+        runtime_choices = ()
+        default_runtime = "test"
+
+        def skill_probe(self, binary):
+            program = (
+                "import json, sys\n"
+                "methods = []\n"
+                "for line in sys.stdin:\n"
+                "    message = json.loads(line)\n"
+                "    methods.append(message['method'])\n"
+                "    if 'id' in message:\n"
+                "        print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], "
+                "'result': {'name': 'third-skill', 'methods': methods}}), flush=True)\n"
+            )
+            return ProviderSkillProbe(
+                command=[binary, "-u", "-c", program],
+                protocol="jsonrpc",
+                messages=(
+                    {"jsonrpc": "2.0", "method": "hello", "params": {}},
+                    {"jsonrpc": "2.0", "id": "catalog", "method": "inventory", "params": {}},
+                ),
+            )
+
+        def parse_skills(self, payload):
+            assert payload == {"name": "third-skill", "methods": ["hello", "inventory"]}
+            return [ProviderSkill(name=payload["name"], label="Third skill", description="Fixture")]
+
+    monkeypatch.setitem(PROVIDERS, ThirdProvider.id, ThirdProvider())
+    manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
+    snapshot = manager.refresh(
+        ThirdProvider.id, "", sys.executable, _ready(ThirdProvider.id, sys.executable)
+    )
+    assert snapshot.status == "fresh", snapshot.diagnostic
+    assert [skill.name for skill in snapshot.skills] == ["third-skill"]
+
+
+@pytest.mark.parametrize(
+    "provider, success, error",
+    [
+        (
+            "codex",
+            {"jsonrpc": "2.0", "id": 1, "result": {"description": "refresh_token_reused"}},
+            {"jsonrpc": "2.0", "id": 1, "error": {"message": "refresh_token_reused"}},
+        ),
+        (
+            "claude",
+            {"type": "system", "subtype": "init", "skills": ["RCP managed credential is missing"]},
+            {"type": "result", "is_error": True, "result": "RCP managed credential is missing"},
+        ),
+    ],
+)
+def test_probe_evidence_distinguishes_success_data_from_error_envelopes(provider, success, error):
+    profile = profile_for(provider)
+    # Even a nonzero exit must not turn successful skill/model data into diagnostics.
+    for returncode in (0, 1):
+        evidence = profile.probe_failure_evidence(
+            subprocess.CompletedProcess([], returncode, json.dumps(success), "")
+        )
+        assert not profile.credential_failure(evidence)
+    evidence = profile.probe_failure_evidence(
+        subprocess.CompletedProcess([], 0, json.dumps(error), "")
+    )
+    assert profile.credential_failure(evidence)

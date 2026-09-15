@@ -38,8 +38,9 @@ access, then send:
   agent.
 - Build a paper introduction from human-approved research while agents gather
   evidence and propose graph changes.
-- Bring your own machines and provider authentication; RCP checks and uses the
-  native credentials already present on each configured execution account.
+- Bring your own machines and provider subscriptions; members sign each
+  execution account in from Settings (Codex by device code, Claude by a pasted
+  setup token), and RCP verifies every login with one real request.
 - Run a team space on your own Linux server, with shared projects, one team
   provider credential per execution account, central Git checkouts, member
   attribution, backup/restore, and personal-to-team project transfer.

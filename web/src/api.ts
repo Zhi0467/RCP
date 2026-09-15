@@ -7,6 +7,7 @@ import type {
   ArtifactRevisionCandidate,
   Episode,
   EpisodeMessage,
+  EpisodeTimelineResponse,
   EpisodeMode,
   ExperimentLoopIndexEntry,
   IdentityResponse,
@@ -14,6 +15,10 @@ import type {
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
+  ProviderLoginAccount,
+  ProviderLoginState,
+  ProviderSignInStatus,
+  ProviderResumeSummary,
   ServerStatus,
   SpaceRunIndexEntry,
   SpaceUserSummary,
@@ -277,6 +282,7 @@ export function loadProjectReadiness(
   Pick<
     ProjectSnapshot,
     | "compute_status"
+    | "provider_logins"
     | "provider_readiness"
     | "providers"
     | "provider_skill_inventories"
@@ -377,14 +383,16 @@ export function archiveEpisode(
   });
 }
 
-export function reauthorizeEpisode(
+/** Add turns to an ended episode; the request id makes a retried click return the same continuation. */
+export function continueEpisode(
   apiBase: string,
   episodeId: string,
   invocationCeiling: number,
+  requestId: string,
 ): Promise<Episode> {
-  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/reauthorize`, {
+  return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/continue`, {
     method: "POST",
-    body: JSON.stringify({ invocation_ceiling: invocationCeiling }),
+    body: JSON.stringify({ invocation_ceiling: invocationCeiling, request_id: requestId }),
   });
 }
 
@@ -392,6 +400,15 @@ export function mergeEpisodeToMain(apiBase: string, episodeId: string): Promise<
   return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/merge`, {
     method: "POST",
   });
+}
+
+export function fetchEpisodeTimeline(
+  apiBase: string,
+  episodeId: string,
+): Promise<EpisodeTimelineResponse> {
+  return api<EpisodeTimelineResponse>(
+    `${apiBase}/episodes/${encodeURIComponent(episodeId)}/timeline`,
+  );
 }
 
 export function loadEpisodeMessages(apiBase: string, episodeId: string): Promise<EpisodeMessage[]> {
@@ -427,4 +444,58 @@ export function probeMachineCompute(apiBase: string, alias: string): Promise<Com
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
+}
+
+export function loadProviderLogins(): Promise<ProviderLoginAccount[]> {
+  return api("/api/providers/logins");
+}
+
+export function startProviderSignIn(provider: string, host: string): Promise<ProviderSignInStatus> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-in`, {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
+}
+
+export function providerSignInStatus(
+  provider: string,
+  loginId: string,
+): Promise<ProviderSignInStatus> {
+  return api(
+    `/api/providers/${encodeURIComponent(provider)}/logins/sign-in/${encodeURIComponent(loginId)}`,
+  );
+}
+
+export function saveProviderToken(
+  provider: string,
+  host: string,
+  token: string,
+): Promise<{ state: ProviderLoginState; resumed: ProviderResumeSummary }> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/token`, {
+    method: "POST",
+    body: JSON.stringify({ host, token }),
+  });
+}
+
+export function signOutProvider(
+  provider: string,
+  host: string,
+): Promise<{ state: ProviderLoginState }> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-out`, {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
+}
+
+export function verifyProviderLogin(
+  provider: string,
+  host: string,
+): Promise<{
+  state: ProviderLoginState;
+  resumed: ProviderResumeSummary;
+}> {
+  return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
+    method: "POST",
+    body: JSON.stringify({ host }),
+  });
 }

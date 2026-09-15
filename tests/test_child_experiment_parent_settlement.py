@@ -262,6 +262,6 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     assert store.auto_research_experiment_allowance(parent.episode_id).used == 1
     assert serialize_episode(
         store, parent.project_id, ended, include_graph_branch=False
-    ).can_reauthorize
+    ).can_continue
     reconcile()
     assert not launches

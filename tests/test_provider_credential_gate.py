@@ -9,14 +9,21 @@ import asyncio
 import errno
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from rcp.agents import AgentLauncher, credential_gate
-from rcp.agents.credential_gate import ProviderCredentialGate
+from rcp.agents import AgentLauncher, AgentProcessControl, credential_gate
+from rcp.agents import launcher as launcher_module
+from rcp.agents.credential_gate import (
+    CredentialStartupHold,
+    ProviderCredentialGate,
+    remaining_startup_hold,
+)
+from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
@@ -323,6 +330,28 @@ async def test_a_cancelled_wait_does_not_strand_the_credential(
     later.release()
 
 
+@pytest.mark.asyncio
+async def test_a_young_provider_process_is_not_signalled_inside_the_startup_hold() -> None:
+    """A kill during the login refresh spends the single-use refresh token.
+
+    Nothing reports when the refresh runs, so every kill of a process younger
+    than the startup hold waits the hold out first. A process that exits on
+    its own owes nothing.
+    """
+
+    assert remaining_startup_hold(time.monotonic() - 3600) == 0
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    control = AgentProcessControl()
+    control.attach(process)
+    control.request_pause()
+    await asyncio.sleep(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS / 4)
+    assert process.returncode is None, "the pause signalled the provider inside the hold"
+    await asyncio.wait_for(process.wait(), timeout=PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS + 5)
+    assert process.returncode != 0
+
+
 def test_a_finished_probe_releases_without_the_turn_stagger() -> None:
     """The minimum exists because a turn's first line can precede its auth.
 
@@ -551,16 +580,196 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
     launcher = AgentLauncher()
     holding: list[str] = []
 
-    def probe(_host, command):
+    def probe(_host, command, **_):
+        if command[-1:] == ["--version"]:
+            # The version read touches no credential and decides whether the
+            # stored answer is current; it runs before the hold.
+            return subprocess.CompletedProcess(command, 0, "2.1.267", "")
         assert not launcher.credential_gate._lock_for("claude", "").acquire(False), (
             f"{command[-2:]} ran without the credential hold"
         )
         holding.append(command[-1])
         if command[-2:] == ["auth", "status"]:
             return subprocess.CompletedProcess(command, 0, '{"loggedIn":true}', "")
-        return subprocess.CompletedProcess(command, 0, "2.1.267", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     launcher._probe = probe
     launcher.readiness("claude", binary=str(binary))
 
     assert "status" in holding, "the authentication probe never ran"
+
+
+@pytest.mark.asyncio
+async def test_waiting_launch_captures_environment_and_generation_together(
+    tmp_path, monkeypatch, prompt_minimum
+):
+    from types import SimpleNamespace
+
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
+    from rcp.runs.provider_sign_in import ProviderSignInRunner
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    credentials.store_token("claude", "", "old-token", member_id="member", now=store.now())
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts)
+    ProviderSignInRunner(store, launcher, accounts)
+    launcher.readiness = lambda *_, **__: SimpleNamespace(
+        installed=True,
+        authenticated=True,
+        path_state="resolved",
+        binary_path="/test/claude",
+        version="2.1.267",
+    )
+    held = await launcher.credential_gate.hold("claude", "")
+    waiting = asyncio.Event()
+    original_hold = launcher.credential_gate.hold
+
+    async def hold(provider, host):
+        waiting.set()
+        return await original_hold(provider, host)
+
+    monkeypatch.setattr(launcher.credential_gate, "hold", hold)
+    observed = {}
+
+    async def capture():
+        observed["generation"] = store.provider_login_state("claude", "").generation
+
+    async def spawn(*args, **kwargs):
+        observed["token"] = kwargs["env"][CLAUDE_TOKEN_VARIABLE]
+        raise OSError("test provider intentionally stopped before spawn")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def consume():
+        return [
+            event
+            async for event in launcher.stream(
+                "claude", "prompt", cwd=tmp_path, capability="scratch_patch", before_start=capture
+            )
+        ]
+
+    pending = asyncio.create_task(consume())
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    credentials.store_token("claude", "", "new-token", member_id="member", now=store.now())
+    repaired = store.mark_provider_login_verified(
+        "claude", "", member_id="member", detail="verified"
+    )
+    held.release()
+    events = await asyncio.wait_for(pending, timeout=5)
+    assert any(event.event == "error" for event in events)
+    assert observed == {"generation": repaired.generation, "token": "new-token"}
+
+
+@pytest.mark.asyncio
+async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Claude's result stops the process; that stop honours the hold like a Pause.
+
+    The stop_process path, error cleanup, and final cleanup all terminate the
+    provider without a Pause, so they must all wait out the same hold before
+    signalling a process that may still be rotating its refresh token.
+    """
+
+    unwanted = tmp_path / "unwanted-next-turn"
+    provider_script = "\n".join(
+        (
+            "import json, sys, time",
+            "from pathlib import Path",
+            'print(json.dumps({"type": "result", "result": "Finished."}), flush=True)',
+            "time.sleep(30)",
+            f"Path({str(unwanted)!r}).write_text('kept running')",
+        )
+    )
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness", (), {"installed": True, "authenticated": True}
+    )()
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", provider_script]
+    )
+
+    started = time.monotonic()
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude", "prompt", cwd=tmp_path, capability="scratch_patch"
+        )
+    ]
+    elapsed = time.monotonic() - started
+
+    assert events[-1].event == "done"
+    assert elapsed >= PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS, (
+        f"the result stop signalled the provider after {elapsed:.2f}s, inside the startup hold"
+    )
+    assert not unwanted.exists(), "the provider outlived its result"
+
+
+def test_a_restarted_minimum_holds_the_credential_from_the_provider_start() -> None:
+    lock = threading.Lock()
+    lock.acquire()
+    hold = CredentialStartupHold(lock, minimum=0)
+    hold.restart_minimum(0.3)
+    hold.release()
+    assert lock.locked(), "the restarted stagger did not delay the release"
+    time.sleep(0.5)
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_remote_stop_waits_out_the_hold_from_the_provider_start_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A remote hold anchored to the SSH client can expire during the handshake.
+
+    The wrapper announces the provider's start; the stagger and every stop are
+    measured from that line, so a result right after it still waits the hold.
+    """
+
+    handshake = 1.0
+    executable = tmp_path / "provider"
+    executable.write_text(
+        f"""#!{sys.executable}
+import json, sys, time
+time.sleep({handshake})
+print({REMOTE_PROVIDER_START_LINE!r}, flush=True)
+print(json.dumps({{"type": "result", "result": "Finished."}}), flush=True)
+time.sleep(30)
+"""
+    )
+    executable.chmod(0o755)
+    launcher = AgentLauncher()
+    launcher.readiness = lambda *args, **kwargs: type(
+        "Ready",
+        (),
+        {"installed": True, "authenticated": True, "binary_path": str(executable), "version": "1"},
+    )()
+    monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
+    monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
+    monkeypatch.setattr(
+        AgentProcessControl, "_terminate_remote", staticmethod(lambda host, pid_file: True)
+    )
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", staticmethod(lambda *args: True))
+
+    started = time.monotonic()
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            capability="discuss",
+            host="fixture-only",
+            remote_pid_file="fixture.pid",
+        )
+    ]
+    elapsed = time.monotonic() - started
+
+    assert events[-1].event == "done"
+    assert elapsed >= handshake + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS - 0.1, (
+        f"the stop came {elapsed:.2f}s after launch; the hold was measured from the SSH client"
+    )

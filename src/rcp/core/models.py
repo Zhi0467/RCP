@@ -759,23 +759,30 @@ class BranchMergeReceipt(BaseModel):
 
 
 class GraphBranchSummary(BaseModel):
-    """Strict episode/API projection; the browser never reconstructs branch state."""
+    """Strict episode/API projection; the browser never reconstructs branch state.
+
+    ``episode_id`` is the chain root that created the branch and whose id the
+    branch keeps; ``current_episode_id`` is the newest continuation of that chain,
+    the episode whose turns write the branch now.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     branch_id: str
     episode_id: str
+    current_episode_id: str
     base_head: GraphHeadRef
     head: GraphHeadRef
     merge_eligible: bool
     merge_blocked_reason: str | None = None
-    merge_requires_end: bool = False
     merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"]
     latest_successful_merge: BranchMergeReceipt | None = None
     active_merge_task_id: str | None = Field(default=None, min_length=1)
     merge_diagnostic: str | None = None
 
-    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+    _validate_uuid4 = field_validator("branch_id", "episode_id", "current_episode_id")(
+        _canonical_uuid4
+    )
 
     @model_validator(mode="after")
     def merge_projection_is_coherent(self) -> GraphBranchSummary:

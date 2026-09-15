@@ -298,7 +298,7 @@ function episode(fields = {}) {
     tasks: [],
     report: null,
     can_stop: false,
-    can_reauthorize: false,
+    can_continue: false,
     can_message: false,
     live: true,
     health: "wrapping_up",
@@ -352,7 +352,7 @@ test("a ready Experiment report opens from the singular episode URL", () => {
       ending: "human_pause",
       created_at: "2026-08-06T04:00:00Z",
     },
-    can_reauthorize: true,
+    can_continue: true,
   });
   const html = render(
     buildExperimentRun(
@@ -511,7 +511,7 @@ test("a final Experiment report error is a note beside the episode's own outcome
     status: "needs_action",
     wrapup_state: "failed",
     wrapup_error: "The visual report could not be generated.",
-    can_reauthorize: true,
+    can_continue: true,
   });
   const html = render(
     buildExperimentRun(
@@ -528,7 +528,7 @@ test("a final Experiment report error is a note beside the episode's own outcome
 
   // The episode exhausted its invocations; the missing report never restates that
   // as the episode's own health or as the human's next step.
-  assertDetailProjection(html, "Paused at invocation limit", "Reauthorize more invocations");
+  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
   assert.match(html, /Report generation error: The visual report could not be generated\./);
   assert.doesNotMatch(
     html,
@@ -809,10 +809,8 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
   });
 
   assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
-  assert.match(html, /<h3>Current turn<\/h3><span>1<\/span>/);
-  assert.match(html, /campaign-task-role worker">Agent/);
-  assert.match(html, /<strong>Invocation 1<\/strong>/);
-  assert.match(html, /Agent task is running\./);
+  // Timeline data arrives after mount; SSR no longer duplicates the turn list.
+  assert.doesNotMatch(html, /<h3>Current turn<\/h3>/);
   assert.match(html, /<h4>Experiment objective<\/h4>/);
   assert.doesNotMatch(html, /will update when it finishes/);
   assert.match(html, /Previous research summary \(stale\).*No baseline has been run yet\./s);
@@ -1004,7 +1002,7 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
   assert.match(html, /A previous episode is still open on this Experiment\./);
 });
 
-test("Reauthorize offers the node's limit as the count the human can override", () => {
+test("a Run at the ceiling offers the node's limit as the count the human can override", () => {
   const html = render({
     node: node(),
     control: control({
@@ -1019,7 +1017,7 @@ test("Reauthorize offers the node's limit as the count the human can override", 
     health: "paused_at_limit",
   });
 
-  assert.match(html, /Reauthorize/);
+  assert.match(html, /Start (new )?episode/);
   assert.match(html, /Invocations to authorize for the next episode/);
   assert.match(html, /value="3"/);
 });
@@ -1102,11 +1100,10 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
     health: "paused_at_limit",
   });
 
-  // At the ceiling the next Run is a reauthorization, and it carries the count.
-  assertDetailProjection(html, "Paused at invocation limit", "Reauthorize more invocations");
-  assert.match(html, /Reauthorize/);
-  assert.doesNotMatch(html, /Start new episode/);
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Reauthorize<\/button>/s);
+  // At the ceiling with nothing to continue, the next Run starts fresh and carries the count.
+  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
+  assert.match(html, /Start new episode/);
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Invocations to authorize for the next episode/);
   assert.match(html, /Stop loop/);
   assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
@@ -1604,4 +1601,51 @@ test("external job rows use watcher facts and keep Cancel independent of observa
   );
   assert.match(completed, /Watcher completed/);
   assert.doesNotMatch(completed, /aria-label="Cancel|success|succeeded/);
+});
+
+test("an ended episode with a bound session offers Add N turns beside Start new episode", () => {
+  const continued = [];
+  const html = render(
+    {
+      node: node(),
+      control: control({
+        episode: episode({ status: "needs_action", can_continue: true }),
+        health: "paused_at_limit",
+        recommendation: "start_episode",
+        can_start: true,
+      }),
+      taskGroup: null,
+      currentTask: null,
+      watchers: [],
+      currentWatchers: [],
+      health: "paused_at_limit",
+    },
+    { onContinue: (episodeId, count) => continued.push([episodeId, count]) },
+  );
+
+  // The count belongs to the continuation; the fresh start keeps the node's own limit.
+  assert.match(html, /Turns to add/);
+  assert.match(html, /Add 3 turns/);
+  assert.match(html, /Start new episode/);
+  assert.doesNotMatch(html, /Invocations to authorize for the next episode/);
+  assert.doesNotMatch(html, /experiment-continue-button" disabled=""/);
+});
+
+test("without a continuation callback an ended episode only starts fresh", () => {
+  const html = render({
+    node: node(),
+    control: control({
+      episode: episode({ status: "needs_action", can_continue: true }),
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+  assert.doesNotMatch(html, /Add 3 turns/);
+  assert.match(html, /Invocations to authorize for the next episode/);
 });

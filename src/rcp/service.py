@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -106,6 +107,7 @@ from rcp.providers import (
     ProviderId,
     ProviderSkillReference,
     configured_runtime,
+    profile_for,
 )
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
@@ -133,6 +135,9 @@ _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "paper_coach",
     "orchestrator",
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class _ProjectSnapshotDraft:
@@ -1527,6 +1532,7 @@ class ProjectService:
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
                 "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
+                "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
                 "providers": {},
@@ -1538,7 +1544,9 @@ class ProjectService:
         )
 
     def readiness_snapshot(self, *, refresh: bool = False) -> dict[str, object]:
-        snapshot = self.readiness_for(self.manifest, self.launcher, refresh=refresh)
+        snapshot = self.readiness_for(
+            self.manifest, self.launcher, refresh=refresh, provider_skills=self.provider_skills
+        )
         snapshot["agent_profiles"] = self.effective_profiles(self.manifest, self.launcher)
         self.wait_for_provider_skill_inventories()
         snapshot["provider_skill_inventories"] = self.provider_skill_inventory_snapshot()
@@ -1595,13 +1603,43 @@ class ProjectService:
         }
 
     @staticmethod
+    def provider_logins_for(manifest: Manifest, launcher: AgentLauncher) -> list[dict[str, object]]:
+        login_state = launcher.login_state
+        if login_state is None:
+            return []
+        return [
+            {
+                **(
+                    launcher.accounts.account_state(provider, host)
+                    if launcher.accounts is not None
+                    else login_state(provider, host)
+                ).model_dump(mode="json"),
+                "label": profile_for(provider).label,
+            }
+            for provider, host in sorted(
+                {
+                    (provider, machine.host)
+                    for machine in manifest.machines
+                    for provider in PROVIDER_IDS
+                }
+            )
+        ]
+
+    @staticmethod
     def readiness_for(
         manifest: Manifest,
         launcher: AgentLauncher,
         *,
         refresh: bool = False,
+        provider_skills: ProviderSkillInventoryManager | None = None,
     ) -> dict[str, object]:
-        """Probe providers without reading or replaying canonical project history."""
+        """Probe providers without reading or replaying canonical project history.
+
+        An explicit refresh is the one product path that re-probes provider-native
+        skills without reusing the stored inventory, so edits to a skill become
+        visible while the executable, its version, and the probe command are
+        unchanged. Implicit reads never start a skill probe.
+        """
 
         targets = [
             (
@@ -1624,7 +1662,20 @@ class ProjectService:
                 kwargs["binary"] = binary
             if refresh:
                 kwargs["refresh"] = True
-            return launcher.readiness(provider, **kwargs).model_dump(mode="json")
+            readiness = launcher.readiness(provider, **kwargs)
+            if refresh and provider_skills is not None:
+                try:
+                    provider_skills.refresh(provider, host, binary, readiness, reuse_cached=False)
+                except Exception as exc:
+                    # The inventory records its own probe failure; only a follower
+                    # that outwaited the owner reaches here, and readiness still answers.
+                    logger.warning(
+                        "Provider skill refresh for %s on %s did not settle: %s",
+                        provider,
+                        host or "local",
+                        exc,
+                    )
+            return readiness.model_dump(mode="json")
 
         readiness_by_machine: dict[str, dict[ProviderId, dict[str, object]]] = {
             machine.alias: {} for machine in manifest.machines
@@ -1642,6 +1693,7 @@ class ProjectService:
                 readiness_by_machine[alias][provider] = probe.result()
         coach_machine = manifest.agent_profile("paper_coach").run_on
         return {
+            "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
             "providers": readiness_by_machine[coach_machine],
         }

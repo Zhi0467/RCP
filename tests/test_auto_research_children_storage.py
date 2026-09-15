@@ -12,6 +12,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
+from rcp.runs.auto_research import project_auto_research_episode
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -1042,7 +1043,13 @@ def test_stopping_child_experiment_pause_keeps_exact_resume_available(tmp_path) 
     assert "replacement_command" not in notice.payload
 
 
-def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("initiated_by", "suppressed"),
+    [("orchestrator:root", "self_caused"), ("human:member", None), (None, None)],
+)
+def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(
+    tmp_path, initiated_by, suppressed
+) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     parent, root = _auto_parent(store, ceiling=2)
@@ -1051,7 +1058,7 @@ def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(tmp_pat
     route = _experiment_route(store, parent, root, task)
     store.create_experiment_episode_with_invocation(task, auto_research_route=route)
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
-    store.request_episode_stop(child_id)
+    store.request_episode_stop(child_id, initiated_by=initiated_by)
 
     store.mark_episode_stop_skipped(child_id, diagnostic="Replaced by a fresh episode.")
 
@@ -1060,6 +1067,35 @@ def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(tmp_pat
     assert notice.source_kind == "experiment_episode"
     assert notice.source_event == "stopped"
     assert notice.payload["ending"] == "stopped"
+
+    assert notice.wake_suppressed == suppressed
+    assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == (
+        [] if suppressed else [notice]
+    )
+    assert store.claim_auto_research_lifecycle_notices(parent.episode_id, root.operation_id) == (
+        [] if suppressed else store.auto_research_lifecycle_delivery(root.operation_id)
+    )
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    assert store.auto_research_is_quiescent(parent.episode_id)
+    if suppressed:
+        ending = store.fence_auto_research_ending_and_settle_watchers(
+            parent.episode_id, "exhausted"
+        )
+        assert ending.ending == "exhausted"
+        assert ending.status == "wrapping_up"
+        assert store.auto_research_is_quiescent(parent.episode_id)
+        projection = project_auto_research_episode(store, parent.episode_id)
+        assert projection.lifecycle_counts["pending"] == 1
+        assert projection.pending_notice_ids == (notice.notice_id,)
+        receipt = store.process_auto_research_lifecycle_inbox(
+            parent.episode_id,
+            effect_id="harvest-suppressed",
+            mode="harvest",
+            acknowledged_by=root.operation_id,
+            delivery_operation_id=root.operation_id,
+        )
+        assert receipt.notice_ids == [notice.notice_id]
+        assert receipt.notices[0].wake_suppressed == "self_caused"
 
 
 def test_lifecycle_notice_dedup_harvest_clear_and_delivery_are_durable(tmp_path) -> None:
@@ -1844,12 +1880,14 @@ def test_pending_experiment_replacement_terminal_outcomes_notify_atomically(tmp_
     cancelled = store.cancel_auto_research_experiment_replacement(
         cancelled_route.child_episode_id,
         diagnostic="The orchestrator cancelled replacement.",
+        initiated_by=f"orchestrator:{root.operation_id}",
     )
 
     assert cancelled.state == "cancelled"
     cancelled_notice = store.auto_research_lifecycle_notices(parent.episode_id)[0]
     assert cancelled_notice.source_kind == "experiment_replacement"
     assert cancelled_notice.source_event == "cancelled"
+    assert cancelled_notice.wake_suppressed == "self_caused"
 
     failed_task = _experiment_task(
         store,
@@ -1872,6 +1910,10 @@ def test_pending_experiment_replacement_terminal_outcomes_notify_atomically(tmp_
     )
 
     assert failed.state == "cancelled"
+    pending = store.pending_auto_research_lifecycle_notices(parent.episode_id)
+    assert len(pending) == 1
+    assert pending[0].source_event == "failed"
+    assert pending[0].wake_suppressed is None
     assert [
         (notice.source_id, notice.source_event)
         for notice in store.auto_research_lifecycle_notices(parent.episode_id)
@@ -1943,6 +1985,8 @@ def test_pending_experiment_replacement_activation_notifies_atomically(
     notices = store.auto_research_lifecycle_notices(parent.episode_id)
     assert len(notices) == 1
     notice = notices[0]
+    assert notice.wake_suppressed == "self_caused"
+    assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == []
     assert (
         notice.source_kind,
         notice.source_id,
@@ -2481,3 +2525,50 @@ def test_legacy_project_data_migration_moves_child_registries_idempotently(tmp_p
                 ).fetchone()[0]
                 == 0
             )
+
+
+@pytest.mark.parametrize("child_kind", ["worker", "experiment"])
+def test_provider_auth_task_notice_is_suppressed(tmp_path, child_kind) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store)
+    if child_kind == "worker":
+        route, task = _work_pair(store, parent, root, worker_id="auth-worker")
+        store.create_auto_research_child_work(route, task)
+    else:
+        task = _experiment_task(store, str(uuid.uuid4()), parent.authorized_by, node_id="exp/auth")
+        store.create_experiment_episode_with_invocation(
+            task, auto_research_route=_experiment_route(store, parent, root, task)
+        )
+    store.fail_agent_task(task.operation_id, error="Sign in again", failure_kind="provider_auth")
+    notices = store.auto_research_lifecycle_notices(parent.episode_id)
+    assert len(notices) == 1
+    assert notices[0].wake_suppressed == "provider_auth"
+    assert notices[0].payload["status"] == "failed"
+    assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == []
+    assert store.pending_auto_research_lifecycle_episode_ids(parent.episode_id) == []
+
+
+def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store, ceiling=2)
+    for notice_id, suppressed in (("self-caused", "self_caused"), ("ordinary", None)):
+        store.record_auto_research_lifecycle_notice(
+            AutoResearchLifecycleNoticeRecord(
+                notice_id=notice_id,
+                episode_id=parent.episode_id,
+                source_kind="experiment_episode",
+                source_id=f"child-{notice_id}",
+                source_event="stopped",
+                wake_suppressed=suppressed,
+                payload={},
+                created_at=store.now(),
+            )
+        )
+
+    blockers = store.auto_research_finish_blockers(parent.episode_id)
+
+    # The orchestrator caused the stop itself; the notice is history it still
+    # sees through the harvest, never an obligation that refuses its Finish.
+    assert [(item.kind, item.blocker_id) for item in blockers] == [("lifecycle_notice", "ordinary")]

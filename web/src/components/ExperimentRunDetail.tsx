@@ -1,8 +1,9 @@
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { taskStatusLabel } from "../agentTasks";
+import { useEffect, useState, type ReactNode } from "react";
+import { fetchEpisodeTimeline } from "../api";
+import { EpisodeTimeline } from "./EpisodeTimeline";
 import {
   type ExperimentRun,
   type ExperimentWatcherGroup,
@@ -15,7 +16,7 @@ import {
   watcherLastObservedAt,
 } from "../runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
-import type { ExperimentLoopHealth, WatcherRecord } from "../types";
+import type { EpisodeTimelineResponse, ExperimentLoopHealth, WatcherRecord } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -72,6 +73,8 @@ interface Props {
   startDisabled?: boolean;
   onInspectTask?: (operationId: string) => void;
   onRun: (invocationCeiling?: number) => void;
+  /** Add turns to the ended episode in its own session; absent where no episode can continue. */
+  onContinue?: (episodeId: string, invocationCeiling: number) => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
@@ -96,6 +99,7 @@ export function ExperimentRunDetail({
   startDisabled = false,
   onInspectTask,
   onRun,
+  onContinue,
   onStopLoop,
   onRecover,
   onSwitchProvider,
@@ -113,6 +117,39 @@ export function ExperimentRunDetail({
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
+  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const watcherSignature = run.watchers
+    .map((watcher) => `${watcher.watcher_id}:${watcher.status}:${watcher.completed_at ?? ""}`)
+    .join("|");
+  useEffect(() => {
+    if (!episode) return;
+    let cancelled = false;
+    void fetchEpisodeTimeline(apiBase, episode.episode_id).then(
+      (response) => {
+        if (!cancelled) {
+          setTimeline(response);
+          setTimelineError(null);
+        }
+      },
+      (error) => {
+        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // Turn progress updates the task row, and a watcher stops or completes,
+    // without touching the episode's own timestamp.
+  }, [
+    apiBase,
+    episode?.episode_id,
+    episode?.updated_at,
+    currentTask?.operation_id,
+    currentTask?.status,
+    currentTask?.updated_at,
+    watcherSignature,
+  ]);
   const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??
@@ -151,9 +188,11 @@ export function ExperimentRunDetail({
   const currentNextAction = currentExperimentGuidance(node, "next_action");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
-  // At the ceiling the next Run is a reauthorization, so the authorized count is
-  // part of the act. It travels with the Run and never edits the graph.
-  const reauthorizing = health === "paused_at_limit";
+  // An ended episode with a bound session continues with the turns the human
+  // names here; the count travels with the act and never edits the graph. Where
+  // no episode can continue, a Run at the ceiling still carries the count.
+  const canContinue = Boolean(episode?.can_continue && onContinue);
+  const reauthorizing = health === "paused_at_limit" && !canContinue;
   const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
 
@@ -218,9 +257,9 @@ export function ExperimentRunDetail({
               {control.report_is_current ? "Open report" : "Previous episode report"}
             </EpisodeReportLink>
           )}
-          {allowStart && !control.node_closed && reauthorizing && (
+          {allowStart && !control.node_closed && (reauthorizing || canContinue) && (
             <label className="experiment-reauthorize-count">
-              <span className="eyebrow">Invocations</span>
+              <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
               <input
                 type="number"
                 min={1}
@@ -229,9 +268,30 @@ export function ExperimentRunDetail({
                 value={ceilingInput}
                 disabled={runDisabled || startDisabled || runBusy || !control.can_start}
                 onChange={(event) => setEditedCeiling(event.target.value)}
-                aria-label="Invocations to authorize for the next episode"
+                aria-label={
+                  canContinue ? "Turns to add" : "Invocations to authorize for the next episode"
+                }
               />
             </label>
+          )}
+          {allowStart && !control.node_closed && canContinue && episode && onContinue && (
+            <button
+              type="button"
+              className="button primary compact experiment-continue-button"
+              disabled={
+                runDisabled ||
+                startDisabled ||
+                runBusy ||
+                stopUnsettled ||
+                !control.can_start ||
+                authorizedCeiling === null
+              }
+              onClick={() => {
+                if (authorizedCeiling !== null) onContinue(episode.episode_id, authorizedCeiling);
+              }}
+            >
+              {authorizedCeiling === null ? "Add turns" : `Add ${authorizedCeiling} turns`}
+            </button>
           )}
           {allowStart && !control.node_closed && (
             <button
@@ -249,15 +309,7 @@ export function ExperimentRunDetail({
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={13} aria-hidden="true" />{" "}
-              {runBusy
-                ? reauthorizing
-                  ? "Reauthorizing"
-                  : "Starting"
-                : reauthorizing
-                  ? "Reauthorize"
-                  : control.episode_id
-                    ? "Start new episode"
-                    : "Start episode"}
+              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
             </button>
           )}
         </div>
@@ -268,29 +320,20 @@ export function ExperimentRunDetail({
         <strong>{recommendation.label}</strong>
       </div>
 
-      {currentTask?.active && (
-        <section className="campaign-turns experiment-current-turn" aria-label="Experiment turn">
-          <header>
-            <h3>Current turn</h3>
-            <span>1</span>
-          </header>
-          <ul>
-            <li className="campaign-task">
-              <button type="button" onClick={() => onInspectTask?.(currentTask.operation_id)}>
-                <span className="campaign-task-role worker">Agent</span>
-                <span className="campaign-task-copy">
-                  <strong>
-                    Invocation {taskInvocation(currentTask) ?? control.invocations_used}
-                  </strong>
-                  <span>{currentTask.status_message}</span>
-                </span>
-                <span className={`status-pill ${currentTask.status}`}>
-                  {taskStatusLabel(currentTask)}
-                </span>
-              </button>
-            </li>
-          </ul>
-        </section>
+      {timelineError && (
+        <div className="campaign-run-error" role="alert">
+          {timelineError}
+        </div>
+      )}
+      {episode && timeline?.episode_id === episode.episode_id && (
+        <EpisodeTimeline
+          events={timeline.events}
+          apiBase={apiBase}
+          episodeId={episode.episode_id}
+          graphTarget={episode.graph_target}
+          truncated={timeline.truncated}
+          onInspectTask={(operationId) => onInspectTask?.(operationId)}
+        />
       )}
 
       {episode?.ending_diagnostic && (

@@ -35,7 +35,14 @@ from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
+from .helpers import (
+    append_fixture_patch,
+    authorized_human,
+    seed_patch,
+    store_test_claude_token,
+    wait_for_task,
+    wait_until,
+)
 from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
@@ -604,6 +611,9 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
 
     first = loop.stop()
     episode_after_first = loop.store.experiment_episode(loop.episode_id)
+    assert loop.store.episode(loop.episode_id).stop_initiated_by == (
+        f"human:{loop.store.local_owner.user_id}"
+    )
     watcher_after_first = loop.store.watcher("finished-unclaimed")
     tasks_after_first = loop.loop_task_ids()
 
@@ -2000,6 +2010,7 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
@@ -2077,6 +2088,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
@@ -2535,6 +2547,7 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
 
 def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store_test_claude_token(app.state.background_tasks.store)
     loop = _Loop(app)
     loop.start_episode(status="failed")
     candidate = "{}"

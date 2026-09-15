@@ -7,6 +7,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_failure_signal,
 )
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.storage import EpisodeRecord
 
 if TYPE_CHECKING:
@@ -21,6 +22,7 @@ class AutoResearchSettlement(Protocol):
 
 AutoResearchRecoveryFailure = Literal[
     "provider",
+    "provider_auth",
     "network",
     "rate_limit",
     "session_limit",
@@ -104,6 +106,7 @@ def reconcile_due_auto_research_recoveries(
     background: BackgroundAgentTasks,
     *,
     as_of: str | None = None,
+    operation_ids: set[str] | None = None,
 ) -> int:
     """Attempt every due durable recovery once; callers provide the process heartbeat."""
 
@@ -112,6 +115,18 @@ def reconcile_due_auto_research_recoveries(
     for recovery in store.due_auto_research_recoveries(as_of=as_of):
         if recovery.status != "pending":
             continue
+        if operation_ids is not None and recovery.operation_id not in operation_ids:
+            continue
+        task = store.agent_task(recovery.operation_id)
+        if task is not None:
+            try:
+                background.admit_provider_task(
+                    task.project_id,
+                    background._request_from_record(task),
+                    execution_host=(task.stage_host or "") if task.stage_root else None,
+                )
+            except ProviderSignedOut:
+                continue
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:
@@ -178,7 +193,10 @@ def _recoverable_failure(
     store,
     operation_id: str,
     request: AutoResearchRunRequest,
-) -> tuple[AutoResearchRecoveryFailure, Literal["exact", "clean"]]:
+) -> tuple[AutoResearchRecoveryFailure, Literal["exact", "clean", "blocked"]]:
+    task = store.agent_task(operation_id)
+    if task is not None and task.failure_kind == "provider_auth":
+        return "provider_auth", "blocked"
     receipts = store.agent_task_receipts(operation_id)
     if any(
         receipt.category == "continuation_context_unavailable"

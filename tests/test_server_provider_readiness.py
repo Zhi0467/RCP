@@ -250,15 +250,12 @@ def test_missing_native_login_pauses_the_initial_request_with_exact_operator_act
     )
 
     assert checked.step.state == "operator_action_needed"
-    assert checked.step.actions == (
-        CommandAction(argv=("sudo", "-u", "rcp", "-H", "/usr/local/bin/codex", "login")),
-        ExternalAction(
-            instruction=(
-                "Complete Codex's native login directly as OS account rcp; do not paste "
-                "provider credentials into RCP."
-            )
-        ),
-    )
+    # No status command and no shell login: the remedy is the product's own
+    # sign-in, which any member may run and which RCP verifies itself.
+    assert len(checked.step.actions) == 1
+    assert isinstance(checked.step.actions[0], ExternalAction)
+    assert "Settings, Provider logins" in checked.step.actions[0].instruction
+    assert "device code" in checked.step.actions[0].instruction
     assert checked.step.resume_argv[-4:] == (
         "provider",
         "check",
@@ -726,7 +723,9 @@ def test_cli_returns_operator_action_exit_for_native_login(tmp_path: Path) -> No
 
     assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
     assert "action required" in output.getvalue().lower()
-    assert "/usr/local/bin/codex login" in output.getvalue()
+    # The login is repaired from the product, by any member, never by a shell command.
+    assert "Settings, Provider logins" in output.getvalue()
+    assert "codex login" not in output.getvalue()
 
 
 def test_cli_shows_a_safe_durable_boundary_refusal(tmp_path: Path) -> None:

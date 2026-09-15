@@ -6,12 +6,14 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.skill_registry import official_registry
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeEnding,
+    EpisodeMode,
     EpisodeRecord,
     EpisodeWrapupRecord,
 )
@@ -19,6 +21,10 @@ from rcp.storage.episodes import compact_episode_receipt
 
 _REPORT_SKILL_ID = "episode-report"
 _REPORT_OUTPUT_NAME = "episode-report.html"
+
+
+class EpisodeReportAdmissionInvalid(ValueError):
+    """The frozen ending or continuation cannot admit a report on a later poll."""
 
 
 class EpisodeWrapupSpec(BaseModel):
@@ -47,6 +53,40 @@ class EpisodeWrapupAdmission:
         return self.task is not None and self.request is not None
 
 
+def episode_wrapup_receipt(
+    *,
+    receipt: dict[str, object],
+    episode_id: str,
+    mode: EpisodeMode,
+    ending: EpisodeEnding,
+    partial: bool,
+    diagnostic: str | None = None,
+    compact_diagnostic: bool = True,
+) -> dict[str, object]:
+    """Build the stored envelope shared by receipt compaction and admission."""
+
+    envelope = {
+        **receipt,
+        **({"diagnostic": diagnostic} if diagnostic is not None else {}),
+        "ending": ending,
+        "episode_id": episode_id,
+        "mode": mode,
+        "partial": partial,
+    }
+
+    if compact_diagnostic and diagnostic is not None:
+        # The episode retains the full immutable diagnostic. Only its receipt
+        # copy is reduced, after the mode adapter has compacted the ending facts.
+        while (
+            len(compact_episode_receipt(envelope)[0].encode("utf-8"))
+            > (AGENT_TASK_RECEIPT_MAX_BYTES)
+            and len(diagnostic) > 1
+        ):
+            diagnostic = diagnostic[: len(diagnostic) // 2 - 1] + "…"
+            envelope["diagnostic"] = diagnostic
+    return envelope
+
+
 def begin_episode_report_wrapup(
     store: AppStore,
     spec: EpisodeWrapupSpec,
@@ -59,10 +99,12 @@ def begin_episode_report_wrapup(
     """
 
     if spec.ending == "stopped":
-        raise ValueError("Stop skips report generation instead of entering wrap-up.")
+        raise EpisodeReportAdmissionInvalid(
+            "Stop skips report generation instead of entering wrap-up."
+        )
     episode = store.episode(spec.episode_id)
     if episode is None:
-        raise KeyError(spec.episode_id)
+        raise EpisodeReportAdmissionInvalid(f"Episode {spec.episode_id} no longer exists.")
     if store.episode_wrapup(spec.episode_id) is None and _never_bound_a_session(
         store.agent_task(spec.continuation_operation_id)
     ):
@@ -83,14 +125,14 @@ def begin_episode_report_wrapup(
         diagnostic=spec.diagnostic,
     )
     receipt_json, receipt_sha256 = compact_episode_receipt(
-        {
-            **spec.receipt,
-            **({"diagnostic": spec.diagnostic} if spec.diagnostic is not None else {}),
-            "ending": spec.ending,
-            "episode_id": spec.episode_id,
-            "mode": episode.mode,
-            "partial": spec.partial,
-        }
+        episode_wrapup_receipt(
+            receipt=spec.receipt,
+            episode_id=spec.episode_id,
+            mode=episode.mode,
+            ending=spec.ending,
+            partial=spec.partial,
+            diagnostic=spec.diagnostic,
+        )
     )
     existing = store.episode_wrapup(spec.episode_id)
     if existing is not None:
@@ -101,8 +143,10 @@ def begin_episode_report_wrapup(
             or existing.receipt_json != receipt_json
             or existing.receipt_sha256 != receipt_sha256
         ):
-            raise ValueError("The episode already has a different immutable wrap-up fence.")
-        return _existing_admission(store, episode, existing)
+            raise EpisodeReportAdmissionInvalid(
+                "The episode already has a different immutable wrap-up fence."
+            )
+        return existing_episode_report_admission(store, episode, existing)
 
     continuation = store.agent_task(spec.continuation_operation_id)
     now = store.now()
@@ -199,7 +243,7 @@ def begin_episode_report_wrapup(
     return EpisodeWrapupAdmission(stored_episode, stored_wrapup, stored_task, request)
 
 
-def _existing_admission(
+def existing_episode_report_admission(
     store: AppStore,
     episode: EpisodeRecord,
     wrapup: EpisodeWrapupRecord,

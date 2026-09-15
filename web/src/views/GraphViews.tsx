@@ -1,3 +1,4 @@
+import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
 import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
@@ -82,10 +83,10 @@ import {
   type ExperimentRouteIdentity,
 } from "../experimentBoard";
 import type {
+  ProviderLoginState,
   AgentTask,
   Edge,
   Episode,
-  EpisodeMessage,
   EpisodeRunSection,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
@@ -1081,7 +1082,6 @@ export function DagView({
 interface ExecutionProps {
   graph: GraphState;
   episodes: Episode[];
-  episodeMessages: Readonly<Record<string, EpisodeMessage[] | undefined>>;
   episodeAction: string | null;
   tasks: AgentTask[];
   watchers: WatcherRecord[];
@@ -1098,14 +1098,15 @@ interface ExecutionProps {
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
   providerLabels?: Record<string, string>;
+  providerLogins?: ProviderLoginState[];
+  onProviderLoginVerified?: () => void;
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
-  onLoadEpisodeMessages: (episodeId: string) => Promise<void>;
   onStopEpisode: (episodeId: string) => Promise<void>;
   onArchiveEpisode: ArchiveEpisodeAction;
   onMergeEpisode: (episodeId: string) => Promise<void>;
-  onReauthorizeEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSelectExperiment: (nodeId: string | null) => void;
@@ -1124,7 +1125,6 @@ interface ExecutionProps {
 export function ExecutionView({
   graph,
   episodes,
-  episodeMessages,
   episodeAction,
   tasks,
   watchers,
@@ -1141,14 +1141,15 @@ export function ExecutionView({
   taskActionId,
   selectedExperimentConversation,
   providerLabels = {},
+  providerLogins = [],
+  onProviderLoginVerified,
   mutationsDisabled = false,
   experimentStartsDisabled = false,
   onInspectTask,
-  onLoadEpisodeMessages,
   onStopEpisode,
   onArchiveEpisode,
   onMergeEpisode,
-  onReauthorizeEpisode,
+  onContinueEpisode,
   onSendEpisodeMessage,
   onOperateEpisodeTask,
   onSelectExperiment,
@@ -1330,6 +1331,7 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
+      <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
       <div className="runs-view-controls">
         <label className="show-archived-runs">
           <input
@@ -1440,7 +1442,6 @@ export function ExecutionView({
       return (
         <AutoResearchEpisodeCard
           episode={episode}
-          messages={episodeMessages[episode.episode_id] ?? []}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={
@@ -1450,16 +1451,18 @@ export function ExecutionView({
           }
           busyAction={episodeAction}
           taskActionId={taskActionId}
-          childExperiments={childExperimentsByParent.get(episode.episode_id) ?? []}
+          // A chain is one card, so children of every member are listed on it.
+          childExperiments={episode.chain.flatMap(
+            (member) => childExperimentsByParent.get(member.episode_id) ?? [],
+          )}
           onOpenExperimentEntry={(entry) => {
             onSelectExperiment(entry.node.id);
             onOpenExperimentEntry(entry);
           }}
           onInspectTask={onInspectTask}
-          onLoadMessages={onLoadEpisodeMessages}
           onStop={onStopEpisode}
           onMerge={onMergeEpisode}
-          onReauthorize={onReauthorizeEpisode}
+          onContinue={onContinueEpisode}
           onSendMessage={onSendEpisodeMessage}
           onOperateTask={onOperateEpisodeTask}
           onArchive={onArchiveEpisode}
@@ -1557,6 +1560,7 @@ export function ExecutionView({
           Boolean(watcherCheckBusyId)
         }
         onInspectTask={onInspectTask}
+        onContinueEpisode={onContinueEpisode}
         onSelectExperiment={onSelectExperiment}
         onOpenExperimentEntry={onOpenExperimentEntry}
         onRunExperiment={onRunExperiment}
@@ -1611,6 +1615,7 @@ function ExperimentEpisodeCard({
   onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
+  onContinueEpisode,
   episodeReportHref,
 }: {
   episode: Episode;
@@ -1640,6 +1645,7 @@ function ExperimentEpisodeCard({
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   episodeReportHref: (episodeId: string) => string;
 }) {
   const detailId = useId();
@@ -1714,6 +1720,9 @@ function ExperimentEpisodeCard({
             watchedByParentAutoResearch={watchedByParentAutoResearch}
             allowStart={!isExactBranchEpisode}
             onRun={(invocationCeiling) => onRunExperiment(run.node, invocationCeiling)}
+            onContinue={(episodeId, invocationCeiling) =>
+              void onContinueEpisode(episodeId, invocationCeiling)
+            }
             onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
             onStopWatcher={onStopExperimentWatcher}

@@ -14,8 +14,11 @@ from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
+from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
@@ -54,6 +57,7 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
+from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -205,6 +209,7 @@ class AgentTaskExecution:
     store: AppStore
     control: AgentProcessControl
     runtime_id: str = ""
+    login_generation: int = 0
     stage_host: str | None = None
     stage_root: str | None = None
     write_scope_fingerprint: str | None = None
@@ -360,6 +365,30 @@ class BackgroundAgentTasks:
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
         )
+
+    def admit_provider_task(
+        self, project_id: str, request: AgentTaskRequest, *, execution_host: str | None = None
+    ) -> None:
+        """Refuse an ineligible execution account before durable allocation or debit."""
+
+        if request.provider is None:
+            raise ValueError("Provider task admission requires a resolved provider.")
+        host = execution_host
+        if host is None:
+            if request.run_on in {None, "local"}:
+                host = ""
+            else:
+                project = self.store.project(project_id)
+                if project is None:
+                    raise KeyError(project_id)
+                host = provider_login_host(load_manifest(project.locator), request.run_on)
+        if reason := account_login_refusal(
+            self.store,
+            ProviderCredentialStore.for_data_dir(self.store.path.parent),
+            request.provider,
+            host,
+        ):
+            raise ProviderSignedOut(reason)
 
     def plan_startup_recovery(self) -> StartupRecoveryPlan:
         """Describe recovery work without changing a row or resolving a stage."""
@@ -936,6 +965,8 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
         graph_target: GraphTargetRef | None = None,
+        continues_episode_id: str | None = None,
+        continuation_request_id: str | None = None,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -949,6 +980,9 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task admission")
+        self.admit_provider_task(
+            project_id, request, execution_host=(stage_host or "") if stage_root else None
+        )
         episode: EpisodeRecord | None = None
         task_graph_target = (
             parent.graph_target if parent is not None else graph_target or GraphTargetRef()
@@ -998,6 +1032,16 @@ class BackgroundAgentTasks:
             raise ValueError("A human authorizer snapshot must include a nonblank display name.")
         if claim_graph_repair_parent and (parent is None or continuation != "graph_repair"):
             raise ValueError("Only an initial graph-repair admission can claim its parent.")
+        if (continues_episode_id is None) != (continuation_request_id is None) or (
+            continues_episode_id is not None
+            and not (
+                isinstance(request, RunRequest)
+                and request.patch_kind == "experiment_loop"
+                and request.trigger == "experiment_run"
+                and parent is None
+            )
+        ):
+            raise ValueError("Only an Experiment Run at invocation 1 can continue an episode.")
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = resolved_dispatch_authority(
             self.store,
@@ -1110,6 +1154,8 @@ class BackgroundAgentTasks:
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
                     request.watcher_ids,
+                    continues_episode_id=continues_episode_id,
+                    continuation_request_id=continuation_request_id,
                 )
             elif parent is not None and continuation in {
                 "resume",
@@ -1196,6 +1242,15 @@ class BackgroundAgentTasks:
             ) from exc
         if request.model_dump(mode="json") != record.request:
             raise ValueError("The admitted task request failed its persisted roundtrip.")
+
+        try:
+            self.admit_provider_task(
+                record.project_id,
+                request,
+                execution_host=(record.stage_host or "") if record.stage_root else None,
+            )
+        except ProviderSignedOut:
+            return record
 
         intent = self.store.agent_task_admission_intent(operation_id)
         if intent is None:
@@ -1692,19 +1747,38 @@ class BackgroundAgentTasks:
     ) -> AgentFailureKind | None:
         """Name this failure so recovery can offer the right next step."""
 
-        provider = getattr(request, "provider", None)
+        provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
                 profile = profile_for(provider)
         exit = self.store.agent_task_provider_exit(operation_id)
-        return classify_agent_failure(
+        kind = classify_agent_failure(
             error=error,
             return_code=exit.return_code if exit is not None else None,
             host=execution.stage_host or "",
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
+        if kind == "provider_auth" and provider:
+            host = execution.stage_host or ""
+            record_provider_failure(
+                self.store,
+                provider,
+                host,
+                generation=execution.login_generation,
+                evidence=error,
+                source="turn",
+            )
+            state = self.store.provider_login_state(provider, host)
+            if state.state == "signed_in" and state.generation > execution.login_generation:
+                # The startup gate is released once the provider speaks, so a member
+                # can verify the account before this turn reports the old login's
+                # death. The store already ignored that stale failure; the task must
+                # not be parked behind a sign-in nobody needs to repeat. It fails as
+                # an ordinary provider error and recovery retries it.
+                kind = None
+        return kind
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.
@@ -2075,9 +2149,10 @@ class BackgroundAgentTasks:
             request = self._request_from_record(current)
             if request.session_id is None:
                 return bool(current.native_session_id)
-            if not current.parent_operation_id:
-                return False
-            parent = self.store.agent_task(current.parent_operation_id)
+            if current.parent_operation_id:
+                parent = self.store.agent_task(current.parent_operation_id)
+            else:
+                parent = self._continued_session_owner(current)
             if (
                 parent is None
                 or parent.project_id != current.project_id
@@ -2087,6 +2162,20 @@ class BackgroundAgentTasks:
                 return False
             current = parent
         return False
+
+    def _continued_session_owner(self, record: AgentTaskRecord) -> AgentTaskRecord | None:
+        """The source orchestrator task whose session a continuation root resumes."""
+
+        episode = self.store.episode(record.episode_id or "")
+        if episode is None or episode.continues_episode_id is None:
+            return None
+        source = self.store.episode(episode.continues_episode_id)
+        if source is None or source.root_operation_id is None:
+            return None
+        binding = self.store.auto_research_actor_binding(source.root_operation_id)
+        if binding is None:
+            return None
+        return self.store.agent_task(binding.current_operation_id)
 
     def _retry_feedback(self, record: AgentTaskRecord) -> tuple[str, ...]:
         feedback: list[str] = []

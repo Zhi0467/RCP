@@ -2,6 +2,17 @@
 
 Active:
 
+- [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
+  — design confirmed 2026-09-14 and revised after an xhigh review; all six
+  slices implemented and driven against a copy of the production data;
+  provider-dependent team-server and desktop checks remain: ending
+  receipts compact and wrap-up failures settle visibly;
+  an exhaustive health table; login failures stop retries and block launches;
+  Codex per turn under a hardened gate, Claude on a static token, sign-in from
+  the UI; reauthorization as a continuation episode on the same branch and
+  session; a branch merges on branch facts; wake provenance and mail harvest;
+  a typed episode timeline. Six slices on one pull request, none optional.
+
 - [External job and watcher simplification](handoff-2026-09-06-external-job-simplification.md)
   — direct Slurm submission, one shell-watcher contract, human Cancel, and an
   OS-owned helper for ordinary processes. Integrated checks and the real

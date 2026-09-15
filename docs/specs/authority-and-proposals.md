@@ -19,7 +19,12 @@ governs installing, updating, restoring, configuring machine credentials,
 provisioning a central checkout, and removing a member. Those operations live
 under `rcp server ...` and are reached only from a console or SSH session with
 the required OS account, never from a member session or an API route. A member
-token cannot perform any of them, and no product role grants them.
+token cannot perform any of them, and no product role grants them. One narrow,
+documented exception: signing a shared provider login in, verifying it, and
+signing it out are reachable from a member session, because a dead login
+stops every member's work and RCP has no administrator; the action runs as the
+execution account, is attributed to the acting member, and is visible to every
+member.
 
 The separation is structural rather than cooperative. The backend runs under a
 dedicated operating-system account that owns its data directory and the

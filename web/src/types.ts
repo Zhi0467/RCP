@@ -1623,7 +1623,8 @@ export interface GraphBranchSummary {
   head: GraphHeadRef;
   merge_eligible: boolean;
   merge_blocked_reason: string | null;
-  merge_requires_end: boolean;
+  /** The newest member of the branch's episode chain; `episode_id` is the chain root. */
+  current_episode_id: string;
   merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
   latest_successful_merge: BranchMergeReceipt | null;
   active_merge_task_id: string | null;
@@ -2184,6 +2185,7 @@ export type EpisodeHealth =
   | "completed"
   | "stopped"
   | "failed";
+export type EpisodeBlockedReason = "sign_in" | "reauthorize";
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
@@ -2216,6 +2218,16 @@ export interface EpisodeReportSummary {
   report_id: string;
   ending: EpisodeEnding;
   created_at: string;
+}
+
+export interface EpisodeChainMember {
+  episode_id: string;
+  created_at: string;
+  status: EpisodeStatus;
+  ending: EpisodeEnding | null;
+  invocation_ceiling: number;
+  invocations_used: number;
+  report: EpisodeReportSummary | null;
 }
 
 export interface AutoResearchRecoverySummary {
@@ -2258,13 +2270,56 @@ export interface Episode {
   archived: boolean;
   can_archive: boolean;
   can_stop: boolean;
-  can_reauthorize: boolean;
+  /** The ended episode this one added turns to, and the one that added turns to this one. */
+  continues_episode_id: string | null;
+  continued_by_episode_id: string | null;
+  can_continue: boolean;
+  /** Every chain member oldest first, ending with this episode; a lone episode is its own chain. */
+  chain: EpisodeChainMember[];
   can_message: boolean;
   live: boolean;
   health: EpisodeHealth;
+  blocked_reason: EpisodeBlockedReason | null;
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
   run_section: EpisodeRunSection;
+}
+
+export type EpisodeTimelineEventKind =
+  "turn" | "retry" | "wake" | "mail" | "notice" | "child" | "lifecycle" | "human";
+
+export interface EpisodeTimelineActor {
+  kind: "orchestrator" | "worker" | "wake" | "human" | "rcp" | "child";
+  id: string | null;
+  label: string;
+  member: AuthorizedHuman | null;
+}
+
+export interface EpisodeTimelineEvent {
+  event_id: string;
+  kind: EpisodeTimelineEventKind;
+  at: string;
+  actor: EpisodeTimelineActor;
+  parent_event_id: string | null;
+  title: string;
+  detail: string | null;
+  status: string | null;
+  cause: string | null;
+  links: {
+    task_id: string | null;
+    message_id: string | null;
+    notice_id: string | null;
+    episode_id: string | null;
+    control_node_id: string | null;
+  };
+  provenance: "recorded" | "unknown";
+}
+
+export interface EpisodeTimelineResponse {
+  episode_id: string;
+  mode: EpisodeMode;
+  events: EpisodeTimelineEvent[];
+  truncated: boolean;
 }
 
 export interface EpisodeMessage {
@@ -2525,6 +2580,7 @@ export interface ProjectSnapshot {
     string,
     Partial<Record<ProviderId, ProviderSkillInventory | null>>
   >;
+  provider_logins?: ProviderLoginState[];
   provider_readiness: Record<string, Record<ProviderId, ProviderReadiness>>;
   providers: Record<ProviderId, ProviderReadiness>;
   cache_metrics: ProjectCacheMetrics;
@@ -2731,4 +2787,54 @@ export interface ProjectArtifact {
   viewer_url: string;
   can_open: boolean;
   unavailable_reason: string | null;
+}
+
+export interface ProviderLoginState {
+  provider: string;
+  label?: string;
+  host: string;
+  state: "signed_in" | "signed_out";
+  generation: number;
+  detail: string | null;
+  source: string | null;
+  changed_at: string;
+  changed_by: string | null;
+}
+
+/** What the UI may know about a stored credential: never the token. */
+export interface ProviderCredentialSummary {
+  pasted_at: string;
+  pasted_by: string;
+  verified_at: string | null;
+  estimated_expiry_at: string | null;
+}
+
+/** One device-code sign-in as it runs. */
+export interface ProviderSignInStatus {
+  login_id: string;
+  provider: string;
+  host: string;
+  state: "pending" | "succeeded" | "failed";
+  user_code: string | null;
+  verification_url: string | null;
+  detail: string | null;
+  started_at: string;
+  started_by: string;
+  finished_at: string | null;
+  resumed: ProviderResumeSummary | null;
+}
+
+/** One `(provider, execution account)` pair every project on this server may launch on. */
+export interface ProviderLoginAccount extends ProviderLoginState {
+  label: string;
+  sign_in_methods: string[];
+  token_instructions: string | null;
+  machines: string[];
+  token: ProviderCredentialSummary | null;
+  sign_in: ProviderSignInStatus | null;
+}
+
+/** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
+export interface ProviderResumeSummary {
+  checked: number;
 }

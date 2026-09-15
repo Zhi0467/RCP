@@ -6,10 +6,12 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
@@ -100,6 +102,32 @@ def seated_on_every_project(_project_id: str, _user_id: str) -> bool:
     """
 
     return True
+
+
+def write_local_test_manifest(directory: Path) -> Path:
+    """A real local execution account for engine tests that resolve run_on."""
+
+    path = directory / "manifest.toml"
+    path.write_text(
+        'name = "Test project"\n'
+        '[[machines]]\nalias = "laptop"\nhost = ""\n'
+        '[[repositories]]\nalias = "repo"\nmachine = "laptop"\n'
+        f"path = {json.dumps(str(directory))}\n"
+        '[project]\ntruth_scope = ["repo"]\n'
+        '[state]\nrepository = "repo"\n'
+        '[agent]\ndefault_run_truth_scope = ["repo"]\n'
+        '[execution]\nrun_on = "laptop"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def store_test_claude_token(store: AppStore, host: str = "") -> None:
+    """Give fake Claude execution an explicit managed credential."""
+
+    ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
+        "claude", host, "test-setup-token", member_id="fixture-member", now=store.now()
+    )
 
 
 def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHuman:

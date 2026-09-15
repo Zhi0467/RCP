@@ -55,9 +55,13 @@ execution account owns a team checkout on its SSH machine. Members remain
 distinct RCP humans and may keep independent personal checkouts. RCP member
 identity, process identity, SSH transport credentials, repository credentials,
 and provider-native authentication are separate authorities. RCP selects and
-readiness-checks a provider but never performs or stores its login; execution
-uses whatever the configured operating-system account has authenticated
-natively. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
+readiness-checks a provider and keeps one durable record per machine account of
+whether its shared login is alive, learned from real provider results and
+verified by one real request. Members sign a shared account in and out from the
+product; Codex keeps its native login on one refresh path, Claude runs on a
+stored long-lived token that RCP injects into every process it starts, and RCP
+starts no provider process it does not need. No new provider work starts on an
+account whose login is known to be dead. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
 non-reloading service, and its commit and update lifecycle are managed by the
 server CLI. The unfinished journeys that make this deployment usable are not
 yet driven end to end.

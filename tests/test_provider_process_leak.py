@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -95,4 +96,4 @@ async def test_terminating_a_reused_pid_does_not_fail_the_turn(
 
     monkeypatch.setattr(os, "killpg", killpg)
 
-    await AgentProcessControl._terminate(Reaped())
+    await AgentProcessControl._terminate(Reaped(), time.monotonic() - 3600)

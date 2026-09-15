@@ -469,6 +469,19 @@ class WatcherStoreMixin:
             ).fetchone()
         return self._watcher_record(row) if row is not None else None
 
+    def episode_watchers(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[StoredWatcherRecord]:
+        """One episode's watchers, newest first; ``newest`` keeps only that many."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM watchers WHERE episode_id = ? ORDER BY created_at DESC, watcher_id"
+                + (" LIMIT ?" if newest is not None else ""),
+                (episode_id,) if newest is None else (episode_id, newest),
+            ).fetchall()
+        return [self._watcher_record(row) for row in rows]
+
     def watchers(
         self,
         project_id: str,

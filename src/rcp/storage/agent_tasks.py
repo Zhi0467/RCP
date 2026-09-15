@@ -242,18 +242,13 @@ class AgentTaskStoreMixin:
                     or stored_episode.graph_target != record.graph_target
                 ):
                     raise ValueError("branch merge requires its exact Auto-research episode")
-                if stored_episode.ending is None:
-                    stored_episode = self._end_paused_auto_research_for_merge_in_connection(
-                        connection, stored_episode, now=self.now()
-                    )
-                if stored_episode.status not in {"needs_action", "completed", "stopped", "failed"}:
-                    raise ValueError("only an ended Auto-research branch is merge eligible")
-                if not self._auto_research_is_quiescent_in_connection(
-                    connection, record.episode_id
-                ):
-                    raise ValueError("an Auto-research branch must be quiescent before merge")
+                # A branch merges on branch facts: nothing about the episode's
+                # status, ending, or paused turns is a condition, and merging ends
+                # nothing. The only writers that matter are live graph-capable tasks.
                 if any(
-                    task.kind != "branch_merge" and task_graph_capable(task.kind, task.request)
+                    task.kind != "branch_merge"
+                    and task.status in {"queued", "running", "pausing"}
+                    and task_graph_capable(task.kind, task.request)
                     for task in self._unsettled_graph_target_tasks_in_connection(
                         connection, record.project_id, record.graph_target
                     )
@@ -1545,26 +1540,35 @@ class AgentTaskStoreMixin:
         episode_id: str,
         *,
         include_hidden: bool = False,
+        newest: int | None = None,
     ) -> list[AgentTaskRecord]:
-        """Return one episode's tasks without exposing hidden wrap-up work by default."""
+        """Return one episode's tasks without exposing hidden wrap-up work by default.
+
+        ``newest`` keeps only that many of the most recent tasks, still in creation order.
+        """
 
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT graph_runs.*,
-                       EXISTS (
-                           SELECT 1 FROM graph_run_receipts AS receipt
-                           WHERE receipt.operation_id = graph_runs.operation_id
-                             AND receipt.category IN (
-                                 'experiment_recovery_abandoned',
-                                 'auto_research_recovery_abandoned'
-                             )
-                       ) AS recovery_abandoned
-                FROM graph_runs
-                WHERE episode_id = ? AND (? OR visible = 1)
-                ORDER BY created_at, operation_id
+                SELECT * FROM (
+                    SELECT graph_runs.*,
+                           EXISTS (
+                               SELECT 1 FROM graph_run_receipts AS receipt
+                               WHERE receipt.operation_id = graph_runs.operation_id
+                                 AND receipt.category IN (
+                                     'experiment_recovery_abandoned',
+                                     'auto_research_recovery_abandoned'
+                                 )
+                           ) AS recovery_abandoned
+                    FROM graph_runs
+                    WHERE episode_id = ? AND (? OR visible = 1)
+                    ORDER BY created_at DESC, operation_id DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY created_at, operation_id
                 """,
-                (episode_id, int(include_hidden)),
+                (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -2225,6 +2229,57 @@ class AgentTaskStoreMixin:
         payload = json.loads(row["payload_json"])
         cause = payload.get("continuation_cause") if isinstance(payload, dict) else None
         return cause if isinstance(cause, str) and cause else None
+
+    def agent_task_continuation_causes(self, operation_ids: Sequence[str]) -> dict[str, str | None]:
+        """Return the durable launch cause of many tasks in one read.
+
+        The read-model twin of ``agent_task_continuation_cause``: the admission
+        intent's cause where one was recorded, else the creation receipt's. It
+        does not re-validate each intent against its task; a projection reads
+        causes, it does not launch on them.
+        """
+
+        ids = list(dict.fromkeys(operation_ids))
+        causes: dict[str, str | None] = {operation_id: None for operation_id in ids}
+        if not ids:
+            return causes
+        admitted: dict[str, str | None] = {}
+        created: dict[str, str | None] = {}
+        with self.connection() as connection:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"""
+                    SELECT operation_id, category, payload_json FROM graph_run_receipts
+                    WHERE operation_id IN ({placeholders})
+                      AND category IN ('operation_admitted', 'operation_created')
+                    ORDER BY receipt_id ASC
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    try:
+                        payload = json.loads(row["payload_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    cause = payload.get("continuation_cause")
+                    cause = cause if isinstance(cause, str) and cause else None
+                    operation_id = str(row["operation_id"])
+                    if row["category"] == "operation_admitted" or (
+                        payload.get("admission_committed") is True
+                    ):
+                        admitted.setdefault(operation_id, cause)
+                    else:
+                        created.setdefault(operation_id, cause)
+        for operation_id in ids:
+            if operation_id in admitted:
+                causes[operation_id] = admitted[operation_id]
+            elif operation_id in created:
+                causes[operation_id] = created[operation_id]
+        return causes
 
     def agent_task_admission_intent(self, operation_id: str) -> dict[str, object] | None:
         """Return one exact durable launch intent, including the legacy recovery form."""

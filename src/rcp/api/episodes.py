@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -7,11 +8,14 @@ from typing import Literal, Protocol
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from rcp.agents.provider_accounts import account_login_refusal
+from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import require_registered_project
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import (
+    AgentFailureKind,
     AgentTaskRecord,
     AgentTaskStatus,
     AppStore,
@@ -24,6 +28,7 @@ from rcp.storage import (
     EpisodeEnding,
     EpisodeMode,
     EpisodeRecord,
+    EpisodeReportRecord,
     EpisodeStatus,
     EpisodeWrapupState,
     ExperimentEpisodeProjectionSnapshot,
@@ -44,8 +49,8 @@ BranchSummaryResolver = Callable[[EpisodeRecord], GraphBranchSummary]
 BranchSummariesResolver = Callable[[list[EpisodeRecord]], dict[str, GraphBranchSummary]]
 
 _STOPPABLE_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset({"queued", "running"})
-_TERMINAL_WRAPUP_STATES: frozenset[EpisodeWrapupState] = frozenset(
-    {"ready", "failed", "legacy_unavailable"}
+_TERMINAL_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {"completed", "failed", "needs_action", "stopped"}
 )
 _EPISODE_TEXT_MAX_LENGTH = 16_000
 
@@ -63,6 +68,7 @@ class _EpisodeProjectionTask(Protocol):
     can_pause: bool
     can_resume: bool
     can_retry: bool
+    failure_kind: AgentFailureKind | None
 
 
 class _AutoResearchControlTask(_EpisodeProjectionTask, Protocol):
@@ -115,10 +121,22 @@ class StartEpisodeBody(BaseModel):
         return value
 
 
-class ReauthorizeEpisodeBody(BaseModel):
+class ContinueEpisodeBody(BaseModel):
+    """Add turns to an ended episode; the request id makes a repeat return the same one."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
     invocation_ceiling: int = Field(ge=1)
+    request_id: str = Field(min_length=1, max_length=120)
+
+    @field_validator("request_id")
+    @classmethod
+    def request_id_is_a_uuid(cls, value: str) -> str:
+        try:
+            uuid.UUID(value)
+        except ValueError as exc:
+            raise ValueError("the continuation request id must be a UUID") from exc
+        return value
 
 
 class EpisodeMessageBody(BaseModel):
@@ -155,6 +173,7 @@ class EpisodeTaskResponse(BaseModel):
     finished_at: str | None = None
     status_message: str
     error: str | None = None
+    failure_kind: AgentFailureKind | None
     degradation: str | None = None
     applied_revision: int | None = None
     result: dict[str, object] | None = None
@@ -194,6 +213,20 @@ class EpisodeReportSummary(BaseModel):
     created_at: str
 
 
+class EpisodeChainMember(BaseModel):
+    """One member of a continuation chain: its turns, how it ended, and its report."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    episode_id: str
+    created_at: str
+    status: EpisodeStatus
+    ending: EpisodeEnding | None
+    invocation_ceiling: int
+    invocations_used: int
+    report: EpisodeReportSummary | None
+
+
 EpisodeHealth = Literal[
     "starting",
     "active",
@@ -205,6 +238,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -265,13 +299,19 @@ class EpisodeResponse(BaseModel):
     tasks: list[EpisodeTaskResponse]
     report: EpisodeReportSummary | None
     can_stop: bool
-    can_reauthorize: bool
+    # A continuation adds turns to an ended episode on the same branch and
+    # session. The chain is published so a card can show it as one run.
+    continues_episode_id: str | None
+    continued_by_episode_id: str | None
+    can_continue: bool
+    chain: list[EpisodeChainMember]
     can_message: bool
     # The lifecycle state this parent is in, what a human should do next, and the
     # recovery control that is actually available. All three are decided from
     # backend lifecycle alone, so the surfaces consume them rather than each
     # reaching its own conclusion from `status`, `ending`, and task rows.
     health: EpisodeHealth
+    blocked_reason: EpisodeBlockedReason | None
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
     run_section: EpisodeRunSection
@@ -327,18 +367,14 @@ def serialize_episode(
         episode.mode != "experiment_loop" or projection_snapshot.episode != episode
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
-    owns_graph_branch = (
-        episode.mode == "auto_research"
-        and episode.graph_target.kind == "branch"
-        and episode.graph_target.branch_id == episode.episode_id
-    )
+    owns_graph_branch = episode.mode == "auto_research" and episode.graph_target.kind == "branch"
     if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
     task_records = (
         projection_snapshot.tasks
         if projection_snapshot is not None
-        else _operational_tasks(store, episode)
+        else operational_episode_tasks(store, episode)
     )
     task_metadata = _episode_task_metadata(store, episode, task_records)
     # An episode turn is a provider call like any other, so the note about a
@@ -368,38 +404,37 @@ def serialize_episode(
             recovery,
         ) = _auto_research_projection(store, episode, task_records)
 
-    stored_report = (
-        None
-        if episode.ending == "stopped"
-        else (
-            projection_snapshot.report
-            if projection_snapshot is not None
-            else store.episode_report(episode.episode_id)
-        )
-    )
     report = (
-        EpisodeReportSummary(
-            report_id=stored_report.report_id,
-            ending=stored_report.ending,
-            created_at=stored_report.created_at,
-        )
-        if stored_report is not None
-        else None
+        _report_summary(projection_snapshot.report)
+        if projection_snapshot is not None and episode.ending != "stopped"
+        else _episode_report_summary(store, episode)
     )
     stopped = episode.ending == "stopped"
-    reauthorizable = (
-        episode.mode == "auto_research"
-        and episode.status == "needs_action"
-        and episode.ending == "exhausted"
-        and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
+    continued_by = store.episode_continuation(episode.episode_id)
+    wrapup = (
+        store.episode_wrapup(episode.episode_id)
+        if episode.wrapup_state in {"pending", "running"}
+        else None
     )
-    health, next_step, task_control = _episode_projection(
+    # The same refusal the report launch consults: a missing managed credential
+    # blocks the account whatever its durable row says.
+    report_login_blocked = (
+        wrapup is not None
+        and wrapup.provider is not None
+        and account_login_refusal(
+            store,
+            ProviderCredentialStore.for_data_dir(store.path.parent),
+            wrapup.provider,
+            wrapup.execution_host or "",
+        )
+        is not None
+    )
+    health, next_step, task_control, blocked_reason = _episode_projection(
         episode,
         tasks,
         control_task_id=current_control_task_id,
         recovery=recovery,
-        has_report=report is not None,
-        can_reauthorize=reauthorizable,
+        report_login_blocked=report_login_blocked,
     )
     return EpisodeResponse(
         episode_id=episode.episode_id,
@@ -443,10 +478,20 @@ def serialize_episode(
             and episode.stop_requested_at is None
             and episode.ending is None
         ),
-        can_reauthorize=reauthorizable,
+        continues_episode_id=episode.continues_episode_id,
+        continued_by_episode_id=continued_by.episode_id if continued_by is not None else None,
+        chain=_chain_members(store, episode, continued=continued_by is not None, report=report),
+        can_continue=(
+            episode.status in _TERMINAL_EPISODE_STATUSES
+            and continued_by is None
+            and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
+            and _continuable_session(store, episode)
+            and store.continuation_slot_open(episode)
+        ),
         can_message=episode.status == "running",
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
+        blocked_reason=blocked_reason,
         recommendation=next_step,
         task_control=task_control,
         run_section=_episode_run_section(health),
@@ -486,9 +531,7 @@ def serialize_episodes(
         branch_episodes = [
             episode
             for episode in selected
-            if episode.mode == "auto_research"
-            and episode.graph_target.kind == "branch"
-            and episode.graph_target.branch_id == episode.episode_id
+            if episode.mode == "auto_research" and episode.graph_target.kind == "branch"
         ]
         resolved = branch_summaries(branch_episodes)
         expected_ids = {episode.episode_id for episode in branch_episodes}
@@ -511,12 +554,103 @@ def serialize_episodes(
     ]
 
 
-def _operational_tasks(store: AppStore, episode: EpisodeRecord) -> list[AgentTaskRecord]:
+def _report_summary(stored: EpisodeReportRecord | None) -> EpisodeReportSummary | None:
+    if stored is None:
+        return None
+    return EpisodeReportSummary(
+        report_id=stored.report_id, ending=stored.ending, created_at=stored.created_at
+    )
+
+
+def _episode_report_summary(store: AppStore, episode: EpisodeRecord) -> EpisodeReportSummary | None:
+    """A Stop skips the report, so a stopped episode publishes none."""
+
+    if episode.ending == "stopped":
+        return None
+    return _report_summary(store.episode_report(episode.episode_id))
+
+
+def episode_chain_records(store: AppStore, episode: EpisodeRecord) -> list[EpisodeRecord]:
+    """The whole continuation chain ``episode`` belongs to, oldest first.
+
+    The caller's record stands in for the requested episode itself so a
+    projection built from a fresher copy stays coherent.
+    """
+
+    root = episode
+    seen = {episode.episode_id}
+    while root.continues_episode_id is not None and root.continues_episode_id not in seen:
+        seen.add(root.continues_episode_id)
+        source = store.episode(root.continues_episode_id)
+        if source is None:
+            break
+        root = source
+    try:
+        chain = store.episode_chain(root.episode_id)
+    except KeyError:
+        return [episode]
+    return [episode if member.episode_id == episode.episode_id else member for member in chain]
+
+
+def _chain_members(
+    store: AppStore,
+    episode: EpisodeRecord,
+    *,
+    continued: bool,
+    report: EpisodeReportSummary | None,
+) -> list[EpisodeChainMember]:
+    """Every chain member with its turns, ending, and report; a lone episode is its own chain."""
+
+    members = (
+        episode_chain_records(store, episode)
+        if continued or episode.continues_episode_id is not None
+        else [episode]
+    )
+    return [
+        EpisodeChainMember(
+            episode_id=member.episode_id,
+            created_at=member.created_at,
+            status=member.status,
+            ending=member.ending,
+            invocation_ceiling=member.invocation_ceiling,
+            invocations_used=member.invocations_used,
+            report=report
+            if member.episode_id == episode.episode_id
+            else _episode_report_summary(store, member),
+        )
+        for member in members
+    ]
+
+
+def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -> bool:
+    """Whether ``episode_id`` names a member of the branch's continuation chain.
+
+    A branch keeps its chain root's id while child routes and Work allocations
+    belong to whichever member owns them now, so ownership is chain membership,
+    not identity with the root.
+    """
+
+    if episode_id is None:
+        return False
+    member = store.episode(episode_id)
+    return (
+        member is not None
+        and member.graph_target.kind == "branch"
+        and member.graph_target.branch_id == branch_id
+    )
+
+
+def operational_episode_tasks(
+    store: AppStore, episode: EpisodeRecord, *, newest: int | None = None
+) -> list[AgentTaskRecord]:
     tasks: list[AgentTaskRecord] = []
-    for task in store.episode_tasks(episode.episode_id):
+    for task in store.episode_tasks(episode.episode_id, newest=newest):
         if task.episode_id != episode.episode_id or task.project_id != episode.project_id:
             raise ValueError("episode task lineage crosses its parent boundary")
-        if not task.visible or task.kind == "episode_report":
+        # Hidden wrap-up work and branch merges are not the episode's turns: the
+        # graph branch summary narrates merges, and a queued merge must not read
+        # as the episode starting.
+        if not task.visible or task.kind in {"episode_report", "branch_merge"}:
             continue
         tasks.append(task)
     return tasks
@@ -542,57 +676,76 @@ def _episode_recovery_control(
     return None
 
 
+def _continuable_session(store: AppStore, episode: EpisodeRecord) -> bool:
+    """Whether a continuation could resume this episode's native session."""
+
+    if episode.mode == "experiment_loop":
+        experiment = store.experiment_episode(episode.episode_id)
+        return experiment is not None and experiment.session_bound
+    if episode.root_operation_id is None:
+        return False
+    binding = store.auto_research_actor_binding(episode.root_operation_id)
+    return binding is not None and bool(binding.native_session_id and binding.stage_root)
+
+
 def _episode_projection(
     episode: _EpisodeProjectionParent,
     tasks: Sequence[_EpisodeProjectionTask],
     *,
     control_task_id: str | None,
     recovery: _RecoveryProjection | None,
-    has_report: bool,
-    can_reauthorize: bool,
-) -> tuple[EpisodeHealth, EpisodeRecommendationKind, EpisodeTaskControlKind | None]:
-    """Decide lifecycle state, next human step, and available control for one parent.
-
-    Every input is backend lifecycle, so this is the projection's answer and not a
-    conclusion any surface reaches on its own. Several distinct situations share
-    the `needs_action` state, which is why the recommendation travels with it.
-    """
+    report_login_blocked: bool = False,
+) -> tuple[
+    EpisodeHealth,
+    EpisodeRecommendationKind,
+    EpisodeTaskControlKind | None,
+    EpisodeBlockedReason | None,
+]:
+    """Apply the episode health table in precedence order, before task controls."""
 
     task = next((item for item in tasks if item.operation_id == control_task_id), None)
-
-    if episode.wrapup_state in {"pending", "running"}:
-        return "wrapping_up", "wait", None
-    if has_report and episode.wrapup_state == "ready":
-        if episode.status == "completed":
-            return "completed", "open_report", None
-        if episode.status == "failed":
-            return "failed", "open_report", None
-        return "needs_action", "open_report", None
-    if episode.status == "stopped":
-        return "stopped", "none", None
-    if episode.status == "completed":
-        return "completed", "none", None
-    if episode.status == "failed":
-        return "failed", "review", None
-    if recovery is not None and recovery.status == "pending":
-        return "recovering", "wait", None
-    if episode.status == "needs_action" and can_reauthorize:
-        return "needs_action", "reauthorize", None
+    if episode.ending == "stopped" or (episode.ending is None and episode.status == "stopped"):
+        return "stopped", "none", None, None
+    if report_login_blocked and episode.wrapup_state in {"pending", "running"}:
+        return "wrapping_up", "wait", None, "sign_in"
+    if episode.status == "wrapping_up" or episode.wrapup_state in {"pending", "running"}:
+        return "wrapping_up", "wait", None, None
+    if episode.ending == "completed" or (episode.ending is None and episode.status == "completed"):
+        return (
+            "completed",
+            "open_report" if episode.wrapup_state == "ready" else "none",
+            None,
+            None,
+        )
+    if episode.ending == "failed" or (episode.ending is None and episode.status == "failed"):
+        return (
+            "failed",
+            "open_report" if episode.wrapup_state == "ready" else "review",
+            None,
+            None,
+        )
+    if episode.ending in {"exhausted", "human_pause"}:
+        return "needs_action", "reauthorize", None, "reauthorize"
     recovery_control = _episode_recovery_control(task)
-    if recovery_control is not None:
-        return "needs_action", recovery_control, recovery_control
-    if episode.status == "stopping":
-        return "stopping", "wait", None
+    live_turn = any(item.status in {"queued", "running", "pausing"} for item in tasks)
+    if (episode.stop_requested_at is not None or episode.status == "stopping") and live_turn:
+        return "stopping", "wait", None, None
+    if recovery is not None and recovery.status == "pending":
+        return "recovering", "wait", None, None
+    if task is not None and task.status == "failed" and task.failure_kind == "provider_auth":
+        return "needs_action", recovery_control or "review", recovery_control, "sign_in"
     if task is not None and task.status in {"paused", "interrupted", "failed"}:
-        return "needs_action", "review", None
-    if episode.status == "queued" or (task is not None and task.status == "queued"):
-        return "starting", "wait", None
+        return "needs_action", recovery_control or "review", recovery_control, None
+    if episode.status == "stopping":
+        return "stopping", "wait", None, None
+    if episode.status == "queued" or any(item.status == "queued" for item in tasks):
+        return "starting", "wait", None, None
     if episode.status == "needs_action":
-        return "needs_action", "review", None
+        return "needs_action", "review", None, None
     if task is not None and task.status == "pausing":
-        return "active", "wait", None
+        return "active", "wait", None, None
     pause = "pause" if task is not None and task.status == "running" and task.can_pause else None
-    return "active", "continue", pause
+    return "active", "continue", pause, None
 
 
 def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
@@ -841,18 +994,11 @@ def space_auto_research_episode_projection(
     recovery = (
         recovery_for(current_control_task_id) if current_control_task_id is not None else None
     )
-    can_reauthorize = (
-        episode.status == "needs_action"
-        and episode.ending == "exhausted"
-        and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
-    )
-    health, _recommendation, _task_control = _episode_projection(
+    health, _recommendation, _task_control, _blocked_reason = _episode_projection(
         episode,
         tasks,
         control_task_id=current_control_task_id,
         recovery=recovery,
-        has_report=snapshot.has_report,
-        can_reauthorize=can_reauthorize,
     )
     run_section = _episode_run_section(health)
     last_activity_at = next(

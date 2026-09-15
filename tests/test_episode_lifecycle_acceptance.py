@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -422,7 +423,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
         assert budget["invocation_ceiling"] == 1
         assert budget["invocations_used"] == 1
         assert budget["invocations_remaining"] == 0
-        assert episode["can_reauthorize"] is True
+        assert episode["can_continue"] is True
         assert episode["report"] is not None
         preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
@@ -442,7 +443,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
     assert store.episode_report(episode_id) is not None
 
 
-def test_acceptance_exhausted_episode_reauthorization_creates_a_fresh_parent(
+def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch(
     manifest,
     tmp_path,
 ) -> None:
@@ -455,9 +456,9 @@ def test_acceptance_exhausted_episode_reauthorization_creates_a_fresh_parent(
     assert project_id is not None
     _add_worker_seat(
         app,
-        node_id="exp/episode-reauthorization",
-        title="Episode reauthorization probe",
-        objective="Prove reauthorization starts a fresh parent and native session.",
+        node_id="exp/episode-continuation",
+        title="Episode continuation probe",
+        objective="Prove adding turns resumes the same orchestrator session on the same branch.",
     )
     store = app.state.background_tasks.store
 
@@ -478,45 +479,77 @@ def test_acceptance_exhausted_episode_reauthorization_creates_a_fresh_parent(
             ending="exhausted",
             report_ready=True,
         )
+        assert old_episode["can_continue"] is True
 
-        reauthorized = client.post(
-            f"/api/projects/{project_id}/episodes/{old_episode_id}/reauthorize",
-            json={"invocation_ceiling": 1},
+        request_id = str(uuid.uuid4())
+        continued = client.post(
+            f"/api/projects/{project_id}/episodes/{old_episode_id}/continue",
+            json={"invocation_ceiling": 1, "request_id": request_id},
         )
-        assert reauthorized.status_code == 202, reauthorized.text
-        fresh_episode_id = reauthorized.json()["episode_id"]
-        fresh_root_operation_id = reauthorized.json()["root_operation_id"]
-        assert fresh_episode_id != old_episode_id
-        assert fresh_root_operation_id != old_root_operation_id
-        fresh_episode = _wait_for_episode(
-            client,
-            project_id,
-            fresh_episode_id,
-            status="needs_action",
-            ending="exhausted",
-            report_ready=True,
+        assert continued.status_code == 202, continued.text
+        continuation = continued.json()
+        continuation_id = continuation["episode_id"]
+        continuation_root_id = continuation["root_operation_id"]
+        assert continuation_id != old_episode_id
+        assert continuation_root_id != old_root_operation_id
+        assert continuation["continues_episode_id"] == old_episode_id
+        assert continuation["graph_target"] == old_episode["graph_target"]
+        assert continuation["graph_branch"]["branch_id"] == old_episode_id
+        assert continuation["graph_branch"]["current_episode_id"] == continuation_id
+        assert continuation["budget"]["invocation_ceiling"] == 1
+        assert continuation["budget"]["invocations_used"] == 1
+        replay = client.post(
+            f"/api/projects/{project_id}/episodes/{old_episode_id}/continue",
+            json={"invocation_ceiling": 1, "request_id": request_id},
         )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["episode_id"] == continuation_id
+        refused = client.post(
+            f"/api/projects/{project_id}/episodes/{old_episode_id}/continue",
+            json={"invocation_ceiling": 1, "request_id": str(uuid.uuid4())},
+        )
+        assert refused.status_code == 409, refused.text
+        wait_for_task(store, continuation_root_id)
 
         listed = client.get(f"/api/projects/{project_id}/episodes").json()
         old_after = next(item for item in listed if item["episode_id"] == old_episode_id)
-        assert old_after == old_episode
+        assert old_after["continued_by_episode_id"] == continuation_id
+        assert old_after["can_continue"] is False
+        assert [member["episode_id"] for member in old_after["chain"]] == [
+            old_episode_id,
+            continuation_id,
+        ]
+        unchanged = {
+            key: value
+            for key, value in old_after.items()
+            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
+        }
+        assert unchanged == {
+            key: value
+            for key, value in old_episode.items()
+            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
+        }
+        timeline = client.get(
+            f"/api/projects/{project_id}/episodes/{continuation_id}/timeline"
+        ).json()
+        event_ids = {event["event_id"] for event in timeline["events"]}
+        assert f"lifecycle:continued:{continuation_id}" in event_ids
+        assert f"{old_episode_id}:turn:{old_root_operation_id}" in event_ids
 
     old_root = store.agent_task(old_root_operation_id)
-    fresh_root = store.agent_task(fresh_root_operation_id)
-    assert old_root is not None and fresh_root is not None
-    assert old_root.parent_operation_id is None
-    assert fresh_root.parent_operation_id is None
-    assert old_root.episode_id == old_episode_id
-    assert fresh_root.episode_id == fresh_episode_id
-    assert fresh_root.native_session_id != old_root.native_session_id
-    assert fresh_root.stage_root != old_root.stage_root
-    assert fresh_episode["starting_instruction"] == ACCEPTANCE_EPISODE_EXHAUST_MARKER
-    for episode_id in (old_episode_id, fresh_episode_id):
-        meter = store.episode_budget_meter(episode_id)
-        assert meter.invocation_ceiling == 1
-        assert meter.invocations_used == 1
-        assert store.episode_report(episode_id) is not None
-        _assert_corrected_report(store, episode_id)
+    continuation_root = store.agent_task(continuation_root_id)
+    assert old_root is not None and continuation_root is not None
+    assert continuation_root.parent_operation_id is None
+    assert continuation_root.episode_id == continuation_id
+    assert continuation_root.native_session_id == old_root.native_session_id
+    assert continuation_root.stage_root == old_root.stage_root
+    assert store.agent_task_continuation_cause(continuation_root_id) == "lifecycle_wake"
+    continuation_request = AutoResearchRunRequest.model_validate(continuation_root.request)
+    assert continuation_request.session_id == old_root.native_session_id
+    assert continuation_request.wake_cause == "lifecycle"
+    assert continuation_request.instruction is None
+    assert store.episode_report(old_episode_id) is not None
+    _assert_corrected_report(store, old_episode_id)
 
 
 def test_acceptance_episode_stop_is_the_only_ending_without_a_report(

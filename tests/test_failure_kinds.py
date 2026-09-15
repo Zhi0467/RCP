@@ -132,3 +132,22 @@ def test_only_the_missing_thread_half_means_the_session_is_gone() -> None:
         classify_terminal_error("collab spawn failed: sandbox denied the request")
         == "provider_error"
     )
+
+
+@pytest.mark.parametrize("provider, expected", [("codex", "provider_auth"), ("claude", None)])
+def test_recorded_reused_refresh_login_is_provider_specific(provider, expected):
+    diagnostic = (
+        "stream error: unexpected status 401 Unauthorized: "
+        '{"error":{"type":"refresh_token_reused",'
+        '"message":"Your refresh token was already used. Please log in again."}}'
+    )
+    assert (
+        classify_agent_failure(
+            error=diagnostic,
+            return_code=1,
+            host="",
+            profile=profile_for(provider),
+            provider_spoke_for_itself=True,
+        )
+        == expected
+    )

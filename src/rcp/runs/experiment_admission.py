@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from rcp.control import ExperimentControlState
-from rcp.core.models import Experiment
+from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.service import ProjectService, RunRequest
+from rcp.storage import AgentTaskRecord, EpisodeRecord
+
+if TYPE_CHECKING:
+    from rcp.background import BackgroundAgentTasks
 
 
 def experiment_start_message(message: str | None, node_id: str) -> str:
@@ -75,3 +79,53 @@ def fresh_experiment_run_request(
         }
     )
     return service.resolve_compute_request(resolve_experiment_node_work_request(service, request))
+
+
+def start_experiment_continuation(
+    tasks: BackgroundAgentTasks,
+    project_id: str,
+    request: RunRequest,
+    *,
+    source: EpisodeRecord,
+    authorized_by: AuthorizedHuman,
+    stage_host: str | None,
+    stage_root: str,
+    continuation_request_id: str,
+) -> AgentTaskRecord:
+    """Admit invocation 1 of a continuation that resumes its source's session.
+
+    ``start`` refuses a saved stage and a watcher notification refuses a session
+    on a human Run, because both are fresh episodes; a continuation is the one
+    Experiment Run that carries the ended episode's exact session and stage.
+    """
+
+    if not authorized_by.display_name.strip():
+        raise ValueError("An Experiment continuation requires a named human authorizer snapshot.")
+    if (
+        request.patch_kind != "experiment_loop"
+        or request.trigger != "experiment_run"
+        or request.control_invocation != 1
+        or not request.session_id
+        or not request.chat_id
+        or request.control_node_id != source.control_node_id
+    ):
+        raise ValueError("An Experiment continuation is invocation 1 on the source's session.")
+    estimate, samples = tasks.store.agent_task_estimate(
+        project_id, "node_chat", request.model_dump(mode="json")
+    )
+    record = tasks._create_and_spawn(
+        project_id,
+        "node_chat",
+        request,
+        estimate_seconds=estimate,
+        estimate_samples=samples,
+        authorized_by=authorized_by,
+        stage_host=stage_host,
+        stage_root=stage_root,
+        graph_target=source.graph_target,
+        continues_episode_id=source.episode_id,
+        continuation_request_id=continuation_request_id,
+    )
+    if record is None:
+        raise RuntimeError("Experiment continuation admission returned no task")
+    return record

@@ -644,6 +644,39 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
     currentWatchers: [],
     health: "agent_active",
   };
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: {
+        ...base.control,
+        recommendation: "start_episode",
+        episode: { blocked_reason: "reauthorize", ending: "exhausted" },
+      },
+      health: "paused_at_limit",
+    }).label,
+    "The authorized turns are spent. Add turns or start a new episode",
+  );
+  // A human-authority pause is also a reauthorization block, but the turns
+  // were not spent; the lead sentence follows the ending, not the block.
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: {
+        ...base.control,
+        recommendation: "start_episode",
+        episode: { blocked_reason: "reauthorize", ending: "human_pause" },
+      },
+      health: "paused_at_limit",
+    }).label,
+    "The episode paused for human authority. Add turns or start a new episode",
+  );
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: { ...base.control, recommendation: "retry", episode: { blocked_reason: "sign_in" } },
+    }).label,
+    "The provider login is dead. Sign in again, then retry this episode, or switch provider",
+  );
   assert.equal(experimentRecommendation(base).step, "wait");
   assert.equal(
     experimentRecommendation({
@@ -691,7 +724,10 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
       ),
       health: "needs_action",
     }),
-    { step: "reauthenticate_provider", label: "Sign in to codex again, then retry" },
+    {
+      step: "reauthenticate_provider",
+      label: "Sign in on the machine, verify it above, then retry",
+    },
   );
 });
 

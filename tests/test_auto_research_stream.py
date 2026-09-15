@@ -73,6 +73,7 @@ from .helpers import (
     fabricated_authorizer,
     seated_on_every_project,
     wait_for_task,
+    write_local_test_manifest,
 )
 
 
@@ -213,7 +214,7 @@ def _setup_auto_research(
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -2962,3 +2963,19 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     )
     assert package_path in fresh
     assert package_path in continuation
+
+
+def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
+    from typing import get_args
+
+    from rcp.agents.auto_research_prompt import _auto_research_commands
+    from rcp.storage import AutoResearchLifecycleNoticeRecord
+
+    prompt = _auto_research_commands("/stage/rcp-agent")
+    assert "inbox --harvest" in prompt
+    assert "inbox --clear" in prompt
+    assert "wake_suppressed" in prompt
+    annotation = AutoResearchLifecycleNoticeRecord.model_fields["wake_suppressed"].annotation
+    suppression_values = get_args(get_args(annotation)[0])
+    assert suppression_values
+    assert all(value in prompt for value in suppression_values)

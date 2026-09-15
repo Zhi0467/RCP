@@ -501,6 +501,7 @@ def auto_research_command_effects(
             action = experiment_coordinator.stop(
                 context.episode.episode_id,
                 arguments.episode_id,
+                operation_id=context.task.operation_id,
             )
         else:
             action = experiment_coordinator.resume(
@@ -569,6 +570,7 @@ def auto_research_command_effects(
                 context.episode.episode_id,
                 effect_id=planned_inbox_effect_id,
                 mode=arguments.action,
+                delivery_operation_id=context.task.operation_id,
                 acknowledged_by=(context.request.actor_operation_id or context.task.operation_id),
             )
         except AutoResearchInboxClearTooLarge as exc:
@@ -849,6 +851,8 @@ def _inbox_command_result(
         receipt.mode,
         notice_ids=receipt.notice_ids,
         notices=receipt.notices,
+        message_ids=receipt.message_ids,
+        messages=receipt.messages,
     )
     return AutoResearchCommandEffectResult(message=message, result=result)
 

@@ -48,7 +48,10 @@ from rcp.runs.auto_research_admission import (
     start_auto_research_child_work,
     stop_auto_research_child_work,
 )
-from rcp.runs.auto_research_delivery import record_auto_research_message
+from rcp.runs.auto_research_delivery import (
+    deliver_pending_auto_research_mail,
+    record_auto_research_message,
+)
 from rcp.runs.auto_research_effects import auto_research_command_effects
 from rcp.service import GraphUpdateResult, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -1597,7 +1600,19 @@ def test_inbox_receipts_reconcile_exact_snapshots_without_acknowledging_later_no
             )
         )
 
+    def mail(body: str):
+        return record_auto_research_message(
+            store,
+            episode_id=auto_research.episode_id,
+            sender_role="human",
+            sender_task_id=None,
+            authorized_by=fabricated_authorizer(),
+            recipient_task_id=root.operation_id,
+            body=body,
+        )
+
     first = notice("notice-first", 1)
+    first_mail = mail("Arrived during this turn.")
     effect_id = str(uuid.uuid4())
     request = InboxCommandRequest(
         mailbox_id=MAILBOX_ID,
@@ -1610,11 +1625,12 @@ def test_inbox_receipts_reconcile_exact_snapshots_without_acknowledging_later_no
 
     harvested = effects.inbox(context, request.arguments, effect_id)
     second = notice("notice-second", 2)
+    second_mail = mail("Arrived after the harvest.")
     reconciled = effects.reconcile_unknown(context, request, effect_id)
 
     assert harvested.result == {
         "action": "harvest",
-        "count": 1,
+        "count": 2,
         "notices": [
             {
                 "notice_id": first.notice_id,
@@ -1624,10 +1640,31 @@ def test_inbox_receipts_reconcile_exact_snapshots_without_acknowledging_later_no
                 "source_attempt": first.source_attempt,
                 "payload": first.payload,
                 "created_at": first.created_at,
+                "wake_suppressed": first.wake_suppressed,
+            }
+        ],
+        "mail": [
+            {
+                "message_id": first_mail.message_id,
+                "sender_role": "human",
+                "sender_task_id": None,
+                "human_name": first_mail.authorized_by.display_name,
+                "created_at": first_mail.created_at,
+                "body": first_mail.body,
             }
         ],
     }
     assert reconciled == harvested
+    assert effects.inbox(context, request.arguments, effect_id) == harvested
+    receipt = store.auto_research_inbox_receipt(effect_id)
+    assert receipt is not None and receipt.message_ids == [first_mail.message_id]
+    assert receipt.messages[0].body == first_mail.body
+    delivered = store.auto_research_message(first_mail.message_id)
+    assert delivered is not None and delivered.delivered_at is not None
+    assert delivered.delivery_operation_id == root.operation_id
+    assert store.pending_auto_research_messages(auto_research.episode_id, root.operation_id) == [
+        second_mail
+    ]
     pending = store.pending_auto_research_lifecycle_notices(auto_research.episode_id)
     assert [item.notice_id for item in pending] == [second.notice_id]
 
@@ -1645,11 +1682,20 @@ def test_inbox_receipts_reconcile_exact_snapshots_without_acknowledging_later_no
         clear_effect_id,
     )
     third = notice("notice-third", 3)
+    third_mail = mail("Arrived after clear.")
+    assert effects.inbox(context, InboxClearArguments(action="clear"), clear_effect_id) == cleared
+    clear_receipt = store.auto_research_inbox_receipt(clear_effect_id)
+    assert clear_receipt is not None and clear_receipt.messages == []
+    assert clear_receipt.message_ids == [second_mail.message_id]
+    assert store.pending_auto_research_messages(auto_research.episode_id, root.operation_id) == [
+        third_mail
+    ]
 
     assert cleared.result == {
         "action": "clear",
-        "count": 1,
+        "count": 2,
         "notice_ids": [second.notice_id],
+        "message_ids": [second_mail.message_id],
     }
     assert [
         item.notice_id
@@ -1707,6 +1753,7 @@ def test_inbox_harvest_leaves_a_body_that_cannot_fit_the_command_response_pendin
         "action": "clear",
         "count": 1,
         "notice_ids": [oversized.notice_id],
+        "message_ids": [],
     }
     assert store.pending_auto_research_lifecycle_notices(auto_research.episode_id) == []
 
@@ -1746,7 +1793,7 @@ def test_inbox_clear_refuses_before_mutation_then_clears_after_bounded_harvest(
     assert refused.status == "invalid"
     assert refused.message == (
         "Clear would exceed the durable command response limit, so no lifecycle "
-        "notices were acknowledged; run inbox --harvest with a new key before "
+        "notices or mail were consumed; run inbox --harvest with a new key before "
         "running inbox --clear with another new key."
     )
     assert refused.result == {
@@ -1804,6 +1851,7 @@ def test_inbox_clear_refuses_before_mutation_then_clears_after_bounded_harvest(
         "action": "clear",
         "count": len(remaining_ids),
         "notice_ids": remaining_ids,
+        "message_ids": [],
     }
     assert [
         notice.notice_id
@@ -1874,6 +1922,8 @@ def test_the_inbox_size_bound_measures_the_payload_the_orchestrator_receives(
             receipt.mode,
             notice_ids=receipt.notice_ids,
             notices=receipt.notices,
+            message_ids=receipt.message_ids,
+            messages=receipt.messages,
         )
         assert effect.result == measured
         assert effect.message == message
@@ -2111,3 +2161,147 @@ def test_individual_worker_stop_routes_to_the_current_attempt_and_never_stops_th
     assert store.episode(auto_research.episode_id).stop_requested_at is None  # type: ignore[union-attr]
     assert background.paused == []
     assert background.resumed == []
+
+
+def test_harvested_mail_cannot_be_claimed_by_a_later_paid_wake(tmp_path) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    background = BackgroundAgentTasks(store, _successful_stream)
+    message = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=fabricated_authorizer(),
+        recipient_task_id=root.operation_id,
+        body="Read this while the turn is running.",
+    )
+    tasks_before = store.auto_research_tasks(episode.episode_id)
+    budget_before = store.episode_budget_meter(episode.episode_id)
+    result = _effects(store, background).inbox(
+        _context(store, episode, root), InboxHarvestArguments(action="harvest"), "read-mail"
+    )
+    assert result.result["mail"][0]["message_id"] == message.message_id
+    assert (
+        deliver_pending_auto_research_mail(
+            background, episode_id=episode.episode_id, recipient_task_id=root.operation_id
+        )
+        is None
+    )
+    assert store.auto_research_tasks(episode.episode_id) == tasks_before
+    assert store.episode_budget_meter(episode.episode_id) == budget_before
+
+
+def test_harvest_bounds_mail_and_leaves_an_oversized_first_message_pending(tmp_path) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    background = BackgroundAgentTasks(store, _successful_stream)
+    effects = _effects(store, background)
+    context = _context(store, episode, root)
+    message = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=fabricated_authorizer(),
+        recipient_task_id=root.operation_id,
+        body="界" * 16_000,
+    )
+    effect_id = "oversized-mail"
+    result = effects.inbox(context, InboxHarvestArguments(action="harvest"), effect_id)
+    assert result.status == "invalid"
+    assert store.auto_research_inbox_receipt(effect_id) is None
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [message]
+    cleared = effects.inbox(context, InboxClearArguments(action="clear"), "clear-oversized-mail")
+    assert cleared.result == {
+        "action": "clear",
+        "count": 1,
+        "notice_ids": [],
+        "message_ids": [message.message_id],
+    }
+
+
+def test_harvest_measures_notices_and_mail_together(tmp_path) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    background = BackgroundAgentTasks(store, _successful_stream)
+    store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice",
+            episode_id=episode.episode_id,
+            source_kind="work",
+            source_id="worker",
+            source_event="settled",
+            payload={"result": "x" * 12_000},
+            created_at=store.now(),
+        )
+    )
+    messages = [
+        record_auto_research_message(
+            store,
+            episode_id=episode.episode_id,
+            sender_role="human",
+            sender_task_id=None,
+            authorized_by=fabricated_authorizer(),
+            recipient_task_id=root.operation_id,
+            body=str(index) + "x" * 12_000,
+        )
+        for index in range(3)
+    ]
+    effect = _effects(store, background).inbox(
+        _context(store, episode, root), InboxHarvestArguments(action="harvest"), "bounded-mixed"
+    )
+    assert effect.status == "ok"
+    assert len(effect.result["notices"]) == 1
+    assert len(effect.result["mail"]) == 1
+    assert (
+        store.pending_auto_research_messages(episode.episode_id, root.operation_id) == messages[1:]
+    )
+
+
+def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
+    import sqlite3
+
+    store, episode, root = _setup_auto_research(tmp_path)
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="atomic-notice",
+            episode_id=episode.episode_id,
+            source_kind="work",
+            source_id="worker",
+            source_event="settled",
+            payload={},
+            created_at=store.now(),
+        )
+    )
+    message = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=fabricated_authorizer(),
+        recipient_task_id=root.operation_id,
+        body="Must remain unread if receipt persistence fails.",
+    )
+    with pytest.raises(ValueError, match="consuming turn operation id"):
+        store.process_auto_research_lifecycle_inbox(
+            episode.episode_id,
+            effect_id="missing-delivery-operation",
+            mode="harvest",
+            acknowledged_by=root.operation_id,
+        )
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == [notice]
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [message]
+    with store.connection() as connection:
+        connection.execute("""
+            CREATE TRIGGER refuse_inbox_receipt BEFORE INSERT ON auto_research_inbox_receipts
+            BEGIN SELECT RAISE(ABORT, 'receipt persistence failed'); END
+        """)
+    with pytest.raises(sqlite3.IntegrityError, match="receipt persistence failed"):
+        store.process_auto_research_lifecycle_inbox(
+            episode.episode_id,
+            effect_id="atomic-harvest",
+            mode="harvest",
+            acknowledged_by=root.operation_id,
+            delivery_operation_id=root.operation_id,
+        )
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == [notice]
+    assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [message]
+    assert store.auto_research_inbox_receipt("atomic-harvest") is None

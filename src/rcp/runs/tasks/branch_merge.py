@@ -142,10 +142,8 @@ async def stream_branch_merge_task(
                 current_episode is None
                 or current_episode.project_id != task.project_id
                 or current_episode.graph_target != task.graph_target
-                or current_episode.ending is None
-                or not execution.store.auto_research_is_quiescent(episode.episode_id)
             ):
-                raise ValueError("The Auto-research branch is no longer quiescent or ended.")
+                raise ValueError("The Auto-research branch lost its episode binding.")
             branch_result = branch.current_materialization()
             metadata = branch.branch_metadata()
             branch_head = branch.head_ref(branch_result)
@@ -158,7 +156,6 @@ async def stream_branch_merge_task(
             )
             eligibility = BranchMergeEligibility(
                 branch_head=branch_head,
-                episode_ending=current_episode.ending,
                 active_branch_writer_task_ids=active_writers,
             )
             main = service.history.current_materialization()
@@ -361,6 +358,7 @@ def _active_branch_writer_task_ids(
         )
         if item.operation_id != exclude_operation_id
         and item.kind != "branch_merge"
+        and item.status in {"queued", "running", "pausing"}
         and task_graph_capable(item.kind, item.request)
     ]
 

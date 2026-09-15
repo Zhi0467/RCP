@@ -232,9 +232,9 @@ class _RecordingStopper:
         self.store = store
         self.stopped: list[str] = []
 
-    def stop_auto_research(self, _tasks, episode_id: str):
+    def stop_auto_research(self, _tasks, episode_id: str, *, initiated_by: str | None = None):
         self.stopped.append(episode_id)
-        return self.store.request_episode_stop(episode_id)
+        return self.store.request_episode_stop(episode_id, initiated_by=initiated_by)
 
 
 def _running_auto_research_episode(

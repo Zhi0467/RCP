@@ -422,6 +422,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         assert stopped.json()["wrapup_error"] is None
         assert stopped.json()["report"] is None
         assert stopped.json()["budget"]["invocations_used"] == 1
+        assert store.episode(episode_id).stop_initiated_by == f"human:{store.local_owner.user_id}"
         assert all(
             task.kind != "episode_report"
             for task in store.episode_tasks(episode_id, include_hidden=True)
