@@ -1,4 +1,4 @@
-import type { AgentArtifactDescriptor, Repository } from "./types";
+import type { Repository } from "./types";
 
 export interface RepositoryFileTarget {
   path: string;
@@ -49,14 +49,14 @@ export function resolveRepositoryFileHref(
   };
 }
 
-export function turnArtifactFromHref(
-  href: string,
-  artifacts: readonly AgentArtifactDescriptor[],
-): AgentArtifactDescriptor | null {
+export function turnArtifactName(href: string, taskId: string): string | null {
   const parsed = parseAbsoluteFileHref(href);
   if (!parsed || parsed.line !== null) return null;
-  const name = /^.*\/artifacts\/([^/]+)$/.exec(parsed.path)?.[1];
-  return artifacts.find((artifact) => artifact.name === name) ?? null;
+  const slash = parsed.path.lastIndexOf("/");
+  // The turn's own directory, not any path ending in a registered name: a stale
+  // citation must not quietly open a different turn's evidence.
+  if (!parsed.path.slice(0, slash).endsWith(`/turns/${taskId}/artifacts`)) return null;
+  return parsed.path.slice(slash + 1) || null;
 }
 
 export function repositoryFilePreviewUrl(projectId: string, target: RepositoryFileTarget): string {

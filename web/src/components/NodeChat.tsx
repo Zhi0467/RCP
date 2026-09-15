@@ -106,7 +106,7 @@ import {
 import {
   repositoryFilePreviewUrl,
   resolveRepositoryFileHref,
-  turnArtifactFromHref,
+  turnArtifactName,
 } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
@@ -1636,14 +1636,19 @@ export function NodeChat({
     if (resolution.kind === "error") {
       // An answer may cite a file the turn itself wrote. That path is outside every
       // repository, so the artifact the task already registered owns the preview.
-      const artifacts =
-        relatedTasks.find((candidate) => candidate.operation_id === taskId)?.result?.artifacts ??
-        [];
-      const artifact = turnArtifactFromHref(href, artifacts);
-      if (artifact?.can_open) {
-        setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-        await openArtifact(taskId, artifact);
-        return;
+      const name = turnArtifactName(href, taskId);
+      if (name) {
+        // An older answer's task has aged out of the recent list, so fetch the exact
+        // task rather than refusing a citation the transcript still displays.
+        const task =
+          relatedTasks.find((candidate) => candidate.operation_id === taskId) ??
+          (await onRefreshTask(taskId).catch(() => null));
+        const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
+        if (artifact?.can_open) {
+          setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
+          await openArtifact(taskId, artifact);
+          return;
+        }
       }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;

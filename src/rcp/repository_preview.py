@@ -49,13 +49,16 @@ try:
     info=os.fstat(file_fd)
     if not stat.S_ISREG(info.st_mode): raise SystemExit(45)
     if info.st_size<=limit:
-        sys.stdout.write(json.dumps(
-            {'start_line':1,'complete':True,'total_bytes':info.st_size})+'\\n')
-        sys.stdout.flush()
-        while True:
-            chunk=os.read(file_fd,1024*1024)
+        chunks=[];remaining=limit+1
+        while remaining:
+            chunk=os.read(file_fd,min(1024*1024,remaining))
             if not chunk: break
-            sys.stdout.buffer.write(chunk)
+            chunks.append(chunk); remaining-=len(chunk)
+        data=b''.join(chunks)
+        sys.stdout.write(json.dumps({'start_line':1,'complete':len(data)<=limit,
+                                     'total_bytes':max(info.st_size,len(data))})+'\\n')
+        sys.stdout.flush()
+        sys.stdout.buffer.write(data[:limit])
     else:
         first=max(1,line-window) if line else 1
         last=line+window if line else 2*window
@@ -319,16 +322,21 @@ def _read_local_file(
             raise ValueError("Repository path is not a bounded regular file")
         if metadata.st_size <= max_bytes:
             chunks: list[bytes] = []
-            while True:
-                chunk = os.read(file_fd, 1024 * 1024)
+            # A file still being appended can outgrow the size just measured, so the
+            # read stays bounded and the extra byte reports that growth honestly.
+            remaining = max_bytes + 1
+            while remaining:
+                chunk = os.read(file_fd, min(1024 * 1024, remaining))
                 if not chunk:
                     break
                 chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
             return _SourceWindow(
-                data=b"".join(chunks)[:max_bytes],
+                data=data[:max_bytes],
                 start_line=1,
-                complete=True,
-                total_bytes=metadata.st_size,
+                complete=len(data) <= max_bytes,
+                total_bytes=max(metadata.st_size, len(data)),
             )
         first, last = _window_bounds(line, REPOSITORY_PREVIEW_WINDOW_LINES)
         anchor = line or first
