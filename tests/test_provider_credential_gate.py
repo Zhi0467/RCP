@@ -605,6 +605,7 @@ async def test_waiting_launch_captures_environment_and_generation_together(
 ):
     from types import SimpleNamespace
 
+    from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
     from rcp.runs.provider_sign_in import ProviderSignInRunner
@@ -613,8 +614,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
     store = AppStore(tmp_path / "app.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
     credentials.store_token("claude", "", "old-token", member_id="member", now=store.now())
-    launcher = AgentLauncher(login_state=store.provider_login_state, credentials=credentials)
-    ProviderSignInRunner(store, launcher, credentials)
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts)
+    ProviderSignInRunner(store, launcher, accounts)
     launcher.readiness = lambda *_, **__: SimpleNamespace(
         installed=True,
         authenticated=True,

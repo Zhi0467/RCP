@@ -13,14 +13,11 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_accounts import ProviderAccounts, reset_logins_without_credentials
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
 from rcp.runs import provider_sign_in
-from rcp.runs.provider_sign_in import (
-    ProviderLoginRefused,
-    ProviderSignInRunner,
-    reset_logins_without_credentials,
-)
+from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
 
 from .helpers import wait_until
@@ -95,12 +92,9 @@ def _runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binary: Path) -> Pr
     monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _provider: str(binary))
     store = AppStore(tmp_path / "app.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
-    launcher = AgentLauncher(
-        login_state=store.provider_login_state,
-        credentials=credentials,
-        readiness_snapshots=store,
-    )
-    return ProviderSignInRunner(store, launcher, credentials)
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts, readiness_snapshots=store)
+    return ProviderSignInRunner(store, launcher, accounts)
 
 
 def _status_when(runner: ProviderSignInRunner, login_id: str, ready):
@@ -333,7 +327,7 @@ def test_verified_generation_replays_recovery_after_interruption(
     runner.resume_account = interrupted
     state = runner.verify("codex", "", member_id="member")
     assert state.state == "signed_in"
-    restarted = ProviderSignInRunner(runner.store, runner.launcher, runner.credentials)
+    restarted = ProviderSignInRunner(runner.store, runner.launcher, runner.accounts)
     restarted.resume_account = lambda provider, host: (
         calls.append((provider, host)) or {"checked": 1}
     )

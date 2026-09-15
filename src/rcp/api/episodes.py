@@ -8,12 +8,12 @@ from typing import Literal, Protocol
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from rcp.agents.provider_accounts import account_login_refusal
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import require_registered_project
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.projects import ProjectCatalog
-from rcp.runs.provider_sign_in import account_login_refusal
 from rcp.storage import (
     AgentFailureKind,
     AgentTaskRecord,

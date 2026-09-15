@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
@@ -117,7 +118,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
-from rcp.runs.provider_sign_in import ProviderSignInRunner, reset_logins_without_credentials
+from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -625,20 +626,18 @@ def create_app(
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
     provider_credentials = ProviderCredentialStore.for_data_dir(app_data)
+    # One account owner for the launcher, sign-in, and skill probing.
+    provider_accounts = ProviderAccounts(store, provider_credentials)
     launcher = (
-        AcceptanceAgentLauncher()
+        AcceptanceAgentLauncher(accounts=provider_accounts)
         if acceptance_agent
-        else AgentLauncher(
-            login_state=store.provider_login_state,
-            credentials=provider_credentials,
-            readiness_snapshots=store,
-        )
+        else AgentLauncher(accounts=provider_accounts, readiness_snapshots=store)
     )
     # A restored data directory carries login state but no token: the backup
     # excludes `providers`; reset accounts whose implementation requires a
     # managed credential before anything can launch on one that is gone.
-    reset_logins_without_credentials(store, provider_credentials)
-    provider_sign_ins = ProviderSignInRunner(store, launcher, provider_credentials)
+    provider_accounts.reset_logins_without_credentials()
+    provider_sign_ins = ProviderSignInRunner(store, launcher, provider_accounts)
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
             store,
@@ -660,7 +659,7 @@ def create_app(
     # One gate, so a skill probe and a turn cannot rotate one login together.
     provider_skills = ProviderSkillInventoryManager(
         store,
-        account_lifecycle=provider_sign_ins,
+        accounts=provider_accounts,
         credential_gate=launcher.credential_gate,
         process_environment=launcher.process_environment,
     )

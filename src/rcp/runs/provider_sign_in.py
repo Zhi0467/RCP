@@ -13,7 +13,9 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import (
+    ProviderAccounts,
+)
 from rcp.config import load_manifest
 from rcp.limits import (
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
@@ -50,73 +52,27 @@ class ProviderSignInStatus(BaseModel):
     resumed: dict[str, int] | None = None
 
 
-def account_login_refusal(
-    store: AppStore, credentials: ProviderCredentialStore, provider: str, host: str
-) -> str | None:
-    profile = profile_for(provider)
-    if not profile.authentication.credential_available(credentials, host):
-        return profile.authentication.missing_credential_detail
-    state = store.provider_login_state(provider, host)
-    if state.state == "signed_out":
-        return f"{profile.label} is signed out. Sign in in Settings, Provider logins."
-    return None
-
-
-def record_provider_failure(
-    store: AppStore,
-    provider: str,
-    host: str,
-    *,
-    generation: int,
-    evidence: str,
-    source: Literal["turn", "report", "probe"],
-) -> bool:
-    """Normalize provider evidence and durably fence only its captured generation."""
-    if not profile_for(provider).credential_failure(evidence):
-        return False
-    store.mark_provider_login_failed(
-        provider,
-        host,
-        generation=generation,
-        # Storage folds whitespace and bounds the text; the provider's own words
-        # (for example `refresh_token_reused`) stay visible on the Settings card.
-        detail=f"Provider authentication failed: {evidence}",
-        source=source,
-    )
-    return True
-
-
-def reset_logins_without_credentials(
-    store: AppStore, credentials: ProviderCredentialStore
-) -> list[ProviderLoginStateRecord]:
-    reset = []
-    for state in store.provider_login_states():
-        auth = profile_for(state.provider).authentication
-        if state.state == "signed_in" and not auth.credential_available(credentials, state.host):
-            reset.append(
-                store.mark_provider_login_signed_out(
-                    state.provider,
-                    state.host,
-                    member_id=None,
-                    source="restore",
-                    detail=auth.missing_credential_detail,
-                )
-            )
-    return reset
-
-
 class ProviderSignInRunner:
+    """Sign in, verify, and sign out accounts, then resume the work they parked.
+
+    The runner and the launcher are built on one `ProviderAccounts`; the runner
+    never reaches into the launcher to wire it.
+    """
+
     def __init__(
         self,
         store: AppStore,
         launcher: AgentLauncher,
-        credentials: ProviderCredentialStore,
+        accounts: ProviderAccounts,
         *,
         popen: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ) -> None:
+        if launcher.accounts is not accounts:
+            raise ValueError("the launcher and the sign-in runner must share one ProviderAccounts")
         self.store = store
         self.launcher = launcher
-        self.credentials = credentials
+        self.accounts = accounts
+        self.credentials = accounts.credentials
         self._popen = popen
         self._lock = threading.Lock()
         self._recovery_lock = threading.Lock()
@@ -124,20 +80,12 @@ class ProviderSignInRunner:
         self._recovered: dict[tuple[str, str], int] = {}
         self._resume_counts: dict[tuple[str, str], dict[str, int]] = {}
         self.resume_account: Callable[[str, str], dict[str, int]] | None = None
-        launcher.credentials = credentials
-        launcher.account_lifecycle = self
 
     def refusal(self, provider: str, host: str) -> str | None:
-        return account_login_refusal(self.store, self.credentials, provider, host)
+        return self.accounts.refusal(provider, host)
 
     def account_state(self, provider: str, host: str) -> ProviderLoginStateRecord:
-        state = self.store.provider_login_state(provider, host)
-        auth = profile_for(provider).authentication
-        if not auth.credential_available(self.credentials, host):
-            return state.model_copy(
-                update={"state": "signed_out", "detail": auth.missing_credential_detail}
-            )
-        return state
+        return self.accounts.account_state(provider, host)
 
     def observe_failure(
         self,
@@ -148,8 +96,8 @@ class ProviderSignInRunner:
         evidence: str,
         source: Literal["turn", "report", "probe"],
     ) -> bool:
-        if not record_provider_failure(
-            self.store, provider, host, generation=generation, evidence=evidence, source=source
+        if not self.accounts.observe_failure(
+            provider, host, generation=generation, evidence=evidence, source=source
         ):
             return False
         if self.store.provider_login_state(provider, host).generation == generation:

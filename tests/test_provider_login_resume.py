@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import provider_login
 from rcp.api.dependencies import get_launcher, get_provider_sign_ins, get_store
@@ -108,7 +109,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     monkeypatch.setattr(
         launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
     )
-    launcher = AgentLauncher(login_state=store.provider_login_state)
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
     monkeypatch.setattr(
         launcher,
@@ -123,9 +124,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    runner = ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
-    )
+    runner = ProviderSignInRunner(store, launcher, launcher.accounts)
     runner.resume_account = app.state.services.provider_sign_ins.resume_account
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
@@ -153,7 +152,7 @@ def _verify_client(store, background, monkeypatch):
     monkeypatch.setattr(
         launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
     )
-    launcher = AgentLauncher(login_state=store.provider_login_state)
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
     monkeypatch.setattr(
         launcher,
@@ -168,9 +167,7 @@ def _verify_client(store, background, monkeypatch):
     app = _resume_app(store, background, monkeypatch)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
-    runner = ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
-    )
+    runner = ProviderSignInRunner(store, launcher, launcher.accounts)
     runner.resume_account = app.state.services.provider_sign_ins.resume_account
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     return TestClient(app)

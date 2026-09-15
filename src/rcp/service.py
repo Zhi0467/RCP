@@ -1610,8 +1610,8 @@ class ProjectService:
         return [
             {
                 **(
-                    launcher.account_lifecycle.account_state(provider, host)
-                    if launcher.account_lifecycle is not None
+                    launcher.accounts.account_state(provider, host)
+                    if launcher.accounts is not None
                     else login_state(provider, host)
                 ).model_dump(mode="json"),
                 "label": profile_for(provider).label,

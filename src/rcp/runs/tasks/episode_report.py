@@ -13,12 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.episode_report_prompt import episode_report_task_contract
+from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import validate_artifact_bytes
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
-from rcp.runs.provider_sign_in import account_login_refusal, record_provider_failure
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,

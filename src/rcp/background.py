@@ -14,6 +14,7 @@ from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
+from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -58,7 +59,6 @@ from rcp.runs.experiment_recovery import (
 )
 from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
 from rcp.runs.provider_process import require_remote_provider_quiescence
-from rcp.runs.provider_sign_in import account_login_refusal, record_provider_failure
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
     AgentTaskRequest,

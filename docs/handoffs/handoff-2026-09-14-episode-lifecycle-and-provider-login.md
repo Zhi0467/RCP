@@ -498,6 +498,10 @@ types, and safe metadata; React renders those capabilities without provider-name
 branches. Device completion resumes parked work without polling, and existing
 durable reconciliation repairs interrupted recovery without duplicate launches.
 Explicit skill Refresh probes; unchanged implicit inventories may be reused.
+One `ProviderAccounts` (login rows plus the credential store) is built once and
+injected into the launcher, the sign-in runner, and the skill inventory; the
+runner refuses a launcher built on a different one, so no collaborator is wired
+after construction.
 
 The remote Claude token file is placed when saved and re-placed by Verify;
 `rcp server doctor` reports durable account state read-only and names Settings,

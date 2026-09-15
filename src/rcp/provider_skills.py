@@ -15,11 +15,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
-from rcp.agents.launcher import AgentLauncher, ProviderAccountLifecycle, ProviderReadiness
+from rcp.agents.launcher import AgentLauncher, ProviderReadiness
+from rcp.agents.provider_accounts import ProviderAccounts, record_provider_failure
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderSkill, ProviderSkillProbe, ProviderSkillReference, profile_for
-from rcp.runs.provider_sign_in import record_provider_failure
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
 from rcp.transport.ssh import ssh_arguments
 
@@ -63,11 +63,12 @@ class ProviderSkillInventoryManager:
         timeout: float = 30.0,
         credential_gate: ProviderCredentialGate | None = None,
         process_environment: Callable[[str, str], ProviderProcessEnvironment] | None = None,
-        account_lifecycle: ProviderAccountLifecycle | None = None,
+        accounts: ProviderAccounts | None = None,
     ) -> None:
         self.store = store
         self.timeout = timeout
-        self.account_lifecycle = account_lifecycle
+        # The same account owner the launcher and sign-in runner hold.
+        self.accounts = accounts
         # Shared with the launcher in composition, so a skill probe and a turn
         # cannot rotate one provider login at the same time.
         self.credential_gate = credential_gate or ProviderCredentialGate()
@@ -311,9 +312,7 @@ class ProviderSkillInventoryManager:
         provider: str,
     ) -> object:
         with self.credential_gate.hold_blocking(provider, host):
-            if self.account_lifecycle is not None and (
-                reason := self.account_lifecycle.refusal(provider, host)
-            ):
+            if self.accounts is not None and (reason := self.accounts.refusal(provider, host)):
                 raise ValueError(reason)
             generation = self.store.provider_login_state(provider, host).generation
             environment = self.process_environment(provider, host)
@@ -353,8 +352,8 @@ class ProviderSkillInventoryManager:
             )
 
     def _observe_failure(self, provider: str, host: str, generation: int, evidence: str) -> None:
-        if self.account_lifecycle is not None:
-            failed = self.account_lifecycle.observe_failure(
+        if self.accounts is not None:
+            failed = self.accounts.observe_failure(
                 provider, host, generation=generation, evidence=evidence, source="probe"
             )
         else:

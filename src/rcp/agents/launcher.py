@@ -25,6 +25,7 @@ from pydantic import BaseModel, model_validator
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
@@ -389,24 +390,6 @@ class AgentProcessControl:
             return False
 
 
-class ProviderAccountLifecycle(Protocol):
-    """Account policy supplied by the shared login owner."""
-
-    def refusal(self, provider: str, host: str) -> str | None: ...
-
-    def account_state(self, provider: str, host: str) -> ProviderLoginStateRecord: ...
-
-    def observe_failure(
-        self,
-        provider: str,
-        host: str,
-        *,
-        generation: int,
-        evidence: str,
-        source: Literal["turn", "report", "probe"],
-    ) -> bool: ...
-
-
 class ProviderReadinessSnapshots(Protocol):
     """The durable readiness answers the launcher reuses; `AppStore` implements it."""
 
@@ -465,9 +448,16 @@ class AgentLauncher:
         *,
         credentials: ProviderCredentialStore | None = None,
         readiness_snapshots: ProviderReadinessSnapshots | None = None,
+        accounts: ProviderAccounts | None = None,
     ) -> None:
+        #: The account owner shared with sign-in and skill probing. Given, it
+        #: answers refusals and classifies failures; without it the launcher
+        #: knows only the raw login row and whatever credential store it got.
+        self.accounts = accounts
+        if accounts is not None:
+            login_state = login_state or accounts.store.provider_login_state
+            credentials = accounts.credentials
         self.login_state = login_state
-        self.account_lifecycle: ProviderAccountLifecycle | None = None
         #: Where a Claude setup token lives; None means every provider inherits
         #: RCP's own environment, as before a token was ever pasted.
         self.credentials = credentials
@@ -490,8 +480,8 @@ class AgentLauncher:
         return profile_for(provider).authentication.process_environment(self.credentials, host)
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
-        if self.account_lifecycle is not None:
-            return self.account_lifecycle.refusal(provider, host)
+        if self.accounts is not None:
+            return self.accounts.refusal(provider, host)
         state = self.login_state(provider, host) if self.login_state is not None else None
         if state is None or state.state != "signed_out":
             return None
@@ -505,8 +495,8 @@ class AgentLauncher:
         self, provider: str, host: str, result: subprocess.CompletedProcess[str], generation: int
     ) -> bool:
         evidence = profile_for(provider).probe_failure_evidence(result)
-        if self.account_lifecycle is not None:
-            return self.account_lifecycle.observe_failure(
+        if self.accounts is not None:
+            return self.accounts.observe_failure(
                 provider, host, generation=generation, evidence=evidence, source="probe"
             )
         return profile_for(provider).credential_failure(evidence)

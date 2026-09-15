@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import provider_login
 from rcp.api.dependencies import (
@@ -31,7 +32,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     store.mark_provider_login_failed(
         "codex", "", generation=0, detail="refresh_token_reused", source="turn"
     )
-    launcher = AgentLauncher(login_state=store.provider_login_state)
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: "/test/codex")
     probes = []
     holds = []
@@ -58,9 +59,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="acting-member")),
     )
     resumed = []
-    runner = ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
-    )
+    runner = ProviderSignInRunner(store, launcher, launcher.accounts)
     runner.resume_account = lambda *args: resumed.append(args) or {"checked": 1}
     app = FastAPI()
     app.include_router(provider_login.router)
@@ -83,7 +82,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
 
 def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "login.sqlite3")
-    launcher = AgentLauncher(login_state=store.provider_login_state)
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: "/test/codex")
     monkeypatch.setattr(
         provider_login,
@@ -103,7 +102,7 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
     app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, ProviderCredentialStore.for_data_dir(store.path.parent)
+        store, launcher, launcher.accounts
     )
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 409
@@ -123,7 +122,8 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     credentials.store_token(
         "claude", "", "sk-ant-oat01-list-test", member_id="member", now=store.now()
     )
-    launcher = AgentLauncher(login_state=store.provider_login_state, credentials=credentials)
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts)
     monkeypatch.setattr(
         provider_login,
         "get_identity_access",
@@ -138,7 +138,7 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     )
     app.dependency_overrides[get_provider_credentials] = lambda: credentials
     app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
-        store, launcher, credentials
+        store, launcher, accounts
     )
     response = TestClient(app).get("/api/providers/logins")
     assert response.status_code == 200, response.text
@@ -217,12 +217,12 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
 
 def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "login.sqlite3")
-    credentials = ProviderCredentialStore(tmp_path / "providers")
-    runner = ProviderSignInRunner(store, AgentLauncher(credentials=credentials), credentials)
+    accounts = ProviderAccounts(store, ProviderCredentialStore(tmp_path / "providers"))
+    runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
     accounts = provider_login.provider_login_accounts(
         store,
         SimpleNamespace(provider_targets=lambda: [("claude", "", None)]),
-        credentials,
+        accounts.credentials,
         runner,
     )
     assert accounts[0].state == "signed_out"
@@ -241,8 +241,8 @@ def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_
 )
 def test_invalid_account_requests_do_not_echo_credentials(tmp_path, body):
     store = AppStore(tmp_path / "login.sqlite3")
-    credentials = ProviderCredentialStore(tmp_path / "providers")
-    runner = ProviderSignInRunner(store, AgentLauncher(credentials=credentials), credentials)
+    accounts = ProviderAccounts(store, ProviderCredentialStore(tmp_path / "providers"))
+    runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
     app = FastAPI()
     app.include_router(provider_login.router)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner

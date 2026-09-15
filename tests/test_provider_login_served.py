@@ -102,7 +102,7 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
         wait_until(lambda: services.provider_sign_ins.sign_in_status(login_id).state == "succeeded")
         assert calls == [queued.operation_id]
         services.provider_sign_ins.reconcile_recovery()
-        restarted = ProviderSignInRunner(store, launcher, services.provider_credentials)
+        restarted = ProviderSignInRunner(store, launcher, launcher.accounts)
         restarted.resume_account = services.provider_sign_ins.resume_account
         restarted.reconcile_recovery()
         with httpx.Client(base_url=url) as client:

@@ -245,14 +245,16 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
 def test_probe_failure_updates_account_only_for_provider_auth(
     tmp_path, monkeypatch, path, diagnostic, blocked
 ):
+    from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.providers import profile_for
     from rcp.runs.provider_sign_in import ProviderSignInRunner
     from rcp.storage import AppStore
 
     store = AppStore(tmp_path / "app.sqlite3")
-    launcher = AgentLauncher(login_state=store.provider_login_state, readiness_snapshots=store)
-    ProviderSignInRunner(store, launcher, ProviderCredentialStore(tmp_path / "providers"))
+    accounts = ProviderAccounts(store, ProviderCredentialStore(tmp_path / "providers"))
+    launcher = AgentLauncher(accounts=accounts, readiness_snapshots=store)
+    ProviderSignInRunner(store, launcher, accounts)
     profile = profile_for("codex")
     binary = tmp_path / "codex"
     binary.write_text("#!/bin/sh\nexit 0\n")

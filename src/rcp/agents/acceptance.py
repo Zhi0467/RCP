@@ -21,6 +21,7 @@ from rcp.agents.launcher import (
     AgentProcessControl,
     ProviderReadiness,
 )
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
@@ -110,8 +111,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
     server restart exercises the same recovery path as a real provider session.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *, accounts: ProviderAccounts | None = None) -> None:
+        super().__init__(accounts=accounts)
         self._records_lock = threading.Lock()
         self._launch_records: list[AcceptanceLaunchRecord] = []
 
