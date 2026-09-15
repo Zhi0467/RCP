@@ -693,17 +693,26 @@ running in the source session, the merge completing, and mail-harvest wake
 suppression. Those hold in the automated suites and are checked live on the
 team server after the release.
 
-Verified live (2026-09-15, releases 0.3.18 and 0.3.19 on the team server and the
-desktop): a device-code sign-in started from the RCP UI on a local account
-returned a verification link and a ten-character code in about a second, was
-completed by the human in a browser, and settled to signed in on a real
-authenticated request with no shell; the same sign-in started on a remote
-account returned its code through the remote login-shell wrapper in about two
-seconds; cancelling a pending sign-in settles the account to signed out with the
-cancellation as its reason, and a subsequent verification restores the account
-from the untouched credential. Two defects found during that drive were fixed in
-the same releases: an account with no recorded login change rendered an empty
-timestamp on the space landing page, and a settled sign-in kept its panel after
-the account reported a contradicting outcome. Still not driven: the Claude token
-journey, which needs a human at a keyboard to mint and paste a setup token, and
-the continuation turn and merge completion.
+Verified live (2026-09-15, releases 0.3.18 and 0.3.19 installed on both the team
+server and the desktop). The sign-in drives ran in a desktop personal space, on
+its local machine account and on a remote machine account whose provider runs
+under the operator's own account on the server host. A device-code sign-in
+started from the RCP UI on the local account returned a verification link and a
+ten-character code in about a second, was completed by the human in a browser,
+and settled to signed in on a real authenticated request with no shell. The same
+sign-in on the remote account returned its code through the remote login-shell
+wrapper in about two seconds, which is the path the shared runner takes when the
+provider is not on this machine. Cancelling a pending sign-in settles the
+account to signed out with the cancellation as its reason, and a subsequent
+verification restores it from the untouched credential. Two defects found during
+those drives were fixed in the same releases: an account with no recorded login
+change rendered an empty timestamp on the space landing page, and a settled
+sign-in kept its panel after the account reported a contradicting outcome.
+
+Not yet driven on the team space itself: its service account's Codex login is
+signed in and last verified by a real authenticated request, but that sign-in
+predates this work and was made at a shell, so the device-code path has not been
+exercised there. Driving it needs an authenticated member session on the team
+server. Also still open: the Claude token journey, which needs a human at a
+keyboard to mint and paste a setup token, and the continuation turn and merge
+completion.
