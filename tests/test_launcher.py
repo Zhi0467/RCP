@@ -17,6 +17,7 @@ import pytest
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
+from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
@@ -1604,6 +1605,18 @@ def test_remote_provider_command_records_a_killable_process_group() -> None:
     assert shlex.split(outer[2])[:4] == ["setsid", "--wait", "sh", "-c"]
     assert "agent.pid" in outer[2]
     assert "exec codex exec prompt" in outer[2]
+
+
+def test_remote_provider_pid_wrapper_announces_the_provider_start() -> None:
+    command = AgentLauncher._remote_login_command(
+        ["codex", "exec", "prompt"],
+        pid_file="/tmp/rcp-run.operation/agent.pid",
+    )
+    child = shlex.split(shlex.split(command)[2])[4]
+
+    # The pid is recorded, the start is announced, then the provider replaces the shell.
+    assert child.index("agent.pid") < child.index(REMOTE_PROVIDER_START_LINE)
+    assert child.index(REMOTE_PROVIDER_START_LINE) < child.index("exec codex")
 
 
 def test_remote_provider_pid_wrapper_changes_directory_before_exec() -> None:

@@ -272,6 +272,13 @@ class AgentProcessControl:
         if self.pause_requested.is_set():
             asyncio.create_task(self._terminate(process, started_at))
 
+    def restart_hold(self, started_at: float) -> None:
+        """The remote provider started later than its SSH client; hold from then."""
+
+        with self._lock:
+            if self._process is not None:
+                self._started_at = started_at
+
     def detach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
             if self._process is process:
@@ -1228,6 +1235,14 @@ class AgentLauncher:
                     # The broker prints this straight after spawning, before the
                     # provider authenticates, so it does not end the hold.
                     continue
+                if host and line == REMOTE_PROVIDER_START_LINE:
+                    # The SSH handshake before this line was not provider time:
+                    # the stagger and every later stop are measured from here.
+                    started_at = time.monotonic()
+                    credential_hold.restart_minimum()
+                    if control is not None:
+                        control.restart_hold(started_at)
+                    continue
                 # A line the provider itself wrote: it is past its own auth
                 # initialization and the next startup may begin.
                 credential_hold.release()
@@ -1537,7 +1552,12 @@ class AgentLauncher:
             provider = f"exec {command_payload}"
             if cwd is not None:
                 provider = f"cd {shlex.quote(str(cwd))} && {provider}"
-            child = f"echo $$ > {shlex.quote(pid_file)}; {provider}"
+            # The start line anchors the startup hold to the provider itself,
+            # not to the local SSH client that spawned this shell.
+            child = (
+                f"echo $$ > {shlex.quote(pid_file)}; "
+                f"echo {shlex.quote(REMOTE_PROVIDER_START_LINE)}; {provider}"
+            )
             # Interactive bash can make setsid a process-group leader, forcing
             # setsid to fork. Wait for that child so SSH owns the provider's
             # lifetime and exit status rather than the short-lived wrapper.
@@ -1556,6 +1576,10 @@ class AgentLauncher:
             payload = f"{prefix}; {payload}"
         return shlex.join(["bash", "-lic", payload])
 
+
+#: The remote wrapper prints this line just before it execs the provider, so
+#: the launcher can tell provider time from the SSH handshake before it.
+REMOTE_PROVIDER_START_LINE = "rcp-remote-provider-start"
 
 # `_remote_login_command` runs the provider under `bash -lic`, and interactive
 # bash on a non-tty always writes these two lines to stderr. They are emitted by

@@ -90,6 +90,21 @@ class CredentialStartupHold:
                 PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS, self._release_now
             )
 
+    def restart_minimum(self, minimum: float | None = None) -> None:
+        """Measure the minimum stagger from now: the provider only just started.
+
+        A remote launch acquires the hold before its SSH handshake, so the
+        stagger counted from acquisition can already have elapsed when the
+        provider process itself starts refreshing the login.
+        """
+
+        if minimum is None:
+            minimum = PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+        with self._guard:
+            if self._lock is None or self._pending is not None:
+                return
+            self._earliest = max(self._earliest, time.monotonic() + minimum)
+
     def release(self) -> None:
         """End this startup, no earlier than the minimum stagger allows."""
 

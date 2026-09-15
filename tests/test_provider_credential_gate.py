@@ -17,7 +17,13 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, AgentProcessControl, credential_gate
-from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
+from rcp.agents import launcher as launcher_module
+from rcp.agents.credential_gate import (
+    CredentialStartupHold,
+    ProviderCredentialGate,
+    remaining_startup_hold,
+)
+from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
@@ -699,3 +705,69 @@ async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
         f"the result stop signalled the provider after {elapsed:.2f}s, inside the startup hold"
     )
     assert not unwanted.exists(), "the provider outlived its result"
+
+
+def test_a_restarted_minimum_holds_the_credential_from_the_provider_start() -> None:
+    lock = threading.Lock()
+    lock.acquire()
+    hold = CredentialStartupHold(lock, minimum=0)
+    hold.restart_minimum(0.3)
+    hold.release()
+    assert lock.locked(), "the restarted stagger did not delay the release"
+    time.sleep(0.5)
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_remote_stop_waits_out_the_hold_from_the_provider_start_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A remote hold anchored to the SSH client can expire during the handshake.
+
+    The wrapper announces the provider's start; the stagger and every stop are
+    measured from that line, so a result right after it still waits the hold.
+    """
+
+    handshake = 1.0
+    executable = tmp_path / "provider"
+    executable.write_text(
+        f"""#!{sys.executable}
+import json, sys, time
+time.sleep({handshake})
+print({REMOTE_PROVIDER_START_LINE!r}, flush=True)
+print(json.dumps({{"type": "result", "result": "Finished."}}), flush=True)
+time.sleep(30)
+"""
+    )
+    executable.chmod(0o755)
+    launcher = AgentLauncher()
+    launcher.readiness = lambda *args, **kwargs: type(
+        "Ready",
+        (),
+        {"installed": True, "authenticated": True, "binary_path": str(executable), "version": "1"},
+    )()
+    monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
+    monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
+    monkeypatch.setattr(
+        AgentProcessControl, "_terminate_remote", staticmethod(lambda host, pid_file: True)
+    )
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", staticmethod(lambda *args: True))
+
+    started = time.monotonic()
+    events = [
+        event
+        async for event in launcher.stream(
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            capability="discuss",
+            host="fixture-only",
+            remote_pid_file="fixture.pid",
+        )
+    ]
+    elapsed = time.monotonic() - started
+
+    assert events[-1].event == "done"
+    assert elapsed >= handshake + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS - 0.1, (
+        f"the stop came {elapsed:.2f}s after launch; the hold was measured from the SSH client"
+    )
