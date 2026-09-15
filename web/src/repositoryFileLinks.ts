@@ -49,6 +49,16 @@ export function resolveRepositoryFileHref(
   };
 }
 
+export function turnArtifactName(href: string, taskId: string): string | null {
+  const parsed = parseAbsoluteFileHref(href);
+  if (!parsed || parsed.line !== null) return null;
+  const slash = parsed.path.lastIndexOf("/");
+  // The turn's own directory, not any path ending in a registered name: a stale
+  // citation must not quietly open a different turn's evidence.
+  if (!parsed.path.slice(0, slash).endsWith(`/turns/${taskId}/artifacts`)) return null;
+  return parsed.path.slice(slash + 1) || null;
+}
+
 export function repositoryFilePreviewUrl(projectId: string, target: RepositoryFileTarget): string {
   const query = new URLSearchParams({ path: target.path });
   if (target.line !== null) query.set("line", String(target.line));

@@ -5,6 +5,7 @@ import {
   isRepositoryFileHrefCandidate,
   repositoryFilePreviewUrl,
   resolveRepositoryFileHref,
+  turnArtifactName,
 } from "../src/repositoryFileLinks.ts";
 
 test("repository file links use path boundaries and preserve the absolute path", () => {
@@ -68,4 +69,15 @@ test("repository preview URLs preserve the absolute path and optional line", () 
     }),
     "/api/projects/project/repositories/files/preview?path=%2Fwork%2Frepo%2FREADME",
   );
+});
+
+test("a turn's own artifact path is bound to that turn's artifact directory", () => {
+  const directory = "/tmp/rcp-run.chat-abc/workspace/turns/turn-1/artifacts";
+
+  assert.equal(turnArtifactName(`${directory}/analysis.html`, "turn-1"), "analysis.html");
+  assert.equal(turnArtifactName(`${directory}/analysis.html`, "turn-2"), null);
+  assert.equal(turnArtifactName("/unrelated/run/artifacts/analysis.html", "turn-1"), null);
+  assert.equal(turnArtifactName(`${directory}/nested/analysis.html`, "turn-1"), null);
+  assert.equal(turnArtifactName(`${directory}/analysis.html:4`, "turn-1"), null);
+  assert.equal(turnArtifactName("/work/repo/src/analysis.html", "turn-1"), null);
 });
