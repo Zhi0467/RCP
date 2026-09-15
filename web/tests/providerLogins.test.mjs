@@ -117,6 +117,20 @@ test("a registered third provider renders only its declared interactions and bac
     assert.match(token, /type="password"/);
     assert.match(token, /Paste the test provider token/);
     assert.doesNotMatch(token, /Sign in with device code|Claude|Codex/);
+    // Nothing is saved yet, so rechecking could only fail: one action, not two.
+    assert.doesNotMatch(token, /Verify sign-in/);
+    const saved = render({
+      sign_in_methods: ["token_entry"],
+      token: {
+        pasted_at: "2026-09-14T10:00:00Z",
+        pasted_by: "member",
+        verified_at: "2026-09-14T10:00:05Z",
+        estimated_expiry_at: "2027-08-15T10:00:00Z",
+      },
+    });
+    assert.match(saved, /Verify sign-in/);
+    // A device-code account can always be rechecked; its credential is native.
+    assert.match(device, /Verify sign-in/);
     const unsupported = render({ sign_in_methods: ["future_method"] });
     assert.doesNotMatch(unsupported, /type="password"|Sign in with device code/);
   } finally {

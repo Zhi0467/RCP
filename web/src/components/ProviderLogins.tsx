@@ -173,6 +173,11 @@ export function ProviderLoginRow({
 
   const label = account.label;
   const disabled = writesDisabled || busy !== null || signIn?.state === "pending";
+  // Rechecking has nothing to recheck when the only way in is a credential the
+  // member has not saved yet: offering it there gave a signed-out row two
+  // buttons, one of which could only fail.
+  const canVerify =
+    account.token !== null || account.sign_in_methods.some((method) => method !== "token_entry");
 
   return (
     <article className={`provider-login-account ${account.state}`}>
@@ -287,24 +292,26 @@ export function ProviderLoginRow({
             />
             <button className="button compact" type="submit" disabled={disabled || !token.trim()}>
               {busy === "token" ? <LoaderCircle size={14} className="spin" /> : null}
-              Save token
+              Sign in
             </button>
           </form>
         ) : null}
-        <button
-          className="button secondary compact"
-          type="button"
-          disabled={disabled}
-          onClick={() =>
-            void run("verify", async () => {
-              const result = await verifyProviderLogin(account.provider, account.host);
-              return resumedNote(result.resumed);
-            })
-          }
-        >
-          {busy === "verify" ? <LoaderCircle size={14} className="spin" /> : null}
-          Verify sign-in
-        </button>
+        {canVerify ? (
+          <button
+            className="button secondary compact"
+            type="button"
+            disabled={disabled || token.trim() !== ""}
+            onClick={() =>
+              void run("verify", async () => {
+                const result = await verifyProviderLogin(account.provider, account.host);
+                return resumedNote(result.resumed);
+              })
+            }
+          >
+            {busy === "verify" ? <LoaderCircle size={14} className="spin" /> : null}
+            Verify sign-in
+          </button>
+        ) : null}
         {account.state === "signed_in" || account.token ? (
           <button
             className="button secondary compact"
