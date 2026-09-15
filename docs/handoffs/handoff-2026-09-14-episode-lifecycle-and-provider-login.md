@@ -709,10 +709,22 @@ those drives were fixed in the same releases: an account with no recorded login
 change rendered an empty timestamp on the space landing page, and a settled
 sign-in kept its panel after the account reported a contradicting outcome.
 
-Not yet driven on the team space itself: its service account's Codex login is
-signed in and last verified by a real authenticated request, but that sign-in
-predates this work and was made at a shell, so the device-code path has not been
-exercised there. Driving it needs an authenticated member session on the team
-server. Also still open: the Claude token journey, which needs a human at a
-keyboard to mint and paste a setup token, and the continuation turn and merge
-completion.
+The team space was then driven by a member from its own browser session on
+release 0.3.20: a device-code sign-in on its service account's Codex row
+completed from the UI with no shell, and a setup token pasted into its Claude row
+signed that account in. `server doctor` reports both as signed in with a real
+authenticated request as the source. The Claude token journey was driven on all
+three machine accounts a member holds, which covers a local account, an SSH
+execution account, and the service account; one token authorized in a browser
+served all three, and RCP placed it on each remote account itself.
+
+Two more surface defects were found by that member during those drives and fixed
+in 0.3.20. The row's only instruction was to run the setup-token command, which
+named no machine, no account, and not the interactive sign-in that breaks a
+shared account. The token field also sat beside a recheck control that looked
+like its submit, so pressing it rechecked the credential on file and left the
+pasted token unsent; saving is now labelled as the sign-in it performs, and
+recheck is withheld where it could only fail.
+
+Still open: the continuation turn running in the source session, the merge
+completing, and mail-harvest wake suppression.
