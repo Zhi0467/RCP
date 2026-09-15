@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from rcp.runs.auto_research import AutoResearchEndingSignal, auto_research_wrapup_spec
 from rcp.runs.episodes import reconcile
+from rcp.runs.episodes.reconcile import _UNCLASSIFIED_ADMISSION_RETRIES as _UNCLASSIFIED_RETRIES
 from rcp.runs.episodes.wrapup import (
     EpisodeReportAdmissionInvalid,
     EpisodeWrapupSpec,
@@ -187,15 +188,22 @@ class _UnclassifiedDefect(Exception):
 
 
 @pytest.mark.parametrize("defect", [_UnclassifiedDefect("bug"), ValueError("bug"), KeyError("bug")])
-def test_unclassified_defect_count_survives_reconciler_restart(tmp_path, monkeypatch, defect):
+def test_unclassified_defect_retries_are_counted_per_process(tmp_path, monkeypatch, defect):
+    """Three tries per process, as the decision promises; a restart starts over."""
+
     store, signal, owner, launch = _ending(tmp_path, monkeypatch)
     monkeypatch.setattr(reconcile, "auto_research_wrapup_spec", Mock(side_effect=defect))
     for _ in range(2):
-        owner = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
+        # A fresh reconciler is a restarted process: the durable receipts it
+        # rereads from the prior process do not count against this one.
+        restarted = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
+        for _ in range(_UNCLASSIFIED_RETRIES - 1):
+            assert not restarted.reconcile_auto_research_wrapup(signal, source="poll")
+            assert store.episode(signal.episode_id).status == "wrapping_up"
+            assert store.episode_wrapup(signal.episode_id) is None
+    for _ in range(_UNCLASSIFIED_RETRIES - 1):
         assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
         assert store.episode(signal.episode_id).status == "wrapping_up"
-        assert store.episode_wrapup(signal.episode_id) is None
-    owner = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
     assert not owner.reconcile_auto_research_wrapup(signal, source="poll")
     settled = store.episode(signal.episode_id)
     assert settled.status == "needs_action"

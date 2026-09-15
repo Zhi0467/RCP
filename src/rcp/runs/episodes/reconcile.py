@@ -96,9 +96,10 @@ def _failure_is_transient(exc: Exception) -> bool:
 
 
 # Any other exception is a programming error or a shape nobody classified. It
-# is retried a few times in case it was incidental, then settled like a
-# permanent defect, because repeating it forever is the incident this module
-# exists to end.
+# is retried a few times per process in case it was incidental, then settled
+# like a permanent defect, because repeating it forever is the incident this
+# module exists to end. The count is process-local, as the decision promises: a
+# restart is a new chance, and the durable receipts stay diagnostic.
 _UNCLASSIFIED_ADMISSION_RETRIES = 3
 
 
@@ -116,6 +117,7 @@ class EpisodeReconciler:
         self.background = background
         self.logger = logger
         self._report_failure_warnings: set[tuple[str, type[Exception]]] = set()
+        self._unclassified_failures: dict[tuple[str, str, str], int] = {}
 
     def _has_unsettled_visible_episode_task(self, episode_id: str) -> bool:
         """Whether already-admitted visible work still owns an unfinished turn."""
@@ -245,17 +247,8 @@ class EpisodeReconciler:
             return True
         if _failure_is_transient(exc):
             return False
-        operation_id = self._reconciling_operation(episode_id, operation_id)
-        if operation_id is None:
-            return False
-        repeats = sum(
-            receipt.category == "episode_report_reconciliation_failed"
-            and receipt.payload.get("episode_id") == episode_id
-            and receipt.payload.get("phase") == phase
-            and receipt.payload.get("exception_type") == type(exc).__name__
-            for receipt in self.store.agent_task_receipts(operation_id)
-        )
-        return repeats >= _UNCLASSIFIED_ADMISSION_RETRIES
+        key = (episode_id, phase, type(exc).__name__)
+        return self._unclassified_failures.get(key, 0) >= _UNCLASSIFIED_ADMISSION_RETRIES
 
     def _settle_unlaunchable_report(
         self,
@@ -287,6 +280,9 @@ class EpisodeReconciler:
         *,
         phase: Literal["admission", "launch"] | None = None,
     ) -> None:
+        if phase is not None:
+            count = (episode_id, phase, type(exc).__name__)
+            self._unclassified_failures[count] = self._unclassified_failures.get(count, 0) + 1
         key = (episode_id, type(exc))
         if key not in self._report_failure_warnings:
             self._report_failure_warnings.add(key)

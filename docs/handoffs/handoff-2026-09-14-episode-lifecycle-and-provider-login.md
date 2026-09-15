@@ -194,10 +194,11 @@ Failure policy by phase:
 - **Transient unavailability** (database lock, canonical repository lock, SSH
   to the stage host): retried on the next poll without bound; the diagnostic
   receipt on the reconciling operation stays as today. An exception that is
-  neither classified permanent nor transient is retried three times across
-  restarts, counted from durable reconciliation-failure receipts, then settled as
-  a permanent defect, because repeating an
-  unclassified deterministic failure forever is the incident itself. A launch
+  neither classified permanent nor transient is retried three times per
+  process, then settled as a permanent defect, because repeating an
+  unclassified deterministic failure forever is the incident itself; the count
+  is process-local, so a restart is a new chance, and the durable
+  reconciliation-failure receipts remain diagnostic. A launch
   of the admitted report allocation that fails the same non-transient way
   three times settles the allocation as unlaunchable through the existing
   path, for the same reason.
