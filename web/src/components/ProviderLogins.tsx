@@ -110,10 +110,16 @@ export function ProviderLoginRow({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // A sign-in another member started is running too; follow it the same way.
+  // A settled one is history once the server stops reporting it: the account
+  // line beside it already carries the outcome, so keeping the panel would
+  // contradict the state the row now shows.
   useEffect(() => {
-    if (account.sign_in && account.sign_in.login_id !== signIn?.login_id)
-      setSignIn(account.sign_in);
-  }, [account.sign_in, signIn?.login_id]);
+    if (account.sign_in) {
+      if (account.sign_in.login_id !== signIn?.login_id) setSignIn(account.sign_in);
+    } else if (signIn && signIn.state !== "pending") {
+      setSignIn(null);
+    }
+  }, [account.sign_in, signIn]);
 
   useEffect(() => {
     if (!signIn || signIn.state !== "pending") return;
@@ -220,6 +226,8 @@ export function ProviderLoginRow({
                   setBusy("cancel");
                   try {
                     setSignIn(await cancelProviderSignIn(account.provider, signIn.login_id));
+                    // The account left the in-progress fence; show what it says now.
+                    await onChanged();
                   } catch (failure) {
                     setError(failure instanceof Error ? failure.message : String(failure));
                   } finally {
