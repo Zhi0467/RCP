@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
+from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 
 
 @pytest.mark.skipif(
@@ -39,7 +40,8 @@ def test_remote_wrapper_waits_for_forked_provider_and_preserves_exit(
     )
 
     assert result.returncode == exit_code
-    assert result.stdout.strip() == "provider finished"
+    # The wrapper announces the provider's start before the provider speaks.
+    assert result.stdout.split() == [REMOTE_PROVIDER_START_LINE, "provider", "finished"]
     assert int(pid_file.read_text()) > 0
 
 
