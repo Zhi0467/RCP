@@ -800,6 +800,20 @@ def test_a_sign_in_interrupted_by_a_restart_stops_asking_a_member_to_finish_it(
     # A second start must not rewrite an account that no longer claims a sign-in.
     assert runner.settle_interrupted_sign_ins() == []
 
+    # An account upgraded mid-attempt carries the previous release's marker.
+    runner.store.mark_provider_login_signed_out(
+        "codex",
+        "",
+        member_id="member",
+        source="sign_out",
+        detail=provider_sign_in.LEGACY_SIGN_IN_IN_PROGRESS_DETAIL,
+    )
+    assert [state.provider for state in runner.settle_interrupted_sign_ins()] == ["codex"]
+    assert (
+        runner.store.provider_login_state("codex", "").detail
+        == provider_sign_in.SIGN_IN_INTERRUPTED_DETAIL
+    )
+
 
 def test_a_cancellation_names_the_member_who_asked_for_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

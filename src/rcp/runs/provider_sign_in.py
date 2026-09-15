@@ -37,6 +37,13 @@ _LOGGER = logging.getLogger(__name__)
 SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Provider logins."
 SIGN_IN_CANCELED_DETAIL = "The sign-in was canceled before it completed."
 SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to get a new code."
+#: What releases before this one wrote while a device sign-in was running. An
+#: account upgraded mid-attempt still carries it, and would otherwise keep
+#: describing a sign-in that no process is running.
+LEGACY_SIGN_IN_IN_PROGRESS_DETAIL = "A replacement login is awaiting verification."
+INTERRUPTED_SIGN_IN_MARKERS = frozenset(
+    {SIGN_IN_IN_PROGRESS_DETAIL, LEGACY_SIGN_IN_IN_PROGRESS_DETAIL}
+)
 
 
 class ProviderLoginRefused(ValueError):
@@ -299,7 +306,7 @@ class ProviderSignInRunner:
 
         settled = []
         for state in self.store.provider_login_states():
-            if state.state == "signed_out" and state.detail == SIGN_IN_IN_PROGRESS_DETAIL:
+            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
                 settled.append(
                     self.store.mark_provider_login_signed_out(
                         state.provider,
