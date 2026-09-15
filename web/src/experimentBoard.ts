@@ -347,16 +347,16 @@ export function mainExperimentRouteMatchesControl(
   route: ExperimentRouteIdentity,
   control: ExperimentControlState | undefined,
 ): boolean {
-  // A continuation chain is one run, so a route naming any earlier member still
-  // addresses the run the control now carries. Adding turns starts a successor
-  // episode; that must not read as History and hide the run that is live.
   const episode = control?.episode;
-  return Boolean(
-    route.graph_target.kind === "main" &&
-    episode &&
-    control?.episode_id === episode.episode_id &&
-    graphTargetsEqual(episode.graph_target, route.graph_target) &&
-    episode.chain.some((member) => member.episode_id === route.episode_id),
+  if (route.graph_target.kind !== "main" || !episode) return false;
+  if (control?.episode_id !== episode.episode_id) return false;
+  if (!graphTargetsEqual(episode.graph_target, route.graph_target)) return false;
+  // A continuation chain is one run. Adding turns starts a successor episode, so
+  // a route naming an earlier member still addresses the run the control carries
+  // and must not read as History while that run is live.
+  return (
+    episode.episode_id === route.episode_id ||
+    episode.chain.some((member) => member.episode_id === route.episode_id)
   );
 }
 
