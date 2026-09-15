@@ -348,7 +348,7 @@ class ProviderSignInRunner:
             watchdog.cancel()
             # The protocol is over; never leave the provider process behind.
             _kill(process)
-            process.wait()
+            returncode = process.wait()
             with self._lock:
                 self._logins.pop(status.login_id, None)
                 canceled = status.login_id in self._canceled
@@ -356,7 +356,11 @@ class ProviderSignInRunner:
         if canceled:
             raise ProviderLoginRefused(SIGN_IN_CANCELED_DETAIL)
         if not finished:
-            raise ProviderLoginRefused("The provider ended the sign-in before it completed.")
+            # Naming the exit status is what separates "the member walked away"
+            # from "this build of the provider has no such command".
+            raise ProviderLoginRefused(
+                f"The provider ended the sign-in before it completed (exit status {returncode})."
+            )
         if failure:
             raise ProviderLoginRefused(failure)
 
