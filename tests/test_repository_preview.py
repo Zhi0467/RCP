@@ -158,6 +158,20 @@ def test_oversized_repository_file_returns_the_window_around_the_cited_line(mani
     assert len(without_line.text.split("\n")) == 2 * preview_module.REPOSITORY_PREVIEW_WINDOW_LINES
 
 
+def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> None:
+    root = Path(manifest.repository_map["repo-a"].path)
+    (root / "one-line.log").write_text("x" * 5000, encoding="utf-8")
+    (root / "multibyte.log").write_text(("é" * 1000 + "\n") * 3, encoding="utf-8")
+
+    undelimited = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=300)
+    assert undelimited.text == "x" * 300
+    assert not undelimited.complete
+
+    # An odd bound cuts the last two-byte character in half.
+    multibyte = load_repository_source(manifest, "repo-a", "multibyte.log", max_bytes=1001)
+    assert multibyte.text == "é" * 500
+
+
 def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
     source = RepositorySource(
         repository_alias="repo-a",

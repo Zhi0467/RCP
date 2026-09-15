@@ -60,22 +60,23 @@ try:
         first=max(1,line-window) if line else 1
         last=line+window if line else 2*window
         anchor=line or first
-        collected=[];start=first;total=0;current=1;pending=b''
+        collected=[];start=first;total=0;current=1;buffer=b'';value=b''
         while current<=last:
-            index=pending.find(b'\\n')
+            index=buffer.find(b'\\n')
             if index<0:
-                chunk=os.read(file_fd,1024*1024)
-                if chunk:
-                    pending+=chunk; continue
-                if not pending: break
-                value,pending=pending,b''
+                if len(value)<limit: value=(value+buffer)[:limit]
+                buffer=os.read(file_fd,1024*1024)
+                if buffer: continue
+                if not value: break
             else:
-                value,pending=pending[:index],pending[index+1:]
+                if len(value)<limit: value=(value+buffer[:index])[:limit]
+                buffer=buffer[index+1:]
             if current>=first:
                 collected.append(value); total+=len(value)+1
                 while total>limit and len(collected)>1 and start<anchor:
                     total-=len(collected.pop(0))+1; start+=1
                 if total>limit and start>=anchor: break
+            value=b''
             current+=1
         sys.stdout.write(json.dumps(
             {'start_line':start,'complete':False,'total_bytes':info.st_size})+'\\n')
@@ -125,8 +126,9 @@ def load_repository_source(
         )
     else:
         window = _read_local_file(repository.path, parts, line=line, max_bytes=max_bytes)
+    data = window.data if window.complete else _trim_partial_utf8_tail(window.data)
     try:
-        text = window.data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Repository file is not UTF-8 text") from exc
     if any(
@@ -242,6 +244,17 @@ class _SourceWindow:
     total_bytes: int
 
 
+def _trim_partial_utf8_tail(data: bytes) -> bytes:
+    """Drop only a trailing character a byte bound cut in half, never real bad bytes."""
+
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        if error.end == len(data) and len(data) - error.start <= 3:
+            return data[: error.start]
+    return data
+
+
 def _window_bounds(line: int | None, window: int) -> tuple[int, int]:
     if line is None:
         return 1, 2 * window
@@ -323,19 +336,24 @@ def _read_local_file(
         start = first
         total = 0
         current = 1
-        pending = b""
+        buffer = b""
+        value = b""
         while current <= last:
-            index = pending.find(b"\n")
+            index = buffer.find(b"\n")
+            # One line is held at most to the byte bound, so a file with no
+            # delimiter cannot grow this reader's memory with the file.
             if index < 0:
-                chunk = os.read(file_fd, 1024 * 1024)
-                if chunk:
-                    pending += chunk
+                if len(value) < max_bytes:
+                    value = (value + buffer)[:max_bytes]
+                buffer = os.read(file_fd, 1024 * 1024)
+                if buffer:
                     continue
-                if not pending:
+                if not value:
                     break
-                value, pending = pending, b""
             else:
-                value, pending = pending[:index], pending[index + 1 :]
+                if len(value) < max_bytes:
+                    value = (value + buffer[:index])[:max_bytes]
+                buffer = buffer[index + 1 :]
             if current >= first:
                 collected.append(value)
                 total += len(value) + 1
@@ -346,6 +364,7 @@ def _read_local_file(
                     start += 1
                 if total > max_bytes and start >= anchor:
                     break
+            value = b""
             current += 1
         return _SourceWindow(
             data=b"\n".join(collected)[:max_bytes],
