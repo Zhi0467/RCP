@@ -638,6 +638,9 @@ def create_app(
     # managed credential before anything can launch on one that is gone.
     provider_accounts.reset_logins_without_credentials()
     provider_sign_ins = ProviderSignInRunner(store, launcher, provider_accounts)
+    # No sign-in survives this process, so an account must not still say one is
+    # running; a member would have no code to finish and no way to move on.
+    provider_sign_ins.settle_interrupted_sign_ins()
     if control_server is not None:
         provider_readiness_coordinator = ProviderReadinessCoordinator(
             store,

@@ -761,3 +761,41 @@ def test_claude_reports_a_rejected_setup_token_as_an_authentication_failure() ->
     assert ClaudeProfile().credential_failure("RCP managed credential is missing")
     # A dropped connection is worth retrying and must not fence the login.
     assert not ClaudeProfile().credential_failure("error: connection reset by peer")
+
+
+def test_a_rejected_token_says_why_instead_of_awaiting_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saving a token the provider rejects must leave the reason on the account."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    with pytest.raises(ProviderLoginRefused):
+        runner.save_token("claude", "", "sk-ant-oat01-rejected", member_id="member")
+
+    state = runner.store.provider_login_state("claude", "")
+    assert state.state == "signed_out"
+    assert "awaiting verification" not in (state.detail or "")
+    assert state.detail
+
+
+def test_a_sign_in_interrupted_by_a_restart_stops_asking_a_member_to_finish_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No sign-in survives the process, so no account may still advertise one."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    runner.store.mark_provider_login_signed_out(
+        "codex",
+        "",
+        member_id="member",
+        source="sign_out",
+        detail=provider_sign_in.SIGN_IN_IN_PROGRESS_DETAIL,
+    )
+
+    settled = runner.settle_interrupted_sign_ins()
+
+    assert [state.provider for state in settled] == ["codex"]
+    detail = runner.store.provider_login_state("codex", "").detail
+    assert detail == provider_sign_in.SIGN_IN_INTERRUPTED_DETAIL
+    # A second start must not rewrite an account that no longer claims a sign-in.
+    assert runner.settle_interrupted_sign_ins() == []

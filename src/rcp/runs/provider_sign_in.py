@@ -35,6 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 #: What the account says while a member is completing a device sign-in.
 SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Provider logins."
 SIGN_IN_CANCELED_DETAIL = "The sign-in was canceled before it completed."
+SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to get a new code."
 
 
 class ProviderLoginRefused(ValueError):
@@ -231,7 +232,8 @@ class ProviderSignInRunner:
         )
         if failed_auth or not auth.verification_succeeded(result):
             detail = (
-                "Provider authentication failed. Sign in again in Settings."
+                # Where to sign in is the surface's own sentence, not this one.
+                "Provider authentication failed; the credential was rejected."
                 if failed_auth
                 else "The provider could not complete the verification request."
             )
@@ -275,6 +277,29 @@ class ProviderSignInRunner:
             daemon=True,
         ).start()
         return status
+
+    def settle_interrupted_sign_ins(self) -> list[ProviderLoginStateRecord]:
+        """Retire a fence left by a sign-in this process cannot still be running.
+
+        A sign-in lives in one process. After a restart none is running, so an
+        account still advertising one would tell a member to finish something
+        that no longer exists. The marker compared here is RCP's own, never a
+        provider's wording.
+        """
+
+        settled = []
+        for state in self.store.provider_login_states():
+            if state.state == "signed_out" and state.detail == SIGN_IN_IN_PROGRESS_DETAIL:
+                settled.append(
+                    self.store.mark_provider_login_signed_out(
+                        state.provider,
+                        state.host,
+                        member_id=None,
+                        source="restore",
+                        detail=SIGN_IN_INTERRUPTED_DETAIL,
+                    )
+                )
+        return settled
 
     def _take_cancellation(self, login_id: str) -> bool:
         """Whether this sign-in was cancelled; a cancellation is consumed once."""
@@ -459,12 +484,25 @@ class ProviderSignInRunner:
             )
             self._forget_readiness(provider, host, binaries)
             try:
-                auth.save_token(
-                    self.credentials, host, token, member_id=member_id, now=self.store.now()
+                try:
+                    auth.save_token(
+                        self.credentials, host, token, member_id=member_id, now=self.store.now()
+                    )
+                except (OSError, ValueError) as exc:
+                    raise ProviderLoginRefused("Could not persist the credential.") from exc
+                state = self._verify_locked(provider, host, binary, binaries, member_id)
+            except ProviderLoginRefused as exc:
+                # The fence above says a credential is awaiting verification;
+                # once it is not, the account must say why rather than keep
+                # describing an attempt that is over.
+                self.store.mark_provider_login_signed_out(
+                    provider,
+                    host,
+                    member_id=member_id,
+                    source="sign_out",
+                    detail=exc.detail,
                 )
-            except (OSError, ValueError) as exc:
-                raise ProviderLoginRefused("Could not persist the credential.") from exc
-            state = self._verify_locked(provider, host, binary, binaries, member_id)
+                raise
         self.reconcile_recovery()
         return state
 
