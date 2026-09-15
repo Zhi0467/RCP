@@ -5,6 +5,7 @@ import {
   isRepositoryFileHrefCandidate,
   repositoryFilePreviewUrl,
   resolveRepositoryFileHref,
+  turnArtifactFromHref,
 } from "../src/repositoryFileLinks.ts";
 
 test("repository file links use path boundaries and preserve the absolute path", () => {
@@ -68,4 +69,18 @@ test("repository preview URLs preserve the absolute path and optional line", () 
     }),
     "/api/projects/project/repositories/files/preview?path=%2Fwork%2Frepo%2FREADME",
   );
+});
+
+test("a turn's own artifact path resolves to the artifact the task registered", () => {
+  const artifacts = [
+    { artifact_id: "a1", name: "analysis.html" },
+    { artifact_id: "a2", name: "early-progress.png" },
+  ];
+  const directory = "/tmp/rcp-run.chat-abc/workspace/turns/turn-1/artifacts";
+
+  assert.equal(turnArtifactFromHref(`${directory}/analysis.html`, artifacts)?.artifact_id, "a1");
+  assert.equal(turnArtifactFromHref(`${directory}/missing.png`, artifacts), null);
+  assert.equal(turnArtifactFromHref(`${directory}/nested/analysis.html`, artifacts), null);
+  assert.equal(turnArtifactFromHref(`${directory}/analysis.html:4`, artifacts), null);
+  assert.equal(turnArtifactFromHref("/work/repo/src/analysis.html", artifacts), null);
 });

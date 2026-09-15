@@ -286,9 +286,25 @@ source page through the secondary preview window.
 
 A remote match is read on demand through that repository's configured SSH host
 and is not retained locally. No match, several matching/nested roots, unavailable
-host, nonregular or nontext file, or over-bound file produces a visible
-nonnavigating error. RCP never chooses the longest root or guesses a machine
-from path text.
+host, or nonregular or nontext file produces a visible nonnavigating error. RCP
+never chooses the longest root or guesses a machine from path text.
+
+A file larger than the preview bound is not refused. The reader returns the
+lines around the cited line, numbered by their real positions and labelled with
+the whole file's byte size, so a cited line in a multi-gigabyte log stays
+readable evidence. When those lines exceed the byte bound, leading context gives
+way first and the cited line itself is always retained. Without a cited line the
+reader returns the file's first lines. A window is always labelled as one; RCP
+never presents it as the whole file.
+
+An answer may also cite a file the turn itself wrote. That path lies outside
+every repository root, so RCP opens the artifact the task already registered
+under that name through the artifact viewer. An unregistered name keeps the
+ordinary nonnavigating error.
+
+Task prompts state this citation contract to the agent: an absolute path on the
+file's host, optionally suffixed with a line, naming either an authorized
+repository file or a file written in the turn's artifact directory.
 
 ## Temporary chat inputs versus outputs
 

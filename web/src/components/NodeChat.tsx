@@ -103,7 +103,11 @@ import {
   startDesktopDictation,
   stopDesktopDictation,
 } from "../desktopRuntime";
-import { repositoryFilePreviewUrl, resolveRepositoryFileHref } from "../repositoryFileLinks";
+import {
+  repositoryFilePreviewUrl,
+  resolveRepositoryFileHref,
+  turnArtifactFromHref,
+} from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
   ArtifactContextRequest,
@@ -1627,9 +1631,20 @@ export function NodeChat({
     }
   };
 
-  const openRepositoryFile = async (messageId: string, href: string) => {
+  const openRepositoryFile = async (messageId: string, taskId: string, href: string) => {
     const resolution = resolveRepositoryFileHref(href, project.repositories);
     if (resolution.kind === "error") {
+      // An answer may cite a file the turn itself wrote. That path is outside every
+      // repository, so the artifact the task already registered owns the preview.
+      const artifacts =
+        relatedTasks.find((candidate) => candidate.operation_id === taskId)?.result?.artifacts ??
+        [];
+      const artifact = turnArtifactFromHref(href, artifacts);
+      if (artifact?.can_open) {
+        setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
+        await openArtifact(taskId, artifact);
+        return;
+      }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
@@ -1839,7 +1854,7 @@ export function NodeChat({
                         glossaryIndex={glossaryIndex}
                         onOpenNode={onOpenNode}
                         onOpenRepositoryFileLink={(href) =>
-                          void openRepositoryFile(messageId, href)
+                          void openRepositoryFile(messageId, line.taskId, href)
                         }
                       />
                     </div>

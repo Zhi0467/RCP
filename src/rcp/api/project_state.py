@@ -374,7 +374,7 @@ def preview_repository_file(
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
-        source = load_repository_source_for_path(manifest, path)
+        source = load_repository_source_for_path(manifest, path, line=line)
         document = repository_source_document(source, line=line)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

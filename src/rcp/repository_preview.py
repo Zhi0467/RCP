@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import shlex
@@ -10,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rcp.config import Manifest
-from rcp.limits import REPOSITORY_PREVIEW_MAX_BYTES, REPOSITORY_PREVIEW_TIMEOUT_SECONDS
+from rcp.limits import (
+    REPOSITORY_PREVIEW_MAX_BYTES,
+    REPOSITORY_PREVIEW_TIMEOUT_SECONDS,
+    REPOSITORY_PREVIEW_WINDOW_LINES,
+)
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnavailable
 
@@ -19,9 +24,13 @@ REPOSITORY_PREVIEW_CSP = (
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
+# Reads one bounded window. A file within the byte limit is returned whole so an
+# ordinary preview is unchanged; a larger one returns only the lines around the
+# cited line, because a cited line in a multi-gigabyte log is still evidence.
 _REMOTE_READER = """
-import os,stat,sys
-root,relative,limit=sys.argv[1],sys.argv[2],int(sys.argv[3])
+import json,os,stat,sys
+root,relative=sys.argv[1],sys.argv[2]
+limit,line,window=int(sys.argv[3]),int(sys.argv[4]),int(sys.argv[5])
 parts=relative.split('/')
 if (not relative or relative.startswith('/') or
         any(part in ('','.','..') for part in parts)):
@@ -38,13 +47,40 @@ try:
         fd=os.open(part,directory_flags,dir_fd=fd); fds.append(fd)
     file_fd=os.open(parts[-1],file_flags,dir_fd=fd); fds.append(file_fd)
     info=os.fstat(file_fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(45)
-    remaining=limit+1
-    while remaining:
-        chunk=os.read(file_fd,min(1024*1024,remaining))
-        if not chunk: break
-        sys.stdout.buffer.write(chunk); remaining-=len(chunk)
-    if remaining==0: raise SystemExit(45)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(45)
+    if info.st_size<=limit:
+        sys.stdout.write(json.dumps(
+            {'start_line':1,'complete':True,'total_bytes':info.st_size})+'\\n')
+        sys.stdout.flush()
+        while True:
+            chunk=os.read(file_fd,1024*1024)
+            if not chunk: break
+            sys.stdout.buffer.write(chunk)
+    else:
+        first=max(1,line-window) if line else 1
+        last=line+window if line else 2*window
+        anchor=line or first
+        collected=[];start=first;total=0;current=1;pending=b''
+        while current<=last:
+            index=pending.find(b'\\n')
+            if index<0:
+                chunk=os.read(file_fd,1024*1024)
+                if chunk:
+                    pending+=chunk; continue
+                if not pending: break
+                value,pending=pending,b''
+            else:
+                value,pending=pending[:index],pending[index+1:]
+            if current>=first:
+                collected.append(value); total+=len(value)+1
+                while total>limit and len(collected)>1 and start<anchor:
+                    total-=len(collected.pop(0))+1; start+=1
+                if total>limit and start>=anchor: break
+            current+=1
+        sys.stdout.write(json.dumps(
+            {'start_line':start,'complete':False,'total_bytes':info.st_size})+'\\n')
+        sys.stdout.flush()
+        sys.stdout.buffer.write(b'\\n'.join(collected)[:limit])
 except FileNotFoundError:
     raise SystemExit(44)
 except (NotADirectoryError,OSError):
@@ -59,6 +95,9 @@ class RepositorySource:
     repository_alias: str
     relative_path: str
     text: str
+    start_line: int = 1
+    complete: bool = True
+    total_bytes: int = 0
 
 
 def load_repository_source(
@@ -66,9 +105,10 @@ def load_repository_source(
     repository_alias: str,
     relative_path: str,
     *,
+    line: int | None = None,
     max_bytes: int = REPOSITORY_PREVIEW_MAX_BYTES,
 ) -> RepositorySource:
-    """Read one bounded repository-relative UTF-8 file without following symlinks."""
+    """Read one bounded repository-relative UTF-8 window without following symlinks."""
 
     parts = _relative_parts(relative_path)
     repository = manifest.repository_map.get(repository_alias)
@@ -76,16 +116,17 @@ def load_repository_source(
         raise FileNotFoundError("Repository not found")
     machine = manifest.machine_map[repository.machine]
     if machine.host:
-        data = _read_remote_file(
+        window = _read_remote_file(
             machine.host,
             repository.path,
             relative_path,
+            line=line,
             max_bytes=max_bytes,
         )
     else:
-        data = _read_local_file(repository.path, parts, max_bytes=max_bytes)
+        window = _read_local_file(repository.path, parts, line=line, max_bytes=max_bytes)
     try:
-        text = data.decode("utf-8")
+        text = window.data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Repository file is not UTF-8 text") from exc
     if any(
@@ -96,6 +137,9 @@ def load_repository_source(
         repository_alias=repository_alias,
         relative_path=relative_path,
         text=text,
+        start_line=window.start_line,
+        complete=window.complete,
+        total_bytes=window.total_bytes,
     )
 
 
@@ -103,6 +147,7 @@ def load_repository_source_for_path(
     manifest: Manifest,
     absolute_path: str,
     *,
+    line: int | None = None,
     max_bytes: int = REPOSITORY_PREVIEW_MAX_BYTES,
 ) -> RepositorySource:
     """Resolve an absolute host path to exactly one configured repository and read it."""
@@ -132,6 +177,7 @@ def load_repository_source_for_path(
         manifest,
         repository_alias,
         relative.as_posix(),
+        line=line,
         max_bytes=max_bytes,
     )
 
@@ -140,10 +186,11 @@ def repository_source_document(source: RepositorySource, *, line: int | None = N
     """Render escaped source as a standalone, script-free HTML document."""
 
     lines = source.text.split("\n")
-    if line is not None and (line < 1 or line > len(lines)):
+    last_line = source.start_line + len(lines) - 1
+    if line is not None and (line < source.start_line or line > last_line):
         raise ValueError("Requested line is outside the repository file")
     rendered_lines = []
-    for number, value in enumerate(lines, start=1):
+    for number, value in enumerate(lines, start=source.start_line):
         selected = ' class="line selected"' if number == line else ' class="line"'
         rendered_lines.append(
             f'<span id="L{number}"{selected}>{html.escape(value, quote=True)}</span>'
@@ -151,6 +198,14 @@ def repository_source_document(source: RepositorySource, *, line: int | None = N
     title = html.escape(
         f"{source.repository_alias}: {source.relative_path}",
         quote=True,
+    )
+    window_note = (
+        ""
+        if source.complete
+        else (
+            f'<span class="window">lines {source.start_line:,}–{last_line:,} '
+            f"of a {source.total_bytes:,}-byte file</span>"
+        )
     )
     source_html = "\n".join(rendered_lines)
     document = f"""<!doctype html>
@@ -163,6 +218,7 @@ def repository_source_document(source: RepositorySource, *, line: int | None = N
 :root {{ color-scheme: light dark; }}
 body {{ margin: 0; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }}
 header {{ position: sticky; top: 0; padding: 10px 16px; background: Canvas; border-bottom: 1px solid GrayText; }}
+.window {{ display: block; color: GrayText; }}
 pre {{ margin: 0; padding: 16px 0; overflow: auto; }}
 .line {{ display: block; min-height: 1.55em; padding: 0 16px 0 4.5em; white-space: pre-wrap; overflow-wrap: anywhere; }}
 .line::before {{ content: attr(id); display: inline-block; width: 3.5em; margin-left: -4em; color: GrayText; user-select: none; }}
@@ -170,12 +226,26 @@ pre {{ margin: 0; padding: 16px 0; overflow: auto; }}
 </style>
 </head>
 <body>
-<header>{title}</header>
+<header>{title}{window_note}</header>
 <pre aria-label="Repository source"><code>{source_html}</code></pre>
 </body>
 </html>
 """
     return document.encode("utf-8")
+
+
+@dataclass(frozen=True)
+class _SourceWindow:
+    data: bytes
+    start_line: int
+    complete: bool
+    total_bytes: int
+
+
+def _window_bounds(line: int | None, window: int) -> tuple[int, int]:
+    if line is None:
+        return 1, 2 * window
+    return max(1, line - window), line + window
 
 
 def _relative_parts(relative_path: str) -> tuple[str, ...]:
@@ -203,7 +273,13 @@ def _absolute_posix_path(
     return PurePosixPath(value)
 
 
-def _read_local_file(root: str, parts: tuple[str, ...], *, max_bytes: int) -> bytes:
+def _read_local_file(
+    root: str,
+    parts: tuple[str, ...],
+    *,
+    line: int | None,
+    max_bytes: int,
+) -> _SourceWindow:
     repository_root = Path(root)
     if not repository_root.is_absolute():
         raise ValueError("Local repository root must be absolute")
@@ -226,19 +302,57 @@ def _read_local_file(root: str, parts: tuple[str, ...], *, max_bytes: int) -> by
         file_fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
         descriptors.append(file_fd)
         metadata = os.fstat(file_fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+        if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("Repository path is not a bounded regular file")
-        chunks: list[bytes] = []
-        remaining = max_bytes + 1
-        while remaining:
-            chunk = os.read(file_fd, min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        if remaining == 0:
-            raise ValueError("Repository file exceeds the preview size limit")
-        return b"".join(chunks)
+        if metadata.st_size <= max_bytes:
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(file_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return _SourceWindow(
+                data=b"".join(chunks)[:max_bytes],
+                start_line=1,
+                complete=True,
+                total_bytes=metadata.st_size,
+            )
+        first, last = _window_bounds(line, REPOSITORY_PREVIEW_WINDOW_LINES)
+        anchor = line or first
+        collected: list[bytes] = []
+        start = first
+        total = 0
+        current = 1
+        pending = b""
+        while current <= last:
+            index = pending.find(b"\n")
+            if index < 0:
+                chunk = os.read(file_fd, 1024 * 1024)
+                if chunk:
+                    pending += chunk
+                    continue
+                if not pending:
+                    break
+                value, pending = pending, b""
+            else:
+                value, pending = pending[:index], pending[index + 1 :]
+            if current >= first:
+                collected.append(value)
+                total += len(value) + 1
+                # The cited line is the evidence, so leading context is what gives
+                # way to the byte bound; the header states the range that survived.
+                while total > max_bytes and len(collected) > 1 and start < anchor:
+                    total -= len(collected.pop(0)) + 1
+                    start += 1
+                if total > max_bytes and start >= anchor:
+                    break
+            current += 1
+        return _SourceWindow(
+            data=b"\n".join(collected)[:max_bytes],
+            start_line=start,
+            complete=False,
+            total_bytes=metadata.st_size,
+        )
     except FileNotFoundError as exc:
         raise FileNotFoundError("Repository file not found") from exc
     except NotADirectoryError as exc:
@@ -250,12 +364,30 @@ def _read_local_file(root: str, parts: tuple[str, ...], *, max_bytes: int) -> by
             os.close(descriptor)
 
 
-def _read_remote_file(host: str, root: str, relative_path: str, *, max_bytes: int) -> bytes:
+def _read_remote_file(
+    host: str,
+    root: str,
+    relative_path: str,
+    *,
+    line: int | None,
+    max_bytes: int,
+) -> _SourceWindow:
     if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", host):
         raise ValueError("SSH host contains unsupported characters")
     if not PurePosixPath(root).is_absolute():
         raise ValueError("Remote repository root must be absolute")
-    command = shlex.join(["python3", "-c", _REMOTE_READER, root, relative_path, str(max_bytes)])
+    command = shlex.join(
+        [
+            "python3",
+            "-c",
+            _REMOTE_READER,
+            root,
+            relative_path,
+            str(max_bytes),
+            str(line or 0),
+            str(REPOSITORY_PREVIEW_WINDOW_LINES),
+        ]
+    )
     try:
         result = subprocess.run(
             ssh_arguments(host, command),
@@ -272,6 +404,19 @@ def _read_remote_file(host: str, root: str, relative_path: str, *, max_bytes: in
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise StateUnavailable(detail or "Repository SSH host is unavailable")
-    if len(result.stdout) > max_bytes:
+    header, separator, data = result.stdout.partition(b"\n")
+    if not separator:
+        raise ValueError("Remote repository file cannot be previewed safely")
+    try:
+        metadata = json.loads(header)
+        window = _SourceWindow(
+            data=data,
+            start_line=int(metadata["start_line"]),
+            complete=bool(metadata["complete"]),
+            total_bytes=int(metadata["total_bytes"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Remote repository file cannot be previewed safely") from exc
+    if len(window.data) > max_bytes:
         raise ValueError("Repository file exceeds the preview size limit")
-    return result.stdout
+    return window

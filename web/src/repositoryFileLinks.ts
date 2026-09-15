@@ -1,4 +1,4 @@
-import type { Repository } from "./types";
+import type { AgentArtifactDescriptor, Repository } from "./types";
 
 export interface RepositoryFileTarget {
   path: string;
@@ -47,6 +47,16 @@ export function resolveRepositoryFileHref(
       line: parsed.line,
     },
   };
+}
+
+export function turnArtifactFromHref(
+  href: string,
+  artifacts: readonly AgentArtifactDescriptor[],
+): AgentArtifactDescriptor | null {
+  const parsed = parseAbsoluteFileHref(href);
+  if (!parsed || parsed.line !== null) return null;
+  const name = /^.*\/artifacts\/([^/]+)$/.exec(parsed.path)?.[1];
+  return artifacts.find((artifact) => artifact.name === name) ?? null;
 }
 
 export function repositoryFilePreviewUrl(projectId: string, target: RepositoryFileTarget): string {
