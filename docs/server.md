@@ -295,7 +295,7 @@ single-use refresh token on every process start, and one lost write kills it for
 every member. Instead, on any machine with a browser and a Claude subscription,
 run `claude setup-token` and copy the long-lived token it prints. In **Settings,
 Provider logins**, paste it into the Claude account's token field and choose
-**Save token**. RCP stores it as `rcp`, readable by the service alone, under the
+**Sign in**. RCP stores it as `rcp`, readable by the service alone, under the
 application data directory (`providers/claude/<account>/setup-token`, mode 0600)
 beside a record of who pasted it and when; for an SSH execution account it also
 places the file on that account. Every Claude process RCP starts receives the

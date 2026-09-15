@@ -690,9 +690,13 @@ copy points at it. Project Settings carries a **Provider logins** card
 (`ProviderLogins`) for both space kinds with one row per account: state, who
 changed it and when, **Sign in with device code** when `device_code` is supported
 (the code and link render while `GET .../sign-in/{login_id}` is polled), a token
-field and **Save token** when `token_entry` is supported (the token is sent once
-and never read back), **Verify sign-in**, and **Sign out**. Unknown interactions
-do not inherit another provider's form. The backend supplies the provider label,
+field and **Sign in** when `token_entry` is supported (the token is sent once
+and never read back; saving it is the sign-in, because the server verifies it
+with one real request before the account counts as signed in), **Verify
+sign-in**, and **Sign out**. **Verify sign-in** is withheld while a pasted token
+is unsent, and from an account that has saved no credential and offers no
+sign-in method but `token_entry`, because there it can only fail. Unknown
+interactions do not inherit another provider's form. The backend supplies the provider label,
 token instructions, and safe credential metadata; React never selects login
 behavior from a provider name. Generic provider routes reject unsupported
 actions and unknown request fields. Status GET reads status only: verification
