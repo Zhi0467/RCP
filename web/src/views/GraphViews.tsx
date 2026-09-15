@@ -75,7 +75,7 @@ import {
   EpisodeAuthor,
   type ArchiveEpisodeAction,
 } from "../components/EpisodeRunControls";
-import { episodeChain, runsEpisodeCards } from "../campaigns";
+import { runsEpisodeCards } from "../campaigns";
 import {
   graphTargetsEqual,
   mainExperimentRouteMatchesControl,
@@ -1243,9 +1243,8 @@ export function ExecutionView({
   // current archive preference, including for main cards built from that cache.
   const episodesById = new Map(episodes.map((episode) => [episode.episode_id, episode]));
   indexedEntries.forEach((entry) => episodesById.set(entry.episode.episode_id, entry.episode));
-  const episodeRecords = [...episodesById.values()];
   const orderedEpisodes = runsEpisodeCards(
-    episodeRecords,
+    [...episodesById.values()],
     new Set(experimentRuns.keys()),
     showArchived,
   );
@@ -1440,12 +1439,9 @@ export function ExecutionView({
 
   function renderEpisodeCard(episode: Episode, initiallyExpanded: boolean) {
     if (episode.mode === "auto_research") {
-      // A chain is one card, so children of every member are listed on it.
-      const chain = episodeChain(episodeRecords, episode);
       return (
         <AutoResearchEpisodeCard
           episode={episode}
-          chain={chain}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={
@@ -1455,7 +1451,8 @@ export function ExecutionView({
           }
           busyAction={episodeAction}
           taskActionId={taskActionId}
-          childExperiments={chain.flatMap(
+          // A chain is one card, so children of every member are listed on it.
+          childExperiments={episode.chain.flatMap(
             (member) => childExperimentsByParent.get(member.episode_id) ?? [],
           )}
           onOpenExperimentEntry={(entry) => {

@@ -220,6 +220,17 @@ function runsEpisode(id, mode, runSection, createdAt, controlNodeId = null) {
     report: null,
     can_stop: !completed,
     can_continue: false,
+    chain: [
+      {
+        episode_id: id,
+        created_at: createdAt,
+        status: completed ? "completed" : "running",
+        ending: completed ? "completed" : null,
+        invocation_ceiling: 3,
+        invocations_used: completed ? 3 : 1,
+        report: null,
+      },
+    ],
     can_message: mode === "auto_research" && !completed,
     live: !completed,
     health: completed ? "completed" : "active",

@@ -141,6 +141,17 @@ function episode(fields = {}) {
     report: null,
     can_stop: false,
     can_continue: false,
+    chain: [
+      {
+        episode_id: "episode-1",
+        created_at: "2026-08-06T01:00:00Z",
+        status: "wrapping_up",
+        ending: "completed",
+        invocation_ceiling: 3,
+        invocations_used: 1,
+        report: null,
+      },
+    ],
     can_message: false,
     live: true,
     health: "wrapping_up",

@@ -44,6 +44,17 @@ function episode(fields) {
     report: null,
     can_stop: false,
     can_continue: false,
+    chain: [
+      {
+        episode_id: "parent",
+        created_at: "2026-09-01T12:00:00Z",
+        status: "failed",
+        ending: "failed",
+        invocation_ceiling: 3,
+        invocations_used: 1,
+        report: null,
+      },
+    ],
     can_message: false,
     archived: false,
     can_archive: true,

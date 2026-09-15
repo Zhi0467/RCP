@@ -31,7 +31,6 @@ import {
   episodeTaskRows,
   isLiveEpisode,
   mergeEpisode,
-  episodeChain,
   runsEpisodeCards,
 } from "../src/campaigns.ts";
 
@@ -66,7 +65,7 @@ test("the Auto-research dialog meters only operational invocations", () => {
   assert.doesNotMatch(html, /Start auto-research" disabled/);
 });
 
-function renderEpisodes(values, { busyAction = null, chain } = {}) {
+function renderEpisodes(values, { busyAction = null } = {}) {
   return renderToStaticMarkup(
     React.createElement(
       "section",
@@ -74,7 +73,6 @@ function renderEpisodes(values, { busyAction = null, chain } = {}) {
       values.map((value, index) =>
         React.createElement(AutoResearchEpisodeCard, {
           episode: value,
-          chain,
           tasks: values.flatMap((episode) => episode.tasks),
           messages: [],
           initiallyExpanded: index === 0 || value.live,
@@ -250,7 +248,16 @@ test("a final report error is visible, terminal, and has no task recovery contro
   assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
 });
 
-test("a continuation chain is one run card listing each member's ceiling and ending", () => {
+test("a continuation chain is one run card listing each member's ceiling, ending, and report", () => {
+  const sourceMember = {
+    episode_id: "episode/source",
+    created_at: "2026-08-11T08:00:00Z",
+    status: "needs_action",
+    ending: "exhausted",
+    invocation_ceiling: 3,
+    invocations_used: 3,
+    report: { report_id: "report-1", ending: "exhausted", created_at: "2026-08-11T09:00:00Z" },
+  };
   const source = {
     ...episode,
     episode_id: "episode/source",
@@ -261,32 +268,39 @@ test("a continuation chain is one run card listing each member's ceiling and end
     continued_by_episode_id: "episode/continuation",
     health: "needs_action",
     recommendation: "review",
-    budget: { ...episode.budget, invocation_ceiling: 3, invocations_used: 3 },
+    chain: [sourceMember],
+  };
+  const continuationMember = {
+    episode_id: "episode/continuation",
+    created_at: episode.created_at,
+    status: "running",
+    ending: null,
+    invocation_ceiling: 2,
+    invocations_used: 1,
+    report: null,
   };
   const continuation = {
     ...episode,
     episode_id: "episode/continuation",
     continues_episode_id: "episode/source",
     can_continue: false,
-    budget: { ...episode.budget, invocation_ceiling: 2, invocations_used: 1 },
+    // The server publishes the whole chain; the card never rebuilds it from the list.
+    chain: [sourceMember, continuationMember],
   };
 
   assert.deepEqual(runsEpisodeCards([source, continuation], new Set()), [continuation]);
+  assert.deepEqual(runsEpisodeCards([continuation], new Set()), [continuation]);
   // Archiving the displayed newest member removes the whole run from default Runs.
   const archivedContinuation = { ...continuation, archived: true };
   assert.deepEqual(runsEpisodeCards([source, archivedContinuation], new Set()), []);
   assert.deepEqual(runsEpisodeCards([source, archivedContinuation], new Set(), true), [
     archivedContinuation,
   ]);
-  const chain = episodeChain([source, continuation], continuation);
-  assert.deepEqual(
-    chain.map((member) => member.episode_id),
-    ["episode/source", "episode/continuation"],
-  );
-  const html = renderEpisodes([continuation], { chain });
+  const html = renderEpisodes([continuation]);
 
   assert.match(html, /Continued 1 time/);
   assert.match(html, /3 of 3 turns[^]*?Exhausted[^]*?1 of 2 turns[^]*?Current/);
+  assert.match(html, new RegExp(`${encodeURIComponent("episode/source")}/report/viewer`));
   assert.doesNotMatch(html, /Continued by|Continues /);
   assert.doesNotMatch(html, /Turns to add/);
 });

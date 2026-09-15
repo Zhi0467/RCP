@@ -96,6 +96,15 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert payload["continues_episode_id"] == original.episode_id
         assert payload["continued_by_episode_id"] is None
         assert payload["can_continue"] is False
+        # The whole chain is published on every member, with each one's report.
+        assert [
+            (member["episode_id"], member["invocation_ceiling"]) for member in payload["chain"]
+        ] == [
+            (original.episode_id, 2),
+            (continuation_id, 4),
+        ]
+        assert payload["chain"][0]["ending"] == "exhausted"
+        assert payload["chain"][0]["invocations_used"] == 1
         # The branch keeps the chain root's identity; the newest member writes to it.
         assert payload["graph_target"] == {"kind": "branch", "branch_id": original.episode_id}
         assert payload["graph_branch"]["branch_id"] == original.episode_id
@@ -151,6 +160,10 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert old_after["budget"]["invocations_used"] == 1
         assert old_after["continued_by_episode_id"] == continuation_id
         assert old_after["can_continue"] is False
+        assert [member["episode_id"] for member in old_after["chain"]] == [
+            original.episode_id,
+            continuation_id,
+        ]
         assert old_after["graph_branch"]["current_episode_id"] == continuation_id
 
         timeline = client.get(f"/api/projects/{project_id}/episodes/{continuation_id}/timeline")

@@ -865,14 +865,23 @@ class AutoResearchChildrenStoreMixin:
             ).fetchone()
         return self._child_work_record(row) if row is not None else None
 
-    def auto_research_child_works(self, episode_id: str) -> list[AutoResearchChildWorkRecord]:
+    def auto_research_child_works(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[AutoResearchChildWorkRecord]:
+        """The episode's child Work routes in creation order; ``newest`` keeps that suffix."""
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM auto_research_child_work
-                WHERE episode_id = ? ORDER BY created_at, worker_id
+                SELECT * FROM (
+                    SELECT * FROM auto_research_child_work
+                    WHERE episode_id = ? ORDER BY created_at DESC, worker_id DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY created_at, worker_id
                 """,
-                (episode_id,),
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._child_work_record(row) for row in rows]
 
@@ -1012,15 +1021,28 @@ class AutoResearchChildrenStoreMixin:
     def auto_research_child_experiments(
         self,
         episode_id: str,
+        *,
+        newest: int | None = None,
     ) -> list[AutoResearchChildExperimentRecord]:
+        """The episode's child Experiment routes in creation order.
+
+        ``newest`` keeps the most recently updated routes, since a route is an
+        event when it is created and again when its child ends or stops.
+        """
+
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM auto_research_child_experiments
-                WHERE auto_research_episode_id = ?
-                ORDER BY created_at, child_episode_id
+                SELECT * FROM (
+                    SELECT * FROM auto_research_child_experiments
+                    WHERE auto_research_episode_id = ?
+                    ORDER BY updated_at DESC, child_episode_id DESC
+                """
+                + ("    LIMIT ?" if newest is not None else "")
+                + """
+                ) ORDER BY created_at, child_episode_id
                 """,
-                (episode_id,),
+                (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._child_experiment_record(row) for row in rows]
 

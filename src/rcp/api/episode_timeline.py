@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.api.episodes import _operational_tasks
+from rcp.api.episodes import episode_chain_records, operational_episode_tasks
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import EPISODE_TIMELINE_EVENT_LIMIT
 from rcp.storage import AppStore, EpisodeRecord
@@ -80,7 +80,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     """
 
     events: list[EpisodeTimelineEvent] = []
-    chain = _episode_chain(store, episode)
+    chain = episode_chain_records(store, episode)
     skipped_members = False
     # Newest member first: a continuation is created after its source ended, so
     # once the newer members alone overflow the response no older member can
@@ -114,23 +114,6 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     )
 
 
-def _episode_chain(store: AppStore, episode: EpisodeRecord) -> list[EpisodeRecord]:
-    root = episode
-    seen = {episode.episode_id}
-    while root.continues_episode_id is not None and root.continues_episode_id not in seen:
-        seen.add(root.continues_episode_id)
-        source = store.episode(root.continues_episode_id)
-        if source is None:
-            break
-        root = source
-    try:
-        chain = store.episode_chain(root.episode_id)
-    except KeyError:
-        return [episode]
-    # The caller's record is the authority for the requested episode itself.
-    return [episode if member.episode_id == episode.episode_id else member for member in chain]
-
-
 def _member_events(
     store: AppStore, episode: EpisodeRecord, *, primary: bool
 ) -> list[EpisodeTimelineEvent]:
@@ -146,19 +129,21 @@ def _member_events(
             if task.visible
         ]
         if auto
-        else _operational_tasks(store, episode, newest=newest)
+        else operational_episode_tasks(store, episode, newest=newest)
     )
     by_task = {task.operation_id: task for task in tasks}
     if auto:
         # Ordinary child Work allocations are outside auto_research_invocations.
-        for task in _operational_tasks(store, episode, newest=newest):
+        for task in operational_episode_tasks(store, episode, newest=newest):
             by_task.setdefault(task.operation_id, task)
         tasks = list(by_task.values())
     degradations = store.agent_task_degradations(list(by_task))
     roles = store.auto_research_invocations(list(by_task)) if auto else {}
     recoveries = store.auto_research_recoveries(episode.episode_id, newest=newest) if auto else []
     recovery_by_task = {row.admitted_operation_id: row for row in recoveries}
-    works = store.auto_research_child_works(episode.episode_id) if auto else []
+    # Child routes and watchers are bounded the same way: each is at least one
+    # event, so only the newest limit + 1 can reach the wire.
+    works = store.auto_research_child_works(episode.episode_id, newest=newest) if auto else []
     work_origins = {row.root_operation_id: row for row in works}
     work_for_task = {}
     for task in tasks:
@@ -173,22 +158,16 @@ def _member_events(
             if parent is None:
                 break
             current = parent
-    routes = store.auto_research_child_experiments(episode.episode_id) if auto else []
-    children = (
-        {row.episode_id: row for row in store.episodes(episode.project_id, limit=None)}
-        if routes
-        else {}
+    routes = (
+        store.auto_research_child_experiments(episode.episode_id, newest=newest) if auto else []
     )
+    children = store.episodes_by_ids([route.child_episode_id for route in routes])
     # Notice and message bodies run up to 16 KB; hydrate only as many as could reach the wire.
     notices = (
         store.auto_research_lifecycle_notices(episode.episode_id, newest=newest) if auto else []
     )
     messages = store.auto_research_messages(episode.episode_id, newest=newest) if auto else []
-    watchers = (
-        [row for row in store.watchers(episode.project_id) if row.episode_id == episode.episode_id]
-        if not auto
-        else []
-    )
+    watchers = store.episode_watchers(episode.episode_id, newest=newest) if not auto else []
     wrapup = store.episode_wrapup(episode.episode_id)
     report = store.episode_report(episode.episode_id)
     members = {member.user_id: member for member in store.space_users()}

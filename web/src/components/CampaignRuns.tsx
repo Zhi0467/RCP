@@ -37,7 +37,6 @@ import {
 
 export function AutoResearchEpisodeCard({
   episode,
-  chain = [episode],
   initiallyExpanded,
   selected = false,
   detailRef,
@@ -54,8 +53,6 @@ export function AutoResearchEpisodeCard({
   onArchive,
 }: {
   episode: Episode;
-  /** Every chain member oldest first, ending with `episode`; a lone episode is its own chain. */
-  chain?: Episode[];
   initiallyExpanded: boolean;
   selected?: boolean;
   detailRef?: Ref<HTMLDivElement>;
@@ -72,6 +69,7 @@ export function AutoResearchEpisodeCard({
   onArchive: ArchiveEpisodeAction;
 }) {
   const detailId = useId();
+  const chain = episode.chain;
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
@@ -244,7 +242,7 @@ export function AutoResearchEpisodeCard({
                   aria-current={member.episode_id === episode.episode_id ? "true" : undefined}
                 >
                   <span>
-                    {member.budget.invocations_used} of {member.budget.invocation_ceiling} turns
+                    {member.invocations_used} of {member.invocation_ceiling} turns
                   </span>
                   <span>
                     {member.ending
@@ -253,6 +251,18 @@ export function AutoResearchEpisodeCard({
                         ? "Current"
                         : "Unsettled"}
                   </span>
+                  {member.report && member.episode_id !== episode.episode_id && (
+                    <EpisodeReportLink
+                      className="campaign-run-chain-report"
+                      aria-label={`Open ${episodeEndingLabel(member.report.ending)} report from ${formatTimestamp(member.report.created_at, true)}`}
+                      projectId={episode.project_id}
+                      episodeId={member.episode_id}
+                      href={episodeReportPreviewUrl(episode.project_id, member.episode_id)}
+                      onOpenError={setLocalError}
+                    >
+                      Report
+                    </EpisodeReportLink>
+                  )}
                 </li>
               ))}
             </ol>

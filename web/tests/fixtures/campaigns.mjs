@@ -59,6 +59,17 @@ export const episode = {
   can_archive: false,
   can_stop: true,
   can_continue: false,
+  chain: [
+    {
+      episode_id: "episode/alpha",
+      created_at: "2026-08-12T08:00:00Z",
+      status: "running",
+      ending: null,
+      invocation_ceiling: 8,
+      invocations_used: 3,
+      report: null,
+    },
+  ],
   can_message: true,
   live: true,
   health: "active",

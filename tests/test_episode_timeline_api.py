@@ -421,11 +421,13 @@ def test_timeline_reads_hydrate_only_the_newest_suffix(tmp_path):
     same order; only the rows that can never reach the wire are left unread.
     """
 
+    from .test_auto_research_children_storage import _work_pair
     from .test_branch_target_storage import _create_auto_episode, _store, _worker_authority
 
     store = _store(tmp_path)
     episode, root = _create_auto_episode(store)
-    for index in range(3):
+    # The ceiling is 4: the root, one worker, and two child Work routes.
+    for index in range(1):
         worker_id = f"worker-{index}"
         store.create_auto_research_agent_task(
             root.model_copy(
@@ -443,10 +445,20 @@ def test_timeline_reads_hydrate_only_the_newest_suffix(tmp_path):
             ),
             role="worker",
         )
+    for index in range(2):
+        route, task = _work_pair(store, episode, root, worker_id=f"child-work-{index}")
+        store.create_auto_research_child_work(route, task)
+    works = store.auto_research_child_works(episode.episode_id)
+    assert len(works) == 2
+    assert store.auto_research_child_works(episode.episode_id, newest=1) == works[-1:]
+    assert set(store.episodes_by_ids([episode.episode_id, "missing"])) == {episode.episode_id}
+    assert store.episode_watchers(episode.episode_id) == []
+    # Child Work spends invocations without joining the paid orchestrator or worker turns.
     paid = store.auto_research_tasks(episode.episode_id)
-    assert len(paid) == 4
-    assert store.auto_research_tasks(episode.episode_id, newest=2) == paid[-2:]
+    assert len(paid) == 2
+    assert store.auto_research_tasks(episode.episode_id, newest=1) == paid[-1:]
     tasks = store.episode_tasks(episode.episode_id)
+    assert len(tasks) == 4
     assert store.episode_tasks(episode.episode_id, newest=2) == tasks[-2:]
     invocations = store.episode_invocations(episode.episode_id)
     assert [row.invocation_number for row in invocations] == [1, 2, 3, 4]

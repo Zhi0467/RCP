@@ -157,6 +157,20 @@ class EpisodeStoreMixin:
             ).fetchone()
         return self._episode_record(row) if row is not None else None
 
+    def episodes_by_ids(self, episode_ids: list[str]) -> dict[str, EpisodeRecord]:
+        """Exactly the named episodes, keyed by id, without scanning the project."""
+
+        found: dict[str, EpisodeRecord] = {}
+        with self.connection() as connection:
+            for start in range(0, len(episode_ids), 500):
+                chunk = episode_ids[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                for row in connection.execute(
+                    f"SELECT * FROM episodes WHERE episode_id IN ({placeholders})", chunk
+                ).fetchall():
+                    found[str(row["episode_id"])] = self._episode_record(row)
+        return found
+
     def episode_chain(self, root_episode_id: str) -> list[EpisodeRecord]:
         """The chain root followed by each continuation, oldest first.
 

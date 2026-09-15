@@ -515,15 +515,19 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
         old_after = next(item for item in listed if item["episode_id"] == old_episode_id)
         assert old_after["continued_by_episode_id"] == continuation_id
         assert old_after["can_continue"] is False
+        assert [member["episode_id"] for member in old_after["chain"]] == [
+            old_episode_id,
+            continuation_id,
+        ]
         unchanged = {
             key: value
             for key, value in old_after.items()
-            if key not in {"continued_by_episode_id", "can_continue", "graph_branch"}
+            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
         }
         assert unchanged == {
             key: value
             for key, value in old_episode.items()
-            if key not in {"continued_by_episode_id", "can_continue", "graph_branch"}
+            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
         }
         timeline = client.get(
             f"/api/projects/{project_id}/episodes/{continuation_id}/timeline"

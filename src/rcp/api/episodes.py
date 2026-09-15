@@ -28,6 +28,7 @@ from rcp.storage import (
     EpisodeEnding,
     EpisodeMode,
     EpisodeRecord,
+    EpisodeReportRecord,
     EpisodeStatus,
     EpisodeWrapupState,
     ExperimentEpisodeProjectionSnapshot,
@@ -212,6 +213,20 @@ class EpisodeReportSummary(BaseModel):
     created_at: str
 
 
+class EpisodeChainMember(BaseModel):
+    """One member of a continuation chain: its turns, how it ended, and its report."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    episode_id: str
+    created_at: str
+    status: EpisodeStatus
+    ending: EpisodeEnding | None
+    invocation_ceiling: int
+    invocations_used: int
+    report: EpisodeReportSummary | None
+
+
 EpisodeHealth = Literal[
     "starting",
     "active",
@@ -289,6 +304,7 @@ class EpisodeResponse(BaseModel):
     continues_episode_id: str | None
     continued_by_episode_id: str | None
     can_continue: bool
+    chain: list[EpisodeChainMember]
     can_message: bool
     # The lifecycle state this parent is in, what a human should do next, and the
     # recovery control that is actually available. All three are decided from
@@ -358,7 +374,7 @@ def serialize_episode(
     task_records = (
         projection_snapshot.tasks
         if projection_snapshot is not None
-        else _operational_tasks(store, episode)
+        else operational_episode_tasks(store, episode)
     )
     task_metadata = _episode_task_metadata(store, episode, task_records)
     # An episode turn is a provider call like any other, so the note about a
@@ -388,23 +404,10 @@ def serialize_episode(
             recovery,
         ) = _auto_research_projection(store, episode, task_records)
 
-    stored_report = (
-        None
-        if episode.ending == "stopped"
-        else (
-            projection_snapshot.report
-            if projection_snapshot is not None
-            else store.episode_report(episode.episode_id)
-        )
-    )
     report = (
-        EpisodeReportSummary(
-            report_id=stored_report.report_id,
-            ending=stored_report.ending,
-            created_at=stored_report.created_at,
-        )
-        if stored_report is not None
-        else None
+        _report_summary(projection_snapshot.report)
+        if projection_snapshot is not None and episode.ending != "stopped"
+        else _episode_report_summary(store, episode)
     )
     stopped = episode.ending == "stopped"
     continued_by = store.episode_continuation(episode.episode_id)
@@ -477,6 +480,7 @@ def serialize_episode(
         ),
         continues_episode_id=episode.continues_episode_id,
         continued_by_episode_id=continued_by.episode_id if continued_by is not None else None,
+        chain=_chain_members(store, episode, continued=continued_by is not None, report=report),
         can_continue=(
             episode.status in _TERMINAL_EPISODE_STATUSES
             and continued_by is None
@@ -550,6 +554,74 @@ def serialize_episodes(
     ]
 
 
+def _report_summary(stored: EpisodeReportRecord | None) -> EpisodeReportSummary | None:
+    if stored is None:
+        return None
+    return EpisodeReportSummary(
+        report_id=stored.report_id, ending=stored.ending, created_at=stored.created_at
+    )
+
+
+def _episode_report_summary(store: AppStore, episode: EpisodeRecord) -> EpisodeReportSummary | None:
+    """A Stop skips the report, so a stopped episode publishes none."""
+
+    if episode.ending == "stopped":
+        return None
+    return _report_summary(store.episode_report(episode.episode_id))
+
+
+def episode_chain_records(store: AppStore, episode: EpisodeRecord) -> list[EpisodeRecord]:
+    """The whole continuation chain ``episode`` belongs to, oldest first.
+
+    The caller's record stands in for the requested episode itself so a
+    projection built from a fresher copy stays coherent.
+    """
+
+    root = episode
+    seen = {episode.episode_id}
+    while root.continues_episode_id is not None and root.continues_episode_id not in seen:
+        seen.add(root.continues_episode_id)
+        source = store.episode(root.continues_episode_id)
+        if source is None:
+            break
+        root = source
+    try:
+        chain = store.episode_chain(root.episode_id)
+    except KeyError:
+        return [episode]
+    return [episode if member.episode_id == episode.episode_id else member for member in chain]
+
+
+def _chain_members(
+    store: AppStore,
+    episode: EpisodeRecord,
+    *,
+    continued: bool,
+    report: EpisodeReportSummary | None,
+) -> list[EpisodeChainMember]:
+    """Every chain member with its turns, ending, and report; a lone episode is its own chain."""
+
+    members = (
+        episode_chain_records(store, episode)
+        if continued or episode.continues_episode_id is not None
+        else [episode]
+    )
+    return [
+        EpisodeChainMember(
+            episode_id=member.episode_id,
+            created_at=member.created_at,
+            status=member.status,
+            ending=member.ending,
+            invocation_ceiling=member.invocation_ceiling,
+            invocations_used=member.invocations_used,
+            report=report
+            if member.episode_id == episode.episode_id
+            else _episode_report_summary(store, member),
+        )
+        for member in members
+    ]
+
+
 def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -> bool:
     """Whether ``episode_id`` names a member of the branch's continuation chain.
 
@@ -568,7 +640,7 @@ def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -
     )
 
 
-def _operational_tasks(
+def operational_episode_tasks(
     store: AppStore, episode: EpisodeRecord, *, newest: int | None = None
 ) -> list[AgentTaskRecord]:
     tasks: list[AgentTaskRecord] = []

@@ -2220,6 +2220,16 @@ export interface EpisodeReportSummary {
   created_at: string;
 }
 
+export interface EpisodeChainMember {
+  episode_id: string;
+  created_at: string;
+  status: EpisodeStatus;
+  ending: EpisodeEnding | null;
+  invocation_ceiling: number;
+  invocations_used: number;
+  report: EpisodeReportSummary | null;
+}
+
 export interface AutoResearchRecoverySummary {
   purpose: "task";
   status: "pending" | "admitted" | "exhausted" | "blocked";
@@ -2264,6 +2274,8 @@ export interface Episode {
   continues_episode_id: string | null;
   continued_by_episode_id: string | null;
   can_continue: boolean;
+  /** Every chain member oldest first, ending with this episode; a lone episode is its own chain. */
+  chain: EpisodeChainMember[];
   can_message: boolean;
   live: boolean;
   health: EpisodeHealth;
