@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 import threading
@@ -419,8 +420,18 @@ class ProviderSignInRunner:
             _kill(process)
             returncode = process.wait()
             with self._lock:
+                # Retiring the process, consuming a cancellation, and claiming
+                # the verification window happen together. A cancellation that
+                # landed between them would otherwise be acknowledged to the
+                # member and then contradicted by a successful sign-in.
                 self._logins.pop(status.login_id, None)
-            canceled = self._take_cancellation(status.login_id)
+                canceled = (
+                    SignInCanceled(self._canceled.pop(status.login_id))
+                    if status.login_id in self._canceled
+                    else None
+                )
+                if canceled is None and finished and not failure:
+                    self._verifying.add(status.login_id)
         if canceled:
             raise canceled
         if not finished:
@@ -431,8 +442,6 @@ class ProviderSignInRunner:
             )
         if failure:
             raise ProviderLoginRefused(failure)
-        with self._lock:
-            self._verifying.add(status.login_id)
 
     def _update(self, login_id: str, **changes: object) -> None:
         with self._lock:
@@ -463,18 +472,25 @@ class ProviderSignInRunner:
                 try:
                     self._device_login(status, auth.device_login(), binary, environment)
                     state = self._verify_locked(provider, host, binary, set(), status.started_by)
-                except ProviderLoginRefused as exc:
-                    # The fence above says a sign-in is running; once it is not,
-                    # the account must say why, not keep describing the attempt.
-                    # A cancellation names whoever asked for it, not whoever
-                    # started the sign-in.
-                    self.store.mark_provider_login_signed_out(
-                        provider,
-                        host,
-                        member_id=getattr(exc, "member_id", None) or status.started_by,
-                        source="sign_out",
-                        detail=exc.detail,
+                except Exception as exc:
+                    # The fence above says a sign-in is running. However this
+                    # attempt ended, the account must say so rather than keep
+                    # asking a member to finish it. A cancellation names whoever
+                    # asked for it, not whoever started the sign-in.
+                    detail = (
+                        exc.detail
+                        if isinstance(exc, ProviderLoginRefused)
+                        else "The sign-in could not complete."
                     )
+                    # Publishing must not replace the failure being reported.
+                    with contextlib.suppress(Exception):
+                        self.store.mark_provider_login_signed_out(
+                            provider,
+                            host,
+                            member_id=getattr(exc, "member_id", None) or status.started_by,
+                            source="sign_out",
+                            detail=detail,
+                        )
                     raise
             self.reconcile_recovery()
             self._update(

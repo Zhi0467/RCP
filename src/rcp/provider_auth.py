@@ -145,6 +145,15 @@ class CodexDeviceLogin(DeviceLogin):
             return DeviceLoginStep()
         if not isinstance(value, dict):
             return DeviceLoginStep()
+        if value.get("id") == self.INITIALIZE_ID and "error" in value:
+            # The provider answered but refused to start. It may hold the
+            # connection open, so end here instead of waiting for a reply that
+            # will never come.
+            return DeviceLoginStep(
+                finished=True,
+                failure=_protocol_error_text(value.get("error"))
+                or "The provider refused to start a sign-in session.",
+            )
         if value.get("id") == self.INITIALIZE_ID and "result" in value:
             return DeviceLoginStep(
                 send=_rpc_bytes({"method": "initialized", "params": {}})

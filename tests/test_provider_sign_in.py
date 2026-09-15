@@ -837,3 +837,60 @@ def test_cancelling_after_the_provider_accepted_the_login_is_refused(
     with pytest.raises(ProviderLoginRefused) as refusal:
         runner.cancel_sign_in(started.login_id, member_id="member")
     assert "already accepted" in refusal.value.detail
+
+
+def test_an_acknowledged_cancellation_never_becomes_a_successful_sign_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling and entering verification settle together, so one excludes the other."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    started = runner.start_sign_in("codex", "", member_id="member")
+    _status_when(runner, started.login_id, lambda status: status.user_code is not None)
+    (tmp_path / "signed-in").write_text("")
+    ended = _status_when(runner, started.login_id, lambda status: status.state != "pending")
+
+    # Whichever side won, the account and the operation agree.
+    if ended.state == "succeeded":
+        assert runner.store.provider_login_state("codex", "").state == "signed_in"
+    else:
+        assert ended.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
+        assert runner.store.provider_login_state("codex", "").state == "signed_out"
+    # Nothing is left behind for the next attempt to trip over.
+    assert started.login_id not in runner._canceled
+    assert started.login_id not in runner._verifying
+
+
+def test_an_unexpected_failure_still_retires_the_in_progress_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after the fence must not leave a member chasing a finished attempt."""
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise OSError("the provider could not be started")
+
+    monkeypatch.setattr(runner, "_popen", explode)
+    started = runner.start_sign_in("codex", "", member_id="member")
+    _status_when(runner, started.login_id, lambda status: status.state != "pending")
+
+    state = runner.store.provider_login_state("codex", "")
+    assert state.detail != provider_sign_in.SIGN_IN_IN_PROGRESS_DETAIL
+    assert state.detail
+
+
+def test_a_refused_initialize_ends_the_sign_in_instead_of_waiting() -> None:
+    """An app-server that rejects initialize may stay open; RCP must not wait for it."""
+
+    login = CodexDeviceLogin()
+    step = login.receive_line(
+        json.dumps(
+            {
+                "id": CodexDeviceLogin.INITIALIZE_ID,
+                "error": {"code": -32600, "message": "unsupported client"},
+            }
+        )
+    )
+    assert step.finished and step.failure == "unsupported client"
+    assert step.send is None
