@@ -82,7 +82,7 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 1. **Canonical Patch logs are append-only.** Never edit or delete main or branch Patch history; replay would change the past.
 2. **Materialized graph files are outputs.** Never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections.
-3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges. The bounded branch orchestrator is the one explicit Decision exception.
+3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges. The Auto-research orchestrator is the one explicit Decision exception, and a human-dispatched branch merge inherits that profile.
 3b. **Existing ResearchQuestions and Hypotheses are protected beliefs.** Agents may create them; structural or semantic changes to existing ones use a Proposal. Never infer protected intent from operation shape.
 4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority; Work names exact write roots to provider enforcement, which bounds every file-editing tool and bounds the shell only where a provider can do so without disabling compute ([decision](docs/decisions/2026-09-13-claude-work-runs-without-the-os-sandbox.md)); ingestion writes only scratch; paper coach is read-only.
 4b. **`patch.json` in the task stage is the only graph-change channel.** Never parse graph authority from answers, traces, artifacts, or repository edits.
