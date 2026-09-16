@@ -617,27 +617,6 @@ function preserveUnchangedProjectSlices(
   return { ...next, ...shared };
 }
 
-/**
- * Whether a staged preview computed against `previous` still describes `next`.
- *
- * A transition projection is built from the canonical graph at one head and the
- * operational inputs the backend folds in beside it. Presentation prefers the
- * projection's own control and attention maps over the stored project's, so a
- * retained projection whose operational inputs have moved renders pre-delivery
- * state — and delivery stops the poll that would have corrected it. Identity is
- * the test because `preserveUnchangedProjectSlices` shares exactly the slices
- * that did not change.
- */
-function projectionInputsSurvive(previous: ProjectSnapshot, next: ProjectSnapshot): boolean {
-  return (
-    next.graph === previous.graph &&
-    next.attention === previous.attention &&
-    next.counts === previous.counts &&
-    next.experiment_control === previous.experiment_control &&
-    next.primary_question === previous.primary_question
-  );
-}
-
 function applyProjectSnapshot(
   state: ProjectSessionState,
   action: Extract<ProjectSessionAction, { kind: "snapshot_applied" }>,
@@ -729,14 +708,6 @@ function applyProjectSnapshot(
   const project = state.project
     ? preserveUnchangedProjectSlices(state.project, storedProject)
     : storedProject;
-  // The staged preview survives only while everything it was computed from is
-  // still current: the canonical head, the draft, and the operational inputs the
-  // projection carries. Watcher or control state moving at an unchanged revision
-  // makes it stale, so it is dropped and the preview effects refetch it.
-  const stagedPreviewSurvives =
-    carriesNoNewCanonicalState &&
-    state.project !== null &&
-    projectionInputsSurvive(state.project, project);
   const transitionCoordinator = reduceProjectTransitionCoordinator(state.transitionCoordinator, {
     kind: "observe_head",
     project_id: decodedProject.id,
@@ -764,14 +735,21 @@ function applyProjectSnapshot(
     transitionManifestExpectedRulesetTag: revisionAdvanced
       ? null
       : state.transitionManifestExpectedRulesetTag,
-    draftTransitionProjection: stagedPreviewSurvives ? state.draftTransitionProjection : null,
+    // The staged preview describes the canonical head and draft it was computed
+    // from, so it survives every read that moved neither. Operational state that
+    // moved at an unchanged revision makes the candidate stale, not wrong: the
+    // replaced snapshot reruns the preview effects, which deliver that state by
+    // replacing the candidate whole. Dropping it here instead rendered canonical
+    // state for the length of that one request, which a human sees as the Inbox
+    // and Runs jumping between two states.
+    draftTransitionProjection: carriesNoNewCanonicalState ? state.draftTransitionProjection : null,
     // Preview status travels with the projection it describes. Clearing a
     // conflict beside a surviving projection would hide it permanently, now that
     // an unchanged snapshot no longer reruns the preview effects, and would
     // re-enable Sync on an edit the backend already refused. Clearing pending
     // would enable Sync before an in-flight preview returns.
-    draftPreviewConflict: stagedPreviewSurvives ? state.draftPreviewConflict : null,
-    draftPreviewPending: stagedPreviewSurvives ? state.draftPreviewPending : false,
+    draftPreviewConflict: carriesNoNewCanonicalState ? state.draftPreviewConflict : null,
+    draftPreviewPending: carriesNoNewCanonicalState ? state.draftPreviewPending : false,
     draftReconciliationDiscardedProposalIds: [
       ...new Set([
         ...state.draftReconciliationDiscardedProposalIds,
