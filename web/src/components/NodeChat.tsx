@@ -1636,7 +1636,9 @@ export function NodeChat({
     if (resolution.kind === "error") {
       // An answer may cite a file the turn itself wrote. That path is outside every
       // repository, so the artifact the task already registered owns the preview.
-      const name = turnArtifactName(href, taskId);
+      // Only when no root claims the path. Several matching roots stay a visible
+      // error, because the reader must not be handed a guess about which one won.
+      const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
       if (name) {
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.

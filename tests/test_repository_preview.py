@@ -171,6 +171,30 @@ def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> Non
     multibyte = load_repository_source(manifest, "repo-a", "multibyte.log", max_bytes=1001)
     assert multibyte.text == "é" * 500
 
+    # A byte that is invalid rather than merely cut short still fails.
+    (root / "binary.log").write_bytes(b"text\xff" * 200)
+    with pytest.raises(ValueError, match="UTF-8"):
+        load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100)
+
+
+def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch) -> None:
+    root = Path(manifest.repository_map["repo-a"].path)
+    (root / "one-line.log").write_bytes(b"x" * 20_000_000)
+    reads = 0
+    real_read = preview_module.os.read
+
+    def counted_read(fd: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        return real_read(fd, size)
+
+    monkeypatch.setattr(preview_module.os, "read", counted_read)
+    source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024)
+
+    assert source.text == "x" * 1024
+    # Without the stop, filling a 1 KiB budget would read all twenty chunks.
+    assert reads <= 2
+
 
 def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
     source = RepositorySource(

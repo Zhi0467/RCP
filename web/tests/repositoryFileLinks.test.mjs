@@ -20,6 +20,7 @@ test("repository file links use path boundaries and preserve the absolute path",
   );
   assert.deepEqual(resolveRepositoryFileHref("/work/repository/main.py", repositories), {
     kind: "error",
+    reason: "no-match",
     message: "Repository file link does not match a configured repository.",
   });
 });
@@ -30,8 +31,11 @@ test("repository file links reject every overlapping root, including nested root
     { alias: "nested-copy", machine: "lab", path: "/srv/shared/packages/core" },
   ]);
 
+  // The reason separates this from a no-match: only a no-match may fall back to
+  // a turn artifact, so several matching roots stay a visible error.
   assert.deepEqual(resolution, {
     kind: "error",
+    reason: "ambiguous",
     message: "Repository file link matches multiple repositories: local-copy, nested-copy.",
   });
 });
@@ -39,7 +43,7 @@ test("repository file links reject every overlapping root, including nested root
 test("repository file links reject non-absolute and traversal-shaped hrefs", () => {
   const repositories = [{ alias: "repo", machine: "local", path: "/work/repo" }];
 
-  assert.equal(resolveRepositoryFileHref("src/main.py", repositories).kind, "error");
+  assert.equal(resolveRepositoryFileHref("src/main.py", repositories).reason, "invalid");
   assert.equal(resolveRepositoryFileHref("/work/repo/../secret.txt", repositories).kind, "error");
   assert.equal(
     resolveRepositoryFileHref("/work/repo/src/main.py?line=2", repositories).kind,

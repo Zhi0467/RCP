@@ -68,7 +68,7 @@ try:
             index=buffer.find(b'\\n')
             if index<0:
                 if len(value)<limit: value=(value+buffer)[:limit]
-                buffer=os.read(file_fd,1024*1024)
+                buffer=b'' if (current>=anchor and len(value)>=limit) else os.read(file_fd,1024*1024)
                 if buffer: continue
                 if not value: break
             else:
@@ -253,7 +253,9 @@ def _trim_partial_utf8_tail(data: bytes) -> bytes:
     try:
         data.decode("utf-8")
     except UnicodeDecodeError as error:
-        if error.end == len(data) and len(data) - error.start <= 3:
+        # Only a character the bound cut short. An invalid byte still fails, so an
+        # oversized nontext file cannot reach the reader as text.
+        if error.reason == "unexpected end of data" and error.end == len(data):
             return data[: error.start]
     return data
 
@@ -353,7 +355,10 @@ def _read_local_file(
             if index < 0:
                 if len(value) < max_bytes:
                     value = (value + buffer)[:max_bytes]
-                buffer = os.read(file_fd, 1024 * 1024)
+                # Once the cited line alone fills the budget, every later byte of it
+                # is discarded anyway, so stop rather than scan to its delimiter.
+                exhausted = current >= anchor and len(value) >= max_bytes
+                buffer = b"" if exhausted else os.read(file_fd, 1024 * 1024)
                 if buffer:
                     continue
                 if not value:

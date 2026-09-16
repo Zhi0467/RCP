@@ -5,8 +5,11 @@ export interface RepositoryFileTarget {
   line: number | null;
 }
 
+export type RepositoryFileErrorReason = "invalid" | "no-match" | "ambiguous";
+
 export type RepositoryFileResolution =
-  { kind: "resolved"; target: RepositoryFileTarget } | { kind: "error"; message: string };
+  | { kind: "resolved"; target: RepositoryFileTarget }
+  | { kind: "error"; reason: RepositoryFileErrorReason; message: string };
 
 export function isRepositoryFileHrefCandidate(href: string | undefined): boolean {
   return Boolean(href && parseAbsoluteFileHref(href));
@@ -17,7 +20,9 @@ export function resolveRepositoryFileHref(
   repositories: readonly Repository[],
 ): RepositoryFileResolution {
   const parsed = parseAbsoluteFileHref(href);
-  if (!parsed) return { kind: "error", message: "Repository file link is invalid." };
+  if (!parsed) {
+    return { kind: "error", reason: "invalid", message: "Repository file link is invalid." };
+  }
 
   const matches = repositories.flatMap((repository) => {
     const root = normalizeRepositoryRoot(repository.path);
@@ -28,6 +33,7 @@ export function resolveRepositoryFileHref(
   if (matches.length === 0) {
     return {
       kind: "error",
+      reason: "no-match",
       message: "Repository file link does not match a configured repository.",
     };
   }
@@ -36,6 +42,7 @@ export function resolveRepositoryFileHref(
     const aliases = [...new Set(matches.map((repository) => repository.alias))].sort();
     return {
       kind: "error",
+      reason: "ambiguous",
       message: `Repository file link matches multiple repositories: ${aliases.join(", ")}.`,
     };
   }
