@@ -336,22 +336,31 @@ class AgentProcessControl:
         return {0: True, 1: False}.get(AgentProcessControl._probe(host, pid_file).returncode)
 
     @staticmethod
-    def remote_provider_silence(host: str, pid_file: str) -> float | None:
-        """How long a still-running provider has written nothing, if it can be read.
+    def remote_provider_sighting(host: str, pid_file: str) -> dict[str, object]:
+        """What a live provider group looks like right now: how quiet, and which one.
 
         Asked only once a probe has already found the group alive, so the extra
         call is paid in the one case a human is waiting on an answer. It takes
         the same shared connection as the probe, for the same reason: the run's
         own link is the one that may be partitioned.
+
+        `identity` is what makes a later stop safe to send. A pid outlives the
+        process that held it, so a stop issued hours after this sighting has to
+        prove it is still the same one.
         """
         result = AgentProcessControl._probe(host, pid_file)
         if result.returncode != 1:
-            return None
+            return {}
+        sighting: dict[str, object] = {}
         with suppress(ValueError, AttributeError, TypeError):
-            value = json.loads(result.stdout).get("idle_seconds")
+            observed = json.loads(result.stdout)
+            value = observed.get("idle_seconds")
             if isinstance(value, (int, float)):
-                return float(value)
-        return None
+                sighting["idle_seconds"] = float(value)
+            identity = observed.get("identity")
+            if isinstance(identity, str) and identity:
+                sighting["identity"] = identity
+        return sighting
 
     @staticmethod
     def _probe(host: str, pid_file: str) -> subprocess.CompletedProcess[str]:
@@ -391,7 +400,7 @@ class AgentProcessControl:
         return cls._terminate_remote(host, pid_file)
 
     @staticmethod
-    def _terminate_remote(host: str, pid_file: str) -> bool:
+    def _terminate_remote(host: str, pid_file: str, expect_identity: str | None = None) -> bool:
         # Shared connection on purpose; see `remote_stopped`.
         command = [
             "python3",
@@ -402,6 +411,7 @@ class AgentProcessControl:
             str(REMOTE_PROVIDER_TERM_WAIT_SECONDS),
             str(REMOTE_PROVIDER_KILL_WAIT_SECONDS),
             str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
+            *([expect_identity] if expect_identity is not None else []),
         ]
         try:
             result = subprocess.run(

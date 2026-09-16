@@ -155,6 +155,26 @@ def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
     )
 
 
+def recorded_provider_identity(
+    store: AppStore, source: AgentTaskRecord, pid_file: str
+) -> str | None:
+    """Which process RCP wrote down when it last saw this group alive.
+
+    A stop is only safe to send while the pid still names that process, so a
+    sighting that could not say which one it was does not authorize one later.
+    """
+
+    for receipt in store.agent_task_receipts(source.operation_id):
+        if (
+            receipt.category == "remote_provider_still_running"
+            and receipt.payload.get("pid_file") == pid_file
+        ):
+            identity = receipt.payload.get("identity")
+            if isinstance(identity, str) and identity:
+                return identity
+    return None
+
+
 def can_stop_remote_provider(store: AppStore, record: AgentTaskRecord) -> bool:
     """Offer the stop only where RCP has actually watched a provider outlive its turn.
 
@@ -167,10 +187,10 @@ def can_stop_remote_provider(store: AppStore, record: AgentTaskRecord) -> bool:
         if not _can_collect(store, record):
             return False
         source = collection_source(store, record)
-        if not store.agent_task_has_receipt(source.operation_id, "remote_provider_still_running"):
-            return False
         pid_file = journal_pid_file(store, source)
-        return pid_file is not None and (source.operation_id, pid_file) in set(
+        if pid_file is None or recorded_provider_identity(store, source, pid_file) is None:
+            return False
+        return (source.operation_id, pid_file) in set(
             store.unresolved_remote_provider_passes(
                 source.stage_host or "", source.stage_root or ""
             )
@@ -263,9 +283,10 @@ def _observe_running_provider(store: AppStore, source: AgentTaskRecord, pid_file
     alone, instead of probing every task in a listing to find out.
     """
 
-    idle = None
+    sighting: dict[str, object] = {}
     with suppress(Exception):
-        idle = AgentProcessControl.remote_provider_silence(source.stage_host or "", pid_file)
+        sighting = AgentProcessControl.remote_provider_sighting(source.stage_host or "", pid_file)
+    idle = sighting.get("idle_seconds")
     with suppress(Exception):
         # Once is enough: this marks that a provider outlived its turn here, and
         # the reading a human acts on is the one in the message below. Recording
@@ -274,7 +295,13 @@ def _observe_running_provider(store: AppStore, source: AgentTaskRecord, pid_file
             store.record_agent_task_receipt(
                 source.operation_id,
                 "remote_provider_still_running",
-                {"pid_file": pid_file, "idle_seconds": idle},
+                # The identity is what a stop sent long after this sighting is
+                # held to, so it is written down with the sighting that offers it.
+                {
+                    "pid_file": pid_file,
+                    "idle_seconds": idle,
+                    "identity": sighting.get("identity"),
+                },
             )
     text = "The original provider is still running; RCP will collect it when it finishes."
     if isinstance(idle, (int, float)):

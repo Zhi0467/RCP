@@ -18,6 +18,7 @@ from rcp.runs.turn_collection import (
     describe_provider_silence,
     incomplete_collection_text,
     read_collected_turn,
+    recorded_provider_identity,
     replay_collected_events,
 )
 from rcp.service import RunRequest
@@ -684,7 +685,11 @@ def test_a_running_provider_reports_its_silence_and_opens_the_stop(tmp_path, mon
     _journal(pid)
     _local_transport(monkeypatch)
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
-    monkeypatch.setattr(AgentProcessControl, "remote_provider_silence", lambda *_: 11_520.0)
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "remote_provider_sighting",
+        lambda *_: {"idle_seconds": 11_520.0, "identity": "boot:904821"},
+    )
 
     assert not can_stop_remote_provider(store, record)
     with pytest.raises(CollectionPending, match="3h 12m"):
@@ -707,7 +712,9 @@ def test_the_stop_is_withdrawn_once_the_pass_is_confirmed_stopped(tmp_path, monk
     _journal(pid)
     _local_transport(monkeypatch)
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
-    monkeypatch.setattr(AgentProcessControl, "remote_provider_silence", lambda *_: None)
+    monkeypatch.setattr(
+        AgentProcessControl, "remote_provider_sighting", lambda *_: {"identity": "boot:904821"}
+    )
     with pytest.raises(CollectionPending):
         read_collected_turn(store, record)
     record = store.agent_task(record.operation_id)
@@ -782,3 +789,27 @@ def test_collection_ignores_an_event_the_live_pipe_would_have_omitted():
 
     assert collected.observed_events == [delivered]
     assert collected.session_id == "native-thread"
+
+
+def test_an_unidentified_provider_is_never_offered_a_delayed_stop(tmp_path, monkeypatch):
+    """A stop RCP cannot aim is not a stop it should offer.
+
+    The control is drawn from a sighting that may be hours old. Sending it needs
+    proof that the pid still names the process that was seen, and a host that
+    could not say which process that was can never supply it.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    _journal(pid)
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
+    monkeypatch.setattr(
+        AgentProcessControl, "remote_provider_sighting", lambda *_: {"idle_seconds": 60.0}
+    )
+    with pytest.raises(CollectionPending):
+        read_collected_turn(store, record)
+
+    current = store.agent_task(record.operation_id)
+    assert store.agent_task_has_receipt(record.operation_id, "remote_provider_still_running")
+    assert recorded_provider_identity(store, current, str(pid)) is None
+    assert not can_stop_remote_provider(store, current)

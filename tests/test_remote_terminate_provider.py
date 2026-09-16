@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import signal
@@ -244,3 +245,62 @@ def test_probe_reused_nonleader_pid_is_unknown(tmp_path, monkeypatch):
 
     monkeypatch.setattr(remote_terminate_provider.os, "killpg", unexpected_signal)
     assert remote_terminate_provider.provider_stopped(str(pid_file)) is None
+
+
+def test_delayed_stop_refuses_a_pid_that_now_names_another_process(owned_group):
+    """A pidfile names a number, and the host is free to reissue it.
+
+    The likeliest process to inherit it is another RCP run, since those are the
+    setsid leaders this account creates. A stop drawn from an old sighting has
+    to prove the pid still names what was seen, and refuse rather than signal
+    whatever else holds it now.
+    """
+
+    process, pid_file = owned_group(ignore_term=False)
+    assert remote_terminate_provider.process_identity(process.pid) is not None
+    source = Path(remote_terminate_provider.__file__).read_text()
+
+    result = subprocess.run(
+        [sys.executable, "-c", source, str(pid_file), "0.5", "2", "2", "0.01", "boot:someone-else"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert process.poll() is None
+
+
+def test_delayed_stop_proceeds_on_the_identity_it_recorded(owned_group):
+    process, pid_file = owned_group(ignore_term=False)
+    identity = remote_terminate_provider.process_identity(process.pid)
+    assert identity is not None
+    source = Path(remote_terminate_provider.__file__).read_text()
+
+    result = subprocess.run(
+        [sys.executable, "-c", source, str(pid_file), "0.5", "2", "2", "0.01", identity],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert process.wait(timeout=5) == -signal.SIGTERM
+
+
+def test_probe_reports_the_identity_a_later_stop_is_held_to(owned_group):
+    process, pid_file = owned_group(ignore_term=False)
+    source = Path(remote_terminate_provider.__file__).read_text()
+    result = subprocess.run(
+        [sys.executable, "-c", source, "--probe", str(pid_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    assert json.loads(result.stdout)["identity"] == remote_terminate_provider.process_identity(
+        process.pid
+    )

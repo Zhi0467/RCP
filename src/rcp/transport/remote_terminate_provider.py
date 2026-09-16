@@ -11,6 +11,7 @@ import math
 import os
 import signal
 import stat
+import subprocess
 import sys
 import time
 
@@ -57,6 +58,40 @@ def _group_stopped(pid: int, timeout: float, poll_interval: float) -> bool:
         if remaining <= 0:
             return False
         time.sleep(min(poll_interval, remaining))
+
+
+def process_identity(pid: int) -> str | None:
+    """A token that changes when this PID stops naming the same process.
+
+    A pidfile names a number, and a host recycles numbers. Nothing else here
+    distinguishes the group this turn started from whatever later inherited its
+    pid -- most plausibly another RCP run, since those are the setsid leaders
+    this account creates. The process start time is the one property the kernel
+    will not reissue with the number, so it is what a delayed stop is held to.
+
+    None means this host offers no such property, and a caller about to signal
+    must treat that as a refusal rather than as agreement.
+    """
+
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            # comm is parenthesised and may itself contain spaces and parens.
+            fields = handle.read().rpartition(b")")[2].split()
+        return "boot:" + fields[19].decode("ascii")
+    except (OSError, IndexError, UnicodeError):
+        pass
+    try:
+        started = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = " ".join(started.stdout.split())
+    return ("clock:" + value) if started.returncode == 0 and value else None
 
 
 def provider_stopped(pid_file: str) -> bool | None:
@@ -129,8 +164,15 @@ def terminate_provider(
     term_timeout: float,
     kill_timeout: float,
     poll_interval: float,
+    expect_identity: str | None = None,
 ) -> bool:
-    """Return true only after the owned process group is confirmed absent."""
+    """Return true only after the owned process group is confirmed absent.
+
+    `expect_identity` is the token a caller recorded when it last saw this group
+    alive. A stop issued straight after a launch does not need one: the group
+    was there moments ago. A stop a human asks for later does, because by then
+    the pid may name something else.
+    """
     durations = (pid_file_timeout, term_timeout, kill_timeout, poll_interval)
     if any(not math.isfinite(value) or value < 0 for value in durations) or poll_interval == 0:
         raise ValueError(
@@ -149,6 +191,10 @@ def terminate_provider(
         # and stop the group itself rather than treating leader exit as success.
         pass
     except OSError:
+        return False
+    if expect_identity is not None and process_identity(pid) != expect_identity:
+        # Either the pid now names a different process, or this host cannot say.
+        # Both are refusals: the group meant to be stopped is not provably here.
         return False
     for requested_signal, timeout in (
         (signal.SIGTERM, term_timeout),
@@ -171,9 +217,17 @@ def main(argv: list[str]) -> int:
         if stopped is False:
             # Only a live group raises the question this answers, and only the
             # exit code decides the verdict; unreadable silence prints nothing.
-            print(json.dumps({"idle_seconds": journal_idle_seconds(argv[2])}))
+            pid = _read_pid(argv[2], timeout=0, poll_interval=1)
+            print(
+                json.dumps(
+                    {
+                        "idle_seconds": journal_idle_seconds(argv[2]),
+                        "identity": None if pid is None else process_identity(pid),
+                    }
+                )
+            )
         return 2 if stopped is None else (0 if stopped else 1)
-    if len(argv) != 6:
+    if len(argv) not in {6, 7}:
         return 2
     try:
         stopped = terminate_provider(
@@ -182,6 +236,7 @@ def main(argv: list[str]) -> int:
             term_timeout=float(argv[3]),
             kill_timeout=float(argv[4]),
             poll_interval=float(argv[5]),
+            expect_identity=argv[6] if len(argv) == 7 else None,
         )
     except ValueError:
         return 2

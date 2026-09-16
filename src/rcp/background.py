@@ -81,6 +81,7 @@ from rcp.runs.turn_collection import (
     incomplete_collection_text,
     journal_pid_file,
     read_collected_turn,
+    recorded_provider_identity,
 )
 from rcp.service import (
     CoachRequest,
@@ -945,8 +946,12 @@ class BackgroundAgentTasks:
         source = collection_source(self.store, record)
         pid_file = journal_pid_file(self.store, source)
         host = source.stage_host or ""
-        assert pid_file and host  # `can_stop_remote_provider` proved both.
-        if not AgentProcessControl._terminate_remote(host, pid_file):
+        identity = recorded_provider_identity(self.store, source, pid_file or "")
+        # `can_stop_remote_provider` proved all three. The identity is what keeps
+        # a stop the human asks for hours later from reaching whatever has since
+        # reused this pid, most plausibly another run of RCP's own.
+        assert pid_file and host and identity
+        if not AgentProcessControl._terminate_remote(host, pid_file, identity):
             raise ValueError("The remote provider process group could not be confirmed stopped.")
         # Confirmed absent, so the pass is answerable and the stage is reusable.
         # This is also what withdraws the control that was just used.

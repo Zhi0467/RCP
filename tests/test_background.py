@@ -3259,7 +3259,10 @@ def test_stopping_a_wedged_provider_clears_the_way_for_collection(
     )
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     store.record_agent_task_receipt(
-        task.operation_id, "remote_provider_still_running", {"pid_file": pid_file}
+        task.operation_id,
+        "remote_provider_still_running",
+        # The identity is what a stop this long after the sighting is held to.
+        {"pid_file": pid_file, "identity": "boot:904821"},
     )
     tasks = BackgroundAgentTasks(store, _done_stream)
 
@@ -3267,13 +3270,13 @@ def test_stopping_a_wedged_provider_clears_the_way_for_collection(
     monkeypatch.setattr(
         AgentProcessControl,
         "_terminate_remote",
-        lambda host, pid: terminated.append((host, pid)) or True,
+        lambda host, pid, identity: terminated.append((host, pid, identity)) or True,
     )
     assert can_stop_remote_provider(store, store.agent_task(task.operation_id))
 
     tasks.stop_remote_provider(task.operation_id)
 
-    assert terminated == [("test-host", pid_file)]
+    assert terminated == [("test-host", pid_file, "boot:904821")]
     assert store.unresolved_remote_provider_passes("test-host", str(root)) == []
     # The control withdraws itself; collection is no longer blocked on a process.
     assert not can_stop_remote_provider(store, store.agent_task(task.operation_id))
@@ -3300,7 +3303,10 @@ def test_an_unconfirmed_stop_leaves_the_pass_open(
     )
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     store.record_agent_task_receipt(
-        task.operation_id, "remote_provider_still_running", {"pid_file": pid_file}
+        task.operation_id,
+        "remote_provider_still_running",
+        # The identity is what a stop this long after the sighting is held to.
+        {"pid_file": pid_file, "identity": "boot:904821"},
     )
     tasks = BackgroundAgentTasks(store, _done_stream)
     monkeypatch.setattr(AgentProcessControl, "_terminate_remote", lambda *_args: False)
