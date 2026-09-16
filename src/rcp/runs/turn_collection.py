@@ -316,20 +316,30 @@ def _decoded_like_the_live_patch(patch: str | None) -> str | None:
         raise ValueError("The provider's patch.json is not UTF-8 text.") from exc
 
 
+def incomplete_collection_text(collected: CollectedTurn) -> str:
+    """What a stopped pass that never completed tells the human.
+
+    Two readers settle this same turn -- the preflight that fails the task and
+    the replay behind it -- and a human must not get a different answer from
+    whichever got there first. The live pipe enriches a failure with the
+    provider's own stderr, and a collected failure is that same failure.
+    """
+
+    text = str(
+        collected.outcome.get("error")
+        or "The remote provider stopped before completing this turn. Its retained output is incomplete."
+    )
+    detail = _meaningful_stderr(collected.stderr)
+    if detail and detail not in text:
+        return "\n".join((text, detail))
+    return text
+
+
 def replay_collected_events(
     collected: CollectedTurn, request: ProviderTurnRequest
 ) -> list[AgentEvent]:
     if not collected.complete:
-        text = str(
-            collected.outcome.get("error")
-            or "The remote provider stopped before completing this turn. Its retained output is incomplete."
-        )
-        # The live pipe enriches a failure with the provider's own stderr. A
-        # collected failure is the same failure and must not say less.
-        detail = _meaningful_stderr(collected.stderr)
-        if detail and detail not in text:
-            text = "\n".join((text, detail))
-        return [AgentEvent(event="error", text=text)]
+        return [AgentEvent(event="error", text=incomplete_collection_text(collected))]
     events = _decode_pass(collected, request)
     for item in collected.passes:
         if item.pid_file == collected.outcome.get("pid_file"):

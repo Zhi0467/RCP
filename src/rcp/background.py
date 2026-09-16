@@ -74,6 +74,7 @@ from rcp.runs.turn_collection import (
     CollectionPending,
     can_collect,
     collected_task_operation_id,
+    incomplete_collection_text,
     read_collected_turn,
 )
 from rcp.service import (
@@ -2121,14 +2122,7 @@ class BackgroundAgentTasks:
                 self.store.finish_remote_provider_pass(
                     collected.source_operation_id, collected.pid_file
                 )
-                raise TaskFailed(
-                    str(
-                        collected.outcome.get("error")
-                        or "The remote provider stopped without completing this turn. Retained output is incomplete."
-                    ),
-                    [],
-                    [],
-                )
+                raise TaskFailed(incomplete_collection_text(collected), [], [])
         applied_revision: int | None = None
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []

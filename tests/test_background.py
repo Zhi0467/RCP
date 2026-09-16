@@ -3233,3 +3233,55 @@ def test_a_collection_that_fails_before_its_stage_leaves_the_turn_collectible(
     assert collection_source(store, settled).operation_id == task.operation_id
     assert can_collect(store, settled)
     tasks.shutdown(timeout=0.1)
+
+
+def test_an_incomplete_collection_still_reports_the_provider_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason the provider stopped is the whole value of collecting it.
+
+    A pass that never completed settles here, before the replay behind it ever
+    runs, so the stderr the live pipe would have shown has to be attached at
+    this point or it is lost with the turn.
+    """
+
+    from rcp.runs.turn_collection import CollectedTurn
+
+    store = _store(tmp_path)
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    pid_file = str(root / "agent.pid")
+    task = _admitted_launch_task(
+        store,
+        operation_id="lost-turn",
+        record_updates={
+            "stage_host": "test-host",
+            "stage_root": str(root),
+            "native_session_id": "native-thread",
+        },
+    )
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(root), pid_file, journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
+    monkeypatch.setattr(
+        background_module,
+        "read_collected_turn",
+        lambda *_args: CollectedTurn(
+            task.operation_id,
+            pid_file,
+            {"protocol_complete": False, "journal_complete": True},
+            "",
+            None,
+            stderr="codex: fatal: the model refused the request\n",
+        ),
+    )
+
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda *_args, **_kwargs: None)
+    child = tasks.collect(task.operation_id)
+    settled = wait_for_task(store, child.operation_id, expect="failed")
+
+    assert "the model refused the request" in settled.status_message
+    assert store.agent_task_has_receipt(child.operation_id, "provider_collection_incomplete")
+    tasks.shutdown(timeout=0.1)
