@@ -688,13 +688,22 @@ function applyProjectSnapshot(
     state.transitionCoordinator.canonical_heads[
       graphSessionKey(decodedProject.id, state.graphTarget)
     ];
-  const nextHead =
-    decodedProject.graph_head ??
-    (observedHead &&
+  const knownHead =
+    observedHead &&
     sameGraphTarget(observedHead.target, state.graphTarget) &&
     observedHead.revision === nextGraph.revision
       ? observedHead
-      : { ...canonicalGraphHead(nextGraph.revision), target: state.graphTarget });
+      : null;
+  const readHead = decodedProject.graph_head ??
+    knownHead ?? { ...canonicalGraphHead(nextGraph.revision), target: state.graphTarget };
+  // A main project snapshot names its head by revision alone, so it states no
+  // transition id. One revision carries exactly one transition identity, so that
+  // null is unstated rather than different, and a head already observed at this
+  // revision keeps the identity a preview or a commit established. Taking the
+  // unstated head instead read every re-poll as canonical movement, which
+  // dropped the staged preview and flipped the view between canonical and
+  // candidate for as long as an edit stayed staged.
+  const nextHead = readHead.transition_id === null && knownHead ? knownHead : readHead;
   const reconciliation = state.humanDraft
     ? authoritative
       ? reconcileHumanDraft(state.humanDraft, nextGraph)
