@@ -134,6 +134,38 @@ def _request():
     )
 
 
+def test_collection_is_never_offered_before_a_provider_started(tmp_path):
+    """A turn that died before its provider started is retried, never collected.
+
+    Auto-research mail is bound to its wake task when that task row is inserted,
+    and `_stage_claimed_mail` skips staging for a collection on the grounds that
+    a started provider was already shown it. Staging runs before launch, so that
+    holds only while eligibility requires a start receipt. Drop this requirement
+    and collection silently swallows mail no agent ever saw.
+    """
+
+    store = AppStore(tmp_path / "state.sqlite3")
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    record = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="never-started",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={"provider": "codex", "mode": "work"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Running",
+            stage_host="test-host",
+            stage_root=str(root),
+            native_session_id="native-thread",
+        )
+    )
+    store.fail_agent_task(record.operation_id, "Link died", failure_kind="transport_lost")
+    assert not can_collect(store, store.agent_task(record.operation_id))
+
+
 @pytest.mark.parametrize("stopped", [False, None])
 def test_collect_waits_for_original_process_without_reading_or_releasing_stage(
     tmp_path,

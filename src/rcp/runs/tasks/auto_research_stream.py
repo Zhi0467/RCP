@@ -1167,6 +1167,12 @@ def _stage_claimed_mail(
     stage: _WorkerStage,
 ) -> str | None:
     if execution.continuation == "collect":
+        # Mail is bound to its wake task the moment that task row is inserted,
+        # so a collected turn's messages already read as delivered. Skipping is
+        # safe only because collection is never offered before a provider
+        # started, and staging runs before that launch: a started provider was
+        # shown this mail. If eligibility ever stops requiring a start receipt,
+        # this returns None for mail no agent ever saw.
         return None
     messages = _claimed_messages(execution, turn)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
