@@ -2183,6 +2183,32 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def remote_provider_start_receipts(self, operation_id: str) -> list[AgentTaskReceiptRecord]:
+        """Every journalled pass this task opened, with no projection ceiling.
+
+        `agent_task_receipts` pages the oldest receipts for display. Collection
+        reads these to find the pass whose journal it must adopt, and a turn that
+        ran enough compute commands to fill that page would hide its own latest
+        pass behind them -- replaying an earlier one and retaining a Patch the
+        correction had already replaced.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'remote_provider_started'
+                ORDER BY receipt_id ASC
+                """,
+                (operation_id,),
+            ).fetchall()
+        receipts = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipts.append(AgentTaskReceiptRecord.model_validate(data))
+        return receipts
+
     def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:
         """Return the named tasks' provider-degradation notes, keyed by operation.
 

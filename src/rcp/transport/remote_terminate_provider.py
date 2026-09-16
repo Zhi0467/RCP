@@ -6,6 +6,7 @@ belongs to its existing remote process wrapper; no process discovery is used.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -77,12 +78,24 @@ def process_identity(pid: int) -> str | None:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             # comm is parenthesised and may itself contain spaces and parens.
             fields = handle.read().rpartition(b")")[2].split()
-        return "boot:" + fields[19].decode("ascii")
+        return "boot:" + fields[19].decode("ascii")  # ticks since boot, not seconds
     except (OSError, IndexError, UnicodeError):
         pass
+    return _clock_identity(pid)
+
+
+def _clock_identity(pid: int) -> str | None:
+    """The identity a host without /proc can still offer.
+
+    `lstart` alone resolves to the second, so a pid recycled inside one second
+    would carry the same token. The command is what separates them: this group
+    was launched for one turn and names that turn's pidfile, which no unrelated
+    process inherits along with the number.
+    """
+
     try:
-        started = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
+        observed = subprocess.run(
+            ["ps", "-ww", "-o", "lstart=,command=", "-p", str(pid)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -90,8 +103,10 @@ def process_identity(pid: int) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    value = " ".join(started.stdout.split())
-    return ("clock:" + value) if started.returncode == 0 and value else None
+    value = " ".join(observed.stdout.split())
+    if observed.returncode != 0 or not value:
+        return None
+    return "clock:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:32]
 
 
 def provider_stopped(pid_file: str) -> bool | None:

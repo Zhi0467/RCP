@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -181,3 +182,40 @@ def test_result_view_revision_retry_reports_lost_stage_without_redrawing(
         tasks.retry(previous.operation_id)
 
     assert "existing view was not redrawn" in str(failure.value)
+
+
+@pytest.mark.parametrize("continuation", ["resume", "collect"])
+def test_recovery_of_a_result_view_turn_admits_collection(tmp_path, continuation) -> None:
+    """Collection recovers a result-view turn instead of refusing it as a new one.
+
+    A transport-lost Work turn that was creating or revising a result view is
+    collectible like any other, so the recovery it reaches must be the same
+    logical turn. Treating it as a fresh dispatch rejected the child outright
+    and stranded the finished journal it was admitted to replay.
+    """
+
+    from rcp.runs.tasks.result_views import _prepare_result_view_turn
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    request = RunRequest(
+        provider="codex",
+        run_on="local",
+        chat_scope="node",
+        node_id="experiment/pilot",
+        chat_id=str(uuid.uuid4()),
+        message="Plot it.",
+        mode="work",
+        result_view={"action": "revise", "view_id": "b" * 24},
+    )
+    execution = SimpleNamespace(continuation=continuation, store=store, operation_id="turn")
+
+    with pytest.raises(ValueError, match="scoped to an existing Experiment"):
+        _prepare_result_view_turn(
+            request,
+            execution,
+            tmp_path,
+            None,
+            focused_node=None,
+            logical_operation_id="turn",
+            revision_preflight=None,
+        )

@@ -613,3 +613,49 @@ def test_the_wrapper_reads_a_bad_byte_the_way_the_live_pipe_reads_it():
     assert observed[0]["note"] == "o�k"
     observer.output(observed[0])
     assert observer.terminal and observer.complete
+
+
+def test_a_completion_that_outruns_the_turn_start_reply_still_ends_the_turn(tmp_path):
+    """A fast server can finish before RCP has read which turn it started.
+
+    The canonical decoder accepts that completion: with no turn id of its own
+    yet, it has nothing to disagree with. The wrapper demanded one, so the turn
+    stayed unfenced with stdin open and settled as protocol incomplete -- and
+    collection, arriving later, would find nothing finished to adopt.
+    """
+
+    turn, observer = _canonical_app_server_turn(tmp_path, handshake=True)
+    observer.input({"id": 4, "method": "turn/start"})
+    completed = {
+        "method": "turn/completed",
+        "params": {"turn": {"id": "unread-turn", "status": "completed"}},
+    }
+
+    assert turn.receive_line(json.dumps(completed)).complete
+    observer.output(completed)
+
+    assert observer.terminal and observer.complete
+
+
+def test_a_final_event_without_a_newline_is_still_observed(tmp_path):
+    """The live reader yields that last partial line at EOF; so must the wrapper.
+
+    A provider that writes its terminal event and closes stdout without a
+    trailing newline would otherwise end a finished turn recorded incomplete,
+    leaving collection with nothing to adopt for a turn that in fact completed.
+    """
+
+    code = """
+import json, sys
+print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}}), flush=True)
+sys.stdout.write(json.dumps({"type": "turn.completed"}))
+sys.stdout.flush()
+"""
+    process = _start(tmp_path, code)
+    process.stdin.write(b'{"type":"user","uuid":"initial","message":{}}\n')
+    process.stdin.close()
+    # Delivered and complete: the controller flushes the same partial line.
+    _finish(process, expected=0)
+
+    outcome = json.loads((tmp_path / "provider.pid.turn" / "outcome.json").read_text())
+    assert outcome["protocol_complete"]

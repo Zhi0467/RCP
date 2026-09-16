@@ -68,9 +68,7 @@ def collected_task_operation_id(execution: AgentTaskExecution) -> str:
 def journal_pid_files(store: AppStore, record: AgentTaskRecord) -> list[str]:
     record = collection_source(store, record)
     result = []
-    for receipt in store.agent_task_receipts(record.operation_id):
-        if receipt.category != "remote_provider_started":
-            continue
+    for receipt in store.remote_provider_start_receipts(record.operation_id):
         payload = receipt.payload
         if payload.get("journal_version") != 1:
             return []

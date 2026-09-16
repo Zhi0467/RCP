@@ -17,6 +17,8 @@ from rcp.runs.turn_collection import (
     can_stop_remote_provider,
     describe_provider_silence,
     incomplete_collection_text,
+    journal_pid_file,
+    journal_pid_files,
     read_collected_turn,
     recorded_provider_identity,
     replay_collected_events,
@@ -813,3 +815,29 @@ def test_an_unidentified_provider_is_never_offered_a_delayed_stop(tmp_path, monk
     assert store.agent_task_has_receipt(record.operation_id, "remote_provider_still_running")
     assert recorded_provider_identity(store, current, str(pid)) is None
     assert not can_stop_remote_provider(store, current)
+
+
+def test_the_latest_pass_is_found_past_the_receipt_display_ceiling(tmp_path):
+    """Collection must read every pass, not the page a projection would show.
+
+    `agent_task_receipts` returns the oldest receipts up to a display ceiling. A
+    turn that ran enough compute commands to fill it and then opened a
+    correction pass would hide that pass behind them, and collection would adopt
+    the journal of the pass the correction had already replaced.
+    """
+
+    from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT
+
+    store, record, pid = _failed_turn(tmp_path)
+    for index in range(AGENT_TASK_RECEIPT_LIST_LIMIT):
+        # Protected categories, because retention keeps exactly these: a turn
+        # reaches the ceiling through its own compute commands, not through
+        # diagnostics that get pruned.
+        store.record_agent_task_receipt(
+            record.operation_id, "compute_command_started", {"index": index}, tier="summary"
+        )
+    correction = _next_pass(store, record, pid, "agent.pid.1")
+
+    assert len(store.agent_task_receipts(record.operation_id)) == AGENT_TASK_RECEIPT_LIST_LIMIT
+    assert journal_pid_files(store, record) == [str(pid), str(correction)]
+    assert journal_pid_file(store, record) == str(correction)

@@ -304,3 +304,47 @@ def test_probe_reports_the_identity_a_later_stop_is_held_to(owned_group):
     assert json.loads(result.stdout)["identity"] == remote_terminate_provider.process_identity(
         process.pid
     )
+
+
+def test_the_clock_identity_separates_two_processes_dated_to_one_second(monkeypatch):
+    """`lstart` resolves to the second, so the command has to carry the difference.
+
+    A host without /proc can only date a process to the second, and a pid
+    recycled inside that second would otherwise present the same token. What
+    separates them is the command: this group was launched for one turn and
+    names that turn's pidfile, which nothing inherits along with the number.
+    """
+
+    stamp = "Wed Sep 16 21:16:15 2026"
+    commands = iter(
+        (
+            f"{stamp} python3 journal --pid-file /stage/agent-first.pid",
+            f"{stamp} python3 journal --pid-file /stage/agent-second.pid",
+        )
+    )
+
+    asked = []
+
+    def one_second(args, **_kwargs):
+        asked.append(args)
+        return subprocess.CompletedProcess(args, 0, next(commands), "")
+
+    monkeypatch.setattr(remote_terminate_provider.subprocess, "run", one_second)
+    tokens = {
+        remote_terminate_provider._clock_identity(4242),
+        remote_terminate_provider._clock_identity(4242),
+    }
+
+    # The command has to be asked for, or the two are dated alike and no longer
+    # distinguishable however the answer is folded together.
+    assert all("command=" in " ".join(args) for args in asked)
+    assert None not in tokens
+    assert len(tokens) == 2
+
+
+def test_the_clock_identity_is_stable_for_one_live_process(owned_group):
+    process, _ = owned_group(ignore_term=False)
+    token = remote_terminate_provider._clock_identity(process.pid)
+
+    assert token is not None
+    assert remote_terminate_provider._clock_identity(process.pid) == token

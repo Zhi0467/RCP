@@ -419,6 +419,12 @@ def _roll_result_view_retention(
             )
 
 
+#: Continuations that recover the same logical result-view turn instead of
+#: starting one. Collection belongs here: it replays a finished journal for the
+#: turn that was already running, and chooses no view action of its own.
+_RESULT_VIEW_RECOVERY_CONTINUATIONS = frozenset({"resume", "retry", "handoff", "collect"})
+
+
 def _result_view_action_was_settled_by_ancestor(
     request: RunRequest,
     execution: AgentTaskExecution,
@@ -426,7 +432,7 @@ def _result_view_action_was_settled_by_ancestor(
 ) -> bool:
     """Recognize only this recovery lineage's exact already-committed view action."""
 
-    if execution.continuation not in {"resume", "retry", "handoff"}:
+    if execution.continuation not in _RESULT_VIEW_RECOVERY_CONTINUATIONS:
         return False
     result_view = request.result_view
     if result_view is None:
@@ -528,7 +534,7 @@ def _prepare_result_view_turn(
         or request.chat_scope != "node"
         or execution is None
         or (
-            execution.continuation not in {"fresh", "resume"}
+            execution.continuation not in {"fresh", "resume", "collect"}
             and not (
                 execution.continuation == "retry" and result_view.action in {"create", "revise"}
             )
@@ -548,7 +554,7 @@ def _prepare_result_view_turn(
     task = _result_view_task(execution)
     if result_view.action == "create":
         origin_operation_id = logical_operation_id
-        if execution.continuation in {"resume", "retry", "handoff"}:
+        if execution.continuation in _RESULT_VIEW_RECOVERY_CONTINUATIONS:
             current = execution.store.agent_task(execution.operation_id)
             seen: set[str] = set()
             while current is not None and current.parent_operation_id is not None:
@@ -604,7 +610,7 @@ def _prepare_result_view_turn(
             local_stage,
             remote_stage,
             view_id,
-            recovering=execution.continuation in {"resume", "retry", "handoff"},
+            recovering=execution.continuation in _RESULT_VIEW_RECOVERY_CONTINUATIONS,
         )
         return _PreparedResultView(
             action="create",

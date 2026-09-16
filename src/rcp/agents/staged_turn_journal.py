@@ -86,11 +86,14 @@ class WireCompletion:
                 self.terminal = True
                 return
             turn = params.get("turn")
+            # A fast server can complete the turn before its turn/start reply is
+            # read. The canonical decoder accepts that completion, having no id
+            # to disagree with yet, so requiring one here left the turn unfenced
+            # with stdin open -- and nothing for collection to settle.
             if (
                 value.get("method") == "turn/completed"
                 and isinstance(turn, dict)
-                and self.turn_id is not None
-                and turn.get("id") == self.turn_id
+                and (self.turn_id is None or turn.get("id") == self.turn_id)
             ):
                 self.terminal = True
                 self.complete = turn.get("status") == "completed"
@@ -136,6 +139,19 @@ class Lines:
         self.limit = limit
         self.consume = consume
         self.pending = bytearray()
+        self.discarding = False
+
+    def flush(self):
+        """Observe a final event the provider wrote without a trailing newline.
+
+        The live reader yields that last partial line at EOF. Dropping it here
+        would end a finished turn recorded as protocol incomplete.
+        """
+
+        if self.pending and not self.discarding:
+            with suppress(ValueError, UnicodeError, TypeError, AttributeError):
+                self.consume(json.loads(bytes(self.pending).decode("utf-8", "replace")))
+        self.pending.clear()
         self.discarding = False
 
     def feed(self, data, stop_when=None):
@@ -297,6 +313,14 @@ def run(args):
                 channel = child_streams[descriptor]
                 if not data:
                     del child_streams[descriptor]
+                    if channel == 1:
+                        outputs.flush()
+                        # A completion only surfaces here once this channel's
+                        # bytes have already been forwarded, so it travelled
+                        # with them; an attached uplink delivered it.
+                        terminal_uplinked = terminal_uplinked or (
+                            observer.terminal and not detached
+                        )
                     continue
                 if channel == 1:
                     if observer.terminal:
