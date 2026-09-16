@@ -446,3 +446,69 @@ async def test_collection_stream_restores_only_finished_patch_and_sets_repair_ga
         "Finished the original work."
     ]
     assert events[-1].event == "done"
+
+
+def test_collection_accepts_bytes_the_live_pipe_would_have_decoded(tmp_path, monkeypatch):
+    """A provider byte that is not valid UTF-8 must not strand a finished turn.
+
+    The live reader decodes its stream with a replacement, so a turn carrying
+    such a byte is delivered normally when the link holds. Collection stands in
+    for that delivery and cannot be the stricter of the two.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    root, outcome, events, patch = _journal(pid)
+    raw = events.encode() + b'{"type":"item.completed","raw":"\xff"}\n'
+    (root / "events.jsonl").write_bytes(raw)
+    (root / "outcome.json").write_text(
+        json.dumps({**outcome, "events_sha256": hashlib.sha256(raw).hexdigest()})
+    )
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    collected = read_collected_turn(store, record)
+
+    assert collected.patch == patch
+    assert [
+        item.text
+        for item in replay_collected_events(collected, _request())
+        if item.event == "answer"
+    ] == ["Finished the original work."]
+
+
+def test_collected_failure_reports_the_provider_stderr(tmp_path, monkeypatch):
+    """A collected failure says what the live pipe would have said."""
+
+    store, record, pid = _failed_turn(tmp_path)
+    root, *_ = _journal(pid, complete=False)
+    (root / "stderr.txt").write_text("codex: fatal: the model refused the request\n")
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    events = replay_collected_events(read_collected_turn(store, record), _request())
+
+    assert [item.event for item in events] == ["error"]
+    assert "the model refused the request" in events[0].text
+
+
+def test_unbindable_journal_withdraws_the_offer_without_failing_the_projection(tmp_path):
+    """One broken record must not take a whole task listing down with it.
+
+    `can_collect` runs for every task in a projection, so a journal that lost
+    its stage binding withdraws the offer. The action path still refuses loudly.
+    """
+
+    store, record, _pid = _failed_turn(tmp_path)
+    elsewhere = tmp_path / "other-stage"
+    elsewhere.mkdir(mode=0o700)
+    # A later stage checkpoint moves the task off the stage its recorded pass
+    # still names, which is how the two can disagree in the first place.
+    store.checkpoint_agent_task(
+        record.operation_id, stage_host="test-host", stage_root=str(elsewhere)
+    )
+    record = store.agent_task(record.operation_id)
+    assert record is not None
+
+    assert can_collect(store, record) is False
+    with pytest.raises(ValueError, match="lost its stage binding"):
+        read_collected_turn(store, record)

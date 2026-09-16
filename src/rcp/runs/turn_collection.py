@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
-from rcp.agents.launcher import AgentProcessControl
+from rcp.agents.launcher import AgentProcessControl, _meaningful_stderr
 from rcp.providers import ProviderTurnRequest, profile_for, require_runtime_id
 from rcp.transport import RemoteRunStage, StateUnavailable, remote_turn_journal
 
@@ -41,6 +41,18 @@ def collection_source(store: AppStore, record: AgentTaskRecord) -> AgentTaskReco
             raise ValueError("Collection changed its original task binding.")
         record = parent
     return record
+
+
+def projected_chat_turn_operation_id(store: AppStore, record: AgentTaskRecord) -> str:
+    """Which chat turn a projection points at; a broken chain points at itself.
+
+    Same reason as `can_collect`: a listing must render every task it holds.
+    """
+
+    try:
+        return collection_source(store, record).operation_id
+    except ValueError:
+        return record.operation_id
 
 
 def collected_task_operation_id(execution: AgentTaskExecution) -> str:
@@ -76,6 +88,21 @@ def journal_pid_file(store: AppStore, record: AgentTaskRecord) -> str | None:
 
 
 def can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
+    """Offer collection, and never fail a listing for one unbindable record.
+
+    This runs for every task in a projection. A broken continuation chain or a
+    journal that lost its stage binding must withdraw the offer, not raise
+    through the response. `read_collected_turn` re-checks the same bindings and
+    still refuses loudly, so a human who asks anyway is told why.
+    """
+
+    try:
+        return _can_collect(store, record)
+    except ValueError:
+        return False
+
+
+def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
     return bool(
         not record.history_only
         and not store.agent_task_has_receipt(record.operation_id, "provider_collection_incomplete")
@@ -112,6 +139,7 @@ class CollectedTurn:
     patch: str | None
     passes: tuple[CollectedTurn, ...] = ()
     correction_error: str | None = None
+    stderr: str = ""
 
     @property
     def complete(self) -> bool:
@@ -198,6 +226,7 @@ def read_collected_turn(store: AppStore, record: AgentTaskRecord) -> CollectedTu
         patch,
         passes,
         correction_error,
+        operational.stderr,
     )
 
 
@@ -235,6 +264,7 @@ def _read_pass(stage: RemoteRunStage, source: AgentTaskRecord, pid_file: str) ->
     outcome = document.get("outcome")
     events = document.get("events")
     patch = document.get("patch")
+    errors = document.get("stderr")
     if (
         not isinstance(outcome, dict)
         or not isinstance(events, str)
@@ -249,27 +279,38 @@ def _read_pass(stage: RemoteRunStage, source: AgentTaskRecord, pid_file: str) ->
         raise ValueError("The provider journal belongs to a different invocation.")
     require_runtime_id(str(outcome.get("provider")), str(outcome.get("runtime_id")))
     for field, content in (("events_sha256", events), ("patch_sha256", patch)):
+        # `surrogateescape` on both sides recovers the writer's exact bytes,
+        # including any the provider emitted that are not valid UTF-8.
         if (
             content is not None
-            and outcome.get(field) != hashlib.sha256(content.encode()).hexdigest()
+            and outcome.get(field)
+            != hashlib.sha256(content.encode("utf-8", "surrogateescape")).hexdigest()
         ):
             raise ValueError("The provider journal changed after completion.")
-    return CollectedTurn(source.operation_id, pid_file, outcome, events, patch)
+    return CollectedTurn(
+        source.operation_id,
+        pid_file,
+        outcome,
+        events,
+        patch,
+        stderr=errors if isinstance(errors, str) else "",
+    )
 
 
 def replay_collected_events(
     collected: CollectedTurn, request: ProviderTurnRequest
 ) -> list[AgentEvent]:
     if not collected.complete:
-        return [
-            AgentEvent(
-                event="error",
-                text=str(
-                    collected.outcome.get("error")
-                    or "The remote provider stopped before completing this turn. Its retained output is incomplete."
-                ),
-            )
-        ]
+        text = str(
+            collected.outcome.get("error")
+            or "The remote provider stopped before completing this turn. Its retained output is incomplete."
+        )
+        # The live pipe enriches a failure with the provider's own stderr. A
+        # collected failure is the same failure and must not say less.
+        detail = _meaningful_stderr(collected.stderr)
+        if detail and detail not in text:
+            text = "\n".join((text, detail))
+        return [AgentEvent(event="error", text=text)]
     events = _decode_pass(collected, request)
     for item in collected.passes:
         if item.pid_file == collected.outcome.get("pid_file"):

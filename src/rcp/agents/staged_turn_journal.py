@@ -353,14 +353,18 @@ def run(args):
                 and not child.stdin.closed
             ):
                 child.stdin.close()
+            # These run every pass of the loop, including the passes after an
+            # earlier failure has already begun the stop. The first cause is the
+            # one that explains the turn, so it is never overwritten by a later
+            # condition that failure itself produced.
             if detached and not observer.prompt_started:
-                error = "Provider uplink closed before prompt delivery."
+                error = error or "Provider uplink closed before prompt delivery."
             # Input identities are bounded as well as payload buffers.
             if (
                 len(observer.message_ids) + len(observer.requests) + len(observer.steer_requests)
                 > args.max_control_messages
             ):
-                error = "Provider control metadata exceeded its storage limit."
+                error = error or "Provider control metadata exceeded its storage limit."
         events.flush()
         errors.flush()
         os.fsync(events.fileno())

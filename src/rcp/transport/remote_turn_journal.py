@@ -34,12 +34,25 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
                 content = stream.read(limit + 1)
                 if len(content) > limit:
                     raise ValueError("Provider journal entry exceeds its bound.")
-                return content.decode("utf-8")
+                # A provider may emit a byte that is not valid UTF-8, and the
+                # live pipe already decodes such a stream with a replacement
+                # rather than failing. Collection must not be stricter than the
+                # delivery it stands in for, so this round-trips the exact bytes
+                # instead: the caller re-encodes the same way to verify the
+                # writer's digest.
+                return content.decode("utf-8", "surrogateescape")
 
         outcome = json.loads(read("outcome.json", max_bytes))
+        try:
+            # The provider's own diagnostic, which the live pipe also reports.
+            # Its absence must never downgrade an otherwise readable journal.
+            errors = read("stderr.txt", max_bytes)
+        except (OSError, ValueError):
+            errors = ""
         return {
             "outcome": outcome,
             "events": read("events.jsonl", max_bytes),
+            "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
         }
     finally:

@@ -63,7 +63,7 @@ from rcp.runs.steering import (
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
-from rcp.runs.turn_collection import can_collect, collection_source
+from rcp.runs.turn_collection import can_collect, projected_chat_turn_operation_id
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -214,7 +214,7 @@ def _agent_task_response(
     response = record.model_dump(mode="json")
     response["can_collect"] = can_collect(store, record)
     if record.kind in {"node_chat", "project_chat"}:
-        response["chat_turn_operation_id"] = collection_source(store, record).operation_id
+        response["chat_turn_operation_id"] = projected_chat_turn_operation_id(store, record)
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
