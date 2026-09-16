@@ -47,6 +47,27 @@ const project = {
       run_on: "local",
       permissions: {},
     },
+    paper_coach: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    orchestrator: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    refresh: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
   },
   provider_readiness: {
     local: {
@@ -926,6 +947,40 @@ test("Experiment provider switch exposes provider controls but locks the executi
     /<button class="button primary" disabled=""[^>]*>.*Switch provider<\/button>/s,
   );
   assert.doesNotMatch(html, /Truth input subset|Additional message/);
+});
+
+test("every switch dialog holds its submit until the binding actually changes", () => {
+  // Only seed and refresh reach this dialog as a plain retry; every other kind
+  // gets here through a switch control, where an unchanged selection is a no-op.
+  const initialConfig = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+  const render = (kind, config) =>
+    renderToStaticMarkup(
+      React.createElement(RunDialog, {
+        open: true,
+        kind,
+        mode: "retry",
+        project,
+        initialScope: ["repo"],
+        initialConfig: config ?? initialConfig,
+        busy: false,
+        onClose() {},
+        onRun() {},
+      }),
+    );
+
+  for (const kind of ["orchestrator", "node_chat", "project_chat", "paper_coach"]) {
+    const html = render(kind);
+    assert.match(
+      html,
+      /<button class="button primary" disabled=""[^>]*>.*Switch provider<\/button>/s,
+    );
+  }
+  assert.match(render("orchestrator"), /Switch Auto-research provider/);
+  assert.match(render("node_chat"), /Switch Experiment provider/);
+  // Seed keeps a submittable plain retry with nothing changed.
+  const seed = render("seed");
+  assert.match(seed, /Retry seed/);
+  assert.doesNotMatch(seed, /<button class="button primary" disabled=""/);
 });
 
 test("a standalone retry may move machines while an episode-bound one stays pinned", () => {

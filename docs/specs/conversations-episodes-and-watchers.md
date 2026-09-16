@@ -212,7 +212,10 @@ provider, session id, execution host, exact reusable stage, project, graph
 target, and actor conversation. A human Run always starts a fresh episode and
 fresh native session. A provider switch is a deliberate recovery that becomes
 active only after a mechanically successful handoff; automatic work never
-silently switches or starts fresh.
+silently switches or starts fresh. Because the switch exists to change the
+binding, it holds its submission until the selection actually differs from the
+one that failed; a run that can retry unchanged keeps its own plain Retry and
+never routes through the switch to get one.
 
 Only operational provider turns spend the operational ceiling. Validation,
 same-invocation Patch/watcher correction, exact Resume/Retry, and hidden report

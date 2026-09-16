@@ -1607,12 +1607,22 @@ def retry_auto_research_task(
     }
     # A rebound recovery cannot resume the session the old binding owns, so it
     # starts fresh the way a spent session or a missing checkpoint already does.
-    # The machine never appears here; `retry` pins it for every episode task.
+    # The machine never reaches here; both Retry entry points pin it first.
     rebound = {
         key: value
         for key, value in requested.items()
         if value is not None and value != getattr(original, key)
     }
+    if rebound and original.role != "orchestrator":
+        # Only the orchestrator's turn has a clean-session path through its own
+        # stream and stage. A worker's continuation requires the exact session
+        # its dispatch bound it to, so admitting a rebinding here would create a
+        # task that cannot launch.
+        raise ValueError(
+            "An Auto-research worker recovery resumes the exact session its dispatch bound "
+            "it to, so only the orchestrator's recovery can change provider, model, or "
+            "reasoning."
+        )
     if rebound:
         original = AutoResearchRunRequest.model_validate(
             {**original.model_dump(mode="json"), **rebound}
@@ -1736,20 +1746,17 @@ def retry_auto_research_task(
     if classification is not None:
         tasks.store.record_agent_task_receipt(
             retried.operation_id,
-            # The category is durable and already consumed; `role` is what
-            # distinguishes the actor now that a worker can rebind too.
             "auto_research_orchestrator_clean_retry",
             {
                 "classification": classification,
-                "role": original.role,
                 "same_allocation": True,
                 "actor_operation_id": original.actor_operation_id,
                 "retry_mode": "clean_native_session",
             },
             tier="summary",
         )
-        # The event names the actor that is retrying and the reason it cannot
-        # resume, because a human rebinding is not a continuation that failed.
+        # The event names why the turn cannot resume, because a human rebinding
+        # is a choice rather than a continuation that failed.
         reason = (
             "the human changed its provider, model, or reasoning"
             if classification == "binding_changed"
@@ -1757,8 +1764,8 @@ def retry_auto_research_task(
         )
         tasks.store.record_agent_task_event(
             retried.operation_id,
-            f"The {original.role} is retrying this same paid allocation with a clean "
-            f"native session after {reason}.",
+            "The orchestrator is retrying this same paid allocation with a clean native "
+            f"session after {reason}.",
             level="warning",
         )
     return retried

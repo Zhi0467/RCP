@@ -18,10 +18,9 @@ interface Props {
   onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
 }
 
-/** What a retry dialog is retrying, for the profiles that can open one. */
-function retryTitle(kind: AgentExecutionProfile): string {
-  if (kind === "seed") return "Retry seed";
-  if (kind === "refresh") return "Retry refresh";
+/** Whose binding this dialog is about to change, in that run's own words. */
+function switchTitle(kind: AgentExecutionProfile): string {
+  if (kind === "node_chat") return "Switch Experiment provider";
   if (kind === "orchestrator") return "Switch Auto-research provider";
   return "Switch provider";
 }
@@ -53,9 +52,13 @@ export function RunDialog({
   }, [open]);
 
   if (!open) return null;
-  const switchingExperimentProvider = mode === "retry" && kind === "node_chat";
+  // A run that can retry as-is only reaches this dialog through a switch
+  // control, so opening it means the human wants a different binding and an
+  // unchanged selection is not a submission. Seed and Refresh have no other
+  // retry path, so requiring a change there would block a plain retry.
+  const switching = mode === "retry" && kind !== "seed" && kind !== "refresh";
   const switchSelectionUnchanged = Boolean(
-    switchingExperimentProvider && initialConfig && !agentSelectionChanged(config, initialConfig),
+    switching && initialConfig && !agentSelectionChanged(config, initialConfig),
   );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   // Which runtime this run will use. A request cannot override the profile's
@@ -96,10 +99,12 @@ export function RunDialog({
       >
         <header>
           <h2 id="run-dialog-title">
-            {switchingExperimentProvider
-              ? "Switch Experiment provider"
+            {switching
+              ? switchTitle(kind)
               : mode === "retry"
-                ? retryTitle(kind)
+                ? kind === "seed"
+                  ? "Retry seed"
+                  : "Retry refresh"
                 : kind === "seed"
                   ? "Seed the project graph"
                   : "Refresh project understanding"}
@@ -189,10 +194,10 @@ export function RunDialog({
             <Play size={14} />{" "}
             {mode === "retry"
               ? busy
-                ? switchingExperimentProvider
+                ? switching
                   ? "Switching…"
                   : "Retrying…"
-                : switchingExperimentProvider
+                : switching
                   ? "Switch provider"
                   : "Retry"
               : busy

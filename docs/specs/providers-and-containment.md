@@ -353,13 +353,16 @@ stage and receipts for reconciliation.
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, stage, and external-effect
 diagnostics. Provider, model, and reasoning are one niche a human may change on
-any recovery, because what makes a recovery worth starting is often that the
-current one cannot finish the turn; the execution machine moves only where
-nothing is anchored to it. An episode's watchers, stage, and children live on
-the machine its turn runs on, so a recovery inside an episode keeps that
-machine, while a standalone turn owns nothing there and may move to any
-reachable one. A rebound Auto-research recovery starts a clean native session,
-since the prior continuation belongs to the binding it left. A failed run retains its scratch and Patch text for bounded
+a recovery, because what makes a recovery worth starting is often that the
+current one cannot finish the turn. A rebound recovery starts a clean native
+session, since the prior continuation belongs to the binding it left, so the
+rebinding reaches exactly the actors that have a clean-session path: an
+Auto-research worker continues only through the exact session its dispatch bound
+it to, and its recovery is refused rather than admitted as a turn that cannot
+launch. The execution machine moves only where nothing is anchored to it. An
+episode's watchers, stage, and children live on the machine its turn runs on, so
+a recovery inside an episode keeps that machine on every Retry path, while a
+standalone turn owns nothing there and may move to any reachable one. A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,

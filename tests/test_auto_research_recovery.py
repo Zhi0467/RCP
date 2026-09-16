@@ -316,6 +316,47 @@ def test_worker_failure_never_becomes_auto_research_verdict(tmp_path: Path) -> N
     assert store.auto_research_recovery("task:worker") is None
 
 
+def test_only_the_orchestrator_recovery_can_be_rebound(tmp_path: Path) -> None:
+    """The control a human is offered has to produce a turn that can launch."""
+
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, request, execution):
+        execution.checkpoint_stage("", str(tmp_path))
+        yield _sse(AgentEvent(event="session", session_id=f"session-{request.role}"))
+        if request.role == "worker":
+            yield _sse(AgentEvent(event="error", text="worker failed"))
+        else:
+            yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    auto_research, root = _start(tasks)
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    worker = start_auto_research_turn(
+        tasks,
+        auto_research.episode_id,
+        AutoResearchRunRequest(
+            provider="codex",
+            episode_id=auto_research.episode_id,
+            role="worker",
+            control_node_id="exp/check",
+        ),
+        parent_operation_id=root.operation_id,
+        operation_id="worker",
+    )
+    wait_for_task(store, worker.operation_id, expect="failed")
+
+    # A worker's continuation requires the exact session its dispatch bound it
+    # to, so a rebinding is refused rather than admitted and left unable to run.
+    with pytest.raises(ValueError, match="only the orchestrator's recovery can change"):
+        tasks.retry_auto_research(worker.operation_id, service=None, reasoning="high")
+    # The machine is the one setting no episode recovery may move, and the
+    # Auto-research path is pinned by the same rule as every other one.
+    with pytest.raises(ValueError, match="pinned execution machine"):
+        tasks.retry_auto_research(worker.operation_id, service=None, run_on="cluster")
+
+
 def test_session_limit_uses_clean_orchestrator_retry_even_after_checkpoint(tmp_path: Path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
