@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -342,11 +343,15 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
 
+    attempts = itertools.count(1)
+
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
             execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
-        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+        # Each attempt fails differently: this covers the shared allocation and
+        # its backoff, not the stop rule for one error that repeats.
+        yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
@@ -447,11 +452,15 @@ def test_admission_and_provider_failures_share_durable_allocation_attempt_cap(
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
 
+    attempts = itertools.count(1)
+
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
             execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
-        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+        # Each attempt fails differently: this covers the shared allocation and
+        # its backoff, not the stop rule for one error that repeats.
+        yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
@@ -708,28 +717,39 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
 
 
-def test_a_capped_account_stops_retrying_and_waits_for_the_human(tmp_path: Path) -> None:
-    """A spent allowance is the account's state; no attempt this run makes clears it."""
+def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
+    tmp_path: Path,
+) -> None:
+    """RCP reads that the retry did not help, not what the provider's prose meant."""
 
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
+    capped = "You've reached your Fable limit. Switch to another model to continue."
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
-        yield _sse(AgentEvent(event="session", session_id="capped-session"))
-        yield _sse(
-            AgentEvent(
-                event="error",
-                text="You've reached your Fable limit. Switch to another model to continue.",
-            )
-        )
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=capped))
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
     _, root = _start(tasks)
     wait_for_task(store, root.operation_id, expect="failed")
     recovery = _wait_for_recovery(store, "task:root")
-    assert recovery.failure_kind == "usage_limit"
-    assert recovery.retry_mode == "blocked"
-    assert recovery.status == "blocked"
+    # The first failure says nothing about whether another attempt would help.
+    assert recovery.status == "pending"
+
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.status != "blocked":
+            return None
+        return candidate
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+    assert settled.retry_mode == "blocked"
+    retried = store.agent_task(settled.operation_id or "")
+    assert retried is not None and retried.attempt == 2

@@ -590,6 +590,11 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        # Provider, model, and reasoning are one niche and a human may change
+        # any of them on any recovery. The execution machine is not: moving it
+        # moves the stage and write roots the turn is bound to.
+        if run_on is not None and run_on != original.run_on:
+            raise ValueError("Recovery cannot change its pinned execution machine.")
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
                 self,

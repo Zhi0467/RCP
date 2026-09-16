@@ -2185,7 +2185,7 @@ export type EpisodeHealth =
   | "completed"
   | "stopped"
   | "failed";
-export type EpisodeBlockedReason = "sign_in" | "reauthorize" | "usage_limit";
+export type EpisodeBlockedReason = "sign_in" | "reauthorize" | "repeated_failure";
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";

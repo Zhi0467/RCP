@@ -243,7 +243,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
-EpisodeBlockedReason = Literal["sign_in", "reauthorize", "usage_limit"]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize", "repeated_failure"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -745,14 +745,15 @@ def _episode_projection(
         return "stopping", "wait", None, None
     if recovery is not None and recovery.status == "pending":
         return "recovering", "wait", None, None
-    # A spent usage allowance is the account's state, so RCP stopped retrying
-    # and the run waits on the human exactly as a dead login does.
+    # A retry that failed the way its predecessor did stopped the ladder. RCP
+    # does not say why; the provider's own message is on the turn, and the
+    # human can change the provider, model, or reasoning and retry.
     if (
         recovery is not None
         and recovery.status == "blocked"
-        and recovery.failure_kind == "usage_limit"
+        and recovery.failure_kind != "provider_auth"
     ):
-        return "needs_action", "review", None, "usage_limit"
+        return "needs_action", "retry", "retry", "repeated_failure"
     if task is not None and task.status == "failed" and task.failure_kind == "provider_auth":
         return "needs_action", recovery_control or "review", recovery_control, "sign_in"
     if task is not None and task.status in {"paused", "interrupted", "failed"}:

@@ -1417,10 +1417,6 @@ PROVIDER_IDS: tuple[str, ...] = tuple(PROVIDERS)
 DEFAULT_PROVIDER = CodexProfile.id
 
 
-#: "reached your <plan or model> limit", whatever that plan is called this month.
-_NAMED_PLAN_LIMIT = re.compile(r"reached your [\w.\- ]{0,40}limit")
-
-
 def classify_terminal_error(text: str) -> str:
     """Classify a persisted provider error without depending on a provider id."""
     folded = " ".join(text.casefold().split())
@@ -1436,12 +1432,6 @@ def classify_terminal_error(text: str) -> str:
         )
     ):
         return "session_limit"
-    # A capped account is not a capped session: a fresh session cannot clear it,
-    # so it is classified apart from `session_limit`, which a clean retry does
-    # clear. Observed from Claude on 2026-09-16 as "You've reached your Fable
-    # limit. Switch to another model to continue."
-    if "switch to another model" in folded or _NAMED_PLAN_LIMIT.search(folded):
-        return "usage_limit"
     # The provider still answers, but the native session RCP asked it to resume
     # is gone. Resuming again cannot work; a fresh session can. Observed from
     # Codex on 2026-09-12 as "collab spawn failed: no thread with id: <uuid>".

@@ -23,22 +23,23 @@ const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/type
 
 after(() => server.close());
 
-test("Experiment provider-switch retry overrides never submit run_on", () => {
-  const task = {
-    request: { patch_kind: "experiment_loop" },
-  };
+test("no retry submits run_on, whatever kind of task it recovers", () => {
   const config = {
     provider: "claude",
     model: "claude-sonnet-4-5",
     reasoning: "high",
     run_on: "cluster",
   };
+  const rebound = { provider: "claude", model: "claude-sonnet-4-5", reasoning: "high" };
 
-  assert.deepEqual(taskRetryRequestBody(task, config), {
-    provider: "claude",
-    model: "claude-sonnet-4-5",
-    reasoning: "high",
-  });
+  for (const task of [
+    { kind: "node_chat", request: { patch_kind: "experiment_loop" } },
+    { kind: "auto_research", request: {} },
+    { kind: "node_chat", request: {} },
+    { kind: "seed", request: {} },
+  ]) {
+    assert.deepEqual(taskRetryRequestBody(task, config), rebound);
+  }
 });
 
 function graph(overrides = {}) {

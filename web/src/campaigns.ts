@@ -126,8 +126,8 @@ export function blockedReasonLead(
   if (reason === "sign_in") {
     return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
   }
-  if (reason === "usage_limit") {
-    return `This provider account's usage allowance is spent, so RCP stopped retrying. ${label}`;
+  if (reason === "repeated_failure") {
+    return `The retry failed the same way, so RCP stopped. Change the provider, model, or reasoning and ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
   }
   if (reason === "reauthorize") {
     const lead =

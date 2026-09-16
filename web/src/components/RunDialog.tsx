@@ -1,12 +1,12 @@
 import { AlertTriangle, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AgentRunConfig, ProjectSnapshot } from "../types";
+import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
 import { RepositoryScope } from "./RepositoryScope";
 
 interface Props {
   open: boolean;
-  kind: "seed" | "refresh" | "node_chat";
+  kind: AgentExecutionProfile;
   project: ProjectSnapshot;
   initialScope: string[];
   initialConfig?: AgentRunConfig;

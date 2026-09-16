@@ -107,7 +107,7 @@ POLICY_MATRIX = [
     pytest.param(
         "Auto-research",
         "retry",
-        "provider profile remains pinned",
+        "execution machine remains pinned",
         id="auto-research-retry",
     ),
     pytest.param(
@@ -699,13 +699,13 @@ def _retry_case(
         return "execution machine remains pinned"
     if family == "Auto-research":
         previous = _auto_parent(store, tasks, stage, terminal_event="error")
-        with pytest.raises(ValueError, match="cannot change its pinned provider"):
+        with pytest.raises(ValueError, match="cannot change its pinned execution machine"):
             tasks.retry(
                 previous.operation_id,
-                provider="claude",
+                run_on="remote",
                 authorized_by=previous.authorized_by,
             )
-        return "provider profile remains pinned"
+        return "execution machine remains pinned"
     if family == "branch merge":
         previous = _detached_record(
             kind="branch_merge",

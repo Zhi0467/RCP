@@ -8,7 +8,7 @@ from rcp.runs.auto_research import (
     auto_research_failure_signal,
 )
 from rcp.runs.provider_login import ProviderSignedOut
-from rcp.storage import EpisodeRecord
+from rcp.storage import AgentTaskRecord, EpisodeRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -26,7 +26,6 @@ AutoResearchRecoveryFailure = Literal[
     "network",
     "rate_limit",
     "session_limit",
-    "usage_limit",
     "missing_checkpoint",
     "continuation_unavailable",
     "structural_unrecoverable",
@@ -94,6 +93,8 @@ def reconcile_auto_research_task_settlement(
         )
 
     failure_kind, retry_mode = _recoverable_failure(store, task.operation_id, request)
+    if retry_mode != "blocked" and _repeats_the_previous_failure(store, task):
+        retry_mode = "blocked"
     store.schedule_auto_research_task_recovery(
         task.operation_id,
         failure_kind=failure_kind,
@@ -190,6 +191,28 @@ class _StoredSettlement:
         self.store = store
 
 
+def _repeats_the_previous_failure(store, task: AgentTaskRecord) -> bool:
+    """Whether this attempt failed the way the attempt before it already did.
+
+    RCP does not read a provider's prose to predict whether another attempt
+    could succeed, and it does not need to: an attempt that reproduced its
+    predecessor's error is itself the evidence that retrying is not the thing
+    to do. Whatever the error was, the human now chooses, and the recovery
+    controls let them change the provider, model, or reasoning first.
+    """
+
+    if task.attempt <= 1 or task.parent_operation_id is None or not task.error:
+        return False
+    previous = store.agent_task(task.parent_operation_id)
+    if previous is None or not previous.error:
+        return False
+    return _folded(previous.error) == _folded(task.error)
+
+
+def _folded(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
 def _recoverable_failure(
     store,
     operation_id: str,
@@ -215,11 +238,6 @@ def _recoverable_failure(
     )
     if terminal == "session_limit":
         return "session_limit", "clean" if request.role == "orchestrator" else "exact"
-    if terminal == "usage_limit":
-        # The account's allowance is spent, not this turn's session. No attempt
-        # clears that, so the root turn waits for the human the way a dead login
-        # does rather than spending its attempts proving it again.
-        return "usage_limit", "blocked" if request.role == "orchestrator" else "clean"
     if terminal == "stale_session":
         # The provider no longer has this thread, so an exact resume fails the
         # same way every time whichever role asked for it.

@@ -192,6 +192,7 @@ import {
   type HumanSyncRequest,
 } from "./humanDraft";
 import type {
+  AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
   AgentTaskKind,
@@ -3488,11 +3489,7 @@ export default function App() {
   );
 
   const requestRetry = (task: AgentTask) => {
-    if (task.kind === "seed" || task.kind === "refresh") {
-      chooseRetryTask(task);
-      return;
-    }
-    void operateTask(task, "retry");
+    chooseRetryTask(task);
   };
 
   const commitProjectOpen = (id: string, experimentRoute: string | null = null) => {
@@ -4858,13 +4855,7 @@ export default function App() {
         <RunDialog
           open
           mode="retry"
-          kind={
-            isExperimentLoopRecovery(retryTask)
-              ? "node_chat"
-              : retryTask.kind === "seed"
-                ? "seed"
-                : "refresh"
-          }
+          kind={retryProfileKind(retryTask)}
           project={project}
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
@@ -5025,9 +5016,7 @@ function previewTraceMismatch(
 }
 
 function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): AgentRunConfig {
-  const profileKind =
-    task.kind === "seed" ? "seed" : task.kind === "refresh" ? "refresh" : "node_chat";
-  const profile = project.agent_profiles[profileKind];
+  const profile = project.agent_profiles[retryProfileKind(task)];
   return {
     provider: task.request.provider || profile.provider,
     model: task.request.model ?? profile.model,
@@ -5036,15 +5025,22 @@ function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): AgentRunCon
   };
 }
 
+/** The profile whose defaults fill a retry the task's own request left unset. */
+export function retryProfileKind(task: AgentTask): AgentExecutionProfile {
+  if (task.kind === "seed" || task.kind === "refresh") return task.kind;
+  if (task.kind === "auto_research") return "orchestrator";
+  if (isExperimentLoopRecovery(task)) return "node_chat";
+  return task.kind === "project_chat" || task.kind === "paper_coach" ? task.kind : "node_chat";
+}
+
 function isExperimentLoopRecovery(task: AgentTask): boolean {
   return task.request.patch_kind === "experiment_loop";
 }
 
 export function taskRetryRequestBody(
-  task: AgentTask,
+  _task: AgentTask,
   config: AgentRunConfig,
-): AgentRunConfig | Omit<AgentRunConfig, "run_on"> {
-  if (!isExperimentLoopRecovery(task)) return config;
+): Omit<AgentRunConfig, "run_on"> {
   return {
     provider: config.provider,
     model: config.model,
