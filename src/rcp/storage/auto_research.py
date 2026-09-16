@@ -1618,18 +1618,18 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._agent_task_record(row) if row is not None else None
 
-    def adopt_settled_auto_research_recovery(
-        self,
-        operation_id: str,
-        *,
-        admitted_operation_id: str,
-    ) -> None:
-        """Hand a recovery the ladder stopped working on to the human's own attempt.
+    def release_settled_auto_research_recovery(self, operation_id: str) -> None:
+        """Retire a verdict the ladder reached, for an attempt a human is starting.
 
-        A blocked or exhausted row is a verdict about the failure that produced
-        it, and a human Retry is the answer that verdict was waiting for. Left
-        settled, it would keep the run parked on a failure that is no longer the
-        current one and deny the next, different one its bounded ladder.
+        A blocked or exhausted row judges the failure that produced it, and a
+        human Retry is the answer that verdict was waiting for. Left settled, it
+        would keep the run parked on a failure that is no longer the current one
+        and deny the next, different one its bounded ladder.
+
+        This runs before the attempt exists. The new turn can settle the instant
+        it is spawned, and its settlement is what writes the next verdict, so
+        releasing afterwards would either miss the row it had already moved or
+        overwrite the answer that turn had just given.
         """
 
         now = self.now()
@@ -1639,10 +1639,11 @@ class AutoResearchStoreMixin:
                 """
                 UPDATE auto_research_recoveries
                 SET status = 'admitted', next_attempt_at = NULL, attempts = 0,
-                    admitted_operation_id = ?, updated_at = ?
-                WHERE operation_id = ? AND status IN ('blocked', 'exhausted')
+                    updated_at = ?
+                WHERE status IN ('blocked', 'exhausted')
+                  AND (operation_id = ? OR admitted_operation_id = ?)
                 """,
-                (admitted_operation_id, now, operation_id),
+                (now, operation_id, operation_id),
             )
 
     def complete_auto_research_recovery(

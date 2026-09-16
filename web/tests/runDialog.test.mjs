@@ -1011,6 +1011,12 @@ test("a standalone retry may move machines while an episode-bound one stays pinn
   assert.match(render({ runOnLocked: false }), /<span>Run on <\/span>/);
   assert.match(render({ runOnLocked: false }), /<option value="cluster">/);
   assert.match(render({}), /<span>Run on <svg/);
+  // Moving off a machine that is gone is the change, so nothing else is owed.
+  const moved = render({
+    runOnLocked: false,
+    initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "cluster" },
+  });
+  assert.doesNotMatch(moved, /<button class="button primary" disabled=""/);
 });
 
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {

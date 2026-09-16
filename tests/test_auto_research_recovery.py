@@ -758,6 +758,52 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
 
 
+def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
+    tmp_path: Path,
+) -> None:
+    """The stop judged one failure; it cannot also judge the next, unrelated one."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+    errors = iter([capped, capped, "The connection dropped mid-turn."])
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=next(errors, "Unexpected extra turn.")))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    human = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    wait_for_task(store, human.operation_id, expect="failed")
+
+    def rescheduled():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.operation_id != human.operation_id:
+            return None
+        return candidate if candidate.status == "pending" else None
+
+    # A dropped connection is not the failure the ladder stopped on, so it gets
+    # the whole bounded ladder rather than inheriting a verdict about a cap.
+    resumed = wait_until(rescheduled, detail="the new failure never got its own ladder")
+    assert resumed.attempts == 1
+    assert resumed.next_attempt_at is not None
+
+
 def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
     tmp_path: Path,
 ) -> None:
@@ -795,11 +841,20 @@ def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
     retried = store.agent_task(settled.operation_id or "")
     assert retried is not None and retried.attempt == 2
 
-    # The human answers the verdict by starting a turn, so the row stops holding
-    # a stopped ladder against whatever this attempt does next.
+    # The human answers the verdict by starting a turn. The release happens
+    # before that turn exists, because a turn that fails the instant it spawns
+    # writes the next verdict itself and must not find the old one in its way.
     human = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
-    adopted = store.auto_research_recovery("task:root")
-    assert adopted is not None
-    assert adopted.status == "admitted"
-    assert adopted.attempts == 0
     wait_for_task(store, human.operation_id, expect="failed")
+
+    def judged_on_its_own():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.operation_id != human.operation_id:
+            return None
+        return candidate
+
+    # This turn reproduced the failure too, so it stops on its own verdict
+    # rather than on the one the human already answered.
+    after = wait_until(judged_on_its_own, detail="the human attempt never reached a verdict")
+    assert after.status == "blocked"
+    assert after.attempts == 1

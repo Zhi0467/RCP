@@ -326,7 +326,7 @@ export function AutoResearchEpisodeCard({
                   : episodeActionLabel(taskControl.kind)}
               </button>
             )}
-            {taskControl?.kind === "retry" && (
+            {taskControl?.kind === "retry" && taskControl.canSwitchProvider && (
               <button
                 className="button compact"
                 type="button"

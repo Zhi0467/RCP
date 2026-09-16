@@ -881,8 +881,11 @@ makes the next attempt different, a changed provider, model, or reasoning, and
 whether that attempt then succeeds is the provider's answer rather than a state
 RCP models. A stopped ladder, whether it stopped on a repeat or ran out of
 waits, is a verdict on the failure that produced it, so the human's own Retry
-takes the record over: the next failure is judged on its own and gets a full
-ladder, while the automatic path keeps counting its attempts as before. A
+retires it before that turn exists: the turn can settle the instant it is
+spawned, and its settlement is what writes the next verdict, so the next failure
+is judged on its own and gets a full ladder. The automatic path keeps counting
+its attempts as before. A Retry that is then refused leaves no verdict and no
+attempt, which reads as the failed turn it still points at. A
 revoked login is the exception it already was, cleared by signing in rather than
 by retrying. Reattempts, their refusals, and their exhaustion are receipts on the
 failed turn.

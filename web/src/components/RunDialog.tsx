@@ -58,7 +58,12 @@ export function RunDialog({
   // retry path, so requiring a change there would block a plain retry.
   const switching = mode === "retry" && kind !== "seed" && kind !== "refresh";
   const switchSelectionUnchanged = Boolean(
-    switching && initialConfig && !agentSelectionChanged(config, initialConfig),
+    switching &&
+    initialConfig &&
+    !agentSelectionChanged(config, initialConfig) &&
+    // Moving off a machine that is gone is the whole reason a standalone
+    // retry may change one, so it counts as the change this dialog wants.
+    (runOnLocked || config.run_on === initialConfig.run_on),
   );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   // Which runtime this run will use. A request cannot override the profile's

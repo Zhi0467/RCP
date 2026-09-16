@@ -40,6 +40,12 @@ export interface EpisodeRecommendation {
 export interface EpisodeTaskControl {
   kind: EpisodeTaskControlKind;
   task: AgentTask;
+  /**
+   * Whether this control may be retried on a different binding. An
+   * Auto-research worker continues only through the exact session its dispatch
+   * bound it to, so a switch it submitted would come back refused.
+   */
+  canSwitchProvider: boolean;
 }
 
 export interface EpisodeProjection {
@@ -163,7 +169,18 @@ export function episodeProjection(
       label: blockedReasonLead(episode.blocked_reason, episode.ending, label),
       task,
     },
-    taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
+    taskControl:
+      episode.task_control && task
+        ? {
+            kind: episode.task_control,
+            task,
+            // Read from the episode's own membership: a mode without roles, or
+            // a control this list does not name, is not a worker.
+            canSwitchProvider:
+              episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !==
+              "worker",
+          }
+        : null,
   };
 }
 
