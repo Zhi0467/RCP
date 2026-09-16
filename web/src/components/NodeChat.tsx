@@ -42,6 +42,7 @@ import {
   artifactRevisionContentUrl,
   artifactUrl,
   chatTasksMissingFromHistory,
+  chatTurnTask,
   isActiveTask,
   latestNativeSessionId,
   orderTranscriptLines,
@@ -1809,7 +1810,7 @@ export function NodeChat({
       >
         {transcript.map((line) => {
           const messageId = line.lineId;
-          const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
+          const task = chatTurnTask(relatedTasks, line.taskId);
           const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
           const recoveryLineTask =
             !line.steering &&

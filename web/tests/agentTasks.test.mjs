@@ -6,6 +6,7 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
+  chatTurnTask,
   latestNativeSessionId,
   orderTranscriptLines,
   projectActivityTask,
@@ -757,4 +758,25 @@ test("collected task shares the durable turn while Retry remains a separate turn
   ];
   assert.deepEqual(chatTasksMissingFromHistory([original, collected, retry], messages), [retry]);
   assert.equal(reconcileChatHistoryArtifacts(messages, [original, collected]).length, 1);
+});
+
+test("a chat line resolves the newest attempt on its turn, not only the source", () => {
+  const original = task({ operation_id: "original", status: "failed" });
+  const collection = task({
+    operation_id: "collection",
+    parent_operation_id: "original",
+    chat_turn_operation_id: "original",
+    status: "failed",
+    can_collect: true,
+    updated_at: "2026-07-28T00:02:00Z",
+  });
+
+  // Once the source turn has a persisted message, the collection child is no
+  // longer rebuilt into the transcript, and the source's own controls are
+  // suppressed as continued. Resolving the line to the source alone would show
+  // neither the running collection nor the child's own Collect result action.
+  assert.equal(chatTurnTask([original, collection], "original")?.operation_id, "collection");
+  // A line rebuilt from a task still names that task, and must keep resolving to it.
+  assert.equal(chatTurnTask([original, collection], "collection")?.operation_id, "collection");
+  assert.equal(chatTurnTask([original, collection], "absent"), undefined);
 });

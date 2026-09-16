@@ -171,6 +171,16 @@ export function chatTasksMissingFromHistory(
   );
 }
 
+export function chatTurnTask(tasks: AgentTask[], taskId: string): AgentTask | undefined {
+  // A persisted message names its canonical chat turn, while a line rebuilt
+  // from a task names that task. A collection continuation shares the source's
+  // canonical turn, so both ids can point at one line; the newest match is the
+  // attempt the line is on now, and the only one whose controls still apply.
+  return [...tasks]
+    .reverse()
+    .find((task) => task.operation_id === taskId || task.chat_turn_operation_id === taskId);
+}
+
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
   return {
     lineId: `message:${message.message_id}`,
