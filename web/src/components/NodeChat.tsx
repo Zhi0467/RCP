@@ -1538,7 +1538,11 @@ export function NodeChat({
     });
   };
 
-  const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
+  const openArtifact = async (
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    reserved: Window | null = null,
+  ) => {
     if (!artifact.can_open) return;
     if (desktop) {
       const key = `${taskId}:${artifact.artifact_id}`;
@@ -1560,7 +1564,7 @@ export function NodeChat({
       }
       return;
     }
-    const target = window.open("about:blank", "_blank");
+    const target = reserved ?? window.open("about:blank", "_blank");
     if (!target) {
       markArtifactUnavailable(taskId, artifact.artifact_id);
       return;
@@ -1640,17 +1644,20 @@ export function NodeChat({
       // error, because the reader must not be handed a guess about which one won.
       const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
       if (name) {
+        const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
+        // A popup is only granted during the click, so claim the window before any
+        // await; the desktop shell opens its own and needs no reservation.
+        const reserved = known || desktop ? null : window.open("about:blank", "_blank");
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.
-        const task =
-          relatedTasks.find((candidate) => candidate.operation_id === taskId) ??
-          (await onRefreshTask(taskId).catch(() => null));
+        const task = known ?? (await onRefreshTask(taskId).catch(() => null));
         const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
         if (artifact?.can_open) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-          await openArtifact(taskId, artifact);
+          await openArtifact(taskId, artifact, reserved);
           return;
         }
+        reserved?.close();
       }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
