@@ -282,10 +282,38 @@ def _read_pass(stage: RemoteRunStage, source: AgentTaskRecord, pid_file: str) ->
         source.operation_id,
         pid_file,
         outcome,
-        events,
-        patch,
-        stderr=errors if isinstance(errors, str) else "",
+        _decoded_like_the_live_stream(events),
+        _decoded_like_the_live_patch(patch),
+        stderr=_decoded_like_the_live_stream(errors) if isinstance(errors, str) else "",
     )
+
+
+def _decoded_like_the_live_stream(text: str) -> str:
+    """Re-decode verified journal bytes the way the live pipe decodes a stream.
+
+    The wire round-trips exact bytes so the writer's digest can be checked, which
+    leaves a lone surrogate wherever the provider emitted a byte that is not
+    UTF-8. Nothing downstream survives one: SQLite refuses to store it, so the
+    turn would fail late, after its Patch had already applied.
+    """
+
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def _decoded_like_the_live_patch(patch: str | None) -> str | None:
+    """Refuse a patch that is not UTF-8, exactly as reading it live would.
+
+    `RemoteRunStage.read_workspace_text` decodes the live patch strictly, so a
+    delivered turn never reaches Apply with replacement characters standing in
+    for graph text. Collection stands in for that delivery, not for a looser one.
+    """
+
+    if patch is None:
+        return None
+    try:
+        return patch.encode("utf-8", "surrogateescape").decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("The provider's patch.json is not UTF-8 text.") from exc
 
 
 def replay_collected_events(

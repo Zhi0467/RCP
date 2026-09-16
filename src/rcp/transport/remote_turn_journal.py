@@ -34,12 +34,12 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
                 content = stream.read(limit + 1)
                 if len(content) > limit:
                     raise ValueError("Provider journal entry exceeds its bound.")
-                # A provider may emit a byte that is not valid UTF-8, and the
-                # live pipe already decodes such a stream with a replacement
-                # rather than failing. Collection must not be stricter than the
-                # delivery it stands in for, so this round-trips the exact bytes
-                # instead: the caller re-encodes the same way to verify the
-                # writer's digest.
+                # A provider may emit a byte that is not valid UTF-8. Round-trip
+                # the exact bytes so the caller can re-encode them the same way
+                # and verify the writer's digest. The caller then re-decodes each
+                # field the way the live path decodes that same channel; nothing
+                # here decides that, because nothing here knows which channel the
+                # field stands in for.
                 return content.decode("utf-8", "surrogateescape")
 
         outcome = json.loads(read("outcome.json", max_bytes))

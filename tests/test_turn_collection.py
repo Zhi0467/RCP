@@ -511,6 +511,34 @@ def test_collection_accepts_bytes_the_live_pipe_would_have_decoded(tmp_path, mon
         for item in replay_collected_events(collected, _request())
         if item.event == "answer"
     ] == ["Finished the original work."]
+    # The wire preserves the exact byte so the digest can be checked. What the
+    # turn carries onward must still be storable: SQLite encodes text as UTF-8
+    # and refuses a lone surrogate, which would fail this turn after its Patch
+    # had applied.
+    collected.events.encode("utf-8")
+    assert "\ufffd" in collected.events
+
+
+def test_collection_refuses_a_patch_the_live_read_would_have_refused(tmp_path, monkeypatch):
+    """A patch that is not UTF-8 stops here, as it would when read live.
+
+    `RemoteRunStage.read_workspace_text` decodes the live patch strictly, so no
+    delivered turn reaches Apply with replacement characters standing in for
+    graph text. Collection must not be the looser of the two paths.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    root, outcome, _events, _patch = _journal(pid)
+    raw = b'{"ops":[{"note":"\xff"}]}\n'
+    (root / "patch.json").write_bytes(raw)
+    (root / "outcome.json").write_text(
+        json.dumps({**outcome, "patch_sha256": hashlib.sha256(raw).hexdigest()})
+    )
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    with pytest.raises(ValueError, match="not UTF-8"):
+        read_collected_turn(store, record)
 
 
 def test_collected_failure_reports_the_provider_stderr(tmp_path, monkeypatch):
