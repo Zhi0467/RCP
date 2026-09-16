@@ -305,6 +305,11 @@ def deliver_pending_auto_research_lifecycle(
     current = store.agent_task(binding.current_operation_id)
     if current is None:
         return None
+    # Admitting would spend a paid invocation and claim what this wake carries
+    # before the stage refused reuse. An unclaimed wake is redelivered, so wait
+    # -- the same answer a reached ceiling or a signed-out provider gives.
+    if remote_stage_awaits_collection(store, current.stage_host or "", binding.stage_root):
+        return None
     pending_mail = pending_auto_research_mail(
         background,
         episode_id=episode_id,
@@ -506,11 +511,9 @@ def deliver_pending_auto_research_mail(
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
         return None
-    # A stage still holding an uncollected turn refuses reuse, and this wake
-    # would learn that only after spending a paid invocation and claiming the
-    # group's notices and mail. The condition clears on its own once that turn
-    # is collected, and an unclaimed group is redelivered, so wait instead --
-    # the same answer a reached ceiling or a signed-out provider gives.
+    # Admitting would spend a paid invocation and claim what this wake carries
+    # before the stage refused reuse. An unclaimed wake is redelivered, so wait
+    # -- the same answer a reached ceiling or a signed-out provider gives.
     if remote_stage_awaits_collection(
         background.store, current.stage_host or "", binding.stage_root
     ):
@@ -708,9 +711,9 @@ def deliver_auto_research_watcher_group(
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
         return None
-    # Same reason as the mail wake: a stage still holding an uncollected
-    # turn refuses reuse, and this group would discover that only after a
-    # paid invocation claimed its notices and mail.
+    # Admitting would spend a paid invocation and claim what this wake carries
+    # before the stage refused reuse. An unclaimed wake is redelivered, so wait
+    # -- the same answer a reached ceiling or a signed-out provider gives.
     if remote_stage_awaits_collection(
         background.store, current.stage_host or "", binding.stage_root
     ):

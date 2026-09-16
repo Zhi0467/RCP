@@ -1980,3 +1980,63 @@ def test_watcher_wake_waits_while_the_stage_still_holds_an_uncollected_turn(
         store.episode_budget_meter(episode.episode_id).invocations_used
         == before.invocations_used + 1
     )
+
+
+def test_lifecycle_wake_waits_while_the_stage_still_holds_an_uncollected_turn(
+    tmp_path, monkeypatch
+) -> None:
+    """The third wake path answers a refused stage the way the other two do.
+
+    Lifecycle delivery reuses the root's stage and claims its notices with root
+    mail, so without this it spends the same paid invocation on the same
+    self-clearing condition.
+    """
+
+    from rcp.runs import auto_research_delivery as delivery_module
+
+    store = _store(tmp_path)
+    clock = _required_timestamp(store.now())
+    monkeypatch.setattr(store, "now", lambda: clock.isoformat())
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("test-host", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="notice-0",
+            episode_id=episode.episode_id,
+            source_kind="worker",
+            source_id="worker-0",
+            source_event="succeeded",
+            payload={},
+            created_at=store.now(),
+        )
+    )
+    clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
+    before = store.episode_budget_meter(episode.episode_id)
+
+    monkeypatch.setattr(
+        delivery_module, "remote_stage_awaits_collection", lambda *_args, **_kwargs: True
+    )
+    assert deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id) is None
+    assert store.episode_budget_meter(episode.episode_id) == before
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == [notice]
+
+    monkeypatch.setattr(
+        delivery_module, "remote_stage_awaits_collection", lambda *_args, **_kwargs: False
+    )
+    wake_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="succeeded")
+    assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == []
+    assert (
+        store.episode_budget_meter(episode.episode_id).invocations_used
+        == before.invocations_used + 1
+    )
