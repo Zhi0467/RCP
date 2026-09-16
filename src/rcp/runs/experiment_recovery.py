@@ -366,10 +366,30 @@ def preflight_experiment_episode_recovery(
         original,
         execution_host=(record.stage_host or "") if record.stage_root else None,
     )
+    require_experiment_episode_context(tasks, record, request=original)
+    if record.stage_host and record.stage_root:
+        require_remote_provider_quiescence(tasks.store, record.stage_host, record.stage_root)
+
+
+def require_experiment_episode_context(
+    tasks: BackgroundAgentTasks,
+    record: AgentTaskRecord,
+    *,
+    request: AgentTaskRequest | None = None,
+) -> None:
+    """Refuse recovery whose episode context is gone, and settle a requested Stop.
+
+    Separate from the launch preflight because collection needs this judgement
+    without the admission beside it: it starts no provider and claims no
+    invocation, but it does settle an episode turn, so it must not adopt one
+    whose retained context can no longer say which episode it belongs to.
+    """
+
+    original = request or tasks._request_from_record(record)
+    if not isinstance(original, RunRequest) or original.patch_kind != "experiment_loop":
+        return
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)
     if problem is None:
-        if record.stage_host and record.stage_root:
-            require_remote_provider_quiescence(tasks.store, record.stage_host, record.stage_root)
         return
     assert original.control_episode_id is not None
     assert original.control_node_id is not None

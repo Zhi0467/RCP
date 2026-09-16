@@ -16,6 +16,7 @@ from rcp.runs.turn_collection import (
     read_collected_turn,
     replay_collected_events,
 )
+from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import RemoteRunStage
 from rcp.transport.remote_turn_journal import read_journal
@@ -548,3 +549,66 @@ def test_unbindable_journal_withdraws_the_offer_without_failing_the_projection(t
     assert can_collect(store, record) is False
     with pytest.raises(ValueError, match="lost its stage binding"):
         read_collected_turn(store, record)
+
+
+def test_collection_refuses_an_episode_whose_retained_context_is_gone():
+    """Collection settles an episode turn, so it owes the same context judgement.
+
+    Retry and Resume get this through their launch preflight. Collection skips
+    that preflight deliberately, because it admits no provider -- but it still
+    settles the turn, so a lineage that can no longer say which episode it
+    belongs to must refuse here as it would there. The Stop a human already
+    requested is settled on the way out, exactly as the preflight does.
+    """
+
+    from types import SimpleNamespace
+
+    from rcp.runs.experiment_recovery import require_experiment_episode_context
+
+    settled: list[str] = []
+    diagnostics: list[str] = []
+    store = SimpleNamespace(
+        experiment_episode_recovery_context_problem=lambda _op: "context candidate is invalid",
+        record_experiment_episode_diagnostic=lambda **kwargs: diagnostics.append(
+            kwargs["diagnostic"]
+        ),
+        experiment_episode=lambda _episode_id: SimpleNamespace(
+            episode_id="episode-1", stop_requested_at="2026-09-16T00:00:00Z", graph_target=None
+        ),
+        settle_experiment_loop_stop=lambda *_a, **kwargs: settled.append(kwargs["episode_id"]),
+    )
+    tasks = SimpleNamespace(store=store)
+    record = SimpleNamespace(operation_id="original", project_id="project")
+    loop_request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_scope="node",
+        node_id="exp/thing",
+        chat_id="chat-1",
+        message="Continue the bounded Experiment loop.",
+        mode="work",
+        patch_kind="experiment_loop",
+        control_node_id="exp/thing",
+        control_episode_id="episode-1",
+    )
+    with pytest.raises(ValueError, match="context candidate is invalid"):
+        require_experiment_episode_context(tasks, record, request=loop_request)
+    assert diagnostics == ["context candidate is invalid"]
+    assert settled == ["episode-1"]
+
+
+def test_context_judgement_ignores_a_turn_that_is_not_an_episode():
+    from types import SimpleNamespace
+
+    from rcp.runs.experiment_recovery import require_experiment_episode_context
+
+    store = SimpleNamespace(
+        experiment_episode_recovery_context_problem=lambda _op: pytest.fail(
+            "A plain chat turn has no episode context to judge"
+        )
+    )
+    require_experiment_episode_context(
+        SimpleNamespace(store=store),
+        SimpleNamespace(operation_id="original", project_id="project"),
+        request=RunRequest(provider="codex", run_on="laptop", chat_id="chat-1", message="hi"),
+    )

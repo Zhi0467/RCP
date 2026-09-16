@@ -54,6 +54,7 @@ from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_recovery import (
     preflight_experiment_episode_recovery,
     record_bound_experiment_session_limit,
+    require_experiment_episode_context,
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
@@ -810,6 +811,10 @@ class BackgroundAgentTasks:
         previous = self._require_operation(operation_id)
         if not can_collect(self.store, previous):
             raise ValueError("This task has no undelivered provider turn to collect.")
+        # Retry and Resume keep this judgement through their launch preflight.
+        # Collection settles an episode turn too, so it answers the same
+        # question, without the admission that preflight pairs it with.
+        require_experiment_episode_context(self, previous)
         collected = read_collected_turn(self.store, previous)
         if collected.session_id:
             if previous.native_session_id and previous.native_session_id != collected.session_id:

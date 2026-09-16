@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.background as background_module
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -35,6 +36,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.turn_collection import can_collect
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -3126,3 +3128,48 @@ def test_unreachable_stage_failure_remains_transport_lost_at_task_boundary(
     assert settled.failure_kind == "transport_lost"
     assert scheduled == [(task.operation_id, 0)]
     tasks.shutdown(timeout=0.1)
+
+
+def test_collect_asks_the_episode_context_judgement_before_creating_a_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Collection owes the judgement Retry already makes, and owes it up front.
+
+    Retry and Resume reach it through their launch preflight, which collection
+    skips on purpose: it admits no provider and claims no invocation. It does
+    still settle the turn, so a lineage that can no longer say which episode it
+    belongs to must refuse here as it refuses there -- and refuse before a
+    collection child exists, or the refusal strands a task of its own. The
+    unattended transport reattempt takes this path too.
+    """
+
+    store = _store(tmp_path)
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    task = _admitted_launch_task(
+        store,
+        operation_id="lost-loop-turn",
+        record_updates={
+            "stage_host": "test-host",
+            "stage_root": str(root),
+            "native_session_id": "native-thread",
+        },
+    )
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(root), str(root / "agent.pid"), journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    assert can_collect(store, store.agent_task(task.operation_id))
+
+    asked: list[str] = []
+
+    def refuse(_tasks: object, record: object, **_kwargs: object) -> None:
+        asked.append(record.operation_id)
+        raise ValueError("its retained episode context candidate is invalid")
+
+    monkeypatch.setattr(background_module, "require_experiment_episode_context", refuse)
+    with pytest.raises(ValueError, match="episode context candidate is invalid"):
+        tasks.collect(task.operation_id)
+    assert asked == [task.operation_id]
+    assert [item.operation_id for item in store.agent_tasks("project")] == [task.operation_id]
