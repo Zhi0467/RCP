@@ -125,6 +125,33 @@ time.sleep(30)
     assert (directory / "patch.json").read_text() == '{"operations": []}'
 
 
+def test_undelivered_terminal_failure_is_also_reported_as_a_lost_link(tmp_path):
+    """A failure nobody received is as undelivered as an answer nobody received.
+
+    The provider said why it stopped and the journal holds that, but the drop
+    swallowed it. Exiting on the child's own status would have RCP report a
+    failure it cannot explain and offer a Retry that repeats the attempt;
+    reporting the lost link instead lets collection surface the real reason.
+    """
+
+    code = """
+import json, sys, time
+for n in range(500):
+    print(json.dumps({"type": "trace", "text": "x" * 1000}), flush=True)
+print(json.dumps({"type": "turn.failed", "error": "the model refused the request"}), flush=True)
+time.sleep(30)
+"""
+    process = _start(tmp_path, code)
+    process.stdin.close()
+    _finish(process, expected=255)
+    outcome = json.loads((tmp_path / "provider.pid.turn/outcome.json").read_text())
+    assert outcome["terminal_event"] and not outcome["protocol_complete"]
+    assert outcome["uplink_detached"]
+    assert (
+        "the model refused the request" in (tmp_path / "provider.pid.turn/events.jsonl").read_text()
+    )
+
+
 def test_journal_overflow_stops_run_with_explicit_incomplete_receipt(tmp_path):
     process = _start(
         tmp_path, 'import time; print("x" * 100000, flush=True); time.sleep(30)', journal_limit=4096

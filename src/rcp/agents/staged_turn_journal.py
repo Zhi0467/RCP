@@ -427,17 +427,19 @@ def run(args):
         "steer_requests": observer.steer_requests,
     }
     _atomic_write(directory / "outcome.json", json.dumps(outcome, sort_keys=True).encode())
-    if observer.complete and not error and not external_stop:
-        # A controller can stop draining while the link itself stays up, which
-        # backs this buffer past its ceiling and drops everything after. The turn
-        # finished and its journal holds the answer, but RCP never saw the
-        # completion, so the exit status has to say the link ended this turn
-        # rather than the work. 255 is the code RCP already reads that way, and
-        # the one a connection that had actually dropped would have produced.
-        # Only the completion's own channel decides it: undelivered stderr costs
-        # the turn nothing.
-        return 0 if terminal_uplinked and not pending[1] else 255
-    return return_code or 1
+    # A controller can stop draining while the link itself stays up, which backs
+    # this buffer past its ceiling and drops everything after. The turn still
+    # reaches its own terminal event, completed or failed, and the journal holds
+    # it -- but RCP never sees it. The exit status is the only channel left to
+    # say so, and 255 is the code RCP already reads as a link that ended the turn
+    # rather than work that did. Collection settles it from the journal either
+    # way: the answer if it completed, the provider's own reason if it did not.
+    # Only the terminal event's own channel decides this; undelivered stderr
+    # costs the turn nothing.
+    settled_here = bool(error) or external_stop
+    if observer.terminal and not settled_here and not (terminal_uplinked and not pending[1]):
+        return 255
+    return 0 if observer.complete and not settled_here else (return_code or 1)
 
 
 def main(argv=None):
