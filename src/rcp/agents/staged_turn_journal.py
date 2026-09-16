@@ -418,6 +418,14 @@ def run(args):
             )
         except (OSError, ValueError) as exc:
             error = str(exc)
+    if error and not detached:
+        # A failure of this journal's own is otherwise recorded only in
+        # `outcome.json`, and while the link is up nothing reads that file: the
+        # turn is not collectible, so the launcher has the exit status alone and
+        # reports whatever generic reason it can build from it. Stderr is the
+        # channel it already surfaces to a human, and this rides out on it with
+        # the provider's own, under the same grace period.
+        pending[2].extend(error.encode("utf-8", "replace") + b"\n")
     flush_deadline = time.monotonic() + args.stop_grace_seconds
     while any(pending.values()) and not detached and time.monotonic() < flush_deadline:
         ready = select.select(

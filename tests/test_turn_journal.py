@@ -167,6 +167,30 @@ def test_journal_overflow_stops_run_with_explicit_incomplete_receipt(tmp_path):
     assert (tmp_path / "provider.pid.turn/events.jsonl").stat().st_size <= 4096
 
 
+def test_a_journal_that_overflows_says_so_where_a_connected_run_can_hear_it(tmp_path):
+    """The one reader of `outcome.json` is collection, and this turn is not collectible.
+
+    Overflow ends the turn with the link still up, so nothing ever opens that
+    file: the launcher is left with an exit status and reports whatever generic
+    reason it can build from it. The failure has to travel the channel a live
+    run already surfaces, or the documented visible failure is invisible in the
+    ordinary connected case.
+    """
+
+    # Enough to pass the journal ceiling and stay inside the uplink one, so the
+    # reason is judged on its own and not on a buffer that overflowed too.
+    process = _start(tmp_path, 'print("x" * 8000, flush=True)', journal_limit=4096)
+    process.stdin.close()
+    process.stdin = None
+    _stdout, stderr = process.communicate(timeout=10)
+
+    assert "Provider journal exceeded its storage limit." in stderr.decode()
+    # Nonzero so the turn fails, and not the code that means a link ended it.
+    assert process.returncode not in {0, 255}
+    outcome = json.loads((tmp_path / "provider.pid.turn/outcome.json").read_text())
+    assert not outcome["journal_complete"] and not outcome["uplink_detached"]
+
+
 def test_live_completion_fences_claude_stdin_before_forwarding_result(tmp_path):
     process = _start(
         tmp_path,

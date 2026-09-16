@@ -66,7 +66,24 @@ def collected_task_operation_id(execution: AgentTaskExecution) -> str:
 
 
 def journal_pid_files(store: AppStore, record: AgentTaskRecord) -> list[str]:
+    """The passes of this turn that were actually handed a prompt, oldest first.
+
+    A pass is reserved before its SSH command runs, so that a live group nobody
+    wrote down can never exist. RCP stopping inside that window leaves the
+    reservation behind with no wrapper, no pidfile and no turn, and one task can
+    open several passes -- so a correction caught there would otherwise be
+    chosen as the latest pass, and every probe of it would answer unknown
+    forever. Such a reservation is skipped: the turn is retried, or collected
+    from the passes that did run.
+    """
+
     record = collection_source(store, record)
+    delivered = {
+        receipt.payload.get("pid_file")
+        for receipt in store.remote_provider_pass_receipts(
+            record.operation_id, "remote_provider_delivered"
+        )
+    }
     result = []
     for receipt in store.remote_provider_pass_receipts(
         record.operation_id, "remote_provider_started"
@@ -79,7 +96,8 @@ def journal_pid_files(store: AppStore, record: AgentTaskRecord) -> list[str]:
             record.stage_root or ""
         ):
             raise ValueError("The provider journal lost its stage binding.")
-        result.append(pid)
+        if pid in delivered:
+            result.append(pid)
     return result
 
 
@@ -149,28 +167,9 @@ def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
         )
         and record.stage_host
         and record.stage_root
-        and _prompt_reached_the_provider(store, record)
         and collectible_surface(store, collection_source(store, record))
         and not store.agent_task_has_continuation(record.operation_id)
         and journal_pid_file(store, record)
-    )
-
-
-def _prompt_reached_the_provider(store: AppStore, record: AgentTaskRecord) -> bool:
-    """Whether a turn was ever handed to the pass this would adopt.
-
-    A pass is reserved before its SSH command runs, so that a live group nobody
-    wrote down can never exist. RCP stopping inside that window leaves the
-    reservation behind with no wrapper, no pidfile and no turn: every probe of
-    it answers unknown, and offering collection would keep asking forever. The
-    runtime checkpoint is written at prompt delivery and nowhere else, so its
-    absence says the prompt never left this machine. The task row carries a
-    runtime from admission onwards; only this receipt marks the moment a turn
-    was handed over.
-    """
-
-    return store.agent_task_has_receipt(
-        collection_source(store, record).operation_id, "provider_runtime_selected"
     )
 
 

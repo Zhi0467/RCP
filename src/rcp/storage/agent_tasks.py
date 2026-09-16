@@ -91,12 +91,12 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_started",
     "compute_command_result",
     "remote_provider_started",
+    "remote_provider_delivered",
     "remote_provider_stopped",
     "remote_provider_still_running",
     "provider_collection_incomplete",
-    # Collection reads this to know a turn was actually handed to the pass it
-    # would adopt. Pruned, a finished turn would look like a reservation that
-    # never launched and its result would be discarded.
+    # `checkpoint_agent_task_runtime` reads these back to refuse a task that
+    # changed runtime after its prompt was delivered. Pruned, that swap passes.
     "provider_runtime_selected",
     # Collection of a Retry reads this to know which deliverables the attempt
     # inherited rather than wrote. Pruned, a stale Patch would read as new.
@@ -2587,6 +2587,50 @@ class AgentTaskStoreMixin:
                 created_at=self.now(),
             )
 
+    def deliver_remote_provider_pass(self, operation_id: str, pid_file: str) -> None:
+        """Record that exactly one reserved pass was handed the turn it was opened for.
+
+        A pass is reserved before its SSH command runs, so that a live group
+        nobody wrote down can never exist. That leaves the reservation alone
+        unable to say whether anything ran under it, and one task can own
+        several passes, so the answer has to name the pidfile rather than the
+        task. Collection reads this to find the passes there is a turn to
+        collect from, and to ignore a reservation a stop caught mid-launch.
+        """
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            started = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'remote_provider_started'
+                  AND json_extract(payload_json, '$.pid_file') = ?
+                """,
+                (operation_id, pid_file),
+            ).fetchone()
+            if started is None:
+                raise ValueError("The remote provider pass has no matching start receipt.")
+            if (
+                connection.execute(
+                    """
+                SELECT 1 FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'remote_provider_delivered'
+                  AND json_extract(payload_json, '$.pid_file') = ?
+                """,
+                    (operation_id, pid_file),
+                ).fetchone()
+                is not None
+            ):
+                return
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "remote_provider_delivered",
+                started["payload_json"],
+                tier="summary",
+                created_at=self.now(),
+            )
+
     def finish_remote_provider_pass(self, operation_id: str, pid_file: str) -> None:
         """Record confirmed absence for exactly one previously reserved process group."""
         with self.connection() as connection:
@@ -2637,6 +2681,7 @@ class AgentTaskStoreMixin:
             "operation_admitted",
             "operation_dispatch_reset",
             "remote_provider_started",
+            "remote_provider_delivered",
             "remote_provider_stopped",
         }:
             raise ValueError(f"{safe_category} is reserved for an atomic task transition")

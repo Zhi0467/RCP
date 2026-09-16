@@ -99,6 +99,10 @@ class JournaledWorkLauncher:
     async def stream(self, _provider, _prompt, **kwargs):
         self.calls += 1
         workspace = Path(kwargs["cwd"])
+        if self.calls == 1:
+            # The launcher announces its remote pass before the SSH command can
+            # run, and its runtime only once that pass is handed the turn.
+            yield AgentEvent(event="remote_process_start", text=kwargs["remote_pid_file"])
         yield AgentEvent(event="runtime", text="codex.exec-json.v1")
         yield AgentEvent(event="session", session_id=self.native_session_id)
         if self.calls > 1:
@@ -108,7 +112,6 @@ class JournaledWorkLauncher:
             yield AgentEvent(event="done")
             return
         pid = kwargs["remote_pid_file"]
-        yield AgentEvent(event="remote_process_start", text=pid)
         journal = Path(pid + ".turn")
         journal.mkdir(mode=0o700)
         terminal = {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 20}}

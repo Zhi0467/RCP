@@ -358,7 +358,10 @@ receipt binding provider/runtime identity, protocol completion, and content
 digests to that pass. The journal is separate from provider-native conversation
 history. Existing provider decoders recover labelled answers, session ids, and
 usage from its events; there is no second answer file. Overflow or incomplete
-evidence fails visibly and cannot authorize Apply.
+evidence fails visibly and cannot authorize Apply. The journal reports its own
+failure on the stderr the live launcher already surfaces, because its outcome
+file is read only by collection and a turn that ends this way, with the link
+still up, is not collectible.
 
 A remote execution machine needs two things and RCP checks one of them. Its
 manifest entry names the provider binary by absolute path, which startup probes.
@@ -382,10 +385,12 @@ stopped draining stdout. It grants no graph authority and runs no validator.
 
 Collection recovers an eligible undelivered remote Work or episode turn without
 launching a provider. Eligibility requires durable evidence that a turn was
-handed to that pass. A pass is recorded before its SSH command runs, so a stop
-inside that window leaves a reservation with no wrapper and no turn; such a
-reservation is retried, never collected. It waits while the original provider is
-alive or its state is unknown; after confirmed process absence it reads that exact pass's completed
+handed to that exact pass. A pass is recorded before its SSH command runs, so a
+stop inside that window leaves a reservation with no wrapper and no turn. One
+turn can open several passes, so that evidence names the pidfile: a reservation
+caught mid-launch is skipped, and the turn is collected from the passes that did
+run, or retried when none did. It waits while the original provider is alive or
+its state is unknown; after confirmed process absence it reads that exact pass's completed
 journals. It never forces that absence, because a group stopped mid-write would
 lose the turn being recovered. A provider found alive reports how long it has
 written nothing, which is the only thing distinguishing a long tool call from a

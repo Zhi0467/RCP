@@ -53,9 +53,7 @@ def _failed_turn(tmp_path, *, status="failed", failure_kind="transport_lost"):
     store.begin_remote_provider_pass(
         record.operation_id, "test-host", str(root), str(pid), journaled=True
     )
-    store.checkpoint_agent_task_runtime(
-        record.operation_id, provider="codex", runtime_id="codex.exec-json.v1"
-    )
+    store.deliver_remote_provider_pass(record.operation_id, str(pid))
     if status == "paused":
         store.pause_agent_task(record.operation_id)
     elif status == "interrupted":
@@ -268,6 +266,7 @@ def _next_pass(store, record, previous_pid, name):
     store.begin_remote_provider_pass(
         record.operation_id, record.stage_host, record.stage_root, str(pid), journaled=True
     )
+    store.deliver_remote_provider_pass(record.operation_id, str(pid))
     return pid
 
 
@@ -348,9 +347,6 @@ def test_preprompt_fallback_is_not_selected_as_operational_pass(tmp_path, monkey
     (root / "outcome.json").write_text(json.dumps(outcome))
     initial_pid = _next_pass(store, record, handshake_pid, "operational.pid")
     _journal(initial_pid, answer="Actual operational answer.", patch="original patch")
-    store.checkpoint_agent_task_runtime(
-        record.operation_id, provider="codex", runtime_id="codex.exec-json.v1"
-    )
     record = store.agent_task(record.operation_id)
     _local_transport(monkeypatch)
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
@@ -930,10 +926,32 @@ def test_a_reservation_that_never_launched_is_retried_not_collected(tmp_path):
     assert not can_collect(store, reserved)
 
     # The same reservation, once its turn was actually handed over.
-    store.checkpoint_agent_task_runtime(
-        record.operation_id, provider="codex", runtime_id="codex.exec-json.v1"
-    )
+    store.deliver_remote_provider_pass(record.operation_id, str(pid))
     assert can_collect(store, store.agent_task(record.operation_id))
+
+
+def test_a_correction_caught_before_its_launch_is_not_the_pass_collection_adopts(tmp_path):
+    """One task opens several passes, so the proof of delivery has to name one.
+
+    An operational pass that completed and a correction pass a stop caught
+    mid-launch look identical from the task: both are reservations on the same
+    turn. Choosing the latest would pick a pidfile no wrapper ever wrote, and
+    every probe of it answers unknown while Retry keeps diverting here.
+    """
+
+    store, record, operational = _failed_turn(tmp_path)
+    correction = operational.with_name("correction.pid")
+    store.finish_remote_provider_pass(record.operation_id, str(operational))
+    store.begin_remote_provider_pass(
+        record.operation_id, record.stage_host, record.stage_root, str(correction), journaled=True
+    )
+
+    assert journal_pid_files(store, record) == [str(operational)]
+    assert journal_pid_file(store, record) == str(operational)
+
+    # The same correction, once its own turn was handed over.
+    store.deliver_remote_provider_pass(record.operation_id, str(correction))
+    assert journal_pid_file(store, record) == str(correction)
 
 
 def test_the_stop_identity_is_found_past_the_receipt_display_ceiling(tmp_path):

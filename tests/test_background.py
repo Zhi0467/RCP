@@ -163,16 +163,17 @@ def _child_experiment_request(episode_id: str, goal: str) -> RunRequest:
     )
 
 
-def _prompt_was_delivered(store: AppStore, operation_id: str) -> None:
-    """The checkpoint every launch writes when it hands its turn to the provider.
+def _prompt_was_delivered(store: AppStore, operation_id: str, pid_file: str) -> None:
+    """What a launch records when it hands its turn to one reserved pass.
 
-    Collection reads it to tell a turn that was delivered from a pass reserved by
-    a launch that never got to run one.
+    Collection reads it to tell a pass that ran from one a stop caught between
+    its reservation and its SSH command.
     """
 
     store.checkpoint_agent_task_runtime(
         operation_id, provider="codex", runtime_id="codex.exec-json.v1"
     )
+    store.deliver_remote_provider_pass(operation_id, pid_file)
 
 
 def _admitted_launch_task(
@@ -3170,7 +3171,7 @@ def test_collect_asks_the_episode_context_judgement_before_creating_a_child(
     store.begin_remote_provider_pass(
         task.operation_id, "test-host", str(root), str(root / "agent.pid"), journaled=True
     )
-    _prompt_was_delivered(store, task.operation_id)
+    _prompt_was_delivered(store, task.operation_id, str(root / "agent.pid"))
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     tasks = BackgroundAgentTasks(store, _done_stream)
     assert can_collect(store, store.agent_task(task.operation_id))
@@ -3217,7 +3218,7 @@ def test_a_collection_that_fails_before_its_stage_leaves_the_turn_collectible(
     store.begin_remote_provider_pass(
         task.operation_id, "test-host", str(root), pid_file, journaled=True
     )
-    _prompt_was_delivered(store, task.operation_id)
+    _prompt_was_delivered(store, task.operation_id, pid_file)
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     monkeypatch.setattr(
         background_module,
@@ -3271,7 +3272,7 @@ def test_stopping_a_wedged_provider_clears_the_way_for_collection(
     store.begin_remote_provider_pass(
         task.operation_id, "test-host", str(root), pid_file, journaled=True
     )
-    _prompt_was_delivered(store, task.operation_id)
+    _prompt_was_delivered(store, task.operation_id, pid_file)
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     store.record_agent_task_receipt(
         task.operation_id,
@@ -3316,7 +3317,7 @@ def test_an_unconfirmed_stop_leaves_the_pass_open(
     store.begin_remote_provider_pass(
         task.operation_id, "test-host", str(root), pid_file, journaled=True
     )
-    _prompt_was_delivered(store, task.operation_id)
+    _prompt_was_delivered(store, task.operation_id, pid_file)
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     store.record_agent_task_receipt(
         task.operation_id,
@@ -3365,7 +3366,7 @@ def test_an_incomplete_collection_still_reports_the_provider_diagnostic(
     store.begin_remote_provider_pass(
         task.operation_id, "test-host", str(root), pid_file, journaled=True
     )
-    _prompt_was_delivered(store, task.operation_id)
+    _prompt_was_delivered(store, task.operation_id, pid_file)
     store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
     monkeypatch.setattr(
         background_module,
