@@ -288,6 +288,7 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
         "purpose": "task",
         "status": "pending",
         "retry_mode": "exact",
+        "failure_kind": "transport",
         "operation_id": root.operation_id,
         "attempts": 0,
         "max_attempts": 3,
@@ -1039,3 +1040,66 @@ def test_project_readiness_includes_only_its_machine_account_logins(manifest, tm
         ("claude", ""),
     }
     assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"
+
+
+def test_auto_episode_publishes_the_decisions_only_a_human_can_retire(tmp_path) -> None:
+    """A wake armed on `decided` is owed to the human; a settled one is not."""
+
+    from rcp.storage import GraphWatcherRecord, WatcherContinuation
+    from rcp.storage.models import NodeStatusGraphCondition
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "auto")
+
+    def condition(watcher_id: str, node_id: str, status: str) -> GraphWatcherRecord:
+        return GraphWatcherRecord(
+            watcher_id=watcher_id,
+            project_id="project",
+            origin_operation_id=root.operation_id,
+            origin_task_kind="auto_research",
+            chat_id="episode-chat",
+            episode_id=episode.episode_id,
+            graph_target=episode.graph_target,
+            continuation=WatcherContinuation(provider="codex", run_on="local"),
+            created_at=store.now(),
+            armed_revision=1,
+            condition=NodeStatusGraphCondition(node_id=node_id, status_in=["decided", "revisit"]),
+            status=status,
+        )
+
+    store.create_watchers(
+        [
+            condition("owed", "dec/direction", "active"),
+            condition("settled", "dec/already-chosen", "completed"),
+        ]
+    )
+    # An Experiment this run waits on retires itself, so it is not owed to anyone.
+    store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="child",
+                project_id="project",
+                origin_operation_id=root.operation_id,
+                origin_task_kind="auto_research",
+                chat_id="episode-chat",
+                episode_id=episode.episode_id,
+                graph_target=episode.graph_target,
+                continuation=WatcherContinuation(provider="codex", run_on="local"),
+                created_at=store.now(),
+                armed_revision=1,
+                condition=NodeStatusGraphCondition(
+                    node_id="exp/baselines", status_in=["completed", "abandoned"]
+                ),
+            )
+        ]
+    )
+
+    response = serialize_episode(
+        store,
+        "project",
+        store.episode(episode.episode_id) or episode,
+        branch_summary=_branch_summary,
+    )
+
+    assert response.awaiting_decision_ids == ["dec/direction"]

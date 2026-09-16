@@ -34,6 +34,7 @@ from rcp.storage import (
     ExperimentEpisodeProjectionSnapshot,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.models import GraphWatcherRecord, NodeStatusGraphCondition
 
 OperationalEpisodeTaskKind = Literal[
     "seed",
@@ -80,12 +81,16 @@ class _AutoResearchControlTask(_EpisodeProjectionTask, Protocol):
 class _RecoveryProjection(Protocol):
     operation_id: str | None
     status: AutoResearchRecoveryStatus
+    # The compact space-run snapshot does not carry it, and a summary view
+    # showing `needs_action` without the exact reason is the same answer.
+    failure_kind: str | None
 
 
 @dataclass(frozen=True)
 class _SpaceRunRecoveryProjection:
     operation_id: str
     status: AutoResearchRecoveryStatus
+    failure_kind: str | None = None
 
 
 def _episode_task_controls(
@@ -238,7 +243,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
-EpisodeBlockedReason = Literal["sign_in", "reauthorize"]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize", "usage_limit"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -259,6 +264,9 @@ class AutoResearchRecoverySummary(BaseModel):
     purpose: Literal["task"] = "task"
     status: AutoResearchRecoveryStatus
     retry_mode: AutoResearchRecoveryMode
+    # Two different failures both block, and only this says which, so a
+    # surface can tell a dead login from a spent usage allowance.
+    failure_kind: str
     operation_id: str | None
     attempts: int
     max_attempts: int
@@ -312,6 +320,10 @@ class EpisodeResponse(BaseModel):
     # reaching its own conclusion from `status`, `ending`, and task rows.
     health: EpisodeHealth
     blocked_reason: EpisodeBlockedReason | None
+    # Decisions this episode armed a wake on and cannot retire itself. They
+    # live on its graph branch, which canonical Inbox attention never covers,
+    # so the run card is the only place a human learns the choice is owed.
+    awaiting_decision_ids: list[str]
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
     run_section: EpisodeRunSection
@@ -492,6 +504,7 @@ def serialize_episode(
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
         blocked_reason=blocked_reason,
+        awaiting_decision_ids=_awaiting_decision_ids(store, episode),
         recommendation=next_step,
         task_control=task_control,
         run_section=_episode_run_section(health),
@@ -732,6 +745,14 @@ def _episode_projection(
         return "stopping", "wait", None, None
     if recovery is not None and recovery.status == "pending":
         return "recovering", "wait", None, None
+    # A spent usage allowance is the account's state, so RCP stopped retrying
+    # and the run waits on the human exactly as a dead login does.
+    if (
+        recovery is not None
+        and recovery.status == "blocked"
+        and recovery.failure_kind == "usage_limit"
+    ):
+        return "needs_action", "review", None, "usage_limit"
     if task is not None and task.status == "failed" and task.failure_kind == "provider_auth":
         return "needs_action", recovery_control or "review", recovery_control, "sign_in"
     if task is not None and task.status in {"paused", "interrupted", "failed"}:
@@ -746,6 +767,29 @@ def _episode_projection(
         return "active", "wait", None, None
     pause = "pause" if task is not None and task.status == "running" and task.can_pause else None
     return "active", "continue", pause, None
+
+
+def _awaiting_decision_ids(store: AppStore, episode: EpisodeRecord) -> list[str]:
+    """Decisions whose armed wake only a human choice can meet.
+
+    An active condition naming `decided` is unmet by definition, and the one
+    agent permitted to meet it is the orchestrator asleep behind it, so the
+    human owes the choice. Read from the condition rather than the branch
+    graph, which this projection does not load.
+    """
+
+    if episode.mode != "auto_research":
+        return []
+    return sorted(
+        {
+            watcher.condition.node_id
+            for watcher in store.episode_watchers(episode.episode_id)
+            if isinstance(watcher, GraphWatcherRecord)
+            and watcher.status == "active"
+            and isinstance(watcher.condition, NodeStatusGraphCondition)
+            and "decided" in watcher.condition.status_in
+        }
+    )
 
 
 def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
@@ -877,6 +921,7 @@ def _auto_research_projection(
         AutoResearchRecoverySummary(
             status=control_recovery.status,
             retry_mode=control_recovery.retry_mode,
+            failure_kind=control_recovery.failure_kind,
             operation_id=control_recovery.operation_id,
             attempts=control_recovery.attempts,
             max_attempts=control_recovery.max_attempts,

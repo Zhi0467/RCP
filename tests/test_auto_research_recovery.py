@@ -706,3 +706,30 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+
+
+def test_a_capped_account_stops_retrying_and_waits_for_the_human(tmp_path: Path) -> None:
+    """A spent allowance is the account's state; no attempt this run makes clears it."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="capped-session"))
+        yield _sse(
+            AgentEvent(
+                event="error",
+                text="You've reached your Fable limit. Switch to another model to continue.",
+            )
+        )
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    assert recovery.failure_kind == "usage_limit"
+    assert recovery.retry_mode == "blocked"
+    assert recovery.status == "blocked"

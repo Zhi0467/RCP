@@ -1425,9 +1425,10 @@ class AutoResearchChildrenStoreMixin:
         if diagnostic:
             payload["diagnostic"] = diagnostic
         if status in {"paused", "failed", "interrupted"}:
-            unavailable = (
-                status != "paused" and classify_terminal_error(diagnostic or "") == "session_limit"
-            )
+            unavailable = status != "paused" and classify_terminal_error(diagnostic or "") in {
+                "session_limit",
+                "usage_limit",
+            }
             receipt_rows = connection.execute(
                 """
                 SELECT category, payload_json FROM graph_run_receipts
@@ -1446,7 +1447,7 @@ class AutoResearchChildrenStoreMixin:
                     continue
                 if (
                     receipt["category"] == "provider_terminal_error"
-                    and receipt_payload.get("classification") == "session_limit"
+                    and receipt_payload.get("classification") in {"session_limit", "usage_limit"}
                 ) or (
                     receipt["category"] == "continuation_context_unavailable"
                     and receipt_payload.get("retry_required") is True

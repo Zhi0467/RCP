@@ -2185,7 +2185,7 @@ export type EpisodeHealth =
   | "completed"
   | "stopped"
   | "failed";
-export type EpisodeBlockedReason = "sign_in" | "reauthorize";
+export type EpisodeBlockedReason = "sign_in" | "reauthorize" | "usage_limit";
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
@@ -2234,6 +2234,8 @@ export interface AutoResearchRecoverySummary {
   purpose: "task";
   status: "pending" | "admitted" | "exhausted" | "blocked";
   retry_mode: "exact" | "clean" | "blocked";
+  /** Which failure blocked it; a dead login and a spent allowance both block. */
+  failure_kind: string;
   operation_id: string | null;
   attempts: number;
   max_attempts: number;
@@ -2280,6 +2282,12 @@ export interface Episode {
   live: boolean;
   health: EpisodeHealth;
   blocked_reason: EpisodeBlockedReason | null;
+  /**
+   * Decisions this episode armed a wake on and cannot retire itself. They sit on its
+   * graph branch, which canonical Inbox attention never covers, so these ids are the
+   * only way a surface learns the run is parked on a choice the human owes.
+   */
+  awaiting_decision_ids: string[];
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
   run_section: EpisodeRunSection;

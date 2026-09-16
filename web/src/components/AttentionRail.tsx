@@ -14,10 +14,18 @@ interface ProposalJudgmentSectionProps {
   onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
 }
 
+/** One Decision an Auto-research run is parked on, living on that run's graph branch. */
+export interface ParkedDecision {
+  node_id: string;
+  episode_id: string;
+}
+
 interface AttentionRailProps {
   decisions: GraphNode[];
   blockers: GraphNode[];
+  parked?: ParkedDecision[];
   onSelectNode: (nodeId: string) => void;
+  onOpenRuns?: () => void;
 }
 
 export function ProposalJudgmentSection({
@@ -143,8 +151,14 @@ export function ProposalJudgmentSection({
   );
 }
 
-export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRailProps) {
-  const total = decisions.length + blockers.length;
+export function AttentionRail({
+  decisions,
+  blockers,
+  parked = [],
+  onSelectNode,
+  onOpenRuns,
+}: AttentionRailProps) {
+  const total = decisions.length + blockers.length + parked.length;
   return (
     <aside className="attention-rail" aria-label="Needs your judgment">
       <header className="rail-heading">
@@ -169,6 +183,18 @@ export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRa
           <span className={`decision-attention-status ${decision.status}`}>
             {decision.status === "revisit" ? "Revisit" : "Ready"}
           </span>
+        </button>
+      ))}
+
+      {parked.map((decision) => (
+        <button
+          className="attention-item decision parked"
+          key={`${decision.episode_id}:${decision.node_id}`}
+          onClick={() => onOpenRuns?.()}
+          title="This Decision is on an Auto-research branch; open Runs to choose it."
+        >
+          <strong>{decision.node_id}</strong>
+          <span className="decision-attention-status ready">On a run branch</span>
         </button>
       ))}
 

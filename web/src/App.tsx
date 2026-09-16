@@ -3972,7 +3972,23 @@ export default function App() {
       </div>
     );
 
-  const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
+  // A run parked on a branch Decision owes the human a choice just as a canonical
+  // one does, but it never enters `project.attention`, which is canonical-only.
+  const parkedDecisions = useMemo(
+    () =>
+      episodes.flatMap((episode) =>
+        episode.awaiting_decision_ids.map((nodeId) => ({
+          node_id: nodeId,
+          episode_id: episode.episode_id,
+        })),
+      ),
+    [episodes],
+  );
+  const attentionCount =
+    pendingProposals.length +
+    attentionDecisions.length +
+    openBlockers.length +
+    parkedDecisions.length;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
@@ -4501,7 +4517,9 @@ export default function App() {
               <AttentionRail
                 decisions={attentionDecisions}
                 blockers={openBlockers}
+                parked={parkedDecisions}
                 onSelectNode={openNodeById}
+                onOpenRuns={() => changeView("execution")}
               />
             </div>
           )}

@@ -26,6 +26,7 @@ AutoResearchRecoveryFailure = Literal[
     "network",
     "rate_limit",
     "session_limit",
+    "usage_limit",
     "missing_checkpoint",
     "continuation_unavailable",
     "structural_unrecoverable",
@@ -214,6 +215,11 @@ def _recoverable_failure(
     )
     if terminal == "session_limit":
         return "session_limit", "clean" if request.role == "orchestrator" else "exact"
+    if terminal == "usage_limit":
+        # The account's allowance is spent, not this turn's session. No attempt
+        # clears that, so the root turn waits for the human the way a dead login
+        # does rather than spending its attempts proving it again.
+        return "usage_limit", "blocked" if request.role == "orchestrator" else "clean"
     if terminal == "stale_session":
         # The provider no longer has this thread, so an exact resume fails the
         # same way every time whichever role asked for it.

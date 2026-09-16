@@ -8,10 +8,34 @@ from rcp.api.episodes import episode_chain_records, operational_episode_tasks
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import EPISODE_TIMELINE_EVENT_LIMIT
 from rcp.storage import AppStore, EpisodeRecord
+from rcp.storage.models import (
+    GraphWatcherRecord,
+    NodeStatusGraphCondition,
+    StoredWatcherRecord,
+)
 
 EpisodeTimelineEventKind = Literal[
     "turn", "retry", "wake", "mail", "notice", "child", "lifecycle", "human"
 ]
+
+
+_EVENT_TITLE_MAX = 120
+
+
+def _armed_label(watcher: StoredWatcherRecord) -> str:
+    """Name what an armed watcher waits for, so a parked episode reads as parked."""
+
+    if not isinstance(watcher, GraphWatcherRecord):
+        return "Watcher armed"
+    condition = watcher.condition
+    if isinstance(condition, NodeStatusGraphCondition):
+        statuses = " or ".join(condition.status_in)
+        label = f"Waiting for {condition.node_id} to reach {statuses}"
+    else:
+        label = f"Waiting for a Proposal on {condition.node_id} to resolve"
+    # Node ids are agent-authored; the event title is bounded at 120.
+    limit = _EVENT_TITLE_MAX
+    return label if len(label) <= limit else label[: limit - 1] + "\u2026"
 
 
 class EpisodeTimelineActor(BaseModel):
@@ -167,7 +191,14 @@ def _member_events(
         store.auto_research_lifecycle_notices(episode.episode_id, newest=newest) if auto else []
     )
     messages = store.auto_research_messages(episode.episode_id, newest=newest) if auto else []
-    watchers = store.episode_watchers(episode.episode_id, newest=newest) if not auto else []
+    # An Auto-research episode's own watchers are graph conditions, and between
+    # turns they are the only record of what the orchestrator is waiting for.
+    # Its shell watchers belong to child episodes and stay on their timelines.
+    watchers = [
+        watcher
+        for watcher in store.episode_watchers(episode.episode_id, newest=newest)
+        if not auto or isinstance(watcher, GraphWatcherRecord)
+    ]
     wrapup = store.episode_wrapup(episode.episode_id)
     report = store.episode_report(episode.episode_id)
     members = {member.user_id: member for member in store.space_users()}
@@ -397,7 +428,7 @@ def _member_events(
             "notice",
             f"notice:{watcher.watcher_id}:armed",
             watcher.created_at,
-            "Watcher armed",
+            _armed_label(watcher),
             parent_event_id=task_event(watcher.origin_operation_id),
             status="armed",
             cause="watcher_armed",
