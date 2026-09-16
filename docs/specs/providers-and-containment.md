@@ -351,8 +351,18 @@ Unreachable or unprovable process state keeps recovery blocked and preserves the
 stage and receipts for reconciliation.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
-They retain task mode, graph target, capability, host, stage, and external-effect
-diagnostics. A failed run retains its scratch and Patch text for bounded
+They retain task mode, graph target, capability, stage, and external-effect
+diagnostics. Provider, model, and reasoning are one niche a human may change on
+a recovery, because what makes a recovery worth starting is often that the
+current one cannot finish the turn. A rebound recovery starts a clean native
+session, since the prior continuation belongs to the binding it left, so the
+rebinding reaches exactly the actors that have a clean-session path: an
+Auto-research worker continues only through the exact session its dispatch bound
+it to, and its recovery is refused rather than admitted as a turn that cannot
+launch. The execution machine moves only where nothing is anchored to it. An
+episode's watchers, stage, and children live on the machine its turn runs on, so
+a recovery inside an episode keeps that machine on every Retry path, while a
+standalone turn owns nothing there and may move to any reachable one. A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,
@@ -861,8 +871,24 @@ gone cannot be resumed at all, so recovery starts the turn clean instead of
 resuming into the same failure. A session-bound episode is the same case: its
 binding names a session the provider has dropped, so recovery hands the episode
 to a clean session on the record rather than refusing and stranding it. Every
-other failure keeps its existing behaviour. Reattempts, their refusals, and
-their exhaustion are receipts on the failed turn.
+other failure keeps its existing behaviour.
+
+A reattempt that failed the same way as the attempt before it ends the ladder
+whatever the failure was named, because the remaining waits would only reproduce
+a settled answer. RCP does not read provider prose for whether a reached limit
+belongs to the session or to the account: it offers the human the one thing that
+makes the next attempt different, a changed provider, model, or reasoning, and
+whether that attempt then succeeds is the provider's answer rather than a state
+RCP models. A stopped ladder, whether it stopped on a repeat or ran out of
+waits, is a verdict on the failure that produced it, so the human's own Retry
+retires it before that turn exists: the turn can settle the instant it is
+spawned, and its settlement is what writes the next verdict, so the next failure
+is judged on its own and gets a full ladder. The automatic path keeps counting
+its attempts as before. A Retry that is then refused leaves no verdict and no
+attempt, which reads as the failed turn it still points at. A
+revoked login is the exception it already was, cleared by signing in rather than
+by retrying. Reattempts, their refusals, and their exhaustion are receipts on the
+failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A

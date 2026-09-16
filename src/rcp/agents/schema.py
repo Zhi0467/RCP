@@ -460,7 +460,13 @@ class OrchestratorAgentPatch(_StrictModel):
         ),
     )
     change_summary: list[str] = Field(default_factory=list)
-    agent_action: Literal["decision_choice"] | None = None
+    agent_action: Literal["decision_choice"] | None = Field(
+        default=None,
+        description=(
+            "Set to 'decision_choice' when this Patch writes selected_option or "
+            "status 'decided' on a Decision. Required for that outcome and refused otherwise."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_explicit_decision_action(self) -> OrchestratorAgentPatch:

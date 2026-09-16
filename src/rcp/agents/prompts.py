@@ -93,7 +93,8 @@ _BASE_AUTHORING_RULES = """These are methods for authorized graph changes, not a
   this task permits; inspect operational state when that state determines the choice. A downstream
   Experiment governed by the Decision need not finish before that Decision becomes ready. State
   what the choice turns on. Use `revisit` only when new evidence undermines a settled choice.
-- Decision options are the alternatives a human will choose among. Before writing them, enumerate
+- Decision options are the alternatives whoever holds the choice selects among; your graph
+  authority above says whether that is you or a human. Before writing them, enumerate
   every distinct choice and investigate each with the same care. Specify every option at the same
   level of detail, as a complete choice a reader could act on alone; never detail one option and
   pad the list with an underspecified or "leave it open" alternative. Do not encode a preference

@@ -1056,8 +1056,6 @@ def retry_agent_task(
     result_view_retry_lock: threading.Lock | None = None
     try:
         overrides = body.model_dump(exclude_none=True) if body is not None else {}
-        if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
-            raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
         if previous.kind == "auto_research":
             candidate = load_stored_request(
                 AutoResearchRunRequest,

@@ -47,6 +47,27 @@ const project = {
       run_on: "local",
       permissions: {},
     },
+    paper_coach: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    orchestrator: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
+    refresh: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      permissions: {},
+    },
   },
   provider_readiness: {
     local: {
@@ -926,6 +947,76 @@ test("Experiment provider switch exposes provider controls but locks the executi
     /<button class="button primary" disabled=""[^>]*>.*Switch provider<\/button>/s,
   );
   assert.doesNotMatch(html, /Truth input subset|Additional message/);
+});
+
+test("every switch dialog holds its submit until the binding actually changes", () => {
+  // Only seed and refresh reach this dialog as a plain retry; every other kind
+  // gets here through a switch control, where an unchanged selection is a no-op.
+  const initialConfig = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+  const render = (kind, config) =>
+    renderToStaticMarkup(
+      React.createElement(RunDialog, {
+        open: true,
+        kind,
+        mode: "retry",
+        project,
+        initialScope: ["repo"],
+        initialConfig: config ?? initialConfig,
+        busy: false,
+        onClose() {},
+        onRun() {},
+      }),
+    );
+
+  for (const kind of ["orchestrator", "node_chat", "project_chat", "paper_coach"]) {
+    const html = render(kind);
+    assert.match(
+      html,
+      /<button class="button primary" disabled=""[^>]*>.*Switch provider<\/button>/s,
+    );
+  }
+  assert.match(render("orchestrator"), /Switch Auto-research provider/);
+  assert.match(render("node_chat"), /Switch Experiment provider/);
+  // Seed keeps a submittable plain retry with nothing changed.
+  const seed = render("seed");
+  assert.match(seed, /Retry seed/);
+  assert.doesNotMatch(seed, /<button class="button primary" disabled=""/);
+});
+
+test("a standalone retry may move machines while an episode-bound one stays pinned", () => {
+  // Only the caller knows whether anything is anchored to the machine, so the
+  // dialog locks by default and the standalone retry is the one that opts out.
+  const render = (props) =>
+    renderToStaticMarkup(
+      React.createElement(RunDialog, {
+        open: true,
+        kind: "node_chat",
+        mode: "retry",
+        project: {
+          ...project,
+          machines: [
+            { alias: "local", host: null },
+            { alias: "cluster", host: "" },
+          ],
+        },
+        initialScope: ["repo"],
+        initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
+        busy: false,
+        onClose() {},
+        onRun() {},
+        ...props,
+      }),
+    );
+
+  assert.match(render({ runOnLocked: false }), /<span>Run on <\/span>/);
+  assert.match(render({ runOnLocked: false }), /<option value="cluster">/);
+  assert.match(render({}), /<span>Run on <svg/);
+  // Moving off a machine that is gone is the change, so nothing else is owed.
+  const moved = render({
+    runOnLocked: false,
+    initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "cluster" },
+  });
+  assert.doesNotMatch(moved, /<button class="button primary" disabled=""/);
 });
 
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {

@@ -1618,6 +1618,80 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._agent_task_record(row) if row is not None else None
 
+    def release_settled_auto_research_recovery(
+        self, operation_id: str
+    ) -> tuple[AutoResearchRecoveryStatus, int] | None:
+        """Retire a verdict the ladder reached, for an attempt a human is starting.
+
+        A blocked or exhausted row judges the failure that produced it, and a
+        human Retry is the answer that verdict was waiting for. Left settled, it
+        would keep the run parked on a failure that is no longer the current one
+        and deny the next, different one its bounded ladder.
+
+        This runs before the attempt exists. The new turn can settle the instant
+        it is spawned, and its settlement is what writes the next verdict, so
+        releasing afterwards would either miss the row it had already moved or
+        overwrite the answer that turn had just given. Running first means it
+        can also run for an attempt that never starts, so it returns the verdict
+        it retired for `restore_settled_auto_research_recovery` to put back.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status, attempts FROM auto_research_recoveries
+                WHERE status IN ('blocked', 'exhausted')
+                  AND (operation_id = ? OR admitted_operation_id = ?)
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (operation_id, operation_id),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """
+                UPDATE auto_research_recoveries
+                SET status = 'admitted', next_attempt_at = NULL, attempts = 0,
+                    updated_at = ?
+                WHERE status IN ('blocked', 'exhausted')
+                  AND (operation_id = ? OR admitted_operation_id = ?)
+                """,
+                (now, operation_id, operation_id),
+            )
+        return (
+            TypeAdapter(AutoResearchRecoveryStatus).validate_python(row["status"]),
+            int(row["attempts"]),
+        )
+
+    def restore_settled_auto_research_recovery(
+        self,
+        operation_id: str,
+        released: tuple[AutoResearchRecoveryStatus, int],
+    ) -> None:
+        """Put a verdict back when the Retry it was retired for never started.
+
+        A released row names no attempt, and an episode whose orchestrator failed
+        with a recovery that names no attempt is never quiescent, so a Stop after
+        a refused Retry would wait on a turn that does not exist. Matching the
+        zeroed attempt count is what proves nothing has happened since the
+        release; the row may still name the child of an earlier automatic one.
+        """
+
+        status, attempts = released
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE auto_research_recoveries
+                SET status = ?, attempts = ?, updated_at = ?
+                WHERE status = 'admitted' AND attempts = 0
+                  AND (operation_id = ? OR admitted_operation_id = ?)
+                """,
+                (status, attempts, self.now(), operation_id, operation_id),
+            )
+
     def complete_auto_research_recovery(
         self,
         recovery_id: str,

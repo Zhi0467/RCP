@@ -85,6 +85,7 @@ function renderEpisodes(values, { busyAction = null } = {}) {
           async onContinue() {},
           async onSendMessage() {},
           async onOperateTask() {},
+          onSwitchProvider() {},
           key: value.episode_id,
         }),
       ),
@@ -180,6 +181,54 @@ test("wrap-up has one exact parent state and no report task or recovery control"
   assert.equal(projection.taskControl, null);
   assert.ok((html.match(/Wrapping up visualization and report/g) ?? []).length >= 2);
   assert.doesNotMatch(html, />Retry<|>Resume<|Report task|episode_report/);
+});
+
+test("only a control that can take a new binding offers the switch", () => {
+  const failed = { ...rootTask, status: "failed", can_pause: false, can_retry: true };
+  const worker = {
+    ...failed,
+    operation_id: "worker-turn",
+    role: "worker",
+    depth: 1,
+    parent_operation_id: rootTask.operation_id,
+  };
+  const withControl = (task) => ({
+    ...episode,
+    status: "needs_action",
+    health: "needs_action",
+    recommendation: "retry",
+    task_control: "retry",
+    live: false,
+    tasks: [{ ...failed, role: "orchestrator", depth: 0 }, worker].filter(
+      (member) => member.operation_id === task.operation_id || member.role === "orchestrator",
+    ),
+    current_control_task_id: task.operation_id,
+    current_operation_id: task.operation_id,
+  });
+
+  const orchestrator = withControl(failed);
+  assert.equal(
+    episodeProjection(orchestrator, orchestrator.tasks).taskControl.canSwitchProvider,
+    true,
+  );
+  assert.match(renderEpisodes([orchestrator]), /Switch provider…/);
+
+  // A worker continues only through the session its dispatch bound it to, so
+  // every switch it could submit would come back refused.
+  const workerControl = withControl(worker);
+  assert.equal(
+    episodeProjection(workerControl, workerControl.tasks).taskControl.canSwitchProvider,
+    false,
+  );
+  assert.doesNotMatch(renderEpisodes([workerControl]), /Switch provider…/);
+
+  // A stopping episode admits only exact recovery, from any actor, so the exact
+  // Retry stays and the rebinding beside it goes.
+  const stopping = { ...orchestrator, stop_requested_at: "2026-09-16T00:00:00Z" };
+  assert.equal(episodeProjection(stopping, stopping.tasks).taskControl.canSwitchProvider, false);
+  const html = renderEpisodes([stopping]);
+  assert.doesNotMatch(html, /Switch provider…/);
+  assert.match(html, />Retry</);
 });
 
 test("a ready episode exposes one singular report URL", () => {

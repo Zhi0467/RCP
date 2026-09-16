@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -315,6 +316,47 @@ def test_worker_failure_never_becomes_auto_research_verdict(tmp_path: Path) -> N
     assert store.auto_research_recovery("task:worker") is None
 
 
+def test_only_the_orchestrator_recovery_can_be_rebound(tmp_path: Path) -> None:
+    """The control a human is offered has to produce a turn that can launch."""
+
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, request, execution):
+        execution.checkpoint_stage("", str(tmp_path))
+        yield _sse(AgentEvent(event="session", session_id=f"session-{request.role}"))
+        if request.role == "worker":
+            yield _sse(AgentEvent(event="error", text="worker failed"))
+        else:
+            yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    auto_research, root = _start(tasks)
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    worker = start_auto_research_turn(
+        tasks,
+        auto_research.episode_id,
+        AutoResearchRunRequest(
+            provider="codex",
+            episode_id=auto_research.episode_id,
+            role="worker",
+            control_node_id="exp/check",
+        ),
+        parent_operation_id=root.operation_id,
+        operation_id="worker",
+    )
+    wait_for_task(store, worker.operation_id, expect="failed")
+
+    # A worker's continuation requires the exact session its dispatch bound it
+    # to, so a rebinding is refused rather than admitted and left unable to run.
+    with pytest.raises(ValueError, match="only the orchestrator's recovery can change"):
+        tasks.retry_auto_research(worker.operation_id, service=None, reasoning="high")
+    # The machine is the one setting no episode recovery may move, and the
+    # Auto-research path is pinned by the same rule as every other one.
+    with pytest.raises(ValueError, match="pinned execution machine"):
+        tasks.retry_auto_research(worker.operation_id, service=None, run_on="cluster")
+
+
 def test_session_limit_uses_clean_orchestrator_retry_even_after_checkpoint(tmp_path: Path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
@@ -342,11 +384,15 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
 
+    attempts = itertools.count(1)
+
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
             execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
-        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+        # Each attempt fails differently: this covers the shared allocation and
+        # its backoff, not the stop rule for one error that repeats.
+        yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
@@ -447,11 +493,15 @@ def test_admission_and_provider_failures_share_durable_allocation_attempt_cap(
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
 
+    attempts = itertools.count(1)
+
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
             execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
-        yield _sse(AgentEvent(event="error", text="provider unavailable"))
+        # Each attempt fails differently: this covers the shared allocation and
+        # its backoff, not the stop rule for one error that repeats.
+        yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
@@ -706,3 +756,203 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+
+
+def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
+    tmp_path: Path,
+) -> None:
+    """The stop judged one failure; it cannot also judge the next, unrelated one."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+    errors = iter([capped, capped, "The connection dropped mid-turn."])
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=next(errors, "Unexpected extra turn.")))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    human = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    wait_for_task(store, human.operation_id, expect="failed")
+
+    def rescheduled():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.operation_id != human.operation_id:
+            return None
+        return candidate if candidate.status == "pending" else None
+
+    # A dropped connection is not the failure the ladder stopped on, so it gets
+    # the whole bounded ladder rather than inheriting a verdict about a cap.
+    resumed = wait_until(rescheduled, detail="the new failure never got its own ladder")
+    assert resumed.attempts == 1
+    assert resumed.next_attempt_at is not None
+
+
+def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Path) -> None:
+    """A release names no attempt, and an episode waits forever on one of those."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=capped))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    # The account is gone, so this Retry never becomes a turn.
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    with pytest.raises(ValueError, match="signed out"):
+        tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+
+    after = store.auto_research_recovery("task:root")
+    assert after is not None
+    assert after.status == "blocked"
+    assert after.attempts == settled.attempts
+
+
+def test_a_committed_child_keeps_the_release_that_a_later_write_failure_follows(
+    tmp_path: Path,
+) -> None:
+    """A turn that exists owes its own failure a ladder, whatever failed after it."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+    # Holds the third turn inside its stream, so the state the restore would
+    # corrupt is observed before that turn writes its own verdict over it.
+    hold = threading.Event()
+    turns = itertools.count()
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        if next(turns) >= 2:
+            hold.wait(10)
+        yield _sse(AgentEvent(event="error", text=capped))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    # The child is committed and running; only the bookkeeping after it fails.
+    original_receipt = store.record_agent_task_receipt
+
+    def failing_receipt(operation_id, category, payload, **kwargs):
+        if category == "auto_research_orchestrator_clean_retry":
+            raise RuntimeError("the receipt write failed after the turn was admitted")
+        return original_receipt(operation_id, category, payload, **kwargs)
+
+    store.record_agent_task_receipt = failing_receipt
+    try:
+        with pytest.raises(RuntimeError, match="after the turn was admitted"):
+            tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    finally:
+        store.record_agent_task_receipt = original_receipt
+
+    child = store.auto_research_task_recovery_child(settled.operation_id or "")
+    assert child is not None
+    # Startup or a later sign-in can still carry this turn, so the verdict it
+    # was released from must not come back over it.
+    held = store.auto_research_recovery("task:root")
+    assert held is not None and held.status == "admitted"
+    hold.set()
+    wait_for_task(store, child.operation_id, expect="failed")
+
+
+def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
+    tmp_path: Path,
+) -> None:
+    """RCP reads that the retry did not help, not what the provider's prose meant."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your Fable limit. Switch to another model to continue."
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=capped))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    # The first failure says nothing about whether another attempt would help.
+    assert recovery.status == "pending"
+
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.status != "blocked":
+            return None
+        return candidate
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+    assert settled.retry_mode == "blocked"
+    retried = store.agent_task(settled.operation_id or "")
+    assert retried is not None and retried.attempt == 2
+
+    # The human answers the verdict by starting a turn. The release happens
+    # before that turn exists, because a turn that fails the instant it spawns
+    # writes the next verdict itself and must not find the old one in its way.
+    human = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    wait_for_task(store, human.operation_id, expect="failed")
+
+    def judged_on_its_own():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.operation_id != human.operation_id:
+            return None
+        return candidate
+
+    # This turn reproduced the failure too, so it stops on its own verdict
+    # rather than on the one the human already answered.
+    after = wait_until(judged_on_its_own, detail="the human attempt never reached a verdict")
+    assert after.status == "blocked"
+    assert after.attempts == 1

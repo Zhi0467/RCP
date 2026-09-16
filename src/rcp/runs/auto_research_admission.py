@@ -1597,7 +1597,7 @@ def retry_auto_research_task(
     skills: SkillSelection | None,
     service: ProjectService | None = None,
 ) -> AgentTaskRecord:
-    """Recover one paid Auto-research allocation without changing its binding."""
+    """Recover one paid Auto-research allocation on the binding the human chose."""
 
     requested = {
         "provider": provider,
@@ -1605,14 +1605,27 @@ def retry_auto_research_task(
         "reasoning": reasoning,
         "run_on": run_on,
     }
-    changed = [
-        key
+    # A rebound recovery cannot resume the session the old binding owns, so it
+    # starts fresh the way a spent session or a missing checkpoint already does.
+    # The machine never reaches here; both Retry entry points pin it first.
+    rebound = {
+        key: value
         for key, value in requested.items()
         if value is not None and value != getattr(original, key)
-    ]
-    if changed:
+    }
+    if rebound and original.role != "orchestrator":
+        # Only the orchestrator's turn has a clean-session path through its own
+        # stream and stage. A worker's continuation requires the exact session
+        # its dispatch bound it to, so admitting a rebinding here would create a
+        # task that cannot launch.
         raise ValueError(
-            "Auto-research recovery cannot change its pinned " + ", ".join(changed) + "."
+            "An Auto-research worker recovery resumes the exact session its dispatch bound "
+            "it to, so only the orchestrator's recovery can change provider, model, or "
+            "reasoning."
+        )
+    if rebound:
+        original = AutoResearchRunRequest.model_validate(
+            {**original.model_dump(mode="json"), **rebound}
         )
     tasks.admit_provider_task(
         previous.project_id,
@@ -1627,6 +1640,7 @@ def retry_auto_research_task(
     clean_orchestrator_retry = original.role == "orchestrator" and (
         session_limit or continuation_unavailable or not owned_checkpoint
     )
+    starts_fresh = bool(rebound) or clean_orchestrator_retry
     logical_problem = (
         "the native provider session reached its limit"
         if session_limit
@@ -1636,10 +1650,10 @@ def retry_auto_research_task(
         if not owned_checkpoint
         else None
     )
-    problem = logical_problem if not clean_orchestrator_retry else None
+    problem = logical_problem if not starts_fresh else None
     if (
         logical_problem is not None
-        and clean_orchestrator_retry
+        and starts_fresh
         and _settle_unusable_recovery_if_stopping(tasks, previous, logical_problem)
     ):
         problem = logical_problem
@@ -1676,7 +1690,7 @@ def retry_auto_research_task(
             stage = Path(previous.stage_root)
             if not stage.is_dir() or stage.is_symlink():
                 problem = "the saved provider workspace is unavailable"
-    elif problem is None and not clean_orchestrator_retry:
+    elif problem is None and not starts_fresh:
         problem = "the prior task has no complete RCP-owned session and stage"
     if problem is not None:
         _settle_unusable_recovery_if_stopping(tasks, previous, problem)
@@ -1684,7 +1698,7 @@ def retry_auto_research_task(
             "Auto-research recovery cannot start a fresh provider session because "
             f"{problem}. Its original allocation and operational history were preserved."
         )
-    if clean_orchestrator_retry:
+    if starts_fresh:
         session_id = None
         classification = (
             "session_limit"
@@ -1692,6 +1706,8 @@ def retry_auto_research_task(
             else "continuation_unavailable"
             if continuation_unavailable
             else "checkpoint_missing"
+            if not owned_checkpoint
+            else "binding_changed"
         )
     else:
         assert previous.native_session_id is not None
@@ -1739,10 +1755,17 @@ def retry_auto_research_task(
             },
             tier="summary",
         )
+        # The event names why the turn cannot resume, because a human rebinding
+        # is a choice rather than a continuation that failed.
+        reason = (
+            "the human changed its provider, model, or reasoning"
+            if classification == "binding_changed"
+            else "its prior continuation became unavailable"
+        )
         tasks.store.record_agent_task_event(
             retried.operation_id,
             "The orchestrator is retrying this same paid allocation with a clean native "
-            "session after its prior continuation became unavailable.",
+            f"session after {reason}.",
             level="warning",
         )
     return retried
