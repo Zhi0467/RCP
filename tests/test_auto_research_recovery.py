@@ -804,6 +804,44 @@ def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
     assert resumed.next_attempt_at is not None
 
 
+def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Path) -> None:
+    """A release names no attempt, and an episode waits forever on one of those."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text=capped))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    # The account is gone, so this Retry never becomes a turn.
+    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    with pytest.raises(ValueError, match="signed out"):
+        tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+
+    after = store.auto_research_recovery("task:root")
+    assert after is not None
+    assert after.status == "blocked"
+    assert after.attempts == settled.attempts
+
+
 def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
     tmp_path: Path,
 ) -> None:

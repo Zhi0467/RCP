@@ -869,18 +869,26 @@ class BackgroundAgentTasks:
         # its own row and must keep counting, so it is left alone. A turn that
         # is never admitted leaves the row `admitted` with nothing running,
         # which reads as the failed parent it still points at.
-        self.store.release_settled_auto_research_recovery(previous.operation_id)
-        return retry_auto_research_task(
-            self,
-            previous,
-            original,
-            provider=provider,
-            model=model,
-            reasoning=reasoning,
-            run_on=run_on,
-            skills=skills,
-            service=service,
-        )
+        released = self.store.release_settled_auto_research_recovery(previous.operation_id)
+        try:
+            return retry_auto_research_task(
+                self,
+                previous,
+                original,
+                provider=provider,
+                model=model,
+                reasoning=reasoning,
+                run_on=run_on,
+                skills=skills,
+                service=service,
+            )
+        except BaseException:
+            # A released row names no attempt, and a failed orchestrator whose
+            # recovery names no attempt is never quiescent, so a Stop after this
+            # refusal would wait forever on a turn that was never created.
+            if released is not None:
+                self.store.restore_settled_auto_research_recovery(previous.operation_id, released)
+            raise
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task pause")

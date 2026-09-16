@@ -4882,7 +4882,6 @@ export default function App() {
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}
-          onSwitchProvider={() => inspectedTask && chooseRetryTask(inspectedTask)}
           onClose={() => selectTaskInspector(null)}
         />
       )}

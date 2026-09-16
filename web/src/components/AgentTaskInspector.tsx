@@ -29,7 +29,6 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onRetry: () => void;
-  onSwitchProvider: () => void;
   onClose: () => void;
 }
 
@@ -43,16 +42,8 @@ export function AgentTaskInspector({
   onPause,
   onResume,
   onRetry,
-  onSwitchProvider,
   onClose,
 }: Props) {
-  // A standalone turn's only recovery surface is this drawer, and it is also
-  // the only one whose machine may move. An episode-bound turn keeps its switch
-  // on the card that knows whether that episode still admits one, and seed and
-  // refresh already open the dialog through Retry itself.
-  const canSwitchProvider = Boolean(
-    task?.can_retry && task.episode_id === null && task.kind !== "seed" && task.kind !== "refresh",
-  );
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
   const [copiedContractRole, setCopiedContractRole] = useState<string | null>(null);
   const transcript = task ? reconstructTaskTranscript([task]) : [];
@@ -388,15 +379,6 @@ export function AgentTaskInspector({
                   >
                     <RotateCcw size={14} />{" "}
                     {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
-                  </button>
-                )}
-                {canSwitchProvider && (
-                  <button
-                    className="button secondary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onSwitchProvider}
-                  >
-                    Switch provider…
                   </button>
                 )}
                 {task.can_resume && (
