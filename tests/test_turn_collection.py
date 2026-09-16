@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -841,3 +842,50 @@ def test_the_latest_pass_is_found_past_the_receipt_display_ceiling(tmp_path):
     assert len(store.agent_task_receipts(record.operation_id)) == AGENT_TASK_RECEIPT_LIST_LIMIT
     assert journal_pid_files(store, record) == [str(pid), str(correction)]
     assert journal_pid_file(store, record) == str(correction)
+
+
+def test_a_collected_retry_refuses_the_patch_it_only_inherited(tmp_path):
+    """A Retry reuses its stage, so the file it starts with is the last attempt's.
+
+    Live settlement compares against the baseline the attempt recorded and
+    refuses a Patch the turn merely inherited. Collection replays that same turn
+    and cannot recompute the comparison -- by then the stage holds one file and
+    nothing says who wrote it -- so it reads what the attempt wrote down.
+    Otherwise a retry that wrote no Patch applies its predecessor's.
+    """
+
+    from rcp.runs.tasks.work import _capture_retry_deliverable_baseline
+
+    store, record, pid = _failed_turn(tmp_path)
+    attempt = store.create_agent_task(
+        record.model_copy(
+            update={"operation_id": "retry-attempt", "parent_operation_id": record.operation_id}
+        ),
+        continuation_cause="retry",
+    )
+    child = store.create_agent_task(
+        attempt.model_copy(
+            update={"operation_id": "collection", "parent_operation_id": attempt.operation_id}
+        ),
+        continuation_cause="collect",
+    )
+    turn = SimpleNamespace(
+        continuation="collect",
+        retrying=False,
+        execution=SimpleNamespace(store=store, operation_id=child.operation_id),
+    )
+
+    # Nothing recorded yet: collection must not invent a baseline.
+    assert _capture_retry_deliverable_baseline(turn).patch_digest is None
+
+    inherited = hashlib.sha256(b'{"operations": []}').hexdigest()
+    store.record_agent_task_receipt(
+        attempt.operation_id,
+        "retry_deliverable_baseline",
+        {"patch_sha256": inherited, "watch_sha256": None, "experiment_watch_sha256": {"out": "d"}},
+        tier="summary",
+    )
+
+    baseline = _capture_retry_deliverable_baseline(turn)
+    assert baseline.patch_digest == inherited
+    assert baseline.experiment_watch_digests == {"out": "d"}

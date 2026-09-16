@@ -94,6 +94,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "remote_provider_stopped",
     "remote_provider_still_running",
     "provider_collection_incomplete",
+    # Collection of a Retry reads this to know which deliverables the attempt
+    # inherited rather than wrote. Pruned, a stale Patch would read as new.
+    "retry_deliverable_baseline",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES

@@ -131,6 +131,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
+from rcp.runs.turn_collection import collection_source
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import WatcherContinuation
@@ -794,7 +795,50 @@ def _compose_retry_prompt(
     )
 
 
+def _collected_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBaseline:
+    """The baseline the source attempt recorded, for the turn that adopts it.
+
+    A Retry reuses its stage, so the files it starts with are the previous
+    attempt's. Live settlement compares them against this baseline and refuses a
+    deliverable the turn only inherited. Collection replays that same turn and
+    cannot recompute the comparison -- by then the stage holds one file and
+    nothing says who wrote it -- so it reads what the attempt wrote down.
+    """
+
+    if turn.execution is None:
+        return _RetryDeliverableBaseline(None, None, {})
+    store = turn.execution.store
+    record = store.agent_task(turn.execution.operation_id)
+    if record is None:
+        return _RetryDeliverableBaseline(None, None, {})
+    source = collection_source(store, record)
+    if store.agent_task_continuation_cause(source.operation_id) != "retry":
+        return _RetryDeliverableBaseline(None, None, {})
+    for receipt in reversed(store.agent_task_receipts(source.operation_id)):
+        if receipt.category != "retry_deliverable_baseline":
+            continue
+        watchers = receipt.payload.get("experiment_watch_sha256")
+        return _RetryDeliverableBaseline(
+            patch_digest=_digest_or_none(receipt.payload.get("patch_sha256")),
+            watch_digest=_digest_or_none(receipt.payload.get("watch_sha256")),
+            experiment_watch_digests={
+                str(name): str(value)
+                for name, value in (watchers or {}).items()
+                if isinstance(value, str)
+            }
+            if isinstance(watchers, dict)
+            else {},
+        )
+    return _RetryDeliverableBaseline(None, None, {})
+
+
+def _digest_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBaseline:
+    if turn.continuation == "collect":
+        return _collected_retry_deliverable_baseline(turn)
     if not turn.retrying:
         return _RetryDeliverableBaseline(None, None, {})
     assert turn.execution is not None
@@ -823,8 +867,9 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         {
             "patch_sha256": patch_digest,
             "watch_sha256": watch_digest,
+            "experiment_watch_sha256": experiment_watch_digests,
         },
-        tier="diagnostic",
+        tier="summary",
     )
     return _RetryDeliverableBaseline(
         patch_digest=patch_digest,
