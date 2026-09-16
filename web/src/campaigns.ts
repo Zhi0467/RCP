@@ -188,9 +188,13 @@ export function episodeProjection(
             kind: episode.task_control,
             task,
             // Read from the episode's own membership: a mode without roles, or
-            // a control this list does not name, is not a worker.
+            // a control this list does not name, is not a worker. A turn still
+            // waiting to be collected is the third refusal: its control adopts
+            // the finished turn on the host that ran it, which no new binding
+            // can reach.
             canSwitchProvider:
               episode.stop_requested_at === null &&
+              !task.can_collect &&
               episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !==
                 "worker",
           }

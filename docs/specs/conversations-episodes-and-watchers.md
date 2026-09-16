@@ -249,12 +249,15 @@ fresh native session. A provider switch is a deliberate recovery that becomes
 active only after a mechanically successful handoff; automatic work never
 silently switches or starts fresh. The switch is offered only where the actor
 can accept a new binding: a rebinding starts a clean native session, which an
-Auto-research worker never gets and which a stopping episode refuses from
-anyone, so neither shows one beside the exact Retry they do permit. Because the switch exists to change the binding, it holds its
-submission until the selection actually differs from the one that failed, and
-the execution machine is part of that selection wherever the recovery is free to
-move it. A run that can retry unchanged keeps its own plain Retry and never
-routes through the switch to get one.
+Auto-research worker never gets, which a stopping episode refuses from anyone,
+and which a turn still waiting to be collected has no use for, because that
+control adopts the turn already finished on the host that ran it. None of the
+three shows a switch beside the exact recovery they do permit. Because the
+switch exists to change the binding, it holds its submission until the
+selection actually differs from the one that failed, and the execution machine
+is part of that selection wherever the recovery is free to move it. A run that
+can retry unchanged keeps its own plain Retry and never routes through the
+switch to get one.
 
 Only operational provider turns spend the operational ceiling. Validation,
 same-invocation Patch/watcher correction, exact Resume/Retry, and hidden report

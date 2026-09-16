@@ -1015,6 +1015,85 @@ def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
     assert resumed.next_attempt_at is not None
 
 
+def test_a_repeated_delivery_loss_is_collected_rather_than_parked(tmp_path, monkeypatch) -> None:
+    """A repeat stops the ladder, but a finished turn is adopted, not owed to a human."""
+
+    store = _store(tmp_path)
+    manifest_path = Path(store.project("project").locator)
+    manifest_path.write_text(manifest_path.read_text().replace('host = ""', 'host = "test-host"'))
+    stage = tmp_path / "original-stage"
+    stage.mkdir()
+    pid_file = str(stage / "original.pid")
+    dropped = "SSH delivery was interrupted"
+    attempts = []
+
+    async def stream(_project_id, _kind, _request, execution):
+        attempts.append(execution.continuation)
+        if execution.continuation == "collect":
+            yield _sse(AgentEvent(event="answer", text="The existing remote work completed."))
+            yield _sse(AgentEvent(event="done"))
+            return
+        if len(attempts) == 1:
+            execution.checkpoint_stage("", str(stage))
+            yield _sse(AgentEvent(event="session", session_id="original-session"))
+            yield _sse(AgentEvent(event="error", text=dropped))
+            return
+        # Only the second turn reached a wrapper, so only it leaves a finished
+        # turn on the host for collection to come back for.
+        execution.checkpoint_stage("test-host", str(stage))
+        store.begin_remote_provider_pass(
+            execution.operation_id, "test-host", str(stage), pid_file, journaled=True
+        )
+        store.deliver_remote_provider_pass(execution.operation_id, pid_file)
+        yield _sse(AgentEvent(event="session", session_id="original-session"))
+        raise RemoteStageUnreachable(dropped)
+
+    def collected(_store, _record):
+        return CollectedTurn(
+            "root",
+            pid_file,
+            {
+                "protocol_complete": True,
+                "journal_complete": True,
+                "root_thread_id": "original-session",
+            },
+            "",
+            None,
+        )
+
+    monkeypatch.setattr(background_module, "read_collected_turn", collected)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: True)
+    tasks = BackgroundAgentTasks(store, stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda *_args, **_kwargs: None)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 1
+    retried = wait_until(
+        lambda: store.auto_research_task_recovery_child(root.operation_id),
+        detail="the first delivery loss never got its retry",
+    ).operation_id
+    wait_for_task(store, retried, expect="failed")
+
+    def settled():
+        candidate = store.auto_research_recovery("task:root")
+        if candidate is None or candidate.operation_id != retried:
+            return None
+        return candidate
+
+    # The drop repeated word for word, which stops a retry ladder. Collection is
+    # not a retry, so the second turn is still picked up on its own.
+    second = wait_until(settled, detail="the second delivery loss never settled")
+    assert second.status == "pending"
+    assert reconcile_due_auto_research_recoveries(tasks, as_of=second.next_attempt_at) == 1
+    child = wait_for_task(
+        store, store.auto_research_recovery("task:root").admitted_operation_id, expect="succeeded"
+    )
+    assert attempts[-1] == "collect"
+    assert child.native_session_id == "original-session"
+
+
 def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Path) -> None:
     """A release names no attempt, and an episode waits forever on one of those."""
 

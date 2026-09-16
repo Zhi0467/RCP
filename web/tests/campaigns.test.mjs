@@ -229,6 +229,18 @@ test("only a control that can take a new binding offers the switch", () => {
   const html = renderEpisodes([stopping]);
   assert.doesNotMatch(html, /Switch provider…/);
   assert.match(html, />Retry</);
+
+  // A finished turn still on its host is collected, not relaunched, so the
+  // control beside it offers the collection and no rebinding.
+  const collectible = {
+    ...orchestrator,
+    tasks: orchestrator.tasks.map((member) => ({ ...member, can_collect: true })),
+  };
+  assert.equal(
+    episodeProjection(collectible, collectible.tasks).taskControl.canSwitchProvider,
+    false,
+  );
+  assert.doesNotMatch(renderEpisodes([collectible]), /Switch provider…/);
 });
 
 test("a ready episode exposes one singular report URL", () => {

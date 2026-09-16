@@ -97,7 +97,14 @@ def reconcile_auto_research_task_settlement(
         )
 
     failure_kind, retry_mode = _recoverable_failure(store, task.operation_id, request)
-    if retry_mode != "blocked" and _repeats_the_previous_failure(store, task):
+    # A repeat stops the retry ladder, but collection is not a retry: that turn
+    # already finished on its host and its recovery only adopts it, so a second
+    # delivery loss is still picked up instead of parked on a human.
+    if (
+        retry_mode != "blocked"
+        and not can_collect(store, task)
+        and _repeats_the_previous_failure(store, task)
+    ):
         retry_mode = "blocked"
     store.schedule_auto_research_task_recovery(
         task.operation_id,

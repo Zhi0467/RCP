@@ -215,9 +215,10 @@ def _decision_disposition() -> str:
 - Set `ready` instead only when the choice turns on something your authority cannot supply: human
   preference, cost or risk the human carries, or a direction the starting instruction left open.
   Name in `rationale` exactly what you are asking the human for.
-- A `ready` Decision does not announce itself. Waking on `decided` parks the episode until the human
-  happens to look, so prefer deciding, and when you do hand a choice over keep other authorized work
-  moving rather than making that wake the episode's only remaining path forward.
+- A `ready` Decision does not announce itself; only a wake armed on `decided` says a choice is owed,
+  and the episode then waits on the human for as long as they take. Prefer deciding, and when you do
+  hand a choice over keep other authorized work moving rather than making that wake the episode's
+  only remaining path forward.
 """
 
 

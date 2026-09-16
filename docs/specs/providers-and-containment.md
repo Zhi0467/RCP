@@ -959,21 +959,23 @@ to a clean session on the record rather than refusing and stranding it. Every
 other failure keeps its existing behaviour.
 
 A reattempt that failed the same way as the attempt before it ends the ladder
-whatever the failure was named, because the remaining waits would only reproduce
-a settled answer. RCP does not read provider prose for whether a reached limit
-belongs to the session or to the account: it offers the human the one thing that
-makes the next attempt different, a changed provider, model, or reasoning, and
-whether that attempt then succeeds is the provider's answer rather than a state
-RCP models. A stopped ladder, whether it stopped on a repeat or ran out of
-waits, is a verdict on the failure that produced it, so the human's own Retry
-retires it before that turn exists: the turn can settle the instant it is
-spawned, and its settlement is what writes the next verdict, so the next failure
-is judged on its own and gets a full ladder. The automatic path keeps counting
-its attempts as before. A Retry that is then refused leaves no verdict and no
-attempt, which reads as the failed turn it still points at. A
-revoked login is the exception it already was, cleared by signing in rather than
-by retrying. Reattempts, their refusals, and their exhaustion are receipts on the
-failed turn.
+whatever the failure was named, because the remaining waits would only
+reproduce a settled answer. A turn that can still be collected is the
+exception: its recovery adopts work the host already finished rather than
+reattempting anything, so it is picked up instead of ending the ladder. RCP
+does not read provider prose for whether a reached limit belongs to the session
+or to the account: it offers the human the one thing that makes the next
+attempt different, a changed provider, model, or reasoning, and whether that
+attempt then succeeds is the provider's answer rather than a state RCP models.
+A stopped ladder, whether it stopped on a repeat or ran out of waits, is a
+verdict on the failure that produced it, so the human's own Retry retires it
+before that turn exists: the turn can settle the instant it is spawned, and its
+settlement is what writes the next verdict, so the next failure is judged on
+its own and gets a full ladder. The automatic path keeps counting its attempts
+as before. A Retry that is then refused leaves no verdict and no attempt, which
+reads as the failed turn it still points at. A revoked login is the exception
+it already was, cleared by signing in rather than by retrying. Reattempts,
+their refusals, and their exhaustion are receipts on the failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
 packages. Startup refreshes each provider/machine target after readiness. A
