@@ -73,8 +73,11 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.turn_collection import (
     CollectionPending,
     can_collect,
+    can_stop_remote_provider,
     collected_task_operation_id,
+    collection_source,
     incomplete_collection_text,
+    journal_pid_file,
     read_collected_turn,
 )
 from rcp.service import (
@@ -918,6 +921,32 @@ class BackgroundAgentTasks:
             skills=skills,
             service=service,
         )
+
+    def stop_remote_provider(self, operation_id: str) -> AgentTaskRecord:
+        """Stop a provider that outlived its turn, so its result can be collected.
+
+        Collection waits for process absence and never forces it: a group killed
+        while still writing would lose the very turn being recovered. But a
+        provider that is wedged rather than working never reaches absence on its
+        own, and nothing here can tell those two apart -- a live group producing
+        nothing looks the same either way. The human who knows what this turn was
+        doing can, and this is where they say so.
+        """
+
+        self._require_startup_effects_open("remote provider stop")
+        record = self._require_operation(operation_id)
+        if not can_stop_remote_provider(self.store, record):
+            raise ValueError("This task has no running remote provider to stop.")
+        source = collection_source(self.store, record)
+        pid_file = journal_pid_file(self.store, source)
+        host = source.stage_host or ""
+        assert pid_file and host  # `can_stop_remote_provider` proved both.
+        if not AgentProcessControl._terminate_remote(host, pid_file):
+            raise ValueError("The remote provider process group could not be confirmed stopped.")
+        # Confirmed absent, so the pass is answerable and the stage is reusable.
+        # This is also what withdraws the control that was just used.
+        self.store.finish_remote_provider_pass(source.operation_id, pid_file)
+        return self._require_operation(operation_id)
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task pause")

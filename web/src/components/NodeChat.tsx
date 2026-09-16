@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   RadioTower,
+  CirclePause,
   RotateCcw,
   Send,
   X,
@@ -161,6 +162,7 @@ interface Props {
   onClose: () => void;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
+  onStopRemoteProviderTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
 }
 
@@ -477,6 +479,7 @@ export function NodeChat({
   onClose,
   onResumeTask,
   onRetryTask,
+  onStopRemoteProviderTask,
   onRefreshTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
@@ -1918,6 +1921,7 @@ export function NodeChat({
                       disabled={readOnly}
                       onResume={() => onResumeTask(recoveryLineTask)}
                       onRetry={() => onRetryTask(recoveryLineTask)}
+                      onStopRemoteProvider={() => onStopRemoteProviderTask(recoveryLineTask)}
                     />
                   ) : activeLineTask ? (
                     <InlineTaskProgress task={activeLineTask} />
@@ -2612,11 +2616,13 @@ function InlineTaskRecovery({
   disabled,
   onResume,
   onRetry,
+  onStopRemoteProvider,
 }: {
   task: AgentTask;
   disabled: boolean;
   onResume: () => void;
   onRetry: () => void;
+  onStopRemoteProvider: () => void;
 }) {
   return (
     <div className="chat-task-inline paused" role="status" aria-label="Agent task recovery">
@@ -2639,6 +2645,17 @@ function InlineTaskRecovery({
       >
         <RotateCcw size={11} /> {taskRetryLabel(task)}
       </button>
+      {task.can_stop_remote_provider && (
+        <button
+          type="button"
+          className="button compact secondary"
+          disabled={disabled}
+          onClick={onStopRemoteProvider}
+          title="The provider on the execution host outlived this turn. Stopping it lets the turn be collected."
+        >
+          <CirclePause size={11} /> Stop provider
+        </button>
+      )}
     </div>
   );
 }

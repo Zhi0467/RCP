@@ -42,7 +42,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { isActiveTask, taskNeedsPolling, taskRecoveryAction } from "./agentTasks";
+import { isActiveTask, taskNeedsPolling, taskRecoveryAction, type TaskAction } from "./agentTasks";
 import { mergeProviderLogins } from "./providers";
 import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
@@ -541,9 +541,12 @@ export function activeBranchMergeTask(episode: Episode): AgentTask | null {
 
 export function taskActionNeedsAuthoritativeProjectReload(
   task: AgentTask,
-  action: "pause" | "resume" | "retry",
+  action: TaskAction,
 ): boolean {
-  return task.request.patch_kind === "experiment_loop" && action !== "pause";
+  // Only an action that advances the loop can change project truth. Stopping a
+  // provider that outlived its turn advances nothing; it clears the way to.
+  const advances = action === "resume" || action === "retry";
+  return task.request.patch_kind === "experiment_loop" && advances;
 }
 
 export function humanAttentionBlockers(
@@ -3376,11 +3379,7 @@ export default function App() {
     }
   };
 
-  const operateTask = async (
-    task: AgentTask,
-    action: "pause" | "resume" | "retry",
-    presentTask = true,
-  ) => {
+  const operateTask = async (task: AgentTask, action: TaskAction, presentTask = true) => {
     if (taskActionId) return;
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     const finishTaskAction = beginTaskAction(task.operation_id);
@@ -3422,10 +3421,7 @@ export default function App() {
     }
   };
 
-  const operateEpisodeOrchestratorTask = async (
-    task: AgentTask,
-    action: "pause" | "resume" | "retry",
-  ) => {
+  const operateEpisodeOrchestratorTask = async (task: AgentTask, action: TaskAction) => {
     await operateTask(task, action, false);
     await refreshEpisodes();
   };
@@ -3487,6 +3483,10 @@ export default function App() {
     },
     [apiBase, upsertTask],
   );
+
+  const requestStopRemoteProvider = (task: AgentTask) => {
+    void operateTask(task, "stop-remote-provider");
+  };
 
   const requestRetry = (task: AgentTask) => {
     if (!task.can_collect && (task.kind === "seed" || task.kind === "refresh")) {
@@ -4030,6 +4030,7 @@ export default function App() {
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
+          onStopRemoteProviderTask={requestStopRemoteProvider}
           onRefreshTask={refreshAgentTask}
           onInspectTask={selectTaskInspector}
           onOpenInbox={() => changeView("attention")}
@@ -4667,6 +4668,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              onStopRemoteProviderTask={requestStopRemoteProvider}
               onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => changeView("attention")}
@@ -4798,6 +4800,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              onStopRemoteProviderTask={requestStopRemoteProvider}
               onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => {
@@ -4886,6 +4889,7 @@ export default function App() {
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}
+          onStopRemoteProvider={() => inspectedTask && requestStopRemoteProvider(inspectedTask)}
           onClose={() => selectTaskInspector(null)}
         />
       )}

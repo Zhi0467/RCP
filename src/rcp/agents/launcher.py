@@ -329,6 +329,28 @@ class AgentProcessControl:
         stop it. `test_provider_turn_rides_the_master_of_its_own_run` fails if
         this or `_terminate_remote` ever takes one.
         """
+        return {0: True, 1: False}.get(AgentProcessControl._probe(host, pid_file).returncode)
+
+    @staticmethod
+    def remote_provider_silence(host: str, pid_file: str) -> float | None:
+        """How long a still-running provider has written nothing, if it can be read.
+
+        Asked only once a probe has already found the group alive, so the extra
+        call is paid in the one case a human is waiting on an answer. It takes
+        the same shared connection as the probe, for the same reason: the run's
+        own link is the one that may be partitioned.
+        """
+        result = AgentProcessControl._probe(host, pid_file)
+        if result.returncode != 1:
+            return None
+        with suppress(ValueError, AttributeError, TypeError):
+            value = json.loads(result.stdout).get("idle_seconds")
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
+
+    @staticmethod
+    def _probe(host: str, pid_file: str) -> subprocess.CompletedProcess[str]:
         command = [
             "python3",
             "-c",
@@ -337,7 +359,7 @@ class AgentProcessControl:
             pid_file,
         ]
         try:
-            result = subprocess.run(
+            return subprocess.run(
                 ssh_arguments(host, shlex.join(command)),
                 capture_output=True,
                 text=True,
@@ -345,8 +367,7 @@ class AgentProcessControl:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return None
-        return {0: True, 1: False}.get(result.returncode)
+            return subprocess.CompletedProcess(command, 2, "", "")
 
     @staticmethod
     def _confirm_remote_stopped(host: str, pid_file: str, started_at: float) -> bool:

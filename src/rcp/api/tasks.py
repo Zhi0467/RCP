@@ -63,7 +63,11 @@ from rcp.runs.steering import (
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
-from rcp.runs.turn_collection import can_collect, projected_chat_turn_operation_id
+from rcp.runs.turn_collection import (
+    can_collect,
+    can_stop_remote_provider,
+    projected_chat_turn_operation_id,
+)
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -213,6 +217,7 @@ def _agent_task_response(
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     response["can_collect"] = can_collect(store, record)
+    response["can_stop_remote_provider"] = can_stop_remote_provider(store, record)
     if record.kind in {"node_chat", "project_chat"}:
         response["chat_turn_operation_id"] = projected_chat_turn_operation_id(store, record)
     steering = chat_steering_state(background_tasks, record)
@@ -898,6 +903,39 @@ def reject_artifact_revision_candidate(
         except ArtifactRevisionConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _artifact_revision_candidate_response(rejected).model_dump(mode="json")
+
+
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/stop-remote-provider",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def stop_agent_task_remote_provider(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+) -> dict[str, object]:
+    """End a provider that outlived its turn, so the turn can be collected."""
+
+    get_project_service(catalog, project_id)
+    record = store.agent_task(operation_id)
+    if record is None or record.project_id != project_id or not record.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(record)
+    # Same gate as collection: this exists to unblock one, and ends the same turn.
+    identity_access.require_patch_capable_identity(request)
+    try:
+        record = background_tasks.stop_remote_provider(operation_id)
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _agent_task_response(store, record, background_tasks)
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)

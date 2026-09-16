@@ -50,6 +50,7 @@ interface Props {
   onStartTask: StartAgentTask;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
+  onStopRemoteProviderTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
@@ -107,6 +108,7 @@ export function ChatsWorkspace({
   onStartTask,
   onResumeTask,
   onRetryTask,
+  onStopRemoteProviderTask,
   onRefreshTask,
   onInspectTask,
   onOpenInbox,
@@ -368,6 +370,7 @@ export function ChatsWorkspace({
             onStartTask={onStartTask}
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
+            onStopRemoteProviderTask={onStopRemoteProviderTask}
             onRefreshTask={onRefreshTask}
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}

@@ -2150,6 +2150,7 @@ export interface AgentTask {
   can_resume: boolean;
   can_retry: boolean;
   can_collect: boolean;
+  can_stop_remote_provider: boolean;
   steer_visible: boolean;
   can_steer: boolean;
   steer_unavailable_reason: string | null;

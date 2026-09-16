@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import rcp.background as background_module
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
@@ -36,7 +36,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.runs.turn_collection import can_collect
+from rcp.runs.turn_collection import can_collect, can_stop_remote_provider
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -3232,6 +3232,86 @@ def test_a_collection_that_fails_before_its_stage_leaves_the_turn_collectible(
     assert settled.failure_kind is None
     assert collection_source(store, settled).operation_id == task.operation_id
     assert can_collect(store, settled)
+    tasks.shutdown(timeout=0.1)
+
+
+def test_stopping_a_wedged_provider_clears_the_way_for_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one control for a provider that never reaches absence on its own.
+
+    Collection waits rather than forces, which is right while a provider may
+    still be writing and useless once it is wedged. Stopping it is the human's
+    call, and confirming the group gone is what lets the next Collect proceed.
+    """
+
+    store = _store(tmp_path)
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    pid_file = str(root / "agent.pid")
+    task = _admitted_launch_task(
+        store,
+        operation_id="wedged-turn",
+        record_updates={"stage_host": "test-host", "stage_root": str(root)},
+    )
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(root), pid_file, journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
+    store.record_agent_task_receipt(
+        task.operation_id, "remote_provider_still_running", {"pid_file": pid_file}
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream)
+
+    terminated: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "_terminate_remote",
+        lambda host, pid: terminated.append((host, pid)) or True,
+    )
+    assert can_stop_remote_provider(store, store.agent_task(task.operation_id))
+
+    tasks.stop_remote_provider(task.operation_id)
+
+    assert terminated == [("test-host", pid_file)]
+    assert store.unresolved_remote_provider_passes("test-host", str(root)) == []
+    # The control withdraws itself; collection is no longer blocked on a process.
+    assert not can_stop_remote_provider(store, store.agent_task(task.operation_id))
+    assert can_collect(store, store.agent_task(task.operation_id))
+    tasks.shutdown(timeout=0.1)
+
+
+def test_an_unconfirmed_stop_leaves_the_pass_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kill nobody could confirm is not a stop, and must not read as one."""
+
+    store = _store(tmp_path)
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    pid_file = str(root / "agent.pid")
+    task = _admitted_launch_task(
+        store,
+        operation_id="stubborn-turn",
+        record_updates={"stage_host": "test-host", "stage_root": str(root)},
+    )
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(root), pid_file, journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
+    store.record_agent_task_receipt(
+        task.operation_id, "remote_provider_still_running", {"pid_file": pid_file}
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(AgentProcessControl, "_terminate_remote", lambda *_args: False)
+
+    with pytest.raises(ValueError, match="could not be confirmed stopped"):
+        tasks.stop_remote_provider(task.operation_id)
+
+    assert store.unresolved_remote_provider_passes("test-host", str(root)) == [
+        (task.operation_id, pid_file)
+    ]
+    assert can_stop_remote_provider(store, store.agent_task(task.operation_id))
     tasks.shutdown(timeout=0.1)
 
 

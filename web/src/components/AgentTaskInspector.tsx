@@ -30,6 +30,7 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onRetry: () => void;
+  onStopRemoteProvider: () => void;
   onClose: () => void;
 }
 
@@ -43,6 +44,7 @@ export function AgentTaskInspector({
   onPause,
   onResume,
   onRetry,
+  onStopRemoteProvider,
   onClose,
 }: Props) {
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
@@ -368,6 +370,7 @@ export function AgentTaskInspector({
             task.can_resume ||
             task.can_retry ||
             task.can_collect ||
+            task.can_stop_remote_provider ||
             task.awaiting_human) && (
             <footer className="drawer-actions run-inspector-actions">
               <div>
@@ -383,6 +386,16 @@ export function AgentTaskInspector({
                     onClick={onRetry}
                   >
                     <RotateCcw size={14} /> {taskRetryLabel(task)}
+                  </button>
+                )}
+                {task.can_stop_remote_provider && (
+                  <button
+                    className="button secondary"
+                    disabled={actionBusy || mutatingActionsDisabled}
+                    onClick={onStopRemoteProvider}
+                    title="The provider on the execution host outlived this turn. Stopping it lets the turn be collected."
+                  >
+                    <CirclePause size={14} /> Stop provider
                   </button>
                 )}
                 {task.can_resume && !task.can_collect && (

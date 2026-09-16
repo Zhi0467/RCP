@@ -32,11 +32,16 @@ export function taskNeedsPolling(task: AgentTask): boolean {
   return task.active || task.can_collect;
 }
 
+export type TaskAction = "pause" | "resume" | "retry" | "stop-remote-provider";
+
 export function taskRecoveryAction(
   task: Pick<AgentTask, "can_collect">,
-  action: "pause" | "resume" | "retry",
-): "pause" | "resume" | "retry" | "collect" {
-  return task.can_collect && action !== "pause" ? "collect" : action;
+  action: TaskAction,
+): TaskAction | "collect" {
+  // Named rather than "not pause": stopping a wedged provider is what makes a
+  // later Collect possible, and must never be turned into that Collect itself.
+  const continues = action === "resume" || action === "retry";
+  return task.can_collect && continues ? "collect" : action;
 }
 
 export function taskRetryLabel(task: Pick<AgentTask, "can_collect" | "kind">): string {

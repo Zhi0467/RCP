@@ -6,6 +6,7 @@ belongs to its existing remote process wrapper; no process discovery is used.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import signal
@@ -84,6 +85,43 @@ def provider_stopped(pid_file: str) -> bool | None:
     return False
 
 
+def journal_idle_seconds(pid_file: str) -> float | None:
+    """Seconds since this turn's journal last grew, or None if it never has.
+
+    A provider that is working writes something; one that is wedged does not.
+    Nothing here judges which of those it is looking at. The probe answers it
+    because the probe is already here, on the shared connection that survives
+    the run's own: asking the stage separately would ask over the very link this
+    situation exists because of.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+    root, name = os.path.split(pid_file)
+    try:
+        root_fd = os.open(root, flags)
+    except OSError:
+        return None
+    try:
+        journal_fd = os.open(name + ".turn", flags, dir_fd=root_fd)
+    except OSError:
+        return None
+    finally:
+        os.close(root_fd)
+    written = []
+    try:
+        for entry in ("events.jsonl", "stderr.txt"):
+            try:
+                written.append(os.stat(entry, dir_fd=journal_fd, follow_symlinks=False).st_mtime)
+            except OSError:
+                continue
+    finally:
+        os.close(journal_fd)
+    if not written:
+        return None
+    # A host clock behind the reader's would otherwise report the future.
+    return max(0.0, time.time() - max(written))
+
+
 def terminate_provider(
     pid_file: str,
     *,
@@ -130,6 +168,10 @@ def terminate_provider(
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] == "--probe":
         stopped = provider_stopped(argv[2])
+        if stopped is False:
+            # Only a live group raises the question this answers, and only the
+            # exit code decides the verdict; unreadable silence prints nothing.
+            print(json.dumps({"idle_seconds": journal_idle_seconds(argv[2])}))
         return 2 if stopped is None else (0 if stopped else 1)
     if len(argv) != 6:
         return 2

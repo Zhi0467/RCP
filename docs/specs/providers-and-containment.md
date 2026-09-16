@@ -370,7 +370,13 @@ stopped draining stdout. It grants no graph authority and runs no validator.
 Collection recovers an eligible undelivered remote Work or episode turn without
 launching a provider. It waits while the original provider is alive or its state
 is unknown; after confirmed process absence it reads that exact pass's completed
-journals. The operational pass supplies the answer; later correction passes
+journals. It never forces that absence, because a group stopped mid-write would
+lose the turn being recovered. A provider found alive reports how long it has
+written nothing, which is the only thing distinguishing a long tool call from a
+wedge, and RCP offers a human the one control that ends it: stopping a provider
+that outlived its turn, confirmed absent, so the turn becomes collectible. That
+control is offered only on a turn where a probe has already found the provider
+alive, and withdraws as soon as that pass is confirmed stopped. The operational pass supplies the answer; later correction passes
 supply their completed deliverables and usage without replacing that answer.
 A stopped pass without protocol completion is incomplete, not evidence
 that work should be rerun. Collection preserves the original authorizer,

@@ -76,6 +76,9 @@ test("eligible recovery collects the existing result without replacing its provi
   assert.equal(taskRecoveryAction({ ...retained, can_collect: false }, "retry"), "retry");
   assert.equal(taskRetryLabel({ ...retained, can_collect: false }), "Retry");
   assert.equal(taskRetryLabel({ kind: "seed", can_collect: false }), "Retry…");
+  // Stopping a provider that outlived this turn is what makes the Collect
+  // possible. Folding it into that Collect would skip the stop entirely.
+  assert.equal(taskRecoveryAction(retained, "stop-remote-provider"), "stop-remote-provider");
 });
 
 test("node chat reconstruction follows the latest chat id for that node", () => {

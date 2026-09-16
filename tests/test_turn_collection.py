@@ -13,6 +13,8 @@ from rcp.runs.turn_collection import (
     CollectedTurn,
     CollectionPending,
     can_collect,
+    can_stop_remote_provider,
+    describe_provider_silence,
     incomplete_collection_text,
     read_collected_turn,
     replay_collected_events,
@@ -666,3 +668,56 @@ def test_context_judgement_ignores_a_turn_that_is_not_an_episode():
         SimpleNamespace(operation_id="original", project_id="project"),
         request=RunRequest(provider="codex", run_on="laptop", chat_id="chat-1", message="hi"),
     )
+
+
+def test_a_running_provider_reports_its_silence_and_opens_the_stop(tmp_path, monkeypatch):
+    """Working and wedged look identical, so give the human the number and the control.
+
+    A live group producing nothing is all collection can see. How long it has
+    been producing nothing is the one thing that separates a long tool call from
+    a wedge, and only the human knows which this turn should be. The sighting is
+    recorded so the stop can be offered on this task without probing every task.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    _journal(pid)
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
+    monkeypatch.setattr(AgentProcessControl, "remote_provider_silence", lambda *_: 11_520.0)
+
+    assert not can_stop_remote_provider(store, record)
+    with pytest.raises(CollectionPending, match="3h 12m"):
+        read_collected_turn(store, record)
+
+    assert can_stop_remote_provider(store, store.agent_task(record.operation_id))
+    # The sighting marks the condition, not each look at it.
+    read_pending = pytest.raises(CollectionPending)
+    with read_pending:
+        read_collected_turn(store, record)
+    assert [item.category for item in store.agent_task_receipts(record.operation_id)].count(
+        "remote_provider_still_running"
+    ) == 1
+
+
+def test_the_stop_is_withdrawn_once_the_pass_is_confirmed_stopped(tmp_path, monkeypatch):
+    """Nothing should offer to stop a provider that has already gone."""
+
+    store, record, pid = _failed_turn(tmp_path)
+    _journal(pid)
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
+    monkeypatch.setattr(AgentProcessControl, "remote_provider_silence", lambda *_: None)
+    with pytest.raises(CollectionPending):
+        read_collected_turn(store, record)
+    record = store.agent_task(record.operation_id)
+    assert can_stop_remote_provider(store, record)
+
+    store.finish_remote_provider_pass(record.operation_id, str(pid))
+
+    assert not can_stop_remote_provider(store, store.agent_task(record.operation_id))
+
+
+def test_provider_silence_reads_in_units_a_human_acts_on():
+    assert describe_provider_silence(12.0) == "under a minute"
+    assert describe_provider_silence(300.0) == "5m"
+    assert describe_provider_silence(3_660.0) == "1h 01m"

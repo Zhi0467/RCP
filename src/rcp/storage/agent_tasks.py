@@ -92,6 +92,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_result",
     "remote_provider_started",
     "remote_provider_stopped",
+    "remote_provider_still_running",
     "provider_collection_incomplete",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(

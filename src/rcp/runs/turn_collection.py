@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -129,6 +130,30 @@ def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
     )
 
 
+def can_stop_remote_provider(store: AppStore, record: AgentTaskRecord) -> bool:
+    """Offer the stop only where RCP has actually watched a provider outlive its turn.
+
+    Probing here would cost one SSH round trip per task in a listing, so this
+    reads the sighting a collection attempt already recorded. It withdraws as
+    soon as that pass is confirmed stopped, by this control or by anything else.
+    """
+
+    try:
+        if not _can_collect(store, record):
+            return False
+        source = collection_source(store, record)
+        if not store.agent_task_has_receipt(source.operation_id, "remote_provider_still_running"):
+            return False
+        pid_file = journal_pid_file(store, source)
+        return pid_file is not None and (source.operation_id, pid_file) in set(
+            store.unresolved_remote_provider_passes(
+                source.stage_host or "", source.stage_root or ""
+            )
+        )
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class CollectedTurn:
     source_operation_id: str
@@ -168,6 +193,48 @@ class CollectedTurn:
         return None
 
 
+def describe_provider_silence(seconds: float) -> str:
+    """How long a live provider has produced nothing, in units a human reads."""
+
+    minutes = int(seconds) // 60
+    if minutes < 1:
+        return "under a minute"
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _observe_running_provider(store: AppStore, source: AgentTaskRecord, pid_file: str) -> str:
+    """Report what a still-live provider looks like, and remember having seen it.
+
+    A working provider and a wedged one present identically from here: a process
+    group that is alive and producing nothing. The one number that separates them
+    is how long the silence has run, and only the human knows whether this turn
+    was meant to be quiet for that long. So report it rather than judge it.
+
+    Recording the sighting is what lets the stop control be offered on this task
+    alone, instead of probing every task in a listing to find out.
+    """
+
+    idle = None
+    with suppress(Exception):
+        idle = AgentProcessControl.remote_provider_silence(source.stage_host or "", pid_file)
+    with suppress(Exception):
+        # Once is enough: this marks that a provider outlived its turn here, and
+        # the reading a human acts on is the one in the message below. Recording
+        # every attempt would grow a category that retention deliberately keeps.
+        if not store.agent_task_has_receipt(source.operation_id, "remote_provider_still_running"):
+            store.record_agent_task_receipt(
+                source.operation_id,
+                "remote_provider_still_running",
+                {"pid_file": pid_file, "idle_seconds": idle},
+            )
+    text = "The original provider is still running; RCP will collect it when it finishes."
+    if isinstance(idle, (int, float)):
+        text += f" It has written nothing for {describe_provider_silence(float(idle))}."
+    return text
+
+
 def read_collected_turn(store: AppStore, record: AgentTaskRecord) -> CollectedTurn:
     source = collection_source(store, record)
     pid_files = journal_pid_files(store, source)
@@ -177,11 +244,11 @@ def read_collected_turn(store: AppStore, record: AgentTaskRecord) -> CollectedTu
     # Never replace shared scratch while the last correction may still write it.
     # Earlier passes were settled before this protected last start was admitted.
     stopped = AgentProcessControl.remote_stopped(source.stage_host, pid_files[-1])
+    if stopped is False:
+        raise CollectionPending(_observe_running_provider(store, source, pid_files[-1]))
     if stopped is not True:
         raise CollectionPending(
-            "The original provider is still running; RCP will collect it when it finishes."
-            if stopped is False
-            else "The provider host is unavailable; collection is waiting for it to return."
+            "The provider host is unavailable; collection is waiting for it to return."
         )
     passes = tuple(_read_pass(stage, source, pid) for pid in pid_files)
     completed = [item for item in passes if item.complete]
