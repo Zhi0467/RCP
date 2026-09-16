@@ -548,7 +548,7 @@ class BackgroundAgentTasks:
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
         if can_collect(self.store, previous):
-            return self.collect(operation_id, authorized_by=authorized_by)
+            return self.collect(operation_id)
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
                 "This task has no resumable native agent checkpoint. Retry it instead."
@@ -603,7 +603,7 @@ class BackgroundAgentTasks:
         if can_collect(self.store, previous):
             if any(value is not None for value in (provider, model, reasoning, run_on, skills)):
                 raise ValueError("Collect the existing turn before changing its provider settings.")
-            return self.collect(operation_id, authorized_by=authorized_by)
+            return self.collect(operation_id)
         original = self._request_from_record(previous)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
@@ -798,13 +798,14 @@ class BackgroundAgentTasks:
             )
         return retried
 
-    def collect(
-        self,
-        operation_id: str,
-        *,
-        authorized_by: AuthorizedHuman | None = None,
-    ) -> AgentTaskRecord:
-        """Adopt a stopped provider's existing result without another invocation."""
+    def collect(self, operation_id: str) -> AgentTaskRecord:
+        """Adopt a stopped provider's existing result without another invocation.
+
+        Deliberately takes no authorizer. Collection launches nothing and asks
+        for nothing new, so the human who authorized the original turn stays its
+        authorizer, and automatic collection keeps one rather than recording
+        none. Callers still gate on their own patch-capable identity.
+        """
         self._require_startup_effects_open("provider turn collection")
         previous = self._require_operation(operation_id)
         if not can_collect(self.store, previous):

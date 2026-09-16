@@ -1004,12 +1004,13 @@ def collect_agent_task(
     if previous is None or previous.project_id != project_id or not previous.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(previous)
-    authorized_by = identity_access.require_patch_capable_identity(request)
+    # Gate only: the collected turn keeps the authorizer it already has.
+    identity_access.require_patch_capable_identity(request)
     service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
     try:
         experiment_admission.require_current(service, previous.request)
         with _chat_recovery_admission(service, store, previous):
-            record = background_tasks.collect(operation_id, authorized_by=authorized_by)
+            record = background_tasks.collect(operation_id)
         return _agent_task_response(store, record, background_tasks)
     except (OSError, RemoteStageUnreachable, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1098,7 +1099,7 @@ def retry_agent_task(
                 raise ValueError("Collect the existing turn before changing its provider settings.")
             experiment_admission.require_current(service, previous.request)
             with _chat_recovery_admission(service, store, previous):
-                record = background_tasks.collect(operation_id, authorized_by=authorized_by)
+                record = background_tasks.collect(operation_id)
             return _agent_task_response(store, record, background_tasks)
         if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
             raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
