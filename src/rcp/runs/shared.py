@@ -863,20 +863,14 @@ async def _stream_agent_events(
                 # Background consumes these. It durably checkpoints the runtime
                 # before the launcher writes the prompt, and records why an
                 # earlier candidate was passed over rather than showing it.
-                if (
-                    event.event == "runtime"
-                    and remote_pass_recorded
-                    and execution is not None
-                    and remote_pid_file is not None
-                ):
-                    # Written before the yield, so the pass is on record as
-                    # delivered before the prompt itself can leave. A fallback
-                    # names a candidate that was passed over, not one handed a
-                    # turn, so it settles nothing here.
-                    execution.store.deliver_remote_provider_pass(
-                        execution.operation_id, remote_pid_file
-                    )
                 yield _sse(event)
+                continue
+            if event.event == "remote_prompt_delivered":
+                # The launcher says this the moment the prompt is on its way to
+                # the pass it named, so recovery reads a pass as delivered only
+                # once there is a turn on the host to come back for.
+                if remote_pass_recorded and execution is not None:
+                    execution.store.deliver_remote_provider_pass(execution.operation_id, event.text)
                 continue
             if event.event == "paused":
                 outcome.paused = True

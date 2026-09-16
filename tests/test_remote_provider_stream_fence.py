@@ -127,3 +127,37 @@ async def test_competing_remote_reservation_closes_launcher_before_provider_adva
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [
         ("second", "/stage/other.pid")
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_is_delivered_only_once_its_prompt_is_on_the_way(tmp_path):
+    """The runtime is named before the prompt is written, and a reservation is not a turn.
+
+    The controller checkpoints the chosen runtime first, on purpose, so that a
+    turn can never run under one nothing recorded. Reading delivery from that
+    same event calls a pass delivered while the turn is still on this machine:
+    a stop in between would divert Retry into a collection whose wrapper was
+    handed nothing, and which therefore waits or settles the turn as incomplete.
+    """
+
+    store = _store(tmp_path)
+    observed = {}
+
+    class _Launcher:
+        async def stream(self, *_args, **kwargs):
+            pid_file = kwargs["remote_pid_file"]
+            yield AgentEvent(event="remote_process_start", text=pid_file)
+            yield AgentEvent(event="runtime", text="codex.exec-json.v1")
+            observed["after_runtime"] = store.agent_task_has_receipt(
+                "first", "remote_provider_delivered"
+            )
+            yield AgentEvent(event="remote_prompt_delivered", text=pid_file)
+            observed["after_delivery"] = store.agent_task_has_receipt(
+                "first", "remote_provider_delivered"
+            )
+            yield AgentEvent(event="answer", text="Done.")
+            yield AgentEvent(event="done")
+
+    await _consume(store, _Launcher(), tmp_path)
+
+    assert observed == {"after_runtime": False, "after_delivery": True}

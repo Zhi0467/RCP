@@ -388,11 +388,13 @@ stopped draining stdout. It grants no graph authority and runs no validator.
 
 Collection recovers an eligible undelivered remote Work or episode turn without
 launching a provider. Eligibility requires durable evidence that a turn was
-handed to that exact pass. A pass is recorded before its SSH command runs, so a
-stop inside that window leaves a reservation with no wrapper and no turn. One
-turn can open several passes, so that evidence names the pidfile: a reservation
-caught mid-launch is skipped, and the turn is collected from the passes that did
-run, or retried when none did. It waits while the original provider is alive or
+handed to that exact pass. A pass is recorded before its SSH command runs, and
+the runtime is checkpointed before the prompt is written, so a stop inside
+either window leaves a pass no turn ever reached. The launcher names the pass
+again once its prompt is on the way, and that is the evidence: one turn can open
+several passes, so it names the pidfile. A pass caught before its prompt is
+skipped, and the turn is collected from the passes that did run, or retried when
+none did. It waits while the original provider is alive or
 its state is unknown; after confirmed process absence it reads that exact pass's completed
 journals. It never forces that absence, because a group stopped mid-write would
 lose the turn being recovered. A provider found alive reports how long it has

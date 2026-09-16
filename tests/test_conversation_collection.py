@@ -104,6 +104,9 @@ class JournaledWorkLauncher:
             # run, and its runtime only once that pass is handed the turn.
             yield AgentEvent(event="remote_process_start", text=kwargs["remote_pid_file"])
         yield AgentEvent(event="runtime", text="codex.exec-json.v1")
+        if self.calls == 1:
+            # Announced once the prompt is on its way, before the provider speaks.
+            yield AgentEvent(event="remote_prompt_delivered", text=kwargs["remote_pid_file"])
         yield AgentEvent(event="session", session_id=self.native_session_id)
         if self.calls > 1:
             assert self.repair_patch is not None, "Collection must not launch another provider."

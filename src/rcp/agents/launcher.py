@@ -184,6 +184,9 @@ class AgentEvent(BaseModel):
         "runtime",
         # Internal process ownership receipts; these convey no prompt authority.
         "remote_process_start",
+        # Emitted once this invocation's prompt is on its way to that pass, so
+        # recovery can tell a pass with a turn on it from a bare reservation.
+        "remote_prompt_delivered",
         "remote_process_stop",
         # Internal diagnostic emitted when a runtime failed before it could have
         # delivered the prompt and another candidate is about to be tried. API
@@ -1207,6 +1210,11 @@ class AgentLauncher:
                     close=turn.close_input_after_initial,
                 )
             )
+            if journaled_remote and prompt_delivered:
+                # Announced once the prompt is on its way to this exact pass, so
+                # what recovery reads as a delivered pass is never one a stop
+                # caught while the turn was still on this machine.
+                yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
             stderr_task = (
                 asyncio.create_task(
                     _read_bounded_text(
@@ -1328,6 +1336,8 @@ class AgentLauncher:
                     prompt_delivered = True
                 for outgoing in step.outgoing:
                     await _write_stdin(process.stdin, outgoing)
+                if step.delivers_prompt and journaled_remote:
+                    yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
                 for decoded in step.events:
                     event = AgentEvent(
                         event=decoded.event,

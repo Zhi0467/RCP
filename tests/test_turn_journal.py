@@ -362,6 +362,32 @@ def test_app_server_request_fence_matches_canonical_decoder(tmp_path, handshake,
     assert observer.terminal
 
 
+def test_a_foreign_thread_request_before_the_resume_reply_is_not_a_fence(tmp_path):
+    """A resumed server can speak for another thread before it answers this one.
+
+    The canonical decoder knows which thread it asked to resume, so it replies
+    to that request and reads on. The wrapper only learned the thread from the
+    reply, so before one arrived every foreign request tripped its fence --
+    killing a resumed turn that was doing nothing wrong and recording it as
+    incomplete for collection to settle.
+    """
+
+    turn, observer = _canonical_app_server_turn(tmp_path, handshake=False)
+    observer.input({"id": 3, "method": "thread/resume", "params": {"threadId": "fence-thread"}})
+
+    foreign = {"id": 9, "method": "execCommandApproval", "params": {"threadId": "other-thread"}}
+    canonical = turn.receive_line(json.dumps(foreign))
+    observer.output(foreign)
+    assert not canonical.complete
+    assert not observer.terminal
+
+    # The fence itself is unchanged for a request this turn's own thread sends.
+    own = {"id": 10, "method": "execCommandApproval", "params": {"threadId": "fence-thread"}}
+    assert turn.receive_line(json.dumps(own)).complete
+    observer.output(own)
+    assert observer.terminal
+
+
 @pytest.mark.parametrize("link_directory", [False, True])
 def test_patch_snapshot_refuses_symlink_boundary(tmp_path, link_directory):
     from rcp.agents.staged_turn_journal import _patch_snapshot

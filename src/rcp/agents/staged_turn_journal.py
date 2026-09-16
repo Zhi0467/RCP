@@ -29,6 +29,8 @@ class WireCompletion:
         self.outstanding = set()
         self.steer_requests = {}
         self.thread_id = None
+        # The thread a resume asked for, known before the reply names it.
+        self.requested_thread_id = None
         self.turn_id = None
         self.terminal = False
         self.complete = False
@@ -50,6 +52,11 @@ class WireCompletion:
         identifier = value.get("id")
         if method in {"thread/start", "thread/resume", "turn/start"}:
             self.requests[identifier] = method
+            params = value.get("params")
+            if method == "thread/resume" and isinstance(params, dict):
+                requested = params.get("threadId")
+                if isinstance(requested, str) and requested:
+                    self.requested_thread_id = requested
         elif method == "turn/steer":
             params = value.get("params", {})
             self.steer_requests[identifier] = params.get("expectedTurnId")
@@ -70,7 +77,17 @@ class WireCompletion:
                 return
             params = value.get("params")
             thread = params.get("threadId") if isinstance(params, dict) else None
-            if isinstance(thread, str) and self.thread_id is not None and thread != self.thread_id:
+            # A resumed server can speak for another of its threads before it
+            # replies to this one. The canonical decoder answers such a request
+            # and reads no further, knowing the thread it asked to resume; the
+            # wrapper has to know it too, or the fence below would stop a turn
+            # over a request that was never addressed to it.
+            expected_thread = self.thread_id or self.requested_thread_id
+            if (
+                isinstance(thread, str)
+                and expected_thread is not None
+                and thread != expected_thread
+            ):
                 return
             # The canonical decoder fences any server-to-client request before
             # it inspects params or the thread, because an unattended turn
