@@ -3173,3 +3173,63 @@ def test_collect_asks_the_episode_context_judgement_before_creating_a_child(
         tasks.collect(task.operation_id)
     assert asked == [task.operation_id]
     assert [item.operation_id for item in store.agent_tasks("project")] == [task.operation_id]
+
+
+def test_a_collection_that_fails_before_its_stage_leaves_the_turn_collectible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed attempt must not strand a finished turn.
+
+    The source stops being collectible the moment any child continues it, so the
+    child has to carry the offer even when its own launch never reached the
+    host. It can: a machine profile edited during the disconnect refuses before
+    anything is checkpointed, and the human who fixes it collects again.
+    """
+
+    from rcp.runs.turn_collection import CollectedTurn, collection_source
+
+    store = _store(tmp_path)
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    pid_file = str(root / "agent.pid")
+    task = _admitted_launch_task(
+        store,
+        operation_id="lost-turn",
+        record_updates={
+            "stage_host": "test-host",
+            "stage_root": str(root),
+            "native_session_id": "native-thread",
+        },
+    )
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(root), pid_file, journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Link died", failure_kind="transport_lost")
+    monkeypatch.setattr(
+        background_module,
+        "read_collected_turn",
+        lambda *_args: CollectedTurn(
+            task.operation_id,
+            pid_file,
+            {"protocol_complete": True, "journal_complete": True},
+            "",
+            None,
+        ),
+    )
+
+    async def refuse_the_launch(_project, _kind, _request, _execution):
+        yield _sse(AgentEvent(event="error", text="unknown execution machine: 'retired'"))
+
+    tasks = BackgroundAgentTasks(store, refuse_the_launch)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda *_args, **_kwargs: None)
+    child = tasks.collect(task.operation_id)
+    settled = wait_for_task(store, child.operation_id, expect="failed")
+
+    assert not can_collect(store, store.agent_task(task.operation_id))
+    assert (settled.stage_host, settled.stage_root) == ("test-host", str(root))
+    # Not a transport loss of its own: the offer survives because the child is a
+    # collection carrying the source's stage, and resolves back to its journal.
+    assert settled.failure_kind is None
+    assert collection_source(store, settled).operation_id == task.operation_id
+    assert can_collect(store, settled)
+    tasks.shutdown(timeout=0.1)
