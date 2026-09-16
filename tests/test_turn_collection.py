@@ -13,6 +13,7 @@ from rcp.runs.turn_collection import (
     CollectedTurn,
     CollectionPending,
     can_collect,
+    incomplete_collection_text,
     read_collected_turn,
     replay_collected_events,
 )
@@ -539,6 +540,31 @@ def test_collection_refuses_a_patch_the_live_read_would_have_refused(tmp_path, m
 
     with pytest.raises(ValueError, match="not UTF-8"):
         read_collected_turn(store, record)
+
+
+def test_collected_failure_reports_the_reason_the_provider_declared(tmp_path, monkeypatch):
+    """A protocol failure says why in its terminal event, not in stderr.
+
+    The live pipe decoded that event and showed it. A turn whose uplink went
+    quiet keeps the same event in its journal, so the human collecting it must
+    get the same sentence rather than a generic note that output is incomplete.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    root, outcome, events, _patch = _journal(pid, complete=False)
+    raw = (
+        events + json.dumps({"type": "turn.failed", "error": "the model refused"}) + "\n"
+    ).encode()
+    (root / "events.jsonl").write_bytes(raw)
+    (root / "outcome.json").write_text(
+        json.dumps({**outcome, "events_sha256": hashlib.sha256(raw).hexdigest()})
+    )
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    collected = read_collected_turn(store, record)
+
+    assert "the model refused" in incomplete_collection_text(collected)
 
 
 def test_collected_failure_reports_the_provider_stderr(tmp_path, monkeypatch):

@@ -316,6 +316,35 @@ def _decoded_like_the_live_patch(patch: str | None) -> str | None:
         raise ValueError("The provider's patch.json is not UTF-8 text.") from exc
 
 
+def _declared_failure_reason(collected: CollectedTurn) -> str | None:
+    """The provider's own words for a turn it ended without completing.
+
+    A protocol-declared failure names its reason in the terminal event, not in
+    stderr and not in the wrapper's error field, and the live pipe showed that
+    event. Ask the decoder that owns the runtime's wording rather than matching
+    event shapes here. The app-server runtime states this through a turn object
+    that needs the live request this settlement does not have, so it keeps the
+    general message.
+    """
+
+    outcome = collected.outcome
+    if str(outcome.get("runtime_id") or "") == "codex.app-server-stdio.v1":
+        return None
+    try:
+        profile = profile_for(str(outcome.get("provider") or ""))
+    except (KeyError, ValueError):
+        return None
+    for line in reversed(collected.events.splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        decoded = profile.decode_event(value, line)
+        if decoded.event == "error" and decoded.text:
+            return decoded.text
+    return None
+
+
 def incomplete_collection_text(collected: CollectedTurn) -> str:
     """What a stopped pass that never completed tells the human.
 
@@ -327,6 +356,7 @@ def incomplete_collection_text(collected: CollectedTurn) -> str:
 
     text = str(
         collected.outcome.get("error")
+        or _declared_failure_reason(collected)
         or "The remote provider stopped before completing this turn. Its retained output is incomplete."
     )
     detail = _meaningful_stderr(collected.stderr)
