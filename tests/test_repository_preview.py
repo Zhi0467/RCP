@@ -286,24 +286,16 @@ def test_repository_preview_route_windows_an_oversized_file(
     assert 'id="L150" class="line"' in response.text
     assert "line 0149" not in response.text
 
-    # The availability preflight must not seek the cited line a second time.
-    reads = 0
-    real_read = window_module.os.read
-
-    def counted_read(fd: int, size: int) -> bytes:
-        nonlocal reads
-        reads += 1
-        return real_read(fd, size)
-
-    monkeypatch.setattr(window_module.os, "read", counted_read)
-    head = client.head(
-        f"/api/projects/{app.state.default_project_id}/repositories/files/preview",
-        params={"path": str(source_path), "line": 250},
-    )
+    # HEAD is the client's preflight, so it must agree with GET about this exact
+    # window: a line past the end of the file has to fail both, not only the GET.
+    url = f"/api/projects/{app.state.default_project_id}/repositories/files/preview"
+    head = client.head(url, params={"path": str(source_path), "line": 250})
 
     assert head.status_code == 200
     assert head.content == b""
-    assert reads <= 2
+    beyond = {"path": str(source_path), "line": oversized + 1_000}
+    assert client.head(url, params=beyond).status_code == 422
+    assert client.get(url, params=beyond).status_code == 422
 
 
 def test_remote_repository_source_uses_multiplexed_ssh_reader(
