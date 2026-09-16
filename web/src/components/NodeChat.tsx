@@ -106,7 +106,11 @@ import {
   startDesktopDictation,
   stopDesktopDictation,
 } from "../desktopRuntime";
-import { repositoryFilePreviewUrl, resolveRepositoryFileHref } from "../repositoryFileLinks";
+import {
+  repositoryFilePreviewUrl,
+  resolveRepositoryFileHref,
+  turnArtifactName,
+} from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
   ArtifactContextRequest,
@@ -1539,7 +1543,11 @@ export function NodeChat({
     });
   };
 
-  const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
+  const openArtifact = async (
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    reserved: Window | null = null,
+  ) => {
     if (!artifact.can_open) return;
     if (desktop) {
       const key = `${taskId}:${artifact.artifact_id}`;
@@ -1561,7 +1569,7 @@ export function NodeChat({
       }
       return;
     }
-    const target = window.open("about:blank", "_blank");
+    const target = reserved ?? window.open("about:blank", "_blank");
     if (!target) {
       markArtifactUnavailable(taskId, artifact.artifact_id);
       return;
@@ -1632,9 +1640,30 @@ export function NodeChat({
     }
   };
 
-  const openRepositoryFile = async (messageId: string, href: string) => {
+  const openRepositoryFile = async (messageId: string, taskId: string, href: string) => {
     const resolution = resolveRepositoryFileHref(href, project.repositories);
     if (resolution.kind === "error") {
+      // An answer may cite a file the turn itself wrote. That path is outside every
+      // repository, so the artifact the task already registered owns the preview.
+      // Only when no root claims the path. Several matching roots stay a visible
+      // error, because the reader must not be handed a guess about which one won.
+      const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
+      if (name) {
+        const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
+        // A popup is only granted during the click, so claim the window before any
+        // await; the desktop shell opens its own and needs no reservation.
+        const reserved = known || desktop ? null : window.open("about:blank", "_blank");
+        // An older answer's task has aged out of the recent list, so fetch the exact
+        // task rather than refusing a citation the transcript still displays.
+        const task = known ?? (await onRefreshTask(taskId).catch(() => null));
+        const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
+        if (artifact?.can_open) {
+          setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
+          await openArtifact(taskId, artifact, reserved);
+          return;
+        }
+        reserved?.close();
+      }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
@@ -1844,7 +1873,7 @@ export function NodeChat({
                         glossaryIndex={glossaryIndex}
                         onOpenNode={onOpenNode}
                         onOpenRepositoryFileLink={(href) =>
-                          void openRepositoryFile(messageId, href)
+                          void openRepositoryFile(messageId, line.taskId, href)
                         }
                       />
                     </div>

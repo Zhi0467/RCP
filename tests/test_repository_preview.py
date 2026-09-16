@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import inspect
+import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
 
 import rcp.repository_preview as preview_module
+import rcp.repository_window as window_module
 from rcp.repository_preview import (
     RepositorySource,
     load_repository_source,
@@ -31,8 +35,12 @@ def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(
     source = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=64)
 
     assert source.text == "print('safe')\n"
-    with pytest.raises(ValueError, match="size limit|bounded"):
-        load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=4)
+    assert source.complete
+    assert source.start_line == 1
+    bounded = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=4)
+    assert bounded.text == "prin"
+    assert not bounded.complete
+    assert bounded.total_bytes == 14
     (nested / "binary.dat").write_bytes(b"\xff")
     with pytest.raises(ValueError, match="UTF-8"):
         load_repository_source(manifest, "repo-a", "src/binary.dat")
@@ -118,6 +126,178 @@ def test_repository_source_document_escapes_content_and_highlights_requested_lin
         repository_source_document(source, line=3)
 
 
+def _numbered_lines(count: int) -> str:
+    return "".join(f"line {number:04d}\n" for number in range(1, count + 1))
+
+
+def test_oversized_repository_file_returns_the_window_around_the_cited_line(manifest) -> None:
+    root = Path(manifest.repository_map["repo-a"].path)
+    (root / "trajectory.jsonl").write_text(_numbered_lines(500), encoding="utf-8")
+
+    source = load_repository_source(
+        manifest,
+        "repo-a",
+        "trajectory.jsonl",
+        line=250,
+        max_bytes=3000,
+    )
+
+    assert not source.complete
+    assert source.total_bytes == 5000
+    assert source.start_line == 250 - preview_module.REPOSITORY_PREVIEW_WINDOW_LINES
+    lines = source.text.split("\n")
+    assert lines[0] == "line 0150"
+    assert lines[-1] == "line 0350"
+
+    tight = load_repository_source(manifest, "repo-a", "trajectory.jsonl", line=250, max_bytes=300)
+    assert tight.start_line == 250
+    assert tight.text.split("\n")[0] == "line 0250"
+    assert len(tight.text) <= 300
+
+    without_line = load_repository_source(manifest, "repo-a", "trajectory.jsonl", max_bytes=3000)
+    assert without_line.start_line == 1
+    assert without_line.text.split("\n")[0] == "line 0001"
+    assert len(without_line.text.split("\n")) == 2 * preview_module.REPOSITORY_PREVIEW_WINDOW_LINES
+
+
+def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> None:
+    root = Path(manifest.repository_map["repo-a"].path)
+    (root / "one-line.log").write_text("x" * 5000, encoding="utf-8")
+    (root / "multibyte.log").write_text(("é" * 1000 + "\n") * 3, encoding="utf-8")
+
+    undelimited = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=300)
+    assert undelimited.text == "x" * 300
+    assert not undelimited.complete
+
+    # An odd bound cuts the last two-byte character in half.
+    multibyte = load_repository_source(manifest, "repo-a", "multibyte.log", max_bytes=1001)
+    assert multibyte.text == "é" * 500
+
+    # A byte that is invalid rather than merely cut short still fails.
+    (root / "binary.log").write_bytes(b"text\xff" * 200)
+    with pytest.raises(ValueError, match="UTF-8"):
+        load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100)
+
+
+def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch) -> None:
+    root = Path(manifest.repository_map["repo-a"].path)
+    (root / "one-line.log").write_bytes(b"x" * 20_000_000)
+    reads = 0
+    real_read = window_module.os.read
+
+    def counted_read(fd: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        return real_read(fd, size)
+
+    monkeypatch.setattr(window_module.os, "read", counted_read)
+    source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024)
+
+    assert source.text == "x" * 1024
+    # Without the stop, filling a 1 KiB budget would read all twenty chunks.
+    assert reads <= 2
+
+
+def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
+    source = RepositorySource(
+        repository_alias="repo-a",
+        relative_path="trajectory.jsonl",
+        text="line 0150\nline 0151",
+        start_line=150,
+        complete=False,
+        total_bytes=581_681_685,
+    )
+
+    document = repository_source_document(source, line=151).decode("utf-8")
+
+    assert 'id="L150" class="line"' in document
+    assert 'id="L151" class="line selected"' in document
+    assert "lines 150–151 of a 581,681,685-byte file" in document
+    for outside in (149, 152):
+        with pytest.raises(ValueError, match="outside"):
+            repository_source_document(source, line=outside)
+
+
+def test_the_shipped_reader_source_windows_the_same_way_as_the_local_call(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "trajectory.jsonl").write_text(_numbered_lines(500), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            inspect.getsource(window_module),
+            str(root),
+            "trajectory.jsonl",
+            "3000",
+            "250",
+            str(preview_module.REPOSITORY_PREVIEW_WINDOW_LINES),
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    header, _separator, payload = result.stdout.partition(b"\n")
+    assert json.loads(header) == {"start_line": 150, "complete": False, "total_bytes": 5000}
+    lines = payload.decode("utf-8").split("\n")
+    assert lines[0] == "line 0150"
+    assert lines[-1] == "line 0350"
+
+    tight = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            inspect.getsource(window_module),
+            str(root),
+            "trajectory.jsonl",
+            "300",
+            "250",
+            str(preview_module.REPOSITORY_PREVIEW_WINDOW_LINES),
+        ],
+        capture_output=True,
+        check=False,
+    )
+
+    assert tight.returncode == 0, tight.stderr
+    tight_header, _tight_separator, tight_payload = tight.stdout.partition(b"\n")
+    assert json.loads(tight_header)["start_line"] == 250
+    assert tight_payload.split(b"\n")[0] == b"line 0250"
+    assert len(tight_payload) <= 300
+
+
+def test_repository_preview_route_windows_an_oversized_file(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    source_path = Path(manifest.repository_map["repo-b"].path) / "trajectory.jsonl"
+    oversized = preview_module.REPOSITORY_PREVIEW_MAX_BYTES // 10 + 1000
+    source_path.write_text(_numbered_lines(oversized), encoding="utf-8")
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+
+    response = client.get(
+        f"/api/projects/{app.state.default_project_id}/repositories/files/preview",
+        params={"path": str(source_path), "line": 250},
+    )
+
+    assert response.status_code == 200
+    assert 'id="L250" class="line selected"' in response.text
+    assert 'id="L150" class="line"' in response.text
+    assert "line 0149" not in response.text
+
+    # HEAD is the client's preflight, so it must agree with GET about this exact
+    # window: a line past the end of the file has to fail both, not only the GET.
+    url = f"/api/projects/{app.state.default_project_id}/repositories/files/preview"
+    head = client.head(url, params={"path": str(source_path), "line": 250})
+
+    assert head.status_code == 200
+    assert head.content == b""
+    beyond = {"path": str(source_path), "line": oversized + 1_000}
+    assert client.head(url, params=beyond).status_code == 422
+    assert client.get(url, params=beyond).status_code == 422
+
+
 def test_remote_repository_source_uses_multiplexed_ssh_reader(
     manifest,
     monkeypatch,
@@ -128,7 +308,12 @@ def test_remote_repository_source_uses_multiplexed_ssh_reader(
     def run(arguments, **kwargs):
         captured["arguments"] = arguments
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(arguments, 0, b"remote text\n", b"")
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            b'{"start_line": 1, "complete": true, "total_bytes": 12}\nremote text\n',
+            b"",
+        )
 
     monkeypatch.setattr(preview_module.subprocess, "run", run)
 
@@ -139,16 +324,20 @@ def test_remote_repository_source_uses_multiplexed_ssh_reader(
     )
 
     assert source.text == "remote text\n"
+    assert source.complete
+    assert source.total_bytes == 12
     arguments = captured["arguments"]
     assert isinstance(arguments, list)
     assert arguments[: 1 + len(SSH_OPTIONS)] == ["ssh", *SSH_OPTIONS]
     assert arguments[-2] == "research@example.test"
     remote_arguments = shlex.split(arguments[-1])
     assert remote_arguments[:2] == ["python3", "-c"]
-    assert remote_arguments[-3:] == [
+    assert remote_arguments[-5:] == [
         manifest.repository_map["repo-a"].path,
         "nested/file.py",
         "123",
+        "0",
+        str(preview_module.REPOSITORY_PREVIEW_WINDOW_LINES),
     ]
     assert captured["kwargs"] == {
         "capture_output": True,

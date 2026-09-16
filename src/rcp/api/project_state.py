@@ -373,8 +373,10 @@ def preview_repository_file(
         manifest = load_manifest(record.locator)
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # HEAD is a client's availability preflight, so it validates the same window
+    # GET would render. A cheaper probe would report a preview that then fails.
     try:
-        source = load_repository_source_for_path(manifest, path)
+        source = load_repository_source_for_path(manifest, path, line=line)
         document = repository_source_document(source, line=line)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
