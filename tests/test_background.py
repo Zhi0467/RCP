@@ -3422,3 +3422,70 @@ def test_worker_recovery_is_refused_outside_its_episode(tmp_path: Path) -> None:
     assert store.auto_research_child_work(route.worker_id).current_operation_id == (
         task.operation_id
     )
+
+
+def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -> None:
+    """An episode owns watchers and a stage on its machine; a lone turn owns neither."""
+
+    store = _store(tmp_path)
+    # A second reachable machine, so "may move" is a real move and not a no-op.
+    manifest = tmp_path / "manifest.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "[[repositories]]", '[[machines]]\nalias = "cluster"\nhost = ""\n[[repositories]]', 1
+        ),
+        encoding="utf-8",
+    )
+    stage = tmp_path / "retry-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        yield _sse(AgentEvent(event="error", text="Transient provider failure."))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    standalone = tasks.start(
+        "project",
+        "project_chat",
+        RunRequest(
+            provider="codex",
+            model="",
+            reasoning="medium",
+            run_on="laptop",
+            run_truth_scope=[],
+            chat_scope="project",
+            chat_id="machine-chat",
+            message="Exercise the recovery machine boundary.",
+            mode="work",
+            patch_kind="work",
+        ),
+        operation_id="standalone-root",
+        authorized_by=fabricated_authorizer("Researcher"),
+    )
+    standalone = wait_for_task(store, standalone.operation_id, expect="failed")
+    assert standalone.episode_id is None
+
+    moved = tasks.retry(
+        standalone.operation_id,
+        run_on="cluster",
+        authorized_by=standalone.authorized_by,
+    )
+    assert moved.request["run_on"] == "cluster"
+
+    episode_turn = tasks.start(
+        "project",
+        "node_chat",
+        _experiment_request(),
+        operation_id="episode-root",
+        authorized_by=fabricated_authorizer("Researcher"),
+    )
+    episode_turn = wait_for_task(store, episode_turn.operation_id, expect="failed")
+    assert episode_turn.episode_id is not None
+
+    with pytest.raises(ValueError, match="cannot change its pinned execution machine"):
+        tasks.retry(
+            episode_turn.operation_id,
+            run_on="cluster",
+            authorized_by=episode_turn.authorized_by,
+        )

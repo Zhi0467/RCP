@@ -2190,7 +2190,7 @@ export type EpisodeHealth =
   | "completed"
   | "stopped"
   | "failed";
-export type EpisodeBlockedReason = "sign_in" | "reauthorize";
+export type EpisodeBlockedReason = "sign_in" | "reauthorize" | "repeated_failure";
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
@@ -2239,6 +2239,8 @@ export interface AutoResearchRecoverySummary {
   purpose: "task";
   status: "pending" | "admitted" | "exhausted" | "blocked";
   retry_mode: "exact" | "clean" | "blocked";
+  /** Which failure blocked it; a dead login and a spent allowance both block. */
+  failure_kind: string;
   operation_id: string | null;
   attempts: number;
   max_attempts: number;

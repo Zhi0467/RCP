@@ -82,12 +82,16 @@ class _AutoResearchControlTask(_EpisodeProjectionTask, Protocol):
 class _RecoveryProjection(Protocol):
     operation_id: str | None
     status: AutoResearchRecoveryStatus
+    # The compact space-run snapshot does not carry it, and a summary view
+    # showing `needs_action` without the exact reason is the same answer.
+    failure_kind: str | None
 
 
 @dataclass(frozen=True)
 class _SpaceRunRecoveryProjection:
     operation_id: str
     status: AutoResearchRecoveryStatus
+    failure_kind: str | None = None
 
 
 def _episode_task_controls(
@@ -241,7 +245,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
-EpisodeBlockedReason = Literal["sign_in", "reauthorize"]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize", "repeated_failure"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -262,6 +266,9 @@ class AutoResearchRecoverySummary(BaseModel):
     purpose: Literal["task"] = "task"
     status: AutoResearchRecoveryStatus
     retry_mode: AutoResearchRecoveryMode
+    # Two different failures both block, and only this says which, so a
+    # surface can tell a dead login from a spent usage allowance.
+    failure_kind: str
     operation_id: str | None
     attempts: int
     max_attempts: int
@@ -741,6 +748,15 @@ def _episode_projection(
         return "stopping", "wait", None, None
     if recovery is not None and recovery.status == "pending":
         return "recovering", "wait", None, None
+    # A retry that failed the way its predecessor did stopped the ladder. RCP
+    # does not say why; the provider's own message is on the turn, and the
+    # human can change the provider, model, or reasoning and retry.
+    if (
+        recovery is not None
+        and recovery.status == "blocked"
+        and recovery.failure_kind != "provider_auth"
+    ):
+        return "needs_action", "retry", "retry", "repeated_failure"
     if task is not None and task.status == "failed" and task.failure_kind == "provider_auth":
         return "needs_action", recovery_control or "review", recovery_control, "sign_in"
     if task is not None and task.status in {"paused", "interrupted", "failed"}:
@@ -915,6 +931,7 @@ def _auto_research_projection(
         AutoResearchRecoverySummary(
             status=control_recovery.status,
             retry_mode=control_recovery.retry_mode,
+            failure_kind=control_recovery.failure_kind,
             operation_id=control_recovery.operation_id,
             attempts=control_recovery.attempts,
             max_attempts=control_recovery.max_attempts,

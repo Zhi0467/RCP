@@ -813,6 +813,14 @@ def _is_authorized_clean_orchestrator_retry(
         return False
     if not parent.native_session_id:
         return True
+    # A human who changed the provider, model, or reasoning retired the session
+    # the old binding owns: no provider can resume another's, and the same
+    # reasoning that made the recovery worth starting makes resuming wrong.
+    if any(
+        getattr(parent_request, field) != getattr(request, field)
+        for field in ("provider", "model", "reasoning")
+    ):
+        return True
     receipts = execution.store.agent_task_receipts(parent.operation_id)
     session_limit = any(
         receipt.category == "provider_terminal_error"

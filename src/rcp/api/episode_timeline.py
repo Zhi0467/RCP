@@ -19,6 +19,9 @@ EpisodeTimelineEventKind = Literal[
 ]
 
 
+_EVENT_TITLE_MAX = 120
+
+
 def _armed_label(watcher: StoredWatcherRecord) -> str:
     """Name what an armed watcher waits for, so a parked episode reads as parked."""
 
@@ -27,8 +30,12 @@ def _armed_label(watcher: StoredWatcherRecord) -> str:
     condition = watcher.condition
     if isinstance(condition, NodeStatusGraphCondition):
         statuses = " or ".join(condition.status_in)
-        return f"Waiting for {condition.node_id} to reach {statuses}"
-    return f"Waiting for a Proposal on {condition.node_id} to resolve"
+        label = f"Waiting for {condition.node_id} to reach {statuses}"
+    else:
+        label = f"Waiting for a Proposal on {condition.node_id} to resolve"
+    # Node ids are agent-authored; the event title is bounded at 120.
+    limit = _EVENT_TITLE_MAX
+    return label if len(label) <= limit else label[: limit - 1] + "\u2026"
 
 
 class EpisodeTimelineActor(BaseModel):

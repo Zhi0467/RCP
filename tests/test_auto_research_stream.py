@@ -1523,6 +1523,88 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     assert store.auto_research_handoffs_cleared(continuation.operation_id) is True
 
 
+def test_a_rebound_orchestrator_retry_launches_on_a_clean_session(manifest, tmp_path) -> None:
+    """A human who changed the binding gets a turn, not an exact-session refusal."""
+
+    service = _service(manifest, tmp_path)
+    store, _auto_research, root, _worker = _setup_auto_research(
+        tmp_path / "store",
+        root_status="running",
+    )
+    data_dir = tmp_path / "data"
+    stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
+    stage.mkdir(parents=True)
+    # An ordinary failure over a live session and stage: nothing about the turn
+    # itself asks for a clean retry, so only the rebinding can authorize one.
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="live-session",
+        stage_host=None,
+        stage_root=str(stage),
+    )
+    contract = "# original auto_research orchestrator contract\n"
+    contract_path = stage / "inputs" / "original-orchestrator-contract.md"
+    contract_path.parent.mkdir(parents=True)
+    contract_path.write_text(contract, encoding="utf-8")
+    store.record_agent_task_contract(
+        root.operation_id,
+        "auto_research_orchestrator",
+        contract,
+        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+    )
+    store.record_agent_task_receipt(
+        root.operation_id,
+        "agent_prompt",
+        {"contract_path": str(contract_path)},
+        tier="diagnostic",
+    )
+    store.fail_agent_task(root.operation_id, "The provider exited before finishing its turn.")
+    root = store.agent_task(root.operation_id)
+    assert root is not None
+
+    def writer(_contract_text: str, workspace: Path) -> None:
+        workspace.joinpath("patch.json").write_text(
+            json.dumps(
+                {
+                    "summary": "No graph change was required after recovery.",
+                    "ops": [],
+                    "repositories_read": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    launcher = _WorkerLauncher(session_id="replacement-session", writer=writer)
+
+    async def stream(_project_id, kind, request, execution):
+        assert kind == "auto_research"
+        async for frame in stream_auto_research_orchestrator_run(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution,
+            command_dispatcher=_dispatcher(store),
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    tasks.recover_at_startup()
+    retry = tasks.retry(root.operation_id, reasoning="high")
+    retry = wait_for_task(store, retry.operation_id, expect="succeeded")
+
+    assert AutoResearchRunRequest.model_validate(retry.request).reasoning == "high"
+    assert launcher.requested_session_ids == [None]
+    assert retry.native_session_id == "replacement-session"
+    assert retry.stage_root == str(stage)
+    receipt = next(
+        receipt
+        for receipt in store.agent_task_receipts(retry.operation_id)
+        if receipt.category == "auto_research_orchestrator_clean_retry"
+    )
+    assert receipt.payload["classification"] == "binding_changed"
+
+
 @pytest.mark.parametrize(
     "failure_point",
     ["session-limit", "saved-stage", "pre-stage"],

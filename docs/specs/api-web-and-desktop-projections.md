@@ -671,7 +671,12 @@ evaluated in precedence order: an episode with an ending is never `active`; a
 exhausted or human-pause ending reads `needs_action` with
 `blocked_reason=reauthorize`; a failed control task whose failure kind is a
 revoked login reads `needs_action` with `blocked_reason=sign_in` beside its
-recovery control. `blocked_reason` names the one human action that clears a
+recovery control; an Auto-research recovery that stopped because its reattempt
+failed the same way again reads `needs_action` with
+`blocked_reason=repeated_failure` beside a recovery control that offers a
+changed provider, model, or reasoning. The recovery summary carries the
+`failure_kind` that stopped it, so the projection separates a revoked login from
+every other stopped recovery without re-reading the diagnostic. `blocked_reason` names the one human action that clears a
 block and is `null` otherwise; the card renders it as one lead sentence before
 the recommendation. `continues_episode_id`, `continued_by_episode_id`, and
 `can_continue` publish the continuation chain, and `chain` lists every member
@@ -791,7 +796,12 @@ guessed. The response is bounded and says when it was truncated. The web holds
 one `EpisodeTimeline` model class and one `TimelineRenderConfig` that maps event
 kinds to lane, glyph, tone, and fold behavior; the component renders what the
 model decides. Mail is folded and opens on click; a task event opens the task
-inspector; a child event opens the child. The timeline replaces the Turns and
+inspector; a child event opens the child. An Auto-research episode's own
+watchers are graph conditions and between turns they are the only record of what
+it is waiting for, so its timeline carries them and each armed event names the
+node and the statuses it waits for rather than reading `Watcher armed`; its
+shell watchers belong to child episodes and stay on those timelines. The
+timeline replaces the Turns and
 Mail lists on the Auto-research card and the turn list on the Experiment run
 detail; the message composer stays beneath it.
 An active child card names its current Experiment turn and links that row to the

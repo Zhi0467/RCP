@@ -40,6 +40,14 @@ export interface EpisodeRecommendation {
 export interface EpisodeTaskControl {
   kind: EpisodeTaskControlKind;
   task: AgentTask;
+  /**
+   * Whether this control may be retried on a different binding. A rebinding
+   * starts a clean native session, which an Auto-research worker never gets —
+   * it continues only through the session its dispatch bound it to — and which
+   * a stopping episode refuses from anyone, so it admits only exact recovery.
+   * A switch either would submit comes back refused.
+   */
+  canSwitchProvider: boolean;
 }
 
 export interface EpisodeProjection {
@@ -126,6 +134,9 @@ export function blockedReasonLead(
   if (reason === "sign_in") {
     return `The provider login is dead. Sign in again, then ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
   }
+  if (reason === "repeated_failure") {
+    return `The retry failed the same way, so RCP stopped. Change the provider, model, or reasoning and ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  }
   if (reason === "reauthorize") {
     const lead =
       ending === "human_pause"
@@ -171,7 +182,19 @@ export function episodeProjection(
         : awaitingDecisionLead(episode.awaiting_decision_ids, label),
       task,
     },
-    taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
+    taskControl:
+      episode.task_control && task
+        ? {
+            kind: episode.task_control,
+            task,
+            // Read from the episode's own membership: a mode without roles, or
+            // a control this list does not name, is not a worker.
+            canSwitchProvider:
+              episode.stop_requested_at === null &&
+              episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !==
+                "worker",
+          }
+        : null,
   };
 }
 

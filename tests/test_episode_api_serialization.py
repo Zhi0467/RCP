@@ -288,6 +288,7 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
         "purpose": "task",
         "status": "pending",
         "retry_mode": "exact",
+        "failure_kind": "transport",
         "operation_id": root.operation_id,
         "attempts": 0,
         "max_attempts": 3,

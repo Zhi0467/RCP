@@ -51,6 +51,7 @@ export function AutoResearchEpisodeCard({
   onContinue,
   onSendMessage,
   onOperateTask,
+  onSwitchProvider,
   onArchive,
 }: {
   episode: Episode;
@@ -67,6 +68,7 @@ export function AutoResearchEpisodeCard({
   onContinue: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
+  onSwitchProvider: (task: AgentTask) => void;
   onArchive: ArchiveEpisodeAction;
 }) {
   const detailId = useId();
@@ -323,6 +325,16 @@ export function AutoResearchEpisodeCard({
                 {controlTaskBusy
                   ? `${episodeActionLabel(taskControl.kind, taskControl.task)}…`
                   : episodeActionLabel(taskControl.kind, taskControl.task)}
+              </button>
+            )}
+            {taskControl?.kind === "retry" && taskControl.canSwitchProvider && (
+              <button
+                className="button compact"
+                type="button"
+                disabled={anotherActionBusy || controlTaskBusy}
+                onClick={() => onSwitchProvider(taskControl.task)}
+              >
+                Switch provider…
               </button>
             )}
             {episode.can_continue && (

@@ -36,6 +36,15 @@ Every agent-produced Proposal waits for a human. Child workers retain the
 ordinary profile and no Decision-choice exception. Neither the orchestrator nor
 any child may approve a Proposal.
 
+A Decision the orchestrator's own evidence settles is the orchestrator's to
+decide, because a human reads the whole branch before any merge. It sets `ready`
+instead only for a choice its authority cannot supply: human preference, cost or
+risk the human carries, or a direction the starting instruction left open, and
+`rationale` names what it is asking for. A `ready` Decision does not announce
+itself and a wake armed on `decided` parks the episode until a human happens to
+look, so handing a choice over never becomes the episode's only remaining path
+forward.
+
 Every orchestrator turn, worker turn, mail wake, graph-condition wake, and other
 Auto-research operational continuation spends one unit of B. Exact recovery of
 the same allocation spends none. Current turns finish at exhaustion; new work

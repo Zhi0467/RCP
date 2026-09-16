@@ -1143,8 +1143,6 @@ def retry_agent_task(
             with _chat_recovery_admission(service, store, previous):
                 record = background_tasks.collect(operation_id)
             return _agent_task_response(store, record, background_tasks)
-        if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
-            raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
         if previous.kind == "auto_research":
             candidate = load_stored_request(
                 AutoResearchRunRequest,

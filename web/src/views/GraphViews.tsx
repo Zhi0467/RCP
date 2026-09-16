@@ -1109,6 +1109,7 @@ interface ExecutionProps {
   onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
+  onSwitchEpisodeProvider: (task: AgentTask) => void;
   onSelectExperiment: (nodeId: string | null) => void;
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onDetailFocused: () => void;
@@ -1152,6 +1153,7 @@ export function ExecutionView({
   onContinueEpisode,
   onSendEpisodeMessage,
   onOperateEpisodeTask,
+  onSwitchEpisodeProvider,
   onSelectExperiment,
   onOpenExperimentEntry,
   onDetailFocused,
@@ -1465,6 +1467,7 @@ export function ExecutionView({
           onContinue={onContinueEpisode}
           onSendMessage={onSendEpisodeMessage}
           onOperateTask={onOperateEpisodeTask}
+          onSwitchProvider={onSwitchEpisodeProvider}
           onArchive={onArchiveEpisode}
           key={episode.episode_id}
         />

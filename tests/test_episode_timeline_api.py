@@ -484,3 +484,40 @@ def test_timeline_reads_hydrate_only_the_newest_suffix(tmp_path):
     assert [row.recovery_id for row in recoveries] == ["recovery-old", "recovery-new"]
     # A recovery is an event at its last update, so the bound keeps the latest-updated row.
     assert store.auto_research_recoveries(episode.episode_id, newest=1) == recoveries[:1]
+
+
+def test_auto_research_timeline_names_its_armed_graph_conditions(tmp_path):
+    """A parked Auto-research run shows what it waits for, not a bare "armed"."""
+
+    from rcp.storage import GraphWatcherRecord
+    from rcp.storage.models import NodeStatusGraphCondition
+
+    from .test_episode_api_serialization import _project
+    from .test_experiment_episode_storage import _continuation
+
+    store = AppStore(tmp_path / "data")
+    _project(store)
+    episode = seed_episode_timeline(store, "project")
+    store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id="graph",
+                project_id="project",
+                origin_operation_id=f"{episode.episode_id}-root",
+                origin_task_kind="auto_research",
+                chat_id="episode-chat",
+                episode_id=episode.episode_id,
+                continuation=_continuation(episode.episode_id),
+                created_at=store.now(),
+                graph_target=episode.graph_target,
+                armed_revision=1,
+                condition=NodeStatusGraphCondition(
+                    node_id="dec/direction", status_in=["decided", "revisit"]
+                ),
+            )
+        ]
+    )
+    events = {event.event_id: event for event in build_episode_timeline(store, episode).events}
+    armed = events["notice:graph:armed"]
+    assert "dec/direction" in armed.title
+    assert "decided" in armed.title and "revisit" in armed.title

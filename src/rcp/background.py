@@ -353,6 +353,24 @@ class TaskFailed(RuntimeError):
         self.artifacts = artifacts
 
 
+def _require_recoverable_machine(
+    previous: AgentTaskRecord,
+    original: AgentTaskRequest,
+    run_on: str | None,
+) -> None:
+    """Refuse the one recovery rebinding an episode cannot survive.
+
+    Provider, model, and reasoning are one niche a human may change on any
+    recovery. The execution machine is different only where an episode is bound
+    to it: its watchers, stage, and children live on that machine and moving the
+    turn would orphan them. A standalone turn owns nothing there, so it may move
+    to a reachable one.
+    """
+
+    if run_on is not None and run_on != original.run_on and previous.episode_id is not None:
+        raise ValueError("Recovery cannot change its pinned execution machine.")
+
+
 class BackgroundAgentTasks:
     def __init__(
         self,
@@ -615,6 +633,7 @@ class BackgroundAgentTasks:
                 raise ValueError("Collect the existing turn before changing its provider settings.")
             return self.collect(operation_id)
         original = self._request_from_record(previous)
+        _require_recoverable_machine(previous, original, run_on)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
                 self,
@@ -916,17 +935,37 @@ class BackgroundAgentTasks:
         original = self._request_from_record(previous)
         if not isinstance(original, AutoResearchRunRequest):
             raise ValueError("This task is not an Auto-research task.")
-        return retry_auto_research_task(
-            self,
-            previous,
-            original,
-            provider=provider,
-            model=model,
-            reasoning=reasoning,
-            run_on=run_on,
-            skills=skills,
-            service=service,
-        )
+        _require_recoverable_machine(previous, original, run_on)
+        # Only a human reaches this entry point, and starting a turn is the
+        # answer a stopped ladder was waiting for. The automatic path settles
+        # its own row and must keep counting, so it is left alone. A turn that
+        # is never admitted leaves the row `admitted` with nothing running,
+        # which reads as the failed parent it still points at.
+        released = self.store.release_settled_auto_research_recovery(previous.operation_id)
+        try:
+            return retry_auto_research_task(
+                self,
+                previous,
+                original,
+                provider=provider,
+                model=model,
+                reasoning=reasoning,
+                run_on=run_on,
+                skills=skills,
+                service=service,
+            )
+        except BaseException:
+            # A released row names no attempt, and a failed orchestrator whose
+            # recovery names no attempt is never quiescent, so a Stop after this
+            # refusal would wait forever on a turn that was never created. A
+            # child that was already committed is a turn: startup or a later
+            # sign-in can still launch it, and it owes its own failure a ladder.
+            if (
+                released is not None
+                and self.store.auto_research_task_recovery_child(previous.operation_id) is None
+            ):
+                self.store.restore_settled_auto_research_recovery(previous.operation_id, released)
+            raise
 
     def stop_remote_provider(self, operation_id: str) -> AgentTaskRecord:
         """Stop a provider that outlived its turn, so its result can be collected.
