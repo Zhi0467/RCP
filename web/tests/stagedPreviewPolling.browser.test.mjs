@@ -94,6 +94,8 @@ test(
     });
 
     let lastRemoteSyncAt = "2026-09-01T12:00:00Z";
+    let experimentControl = {};
+    let candidateAwaiting = ["dec/two"];
     let previewResponses = 0;
     const profile = { provider: "codex", model: "", reasoning: "high", run_on: "local" };
     // The head a real project snapshot carries: this revision, no transition id.
@@ -124,7 +126,7 @@ test(
       provider_skill_inventories: {},
       skill_catalog: [],
       skill_defaults: {},
-      experiment_control: {},
+      experiment_control: experimentControl,
       attention: attention(["dec/one", "dec/two"]),
       counts,
       graph: graph(3, [
@@ -135,6 +137,14 @@ test(
       paper_coach: {},
       validation_messages: [],
     });
+    const candidateDecision = (id, title) =>
+      candidateAwaiting.includes(id)
+        ? decision(id, title)
+        : decision(id, title, "decided", {
+            selected_option: "Amend the plan",
+            standing: "accepted",
+            updated_rev: 4,
+          });
     // The head a real preview carries: the same revision, named by the last
     // accepted transition.
     const previewPayload = () => ({
@@ -142,17 +152,13 @@ test(
         head: { target, revision: 4, transition_id: previewTransition },
         base_head: { target, revision: 3, transition_id: priorTransition },
         graph: graph(4, [
-          decision("dec/one", "Amend the preregistered analysis plan", "decided", {
-            selected_option: "Amend the plan",
-            standing: "accepted",
-            updated_rev: 4,
-          }),
-          decision("dec/two", "Pre-main secondary diagnostics"),
+          candidateDecision("dec/one", "Amend the preregistered analysis plan"),
+          candidateDecision("dec/two", "Pre-main secondary diagnostics"),
         ]),
-        attention: attention(["dec/two"]),
+        attention: attention(candidateAwaiting),
         primary_question: null,
-        counts: { ...counts, decisions_awaiting_choice: 1 },
-        experiment_control: {},
+        counts: { ...counts, decisions_awaiting_choice: candidateAwaiting.length },
+        experiment_control: experimentControl,
         ruleset_tag: rulesetTag,
         transition_id: previewTransition,
         canonical: false,
@@ -238,17 +244,31 @@ test(
     );
     assert.equal((await inboxOpen.textContent()).trim(), "1 open");
 
-    // Operational polling re-reads the project at the same revision. The staged
-    // decision must stay decided in the Inbox while the refetch is in flight.
+    // Operational polling re-reads the project at the same revision, and this
+    // read carries control state that moved. The staged decision must stay
+    // decided in the Inbox while the refetch is in flight.
     const reloaded = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/projects/demo",
     );
+    const refetched = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith("/sync/preview"),
+    );
     lastRemoteSyncAt = "2026-09-01T12:01:00Z";
+    experimentControl = { "exp/one": { health: "completed" } };
+    candidateAwaiting = [];
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await (await reloaded).finished();
     await page.waitForTimeout(500);
 
     assert.equal((await inboxOpen.textContent()).trim(), "1 open");
+
+    // The refetch replaces the whole candidate, so what moved is delivered
+    // without ever rendering canonical state under the staged edit.
+    await (await refetched).finished();
+    await page.waitForFunction(
+      () => !document.body.textContent.includes("Preparing staged transition preview."),
+    );
+    assert.equal((await inboxOpen.textContent()).trim(), "0 open");
     assert.deepEqual(errors, []);
   },
 );
