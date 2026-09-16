@@ -150,8 +150,12 @@ class Lines:
             if index < len(pieces) - 1:
                 offset += len(piece) + 1
                 if not self.discarding:
+                    # Decode the way the live pipe decodes the same bytes. Strict
+                    # UTF-8 would reject a terminal event over one bad byte in a
+                    # text field, recording the turn incomplete while the live
+                    # reader replaced the byte and accepted the completion.
                     with suppress(ValueError, UnicodeError, TypeError, AttributeError):
-                        self.consume(json.loads(self.pending))
+                        self.consume(json.loads(bytes(self.pending).decode("utf-8", "replace")))
                 self.pending.clear()
                 self.discarding = False
                 if stop_when is not None and stop_when():

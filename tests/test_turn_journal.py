@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents.staged_turn_journal import WireCompletion
+from rcp.agents.staged_turn_journal import Lines, WireCompletion
 from rcp.agents.turn_journal import STAGED_TURN_JOURNAL_NAME, staged_turn_journal_source
 
 
@@ -591,3 +591,25 @@ def test_the_wrapper_ignores_a_completion_naming_no_thread_and_a_foreign_turn(tm
     assert turn.receive_line(json.dumps(foreign)).explicit_terminal
     observer.output(foreign)
     assert not observer.terminal
+
+
+def test_the_wrapper_reads_a_bad_byte_the_way_the_live_pipe_reads_it():
+    """One invalid byte must not make the two readers disagree about completion.
+
+    The live pipe decodes each line with `errors="replace"`, so a terminal event
+    carrying a stray byte in its text still parses and still ends the turn.
+    Reading the same bytes strictly here would record the turn as protocol
+    incomplete, and collection would then discard a result live delivery accepted.
+    """
+
+    observed = []
+    lines = Lines(1 << 20, observed.append)
+    observer = WireCompletion("codex.exec-json.v1")
+    completion = json.dumps({"type": "turn.completed", "note": "ok"}).encode()
+
+    lines.feed(completion.replace(b"ok", b"o\xffk") + b"\n")
+
+    assert observed and observed[0]["type"] == "turn.completed"
+    assert observed[0]["note"] == "o�k"
+    observer.output(observed[0])
+    assert observer.terminal and observer.complete
