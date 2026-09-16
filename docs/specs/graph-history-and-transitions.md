@@ -289,6 +289,11 @@ draft candidate, and attributes the conflict to its initiating action and rule.
 Sync re-prepares the complete staged batch against the locked current head and
 commits one revision or none.
 
+A re-read that carries no new canonical state holds the rendered candidate,
+including the operational state folded into it. The refreshed preview replaces
+that candidate whole, so a staged edit never falls back to canonical state while
+its preview refreshes.
+
 Agent Apply uses the same manager. A conflict identifies bounded operation
 indexes, rule, cause chain, affected ids, and invariant and returns that input to
 the same native session's correction path. No rejected preparation creates a

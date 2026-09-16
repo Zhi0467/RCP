@@ -282,10 +282,10 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.equal(repolled.draftPreviewPending, false);
 
   // Operational state that really did move at the same graph revision is still
-  // applied: that poll exists to deliver watcher and control state, and holding
-  // a stale control projection would strand Runs on "waiting" indefinitely.
-  // Presentation prefers the projection's own control map, so the projection is
-  // dropped rather than retained beside fresh state, and the effects refetch it.
+  // applied: that poll exists to deliver watcher and control state. The staged
+  // candidate is held while the effects refetch it, because dropping it renders
+  // canonical state until the fresh preview lands, and a human reads that as the
+  // view jumping between two states.
   const controlMoved = projectSessionReducer(repolled, {
     kind: "snapshot_applied",
     snapshot: snapshot(1, {
@@ -298,9 +298,76 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.deepEqual(controlMoved.project.experiment_control, {
     "exp/one": { health: "completed" },
   });
-  assert.equal(controlMoved.draftTransitionProjection, null);
+  assert.strictEqual(controlMoved.draftTransitionProjection, stagedProjection);
   assert.strictEqual(controlMoved.humanDraft, stagedDraft);
   assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
+});
+
+test("a backend preview survives a re-poll whose snapshot states no transition id", () => {
+  // The two heads the app really receives: POST /sync/preview answers with the
+  // last accepted transition id in its base head, while GET /api/projects/{id}
+  // names the same revision with no transition id at all.
+  const previewBaseHead = { target: { kind: "main" }, revision: 1, transition_id: transitionOne };
+  const snapshotHead = { target: { kind: "main" }, revision: 1, transition_id: null };
+  const stagedNode = {
+    id: "hyp/example",
+    type: "hypothesis",
+    title: "Canonical",
+    statement: "Statement",
+    standing: "accepted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const polled = () =>
+    snapshot(1, { graph: graph(1, stagedNode), graph_head: snapshotHead, graph_changes: null });
+
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: polled(),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_loaded",
+    draft: humanDraft(1),
+  });
+  state = projectSessionReducer(state, {
+    kind: "preview_applied",
+    project_id: "alpha",
+    projection: { ...projection(2), base_head: previewBaseHead },
+    base_head: previewBaseHead,
+  });
+  const stagedProjection = state.draftTransitionProjection;
+  const stagedDraft = state.humanDraft;
+  assert.equal(state.transitionHead.transition_id, transitionOne);
+
+  // Operational polling re-reads the project every few seconds. A head that
+  // states no identity is not a different head, so nothing here moved.
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: polled(),
+    preserve_readiness: false,
+  });
+
+  assert.strictEqual(repolled.draftTransitionProjection, stagedProjection);
+  assert.strictEqual(repolled.humanDraft, stagedDraft);
+  assert.strictEqual(repolled.transitionHead, state.transitionHead);
+
+  // Canonical movement still replaces the head and drops the staged preview.
+  const moved = projectSessionReducer(repolled, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2, {
+      graph: graph(2, { ...stagedNode, title: "Canonical after", updated_rev: 2 }),
+      graph_head: { target: { kind: "main" }, revision: 2, transition_id: null },
+      graph_changes: null,
+    }),
+    preserve_readiness: false,
+  });
+
+  assert.equal(moved.transitionHead.revision, 2);
+  assert.equal(moved.transitionHead.transition_id, null);
+  assert.equal(moved.draftTransitionProjection, null);
 });
 
 test("an unchanged snapshot keeps preview status, and a moved one clears it", () => {
