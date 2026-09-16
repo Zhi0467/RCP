@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from contextlib import aclosing
 from pathlib import Path
 
 import pytest
@@ -534,3 +535,58 @@ async def test_the_python_prerequisite_is_named_before_a_probe_that_needs_python
     # follows the human installing the interpreter.
     exit_event = next(event for event in events if event.event == "provider_exit")
     assert json.loads(exit_event.text)["remote_process_stopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_consumer_that_stops_reading_does_not_leave_the_provider_running(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """Preservation is for a link that ended the turn, not for any early exit.
+
+    A consumer can stop reading for reasons of its own -- a continuation that
+    refused the session it was handed, an error on the way -- and the turn then
+    fails as something other than a lost link. Nothing will offer to collect it
+    and nothing will offer to stop it, so a survivor would hold the stage fence
+    against every later recovery with no control left to end it.
+    """
+
+    from rcp.agents import AgentProcessControl
+
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            # Speaks once the prompt has landed, then holds the group open.
+            "import sys, json, time; sys.stdin.read(); "
+            + "print(json.dumps({'type': 'thread.started', 'thread_id': 'native'}), flush=True); "
+            + "time.sleep(30)",
+        ],
+    )
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: None)
+    terminated = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "_confirm_remote_stopped",
+        lambda host, pid, _started: terminated.append((host, pid)) or True,
+    )
+    pid_file = str(tmp_path / "provider.pid")
+
+    stream = transported_launcher.stream(
+        "codex",
+        "prompt",
+        cwd=tmp_path,
+        capability="scratch_patch",
+        host="fixture",
+        remote_pid_file=pid_file,
+        preserve_on_transport_loss=True,
+    )
+    async with aclosing(stream):
+        async for event in stream:
+            # Past the prompt, which is what the old condition took as reason
+            # enough on its own to leave the group running.
+            if event.event == "session":
+                break
+
+    assert terminated == [("fixture", pid_file)]

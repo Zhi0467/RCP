@@ -349,7 +349,10 @@ unresolved pass fences stage reuse across task failure and server restart; a
 read-only check may release that fence only after confirming process absence.
 Unreachable or unprovable process state preserves the fence, stage, and receipts
 while recovery waits. Losing the controlling connection does not authorize
-terminating the original provider or launching its replacement.
+terminating the original provider or launching its replacement. A group is left
+running only where the turn was classified as one the link ended, on a surface
+that collects; a run that ends any other way stops its group, because nothing
+would offer to collect or to stop a survivor of it.
 
 Every remote provider pass writes a bounded durability journal beside its
 pidfile, in `<pid_file>.turn/`: raw stdout in `events.jsonl`, bounded stderr,

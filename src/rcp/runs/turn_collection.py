@@ -256,7 +256,11 @@ class CollectedTurn:
         events would let collection act on one the live turn had refused.
         """
 
-        return [line for line in self.events.splitlines() if _within_event_limit(line)]
+        # Split on the delimiter the writer used. `splitlines` would also break
+        # on U+2028 and friends, so one event carrying a line separator inside
+        # an answer would reach the decoder as two fragments of invalid JSON --
+        # and a completed turn would settle without the answer it did produce.
+        return [line for line in self.events.split("\n") if line and _within_event_limit(line)]
 
     @property
     def session_id(self) -> str | None:
@@ -305,10 +309,17 @@ def _observe_running_provider(store: AppStore, source: AgentTaskRecord, pid_file
         sighting = AgentProcessControl.remote_provider_sighting(source.stage_host or "", pid_file)
     idle = sighting.get("idle_seconds")
     with suppress(Exception):
-        # Once is enough: this marks that a provider outlived its turn here, and
-        # the reading a human acts on is the one in the message below. Recording
-        # every attempt would grow a category that retention deliberately keeps.
-        if not store.agent_task_has_receipt(source.operation_id, "remote_provider_still_running"):
+        # Once is enough for the mark that a provider outlived its turn here,
+        # and the reading a human acts on is the one in the message below.
+        # Recording every attempt would grow a category retention keeps. But a
+        # probe that answered without naming the process leaves the stop with
+        # nothing to aim at, so one later probe that can name it still writes.
+        if recorded_provider_identity(store, source, pid_file) is None and (
+            sighting.get("identity")
+            or not store.agent_task_has_receipt(
+                source.operation_id, "remote_provider_still_running"
+            )
+        ):
             store.record_agent_task_receipt(
                 source.operation_id,
                 "remote_provider_still_running",

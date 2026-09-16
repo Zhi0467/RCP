@@ -70,12 +70,13 @@ def _journal(
     answer="Finished the original work.",
     patch='{"ops":[]}\n',
     generated_tokens=20,
+    ensure_ascii=True,
 ):
     root = Path(str(pid) + ".turn")
     root.mkdir()
     events = (
         "\n".join(
-            json.dumps(value)
+            json.dumps(value, ensure_ascii=ensure_ascii)
             for value in (
                 {"type": "thread.started", "thread_id": "native-thread"},
                 {
@@ -983,4 +984,63 @@ def test_the_stop_identity_is_found_past_the_receipt_display_ceiling(tmp_path):
     )
     current = store.agent_task(record.operation_id)
     assert recorded_provider_identity(store, current, str(pid)) == "boot:4242"
+    assert can_stop_remote_provider(store, current)
+
+
+def test_an_answer_carrying_a_line_separator_survives_replay(tmp_path, monkeypatch):
+    """The journal's records end where the writer ended them, and nowhere else.
+
+    A provider that does not escape non-ASCII can put U+2028 inside an answer,
+    and both the live reader and the journal still delimit events with one byte.
+    Splitting the retained text the way Python splits lines breaks that event in
+    two, and the decoder is handed two fragments of invalid JSON: the turn then
+    settles as completed, applying its Patch, with no answer to show for it.
+    """
+
+    answer = "First finding.\u2028Second finding."
+    store, record, pid = _failed_turn(tmp_path)
+    _journal(pid, answer=answer, ensure_ascii=False)
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    collected = read_collected_turn(store, record)
+    assert "\u2028" in collected.events
+    events = replay_collected_events(collected, _request())
+
+    assert [item.text for item in events if item.event == "answer"] == [answer]
+    assert events[-1].event == "done"
+
+
+def test_a_sighting_that_could_not_name_the_process_is_not_the_last_word(tmp_path, monkeypatch):
+    """One probe failing must not withdraw the Stop control for good.
+
+    The sighting is recorded once so the control can be offered without probing
+    every task in a listing. Recorded from a probe that answered without naming
+    the process, it holds a place the identity was meant to fill, and every
+    later probe skips it -- so a wedged provider stays unstoppable however many
+    times RCP goes back and succeeds.
+    """
+
+    store, record, pid = _failed_turn(tmp_path)
+    _journal(pid)
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: False)
+    monkeypatch.setattr(
+        AgentProcessControl, "remote_provider_sighting", lambda *_: {"idle_seconds": 60.0}
+    )
+    with pytest.raises(CollectionPending):
+        read_collected_turn(store, record)
+    assert not can_stop_remote_provider(store, store.agent_task(record.operation_id))
+
+    # The next probe reaches the host and names the process it found.
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "remote_provider_sighting",
+        lambda *_: {"idle_seconds": 120.0, "identity": "boot:517"},
+    )
+    with pytest.raises(CollectionPending):
+        read_collected_turn(store, record)
+
+    current = store.agent_task(record.operation_id)
+    assert recorded_provider_identity(store, current, str(pid)) == "boot:517"
     assert can_stop_remote_provider(store, current)

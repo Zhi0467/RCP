@@ -1183,6 +1183,10 @@ class AgentLauncher:
         stdout_lines = None
         remote_stopped: bool | None = None
         prompt_delivered = False
+        # Set only where this turn is actually classified as one the link ended.
+        # Every other way out of the stream -- a consumer that stops reading, an
+        # error on the way -- leaves it false, and leaves nothing to preserve.
+        delivery_lost = False
         try:
             assert process.stdin is not None
             assert process.stdout is not None
@@ -1526,15 +1530,12 @@ class AgentLauncher:
             async def cleanup() -> None:
                 try:
                     # Leaving the group alive is only ever worth it for a turn
-                    # something will come back for. On every other surface the
-                    # journal is discarded anyway, and a survivor would hold the
-                    # stage fence against recovery with no Stop control to end it.
-                    preserve_remote = (
-                        journaled_remote
-                        and preserve_on_transport_loss
-                        and prompt_delivered
-                        and not (control is not None and control.pause_requested.is_set())
-                    )
+                    # something will come back for: a link that ended the turn,
+                    # on a surface that collects. Anything else -- a consumer
+                    # that stopped reading, a provider that failed on its own --
+                    # is a turn nothing will claim, and a survivor would hold
+                    # the stage fence with no Stop control to end it.
+                    preserve_remote = preserve_on_transport_loss and delivery_lost
                     if (
                         host
                         and remote_pid_file
