@@ -41,9 +41,11 @@ export interface EpisodeTaskControl {
   kind: EpisodeTaskControlKind;
   task: AgentTask;
   /**
-   * Whether this control may be retried on a different binding. An
-   * Auto-research worker continues only through the exact session its dispatch
-   * bound it to, so a switch it submitted would come back refused.
+   * Whether this control may be retried on a different binding. A rebinding
+   * starts a clean native session, which an Auto-research worker never gets —
+   * it continues only through the session its dispatch bound it to — and which
+   * a stopping episode refuses from anyone, so it admits only exact recovery.
+   * A switch either would submit comes back refused.
    */
   canSwitchProvider: boolean;
 }
@@ -177,8 +179,9 @@ export function episodeProjection(
             // Read from the episode's own membership: a mode without roles, or
             // a control this list does not name, is not a worker.
             canSwitchProvider:
+              episode.stop_requested_at === null &&
               episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !==
-              "worker",
+                "worker",
           }
         : null,
   };

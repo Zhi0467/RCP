@@ -213,8 +213,9 @@ target, and actor conversation. A human Run always starts a fresh episode and
 fresh native session. A provider switch is a deliberate recovery that becomes
 active only after a mechanically successful handoff; automatic work never
 silently switches or starts fresh. The switch is offered only where the actor
-can accept a new binding, so a control that resolves to an Auto-research worker
-shows none. Because the switch exists to change the binding, it holds its
+can accept a new binding: a rebinding starts a clean native session, which an
+Auto-research worker never gets and which a stopping episode refuses from
+anyone, so neither shows one beside the exact Retry they do permit. Because the switch exists to change the binding, it holds its
 submission until the selection actually differs from the one that failed, and
 the execution machine is part of that selection wherever the recovery is free to
 move it. A run that can retry unchanged keeps its own plain Retry and never

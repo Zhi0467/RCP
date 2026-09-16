@@ -221,6 +221,14 @@ test("only a control that can take a new binding offers the switch", () => {
     false,
   );
   assert.doesNotMatch(renderEpisodes([workerControl]), /Switch provider…/);
+
+  // A stopping episode admits only exact recovery, from any actor, so the exact
+  // Retry stays and the rebinding beside it goes.
+  const stopping = { ...orchestrator, stop_requested_at: "2026-09-16T00:00:00Z" };
+  assert.equal(episodeProjection(stopping, stopping.tasks).taskControl.canSwitchProvider, false);
+  const html = renderEpisodes([stopping]);
+  assert.doesNotMatch(html, /Switch provider…/);
+  assert.match(html, />Retry</);
 });
 
 test("a ready episode exposes one singular report URL", () => {
