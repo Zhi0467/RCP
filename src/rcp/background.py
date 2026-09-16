@@ -885,8 +885,13 @@ class BackgroundAgentTasks:
         except BaseException:
             # A released row names no attempt, and a failed orchestrator whose
             # recovery names no attempt is never quiescent, so a Stop after this
-            # refusal would wait forever on a turn that was never created.
-            if released is not None:
+            # refusal would wait forever on a turn that was never created. A
+            # child that was already committed is a turn: startup or a later
+            # sign-in can still launch it, and it owes its own failure a ladder.
+            if (
+                released is not None
+                and self.store.auto_research_task_recovery_child(previous.operation_id) is None
+            ):
                 self.store.restore_settled_auto_research_recovery(previous.operation_id, released)
             raise
 

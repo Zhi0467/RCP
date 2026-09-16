@@ -842,6 +842,66 @@ def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Pat
     assert after.attempts == settled.attempts
 
 
+def test_a_committed_child_keeps_the_release_that_a_later_write_failure_follows(
+    tmp_path: Path,
+) -> None:
+    """A turn that exists owes its own failure a ladder, whatever failed after it."""
+
+    store = _store(tmp_path)
+    stage = tmp_path / "orchestrator-stage"
+    stage.mkdir()
+    capped = "You've reached your limit. Switch to another model to continue."
+    # Holds the third turn inside its stream, so the state the restore would
+    # corrupt is observed before that turn writes its own verdict over it.
+    hold = threading.Event()
+    turns = itertools.count()
+
+    async def stream(_project_id, _kind, _request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="session-1"))
+        if next(turns) >= 2:
+            hold.wait(10)
+        yield _sse(AgentEvent(event="error", text=capped))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    _, root = _start(tasks)
+    wait_for_task(store, root.operation_id, expect="failed")
+    recovery = _wait_for_recovery(store, "task:root")
+    reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
+
+    def blocked():
+        candidate = store.auto_research_recovery("task:root")
+        return candidate if candidate and candidate.status == "blocked" else None
+
+    settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
+
+    # The child is committed and running; only the bookkeeping after it fails.
+    original_receipt = store.record_agent_task_receipt
+
+    def failing_receipt(operation_id, category, payload, **kwargs):
+        if category == "auto_research_orchestrator_clean_retry":
+            raise RuntimeError("the receipt write failed after the turn was admitted")
+        return original_receipt(operation_id, category, payload, **kwargs)
+
+    store.record_agent_task_receipt = failing_receipt
+    try:
+        with pytest.raises(RuntimeError, match="after the turn was admitted"):
+            tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    finally:
+        store.record_agent_task_receipt = original_receipt
+
+    child = store.auto_research_task_recovery_child(settled.operation_id or "")
+    assert child is not None
+    # Startup or a later sign-in can still carry this turn, so the verdict it
+    # was released from must not come back over it.
+    held = store.auto_research_recovery("task:root")
+    assert held is not None and held.status == "admitted"
+    hold.set()
+    wait_for_task(store, child.operation_id, expect="failed")
+
+
 def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
     tmp_path: Path,
 ) -> None:
