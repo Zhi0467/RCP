@@ -49,6 +49,20 @@ export function AgentTaskInspector({
 }: Props) {
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
   const [copiedContractRole, setCopiedContractRole] = useState<string | null>(null);
+  // An Auto-research turn's lifecycle belongs to its episode card, not here.
+  // Stopping a provider that outlived its turn is not lifecycle: it ends a
+  // wedged process so the turn can be collected at all, and no episode surface
+  // offers it, so it is the one control this footer keeps for those tasks.
+  const episodeLifecycleElsewhere = task?.kind === "auto_research";
+  const hasTaskControls = Boolean(
+    task &&
+    (task.can_pause ||
+      task.can_resume ||
+      task.can_retry ||
+      task.can_collect ||
+      task.can_stop_remote_provider ||
+      task.awaiting_human),
+  );
   const transcript = task ? reconstructTaskTranscript([task]) : [];
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
   const contracts = task?.contracts ?? [];
@@ -364,52 +378,45 @@ export function AgentTaskInspector({
           </div>
         </div>
 
-        {task &&
-          task.kind !== "auto_research" &&
-          (task.can_pause ||
-            task.can_resume ||
-            task.can_retry ||
-            task.can_collect ||
-            task.can_stop_remote_provider ||
-            task.awaiting_human) && (
-            <footer className="drawer-actions run-inspector-actions">
-              <div>
-                {task.can_pause && (
-                  <button className="button secondary" disabled={actionBusy} onClick={onPause}>
-                    <CirclePause size={14} /> Pause
-                  </button>
-                )}
-                {(task.can_retry || task.can_collect) && (
-                  <button
-                    className="button secondary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onRetry}
-                  >
-                    <RotateCcw size={14} /> {taskRetryLabel(task)}
-                  </button>
-                )}
-                {task.can_stop_remote_provider && (
-                  <button
-                    className="button secondary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onStopRemoteProvider}
-                    title="The provider on the execution host outlived this turn. Stopping it lets the turn be collected."
-                  >
-                    <CirclePause size={14} /> Stop provider
-                  </button>
-                )}
-                {task.can_resume && !task.can_collect && (
-                  <button
-                    className="button primary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onResume}
-                  >
-                    <Play size={14} /> Resume
-                  </button>
-                )}
-              </div>
-            </footer>
-          )}
+        {task && (episodeLifecycleElsewhere ? task.can_stop_remote_provider : hasTaskControls) && (
+          <footer className="drawer-actions run-inspector-actions">
+            <div>
+              {task.can_pause && !episodeLifecycleElsewhere && (
+                <button className="button secondary" disabled={actionBusy} onClick={onPause}>
+                  <CirclePause size={14} /> Pause
+                </button>
+              )}
+              {(task.can_retry || task.can_collect) && !episodeLifecycleElsewhere && (
+                <button
+                  className="button secondary"
+                  disabled={actionBusy || mutatingActionsDisabled}
+                  onClick={onRetry}
+                >
+                  <RotateCcw size={14} /> {taskRetryLabel(task)}
+                </button>
+              )}
+              {task.can_stop_remote_provider && (
+                <button
+                  className="button secondary"
+                  disabled={actionBusy || mutatingActionsDisabled}
+                  onClick={onStopRemoteProvider}
+                  title="The provider on the execution host outlived this turn. Stopping it lets the turn be collected."
+                >
+                  <CirclePause size={14} /> Stop provider
+                </button>
+              )}
+              {task.can_resume && !task.can_collect && !episodeLifecycleElsewhere && (
+                <button
+                  className="button primary"
+                  disabled={actionBusy || mutatingActionsDisabled}
+                  onClick={onResume}
+                >
+                  <Play size={14} /> Resume
+                </button>
+              )}
+            </div>
+          </footer>
+        )}
       </aside>
     </div>
   );

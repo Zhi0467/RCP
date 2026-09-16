@@ -700,6 +700,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     onClose() {},
     onResumeTask() {},
     onRetryTask() {},
+    onStopRemoteProviderTask() {},
   };
   const html = renderToStaticMarkup(
     React.createElement(NodeChat, {
@@ -1045,6 +1046,57 @@ test("provider path state distinguishes a stale recorded executable", () => {
   );
 });
 
+test("an episode turn keeps the stop control its episode card does not offer", () => {
+  const now = new Date().toISOString();
+  const task = withTaskAnswers({
+    operation_id: "wedged-orchestrator",
+    project_id: "project",
+    kind: "auto_research",
+    status: "failed",
+    request: { provider: "codex", episode_id: "episode", role: "orchestrator" },
+    created_at: now,
+    updated_at: now,
+    status_message: "The connection was lost.",
+    error: "The connection was lost.",
+    attempt: 1,
+    estimate_seconds: 60,
+    estimate_samples: 0,
+    phase: "failed",
+    elapsed_seconds: 10,
+    progress: 1,
+    can_pause: false,
+    can_resume: true,
+    can_retry: true,
+    can_collect: true,
+    can_stop_remote_provider: true,
+  });
+  const inspectorProps = {
+    tasks: [task],
+    task,
+    loading: false,
+    actionBusy: false,
+    onSelect() {},
+    onPause() {},
+    onResume() {},
+    onRetry() {},
+    onStopRemoteProvider() {},
+    onClose() {},
+  };
+  const inspector = renderToStaticMarkup(React.createElement(AgentTaskInspector, inspectorProps));
+  // Collect stays on the episode card; without this the wedged provider has no
+  // control anywhere and repeated Collect attempts stay pending forever.
+  assert.match(inspector, /Stop provider/);
+  assert.doesNotMatch(inspector, /Collect result|>(?:<!-- -->)?\s*Resume<\/button>/);
+
+  const settled = renderToStaticMarkup(
+    React.createElement(AgentTaskInspector, {
+      ...inspectorProps,
+      task: { ...task, can_stop_remote_provider: false },
+    }),
+  );
+  assert.doesNotMatch(settled, /Stop provider/);
+});
+
 test("retained results expose one collection control in the inspector and failed chat", () => {
   const now = new Date().toISOString();
   const task = withTaskAnswers({
@@ -1083,6 +1135,7 @@ test("retained results expose one collection control in the inspector and failed
       onPause() {},
       onResume() {},
       onRetry() {},
+      onStopRemoteProvider() {},
       onClose() {},
     }),
   );
@@ -1105,6 +1158,7 @@ test("retained results expose one collection control in the inspector and failed
     onClose() {},
     onResumeTask() {},
     onRetryTask() {},
+    onStopRemoteProviderTask() {},
   };
   const chat = renderToStaticMarkup(React.createElement(NodeChat, props));
   assert.equal(chat.match(/Collect result/g)?.length, 1);
