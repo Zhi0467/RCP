@@ -398,3 +398,196 @@ time.sleep(30)
         assert not socket_path.exists()
     finally:
         socket_path.unlink(missing_ok=True)
+
+
+def _canonical_turn(tmp_path, runtime_id: str):
+    from rcp.providers import ProviderTurnRequest, profile_for
+
+    provider = "claude" if runtime_id.startswith("claude") else "codex"
+    return (
+        profile_for(provider)
+        .runtime(runtime_id)
+        .turn(
+            ProviderTurnRequest(
+                prompt="corpus",
+                binary=provider,
+                cwd=tmp_path,
+                model=None,
+                reasoning=None,
+                session_id="corpus-thread",
+                read_dirs=[],
+                write_dirs=[],
+                write_scope=None,
+                capability="paper_readonly",
+                provider_version="0.153.4",
+            )
+        )
+    )
+
+
+def _started_decoder_pair(tmp_path, runtime_id: str):
+    """Both decoders for one runtime, holding the same turn and ready for its traffic."""
+
+    if runtime_id == "codex.app-server-stdio.v1":
+        turn, observer = _canonical_app_server_turn(tmp_path, handshake=True)
+        started = {"id": 4, "result": {"turn": {"id": "corpus-turn"}}}
+        turn.receive_line(json.dumps(started))
+        observer.input({"id": 4, "method": "turn/start"})
+        observer.output(started)
+        return turn, observer
+    turn = _canonical_turn(tmp_path, runtime_id)
+    observer = WireCompletion(runtime_id)
+    start = (
+        {"type": "system", "subtype": "init", "session_id": "corpus-thread"}
+        if runtime_id.startswith("claude")
+        else {"type": "thread.started", "thread_id": "corpus-thread"}
+    )
+    turn.receive_line(json.dumps(start))
+    observer.output(start)
+    return turn, observer
+
+
+# One protocol message per case: every shape each runtime can end a turn with,
+# and the ordinary traffic it must not end one with.
+_COMPLETION_CORPUS = tuple(
+    (runtime_id, message)
+    for runtime_id, messages in (
+        (
+            "codex.exec-json.v1",
+            (
+                {"type": "thread.started", "thread_id": "corpus-thread"},
+                {"type": "turn.started"},
+                {"type": "item.started", "item": {"type": "agent_message"}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "answer"}},
+                {"type": "item.completed", "item": {"type": "command_execution", "text": "ls"}},
+                {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}},
+                {"type": "turn.failed", "error": {"message": "the model refused"}},
+                {"type": "error", "message": "codex crashed"},
+                {"type": "unrecognized.event"},
+                {"item": {"type": "agent_message", "text": "no type at all"}},
+            ),
+        ),
+        (
+            "claude.stream-json.v1",
+            (
+                {"type": "system", "subtype": "init", "session_id": "corpus-thread"},
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+                {"type": "result", "subtype": "success", "result": "answer"},
+                {"type": "result", "subtype": "error_during_execution", "is_error": True},
+                {"type": "result", "subtype": ""},
+                {"type": "error", "message": "claude crashed"},
+                {"type": "unrecognized.event"},
+                {"message": {"content": []}},
+            ),
+        ),
+        (
+            "codex.app-server-stdio.v1",
+            (
+                {"id": 7, "method": "applyPatchApproval"},
+                {"id": 7, "method": "applyPatchApproval", "params": {}},
+                {"id": 7, "method": "execCommandApproval", "params": {"threadId": "corpus-thread"}},
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"id": "corpus-turn", "status": "completed"}},
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"id": "corpus-turn", "status": "failed"}},
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "child",
+                        "turn": {"id": "child-turn", "status": "completed"},
+                    },
+                },
+                {"method": "error", "params": {"willRetry": False, "message": "boom"}},
+                {"method": "error", "params": {"willRetry": True, "message": "retrying"}},
+                {"method": "item/completed", "params": {"threadId": "corpus-thread", "item": {}}},
+                {"method": "item/completed", "params": {"threadId": "child", "item": {}}},
+                {"method": "turn/started", "params": {"threadId": "corpus-thread"}},
+            ),
+        ),
+    )
+    for message in messages
+)
+
+
+@pytest.mark.parametrize(
+    "runtime_id,message", _COMPLETION_CORPUS, ids=lambda value: str(value)[:44]
+)
+def test_completion_decoders_agree_across_the_protocol_corpus(tmp_path, runtime_id, message):
+    """The wrapper's stdlib copy must end a turn exactly where the real decoder does.
+
+    RCP cannot ship its decoder to the execution host, so the rule for "this turn
+    is over" is written twice and nothing structural keeps the two together. The
+    drift that got through was an ordering difference in one branch, invisible
+    until a message carrying no params arrived on a dead link. So compare them on
+    the traffic itself, rather than only on the shapes someone thought to worry
+    about. Traffic arriving before the handshake is its own test: there the
+    canonical decoder is also validating protocol order, which the wrapper is
+    deliberately not.
+    """
+
+    turn, observer = _started_decoder_pair(tmp_path, runtime_id)
+    step = turn.receive_line(json.dumps(message))
+    observer.output(message)
+
+    assert step.explicit_terminal == observer.terminal
+
+
+def test_the_protocol_corpus_covers_both_verdicts(tmp_path):
+    """A corpus both decoders agreed to ignore entirely would prove nothing."""
+
+    verdicts: dict[str, set[bool]] = {runtime: set() for runtime, _ in _COMPLETION_CORPUS}
+    for runtime_id, message in _COMPLETION_CORPUS:
+        _turn, observer = _started_decoder_pair(tmp_path, runtime_id)
+        observer.output(message)
+        verdicts[runtime_id].add(observer.terminal)
+    assert all(seen == {False, True} for seen in verdicts.values()), verdicts
+
+
+def test_the_wrapper_waits_for_steering_the_live_pipe_tracks_elsewhere(tmp_path):
+    """One of two places the decoders part on purpose, recorded so it stays on purpose.
+
+    A Claude result naming some finished inputs while others are still out ends
+    the turn for the canonical decoder, whose live pipe owns steering separately.
+    The wrapper is the only fence on a dead link, so it holds until every input
+    it forwarded has come back.
+    """
+
+    turn = _canonical_turn(tmp_path, "claude.stream-json.v1")
+    observer = WireCompletion("claude.stream-json.v1")
+    for identifier in ("first", "second"):
+        observer.input({"type": "user", "uuid": identifier, "message": {}})
+        observer.output(
+            {"type": "command_lifecycle", "command_uuid": identifier, "state": "started"}
+        )
+    partial = {"type": "result", "subtype": "success", "user_message_uuids": ["first"]}
+
+    assert turn.receive_line(json.dumps(partial)).explicit_terminal
+    observer.output(partial)
+    assert not observer.terminal
+
+    observer.output({"type": "result", "subtype": "success", "user_message_uuids": ["second"]})
+    assert observer.terminal
+
+
+def test_the_wrapper_ignores_a_completion_naming_no_thread_and_a_foreign_turn(tmp_path):
+    """The other deliberate parting, and the safer side of it to be on.
+
+    A `turn/completed` that names neither this thread nor this turn is a protocol
+    violation, and the canonical decoder ends the turn on it. The wrapper holds:
+    its fence is keyed to the turn it was launched for, which is what keeps a
+    subagent's completion from closing the root turn out from under it.
+    """
+
+    foreign = {
+        "method": "turn/completed",
+        "params": {"turn": {"id": "someone-elses-turn", "status": "completed"}},
+    }
+    turn, observer = _started_decoder_pair(tmp_path, "codex.app-server-stdio.v1")
+
+    assert turn.receive_line(json.dumps(foreign)).explicit_terminal
+    observer.output(foreign)
+    assert not observer.terminal
