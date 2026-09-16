@@ -1615,6 +1615,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         "classification": (
             "session_limit" if failure_point == "session-limit" else "checkpoint_missing"
         ),
+        "role": "orchestrator",
         "same_allocation": True,
         "actor_operation_id": root.operation_id,
         "retry_mode": "clean_native_session",

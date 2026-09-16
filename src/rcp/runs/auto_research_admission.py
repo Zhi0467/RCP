@@ -1736,19 +1736,29 @@ def retry_auto_research_task(
     if classification is not None:
         tasks.store.record_agent_task_receipt(
             retried.operation_id,
+            # The category is durable and already consumed; `role` is what
+            # distinguishes the actor now that a worker can rebind too.
             "auto_research_orchestrator_clean_retry",
             {
                 "classification": classification,
+                "role": original.role,
                 "same_allocation": True,
                 "actor_operation_id": original.actor_operation_id,
                 "retry_mode": "clean_native_session",
             },
             tier="summary",
         )
+        # The event names the actor that is retrying and the reason it cannot
+        # resume, because a human rebinding is not a continuation that failed.
+        reason = (
+            "the human changed its provider, model, or reasoning"
+            if classification == "binding_changed"
+            else "its prior continuation became unavailable"
+        )
         tasks.store.record_agent_task_event(
             retried.operation_id,
-            "The orchestrator is retrying this same paid allocation with a clean native "
-            "session after its prior continuation became unavailable.",
+            f"The {original.role} is retrying this same paid allocation with a clean "
+            f"native session after {reason}.",
             level="warning",
         )
     return retried

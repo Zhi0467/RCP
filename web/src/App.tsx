@@ -3489,7 +3489,11 @@ export default function App() {
   );
 
   const requestRetry = (task: AgentTask) => {
-    chooseRetryTask(task);
+    if (task.kind === "seed" || task.kind === "refresh") {
+      chooseRetryTask(task);
+      return;
+    }
+    void operateTask(task, "retry");
   };
 
   const commitProjectOpen = (id: string, experimentRoute: string | null = null) => {
@@ -3969,23 +3973,7 @@ export default function App() {
       </div>
     );
 
-  // A run parked on a branch Decision owes the human a choice just as a canonical
-  // one does, but it never enters `project.attention`, which is canonical-only.
-  const parkedDecisions = useMemo(
-    () =>
-      episodes.flatMap((episode) =>
-        episode.awaiting_decision_ids.map((nodeId) => ({
-          node_id: nodeId,
-          episode_id: episode.episode_id,
-        })),
-      ),
-    [episodes],
-  );
-  const attentionCount =
-    pendingProposals.length +
-    attentionDecisions.length +
-    openBlockers.length +
-    parkedDecisions.length;
+  const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
@@ -4514,9 +4502,7 @@ export default function App() {
               <AttentionRail
                 decisions={attentionDecisions}
                 blockers={openBlockers}
-                parked={parkedDecisions}
                 onSelectNode={openNodeById}
-                onOpenRuns={() => changeView("execution")}
               />
             </div>
           )}
@@ -4583,6 +4569,7 @@ export default function App() {
                 onContinueEpisode={requestEpisodeContinuation}
                 onSendEpisodeMessage={messageEpisodeOrchestrator}
                 onOperateEpisodeTask={operateEpisodeOrchestratorTask}
+                onSwitchEpisodeProvider={chooseRetryTask}
                 onSelectExperiment={selectExperiment}
                 onOpenExperimentEntry={(entry) =>
                   commitProjectOpen(project.id, experimentBoardRouteToken(entry))

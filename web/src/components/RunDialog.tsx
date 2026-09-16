@@ -16,6 +16,14 @@ interface Props {
   onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
 }
 
+/** What a retry dialog is retrying, for the profiles that can open one. */
+function retryTitle(kind: AgentExecutionProfile): string {
+  if (kind === "seed") return "Retry seed";
+  if (kind === "refresh") return "Retry refresh";
+  if (kind === "orchestrator") return "Switch Auto-research provider";
+  return "Switch provider";
+}
+
 export function RunDialog({
   open,
   kind,
@@ -88,7 +96,7 @@ export function RunDialog({
             {switchingExperimentProvider
               ? "Switch Experiment provider"
               : mode === "retry"
-                ? `Retry ${kind === "seed" ? "seed" : "refresh"}`
+                ? retryTitle(kind)
                 : kind === "seed"
                   ? "Seed the project graph"
                   : "Refresh project understanding"}
