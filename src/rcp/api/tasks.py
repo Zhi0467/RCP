@@ -63,6 +63,7 @@ from rcp.runs.steering import (
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
+from rcp.runs.turn_collection import can_collect, collection_source
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -73,7 +74,7 @@ from rcp.storage import (
     ArtifactRevisionCandidateRecord,
     ArtifactRevisionConflict,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, RemoteStageUnreachable, StateUnavailable
 from rcp.transport.state import StateWorkspace
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -211,6 +212,9 @@ def _agent_task_response(
     degradations: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    response["can_collect"] = can_collect(store, record)
+    if record.kind in {"node_chat", "project_chat"}:
+        response["chat_turn_operation_id"] = collection_source(store, record).operation_id
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -971,13 +975,46 @@ def resume_agent_task(
                 skills=skills,
                 authorized_by=authorized_by,
             ).model_dump(mode="json")
-    except OSError as exc:
+    except (OSError, RemoteStageUnreachable, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
         if result_view_resume_lock is not None:
             result_view_resume_lock.release()
+
+
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/collect",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def collect_agent_task(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
+) -> dict[str, object]:
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
+    authorized_by = identity_access.require_patch_capable_identity(request)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    try:
+        experiment_admission.require_current(service, previous.request)
+        with _chat_recovery_admission(service, store, previous):
+            record = background_tasks.collect(operation_id, authorized_by=authorized_by)
+        return _agent_task_response(store, record, background_tasks)
+    except (OSError, RemoteStageUnreachable, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(
@@ -1056,6 +1093,13 @@ def retry_agent_task(
     result_view_retry_lock: threading.Lock | None = None
     try:
         overrides = body.model_dump(exclude_none=True) if body is not None else {}
+        if can_collect(store, previous):
+            if overrides:
+                raise ValueError("Collect the existing turn before changing its provider settings.")
+            experiment_admission.require_current(service, previous.request)
+            with _chat_recovery_admission(service, store, previous):
+                record = background_tasks.collect(operation_id, authorized_by=authorized_by)
+            return _agent_task_response(store, record, background_tasks)
         if previous.request.get("patch_kind") == "experiment_loop" and "run_on" in overrides:
             raise ValueError("Experiment-loop recovery cannot change its pinned execution machine.")
         if previous.kind == "auto_research":
@@ -1123,7 +1167,7 @@ def retry_agent_task(
                 authorized_by=authorized_by,
                 **overrides,
             ).model_dump(mode="json")
-    except OSError as exc:
+    except (OSError, RemoteStageUnreachable, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

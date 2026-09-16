@@ -14,6 +14,7 @@ from rcp.api.dependencies import require_registered_project
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.projects import ProjectCatalog
+from rcp.runs.turn_collection import can_collect
 from rcp.storage import (
     AgentFailureKind,
     AgentTaskRecord,
@@ -194,6 +195,7 @@ class EpisodeTaskResponse(BaseModel):
     can_pause: bool
     can_resume: bool
     can_retry: bool
+    can_collect: bool = False
     active: bool
     queued: bool
     pausing: bool
@@ -387,6 +389,7 @@ def serialize_episode(
             role=task_metadata[task.operation_id][0],
             depth=task_metadata[task.operation_id][1],
             degradation=degradations.get(task.operation_id),
+            collectible=can_collect(store, task),
         )
         for task in task_records
     ]
@@ -771,10 +774,11 @@ def _serialize_task(
     role: Literal["orchestrator", "worker", "wake"],
     depth: int,
     degradation: str | None,
+    collectible: bool = False,
 ) -> EpisodeTaskResponse:
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
-    values.update(role=role, depth=depth, degradation=degradation)
+    values.update(role=role, depth=depth, degradation=degradation, can_collect=collectible)
     values.update(_episode_task_controls(episode, task))
     return EpisodeTaskResponse.model_validate(values)
 

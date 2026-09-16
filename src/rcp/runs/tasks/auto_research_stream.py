@@ -78,6 +78,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
+    collected_task_operation_id,
 )
 from rcp.runs.tasks.work import (
     _apply_work_patch,
@@ -102,11 +103,12 @@ from rcp.transport import (
     repository_access,
 )
 
-_SAME_ALLOCATION_RECOVERY = frozenset({"resume", "retry"})
+_SAME_ALLOCATION_RECOVERY = frozenset({"resume", "retry", "collect"})
 _HANDOFFS_CLEARED_RECEIPT = "auto_research_worker_handoffs_cleared"
 _WORKER_CONTINUATIONS = frozenset(
     {
         "fresh",
+        "collect",
         "resume",
         "retry",
         "watcher_wake",
@@ -411,7 +413,9 @@ def _ordered_orchestrator_graph_updates(
     """Rebuild this turn's in-turn Apply history from its durable commit ledger."""
 
     graph_updates: list[GraphUpdateResult] = []
-    for record in execution.store.auto_research_apply_results(execution.operation_id):
+    for record in execution.store.auto_research_apply_results(
+        collected_task_operation_id(execution)
+    ):
         effect_result = record.result.get("result")
         if not isinstance(effect_result, dict):
             continue
@@ -864,10 +868,10 @@ def _paid_allocation_operation_id(
 ) -> str:
     current = task
     seen: set[str] = set()
-    while execution.store.agent_task_continuation_cause(current.operation_id) in {
-        "resume",
-        "retry",
-    }:
+    while (
+        execution.store.agent_task_continuation_cause(current.operation_id)
+        in _SAME_ALLOCATION_RECOVERY
+    ):
         if current.operation_id in seen or current.parent_operation_id is None:
             raise ValueError("AutoResearch actor recovery lost its paid allocation lineage.")
         seen.add(current.operation_id)
@@ -1138,6 +1142,8 @@ def _prepare_turn_handoffs(
     cleared = execution.store.auto_research_handoffs_cleared(turn.allocation_operation_id)
     if turn.recovering_allocation and cleared:
         return
+    if execution.continuation == "collect":
+        raise ValueError("The collected Auto-research turn has no retained handoff boundary.")
     _clear_stale_turn_handoffs(stage.workspace, stage.remote)
     execution.store.mark_auto_research_handoffs_cleared(turn.allocation_operation_id)
     execution.store.record_agent_task_receipt(
@@ -1160,6 +1166,8 @@ def _stage_claimed_mail(
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
 ) -> str | None:
+    if execution.continuation == "collect":
+        return None
     messages = _claimed_messages(execution, turn)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
     if messages:
@@ -1197,6 +1205,8 @@ def _stage_claimed_lifecycle(
     turn: _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
 ) -> str | None:
+    if execution.continuation == "collect":
+        return None
     notices = execution.store.auto_research_lifecycle_delivery(turn.allocation_operation_id)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
     if notices:
@@ -1262,6 +1272,8 @@ def _orchestrator_prompt(
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
 ) -> tuple[str, str]:
+    if execution.continuation == "collect":
+        return _parent_task_contract_path(execution, local_stage, remote_stage), ""
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
@@ -1369,6 +1381,8 @@ def _worker_prompt(
     messages_path: str | None,
     write_scope: ProjectWriteScope,
 ) -> tuple[str, str]:
+    if execution.continuation == "collect":
+        return _parent_task_contract_path(execution, local_stage, remote_stage), ""
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
         raise ValueError("AutoResearch worker origin task is missing.")
@@ -1704,6 +1718,8 @@ async def _settle_worker_patch(
         )
     else:
         failure = None
+    if patch_text is None and execution.collection_patch_error:
+        failure = _WorkPatchFailure(execution.collection_patch_error, correctable=True)
     if _retry_deliverable_is_unchanged(
         execution,
         filename="patch.json",
@@ -1771,7 +1787,8 @@ async def _settle_worker_patch(
                 )
         assert failure is not None
         if (
-            not failure.correctable
+            execution.continuation == "collect"
+            or not failure.correctable
             or correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
             or not native_session_id
         ):
@@ -1967,7 +1984,7 @@ def _orchestrator_final_source_effect_id(
         for patch in service.history.load_patches()
         if patch.admission == "accepted"
         and patch.kind == "work"
-        and patch.source_operation_id == execution.operation_id
+        and patch.source_operation_id == collected_task_operation_id(execution)
         and patch.source_effect_sha256 == patch_digest
     ]
     if len(matches) > 1:
@@ -1985,7 +2002,7 @@ def _orchestrator_final_source_effect_id(
         str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                "rcp:auto-research-final-apply:" + execution.operation_id,
+                "rcp:auto-research-final-apply:" + collected_task_operation_id(execution),
             )
         ),
         False,

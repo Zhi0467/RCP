@@ -50,6 +50,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
+  taskRetryLabel,
   versionedArtifactContentUrl,
 } from "../agentTasks";
 import {
@@ -1810,10 +1811,10 @@ export function NodeChat({
           const messageId = line.lineId;
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
           const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
-          const pausedLineTask =
+          const recoveryLineTask =
             !line.steering &&
-            task?.paused &&
-            task.can_resume &&
+            task &&
+            (task.can_collect || (task.paused && task.can_resume)) &&
             !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
@@ -1910,12 +1911,12 @@ export function NodeChat({
                       </div>
                     );
                   })}
-                  {pausedLineTask ? (
-                    <InlinePausedTask
-                      task={pausedLineTask}
+                  {recoveryLineTask ? (
+                    <InlineTaskRecovery
+                      task={recoveryLineTask}
                       disabled={readOnly}
-                      onResume={() => onResumeTask(pausedLineTask)}
-                      onRetry={() => onRetryTask(pausedLineTask)}
+                      onResume={() => onResumeTask(recoveryLineTask)}
+                      onRetry={() => onRetryTask(recoveryLineTask)}
                     />
                   ) : activeLineTask ? (
                     <InlineTaskProgress task={activeLineTask} />
@@ -1923,7 +1924,7 @@ export function NodeChat({
                     <InlineTaskProgress task={null} />
                   ) : null}
                 </>
-              ) : pausedLineTask ? null : (
+              ) : recoveryLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
@@ -2605,7 +2606,7 @@ function InlineTaskProgress({ task }: { task: AgentTask | null }) {
   );
 }
 
-function InlinePausedTask({
+function InlineTaskRecovery({
   task,
   disabled,
   onResume,
@@ -2617,23 +2618,25 @@ function InlinePausedTask({
   onRetry: () => void;
 }) {
   return (
-    <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
+    <div className="chat-task-inline paused" role="status" aria-label="Agent task recovery">
       <span>{task.status_message}</span>
-      <button
-        type="button"
-        className="button compact primary"
-        disabled={disabled}
-        onClick={onResume}
-      >
-        <Play size={11} /> Resume
-      </button>
+      {task.can_resume && !task.can_collect && (
+        <button
+          type="button"
+          className="button compact primary"
+          disabled={disabled}
+          onClick={onResume}
+        >
+          <Play size={11} /> Resume
+        </button>
+      )}
       <button
         type="button"
         className="button compact secondary"
         disabled={disabled}
         onClick={onRetry}
       >
-        <RotateCcw size={11} /> Retry
+        <RotateCcw size={11} /> {taskRetryLabel(task)}
       </button>
     </div>
   );

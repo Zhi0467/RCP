@@ -88,6 +88,7 @@ from rcp.runs.shared import (
     _stage_task_input,
     _swept_stage_root,
     _task_token,
+    collected_task_operation_id,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import (
@@ -157,7 +158,7 @@ def _work_patch_source_operation_id(
 ) -> str | None:
     if execution is None:
         return None
-    return execution.operation_id
+    return collected_task_operation_id(execution)
 
 
 def _prepare_work_chat_prompt(
@@ -260,7 +261,7 @@ async def _stage_work_turn(
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
     clear_stale_handoffs = _clears_stale_turn_handoffs(continuation)
-    resuming = continuation == "resume"
+    resuming = continuation in {"resume", "collect"}
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -279,7 +280,8 @@ async def _stage_work_turn(
                 task.project_id,
                 request,
                 context,
-                resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
+                resuming_integration=execution.continuation
+                in {"resume", "retry", "handoff", "collect"},
             )
         surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
         _record_chat_context_receipt(execution, context, surface=surface)
@@ -846,6 +848,8 @@ def _read_initial_patch_deliverable(
         )
     else:
         failure = None
+    if text is None and turn.execution is not None and turn.execution.collection_patch_error:
+        failure = _DeliverableFailure(turn.execution.collection_patch_error, correctable=True)
     if _retry_deliverable_is_unchanged(
         turn.execution,
         filename="patch.json",
@@ -1191,7 +1195,8 @@ async def _settle_patch_deliverable(
                 return
         assert failure is not None
         if (
-            not failure.correctable
+            turn.continuation == "collect"
+            or not failure.correctable
             or correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
             or not settled.native_session_id
         ):
@@ -1378,7 +1383,8 @@ async def _settle_watch_deliverable(
                 return
         assert failure is not None
         if (
-            not failure.correctable
+            turn.continuation == "collect"
+            or not failure.correctable
             or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
@@ -1756,7 +1762,7 @@ async def stream_work_run(
         )
         return
 
-    if execution is not None and execution.continuation == "graph_repair":
+    if _is_work_graph_repair(execution):
         async with aclosing(
             _stream_work_graph_repair(
                 service,
@@ -1786,7 +1792,11 @@ async def stream_work_run(
         outcome = turn.outcome
         resuming = turn.resuming
         await _prepare_work_prompt_context(turn, staged)
-        if resuming:
+        if turn.continuation == "collect":
+            assert execution is not None
+            retained = _parent_task_contract_path(execution, turn.local_stage, turn.remote_stage)
+            composed_prompt = _ComposedWorkPrompt(retained, "", retained)
+        elif resuming:
             composed_prompt = _compose_resume_prompt(turn, staged)
         else:
             result_view_handoff = bool(
@@ -1894,6 +1904,17 @@ async def stream_work_run(
         yield frame
 
 
+def _is_work_graph_repair(execution: AgentTaskExecution | None) -> bool:
+    if execution is None:
+        return False
+    if execution.continuation != "collect":
+        return execution.continuation == "graph_repair"
+    return (
+        execution.store.agent_task_continuation_cause(collected_task_operation_id(execution))
+        == "graph_repair"
+    )
+
+
 def _rejected_graph_update_for_repair(execution: AgentTaskExecution) -> GraphUpdateResult:
     """Find the rejected Work result behind a graph-repair recovery chain."""
 
@@ -1954,7 +1975,8 @@ async def _stream_work_graph_repair(
                 task.project_id,
                 request,
                 context,
-                resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
+                resuming_integration=execution.continuation
+                in {"resume", "retry", "handoff", "collect"},
             )
         stage_name = _chat_stage_name(service, request, execution)
         local_stage: Path | None = None
@@ -2122,6 +2144,7 @@ async def _stream_work_graph_repair(
     repair = settle_graph_repair_patch(
         outcome,
         provider=request.provider,
+        collection_patch_error=execution.collection_patch_error,
         read_patch=lambda: _read_chat_patch(workspace, remote_stage),
         apply_patch=lambda text: _apply_work_patch(
             service,

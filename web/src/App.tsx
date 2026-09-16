@@ -42,7 +42,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { isActiveTask } from "./agentTasks";
+import { isActiveTask, taskNeedsPolling, taskRecoveryAction } from "./agentTasks";
 import { mergeProviderLogins } from "./providers";
 import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
@@ -2466,7 +2466,7 @@ export default function App() {
     transitionRulesetTag,
   ]);
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
-  const hasActiveTasks = projectTasks.some(isActiveTask);
+  const hasPendingTasks = projectTasks.some(taskNeedsPolling);
 
   const changeAppTextScale = (action: TextScaleAction) => {
     setTextScale((current) => changeTextScale(current, action));
@@ -2591,7 +2591,7 @@ export default function App() {
   }, [selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
-    if (!projectId || !hasActiveTasks) return;
+    if (!projectId || !hasPendingTasks) return;
     let stopped = false;
     let timer = 0;
     let consecutiveFailures = 0;
@@ -2655,14 +2655,14 @@ export default function App() {
         }
       }
       replaceTasks(next);
-      if (next.some(isActiveTask)) schedule(1000);
+      if (next.some(taskNeedsPolling)) schedule(1000);
     };
     schedule(500);
     return () => {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [consumeTerminalTasks, hasActiveTasks, projectId, graphTarget, reloadAuthoritativeProject]);
+  }, [consumeTerminalTasks, hasPendingTasks, projectId, graphTarget, reloadAuthoritativeProject]);
 
   useEffect(() => {
     if (!projectId || !watchersAwaitingDelivery) return;
@@ -3387,7 +3387,8 @@ export default function App() {
     if (!finishTaskAction) return;
     let recoveryStarted = false;
     try {
-      const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
+      const routeAction = taskRecoveryAction(task, action);
+      const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${routeAction}`, {
         method: "POST",
       });
       recoveryStarted = true;
@@ -3488,7 +3489,7 @@ export default function App() {
   );
 
   const requestRetry = (task: AgentTask) => {
-    if (task.kind === "seed" || task.kind === "refresh") {
+    if (!task.can_collect && (task.kind === "seed" || task.kind === "refresh")) {
       chooseRetryTask(task);
       return;
     }

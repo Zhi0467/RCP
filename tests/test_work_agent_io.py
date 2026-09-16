@@ -620,3 +620,181 @@ async def test_operational_continuation_renders_current_launch_client(
         assert previous_command not in contract
     finally:
         await turn.validator_lifecycle.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_applied", [False, True])
+async def test_collect_graph_repair_keeps_patch_only_purpose_and_applies_once(
+    manifest, tmp_path, monkeypatch, already_applied
+):
+    from rcp.agents.launcher import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+
+    from .test_api import _events
+
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    store = app.state.background_tasks.store
+    append_fixture_patch(service, seed_patch())
+    request = _request()
+    original = _chat_task_execution(
+        store,
+        operation_id="work-original",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher(
+        [{"patch.json": agent_patch_json(shape_invalid_patch())}], message="Operational answer."
+    )
+    events = _events(
+        [
+            frame
+            async for frame in stream_work_run(
+                service, launcher, request, data_dir, execution=original
+            )
+        ]
+    )
+    result = next(
+        json.loads(event.text)
+        for event in events
+        if event.event == "message" and event.text and "graph_update" in json.loads(event.text)
+    )
+    assert result["graph_update"]["status"] == "rejected"
+    store.checkpoint_agent_task(original.operation_id, native_session_id=launcher.native_session_id)
+    store.complete_agent_task(original.operation_id, applied_revision=None, result=result)
+    parent = store.agent_task(original.operation_id)
+    repair_request = request.model_copy(
+        update={"message": None, "session_id": launcher.native_session_id}
+    )
+    repair_record = parent.model_copy(
+        update={
+            "operation_id": "work-repair",
+            "parent_operation_id": parent.operation_id,
+            "status": "queued",
+            "attempt": parent.attempt + 1,
+            "result": None,
+            "request": repair_request.model_dump(mode="json"),
+        }
+    )
+    store.create_agent_task_graph_repair(parent.operation_id, repair_record)
+    store.mark_agent_task_running(repair_record.operation_id)
+    repair = AgentTaskExecution(
+        operation_id=repair_record.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        continuation="graph_repair",
+        stage_root=parent.stage_root,
+    )
+    patch_text = json.dumps(
+        {
+            "summary": "Record the completed observation.",
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/repair-observation",
+                            "type": "evidence",
+                            "title": "Repair observation",
+                            "observation": "The check finished.",
+                            "origin": "analytic",
+                        }
+                    ],
+                }
+            ],
+            "repositories_read": [],
+            "change_summary": [],
+        }
+    )
+
+    class RepairLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if not already_applied and event.event == "done":
+                    raise OSError("repair delivery lost")
+                yield event
+
+    repair_launcher = RepairLauncher([{"patch.json": patch_text}], message="Repair trace.")
+    repair_launcher.native_session_id = launcher.native_session_id
+    repair_stream = stream_work_run(
+        service, repair_launcher, repair_request, data_dir, execution=repair
+    )
+    if already_applied:
+        _events([frame async for frame in repair_stream])
+    else:
+        with pytest.raises(OSError, match="repair delivery lost"):
+            _events([frame async for frame in repair_stream])
+    store.fail_agent_task(repair.operation_id, "repair delivery lost")
+    parent = store.agent_task(repair.operation_id)
+    collected_record = parent.model_copy(
+        update={
+            "operation_id": "work-collected-repair",
+            "parent_operation_id": parent.operation_id,
+            "status": "queued",
+            "attempt": parent.attempt + 1,
+            "result": None,
+        }
+    )
+    store.create_agent_task(collected_record, continuation_cause="collect")
+    store.mark_agent_task_running(collected_record.operation_id)
+    collected = AgentTaskExecution(
+        operation_id=collected_record.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        continuation="collect",
+        stage_root=parent.stage_root,
+    )
+
+    async def replay(turn, _launcher, _prompt, *, outcome, **_kwargs):
+        outcome.session_id = launcher.native_session_id
+        outcome.answers = ["Repair trace."]
+        outcome.completed = True
+        await turn.validator_lifecycle.close()
+        if False:
+            yield ""
+
+    monkeypatch.setattr(work_module, "_stream_turn_agent_events", replay)
+    unused = ScriptedLauncher([{}])
+    events = _events(
+        [
+            frame
+            async for frame in stream_work_run(
+                service, unused, repair_request, data_dir, execution=collected
+            )
+        ]
+    )
+    assert not [event for event in events if event.event in {"error", "answer"}], events
+    assert events[-1].event == "done"
+    assert unused.calls == 0
+    updates = [
+        json.loads(event.text)["graph_update"]
+        for event in events
+        if event.event == "message" and event.text and "graph_update" in json.loads(event.text)
+    ]
+    assert updates[-1]["status"] == "applied"
+    assert (
+        len(
+            [
+                patch
+                for patch in service.history.load_patches()
+                if patch.source_operation_id == repair.operation_id
+            ]
+        )
+        == 1
+    )
+    records = [
+        json.loads(line)
+        for line in service.chat_path(
+            request.chat_id,
+            chat_scope="project",
+            node_id=None,
+        )
+        .read_text()
+        .splitlines()
+    ]
+    assert [item["text"] for item in records if item["role"] == "assistant"] == [
+        "Operational answer.",
+        "",
+    ]
+    assert records[-1]["operationId"] == repair.operation_id

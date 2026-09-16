@@ -2626,8 +2626,7 @@ def test_a_revoked_login_is_never_reattempted(tmp_path: Path, monkeypatch) -> No
 
 
 def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) -> None:
-    """A link still down after the last wait is not a transient stall, and a
-    loop that never ends would burn an episode's invocations on the network."""
+    """Repeated admitted turns that lose their links have a bounded budget."""
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
@@ -2928,16 +2927,15 @@ def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(
 
 
 def test_a_refused_reattempt_keeps_the_remaining_waits(tmp_path: Path, monkeypatch) -> None:
-    """A host still rebooting refuses admission, which is what the longer waits
-    are for. No child is admitted, so the receipt chain cannot carry the count
-    and the sequence has to hand it on itself."""
+    """Admission may fail after reachability is established. No child carries
+    the count, so the sequence has to hand it on itself."""
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
     failed = _transport_failed_task(store, operation_id="still-down")
 
     def refuse(_operation_id, **_kwargs):
-        raise ValueError("the execution machine is unavailable")
+        raise ValueError("the execution account refuses admission")
 
     monkeypatch.setattr(tasks, "retry", refuse)
     scheduled: list[int] = []
@@ -3002,3 +3000,129 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     state = store.provider_login_state("codex", "")
     assert state.state == "signed_in"
     assert state.generation == 1
+
+
+def test_transport_retry_waits_for_reachable_host_without_spending_attempts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    failed = _transport_failed_task(
+        store,
+        operation_id="offline",
+        record_updates={"stage_host": "research.example", "stage_root": "/tmp/rcp-run.saved"},
+    )
+    callbacks = []
+
+    def timer(_delay, callback):
+        callbacks.append(callback)
+        return SimpleNamespace(start=lambda: None, cancel=lambda: None)
+
+    monkeypatch.setattr("rcp.background.threading.Timer", timer)
+    observations = iter([None, None, None, True])
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: next(observations))
+    retries = []
+    monkeypatch.setattr(
+        tasks, "retry", lambda operation_id, **_kwargs: retries.append(operation_id)
+    )
+
+    tasks._auto_retry_transport_loss(failed)
+    for _ in range(3):
+        callbacks.pop(0)()
+        assert retries == []
+        assert tasks._transport_retry_attempt(failed) == 0
+        assert store.owed_transport_retry_operation_ids() == [failed.operation_id]
+    assert store.agent_task_has_receipt("offline", "transport_auto_retry_waiting_for_host")
+    assert not store.agent_task_has_receipt("offline", "transport_auto_retry_failed")
+
+    tasks.shutdown(timeout=0.1)
+    callbacks.clear()
+    restarted = BackgroundAgentTasks(store, _done_stream)
+    monkeypatch.setattr(
+        restarted, "retry", lambda operation_id, **_kwargs: retries.append(operation_id)
+    )
+    restarted._rearm_owed_transport_retries()
+    callbacks.pop(0)()
+    assert retries == ["offline"]
+    restarted.shutdown(timeout=0.1)
+
+
+@pytest.mark.parametrize("change", ["shutdown", "superseded"])
+def test_transport_retry_stands_down_when_state_changes_during_probe(
+    tmp_path: Path, monkeypatch, change: str
+) -> None:
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    failed = _transport_failed_task(
+        store,
+        operation_id="probe-race",
+        record_updates={"stage_host": "research.example", "stage_root": "/tmp/rcp-run.saved"},
+    )
+    callbacks = []
+
+    def timer(_delay, callback):
+        callbacks.append(callback)
+        return SimpleNamespace(start=lambda: None, cancel=lambda: None)
+
+    def probe(_stage, _root):
+        if change == "shutdown":
+            tasks.shutdown(timeout=0.1)
+        else:
+            _admitted_launch_task(
+                store,
+                operation_id="human-recovery",
+                parent_operation_id=failed.operation_id,
+                request=RunRequest.model_validate(failed.request),
+            )
+        return True
+
+    monkeypatch.setattr("rcp.background.threading.Timer", timer)
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", probe)
+    retries = []
+    monkeypatch.setattr(
+        tasks, "retry", lambda operation_id, **_kwargs: retries.append(operation_id)
+    )
+    tasks._auto_retry_transport_loss(failed)
+    callbacks.pop(0)()
+    assert retries == []
+    tasks.shutdown(timeout=0.1)
+
+
+def test_unreachable_stage_failure_remains_transport_lost_at_task_boundary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import subprocess
+
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    monkeypatch.setattr(
+        RemoteRunStage,
+        "_ssh",
+        lambda _self, arguments: subprocess.CompletedProcess(
+            arguments, 255, "", "execution host unavailable"
+        ),
+    )
+
+    async def stream(_project, _kind, _request, _execution):
+        RemoteRunStage("research.example").attach("/tmp/rcp-run.saved")
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    scheduled = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append((operation_id, attempt)),
+    )
+    task = _admitted_launch_task(store, operation_id="unreachable-stage")
+    tasks.launch_admitted(task.operation_id)
+    settled = wait_for_task(store, task.operation_id, expect="failed")
+    wait_until(lambda: bool(scheduled))
+    assert settled.failure_kind == "transport_lost"
+    assert scheduled == [(task.operation_id, 0)]
+    tasks.shutdown(timeout=0.1)

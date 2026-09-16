@@ -435,11 +435,19 @@ class AutoResearchStoreMixin:
                         "Auto-research tasks retain the root human authorizer snapshot"
                     )
                 role = TypeAdapter(AutoResearchRole).validate_python(parent["role"])
-                if episode.status not in {"running", "stopping"}:
+                if continuation_cause != "collect" and episode.status not in {
+                    "running",
+                    "stopping",
+                }:
                     raise EpisodeNotRunning(
                         "the episode cannot recover after its ending is durable"
                     )
-                if episode.wrapup_state in {"running", "ready", "failed", "skipped"}:
+                if continuation_cause != "collect" and episode.wrapup_state in {
+                    "running",
+                    "ready",
+                    "failed",
+                    "skipped",
+                }:
                     raise EpisodeNotRunning("episode report settlement already closed recovery")
 
                 child = connection.execute(
@@ -1676,7 +1684,7 @@ class AutoResearchStoreMixin:
         return self._auto_research_recovery_record(row)
 
     def defer_auto_research_recovery(
-        self, recovery_id: str, *, diagnostic: str
+        self, recovery_id: str, *, diagnostic: str, consume_attempt: bool = True
     ) -> AutoResearchRecoveryRecord:
         now = self.now()
         detail = " ".join(diagnostic.split())[:2000] or "Auto-research recovery attempt failed."
@@ -1690,7 +1698,7 @@ class AutoResearchStoreMixin:
                 raise KeyError(recovery_id)
             if row["status"] != "pending":
                 return self._auto_research_recovery_record(row)
-            attempts = int(row["attempts"]) + 1
+            attempts = int(row["attempts"]) + int(consume_attempt)
             exhausted = attempts >= int(row["max_attempts"])
             next_attempt_at = (
                 None if exhausted else self._auto_research_recovery_next_attempt_at(now, attempts)

@@ -14,6 +14,8 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
+  taskRecoveryAction,
+  taskRetryLabel,
   versionedArtifactContentUrl,
 } from "../src/agentTasks.ts";
 
@@ -58,6 +60,21 @@ function artifact(overrides = {}) {
 
 test("branch merge tasks keep a human-readable activity label", () => {
   assert.equal(taskKindLabel("branch_merge"), "Branch merge");
+});
+
+test("eligible recovery collects the existing result without replacing its provider", () => {
+  const retained = task({
+    operation_id: "disconnected",
+    kind: "project_chat",
+    can_collect: true,
+  });
+  assert.equal(taskRecoveryAction(retained, "retry"), "collect");
+  assert.equal(taskRecoveryAction(retained, "resume"), "collect");
+  assert.equal(taskRecoveryAction(retained, "pause"), "pause");
+  assert.equal(taskRetryLabel(retained), "Collect result");
+  assert.equal(taskRecoveryAction({ ...retained, can_collect: false }, "retry"), "retry");
+  assert.equal(taskRetryLabel({ ...retained, can_collect: false }), "Retry");
+  assert.equal(taskRetryLabel({ kind: "seed", can_collect: false }), "Retry…");
 });
 
 test("node chat reconstruction follows the latest chat id for that node", () => {
@@ -711,4 +728,33 @@ test("a steer receipt preserves the original turn and the unfinished answer", ()
     reconcileChatHistoryArtifacts(completedHistory, [active]).map((line) => line.text),
     ["Original prompt", "Steer text", "Final answer"],
   );
+});
+
+test("collected task shares the durable turn while Retry remains a separate turn", () => {
+  const original = task({ operation_id: "original", status: "failed" });
+  const collected = task({
+    operation_id: "collected",
+    parent_operation_id: "original",
+    chat_turn_operation_id: "original",
+    status: "succeeded",
+    result: { messages: ["Recovered answer"] },
+  });
+  const retry = task({
+    operation_id: "retry",
+    parent_operation_id: "original",
+    status: "succeeded",
+  });
+  const messages = [
+    {
+      message_id: "answer",
+      operation_id: "original",
+      role: "assistant",
+      text: "Recovered answer",
+      timestamp: "2026-07-28T00:01:00Z",
+      mode: "work",
+      graph_update: null,
+    },
+  ];
+  assert.deepEqual(chatTasksMissingFromHistory([original, collected, retry], messages), [retry]);
+  assert.equal(reconcileChatHistoryArtifacts(messages, [original, collected]).length, 1);
 });

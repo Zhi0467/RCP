@@ -2979,3 +2979,157 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     suppression_values = get_args(get_args(annotation)[0])
     assert suppression_values
     assert all(value in prompt for value in suppression_values)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "valid_patch,already_applied", [(True, False), (True, True), (False, False)]
+)
+async def test_collected_worker_settles_retained_patch_without_provider_or_new_allocation(
+    manifest, tmp_path, monkeypatch, valid_patch, already_applied
+) -> None:
+    service = _service(manifest, tmp_path)
+    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
+    stage.mkdir(parents=True)
+    store, episode, _root, worker = _setup_auto_research(
+        tmp_path,
+        worker_status="failed",
+        native_session_id="worker-session",
+        stage_root=str(stage),
+    )
+    _record_original_contract(store, worker, stage)
+    store.mark_auto_research_handoffs_cleared(worker.operation_id)
+    candidate = (
+        json.dumps(
+            {
+                "summary": "Retained completed observation.",
+                "ops": [
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": "ev/collected-worker",
+                                "type": "evidence",
+                                "title": "Collected observation",
+                                "observation": "The retained computation finished.",
+                                "origin": "analytic",
+                            }
+                        ],
+                    }
+                ],
+                "repositories_read": [],
+                "change_summary": [],
+            }
+        )
+        if valid_patch
+        else '{"invalid": true}'
+    )
+    (stage / "patch.json").write_text(candidate, encoding="utf-8")
+    (stage / "watch.json").write_text("retained watcher output", encoding="utf-8")
+    (stage / "messages.json").write_text("retained mail", encoding="utf-8")
+    if already_applied:
+        result, failure = _apply_work_patch(
+            service, _execution(store, worker), candidate, run_truth_scope=["repo-a"]
+        )
+        assert failure is None
+        assert result.status == "applied"
+    prior_revision = service.history.state().revision
+    before = store.episode(episode.episode_id).invocations_used
+    collected = _recovery_task(
+        store, episode, worker, operation_id="worker-collect", continuation_cause="collect"
+    )
+    with pytest.raises(ValueError, match="already has a recovery child"):
+        _recovery_task(
+            store, episode, worker, operation_id="duplicate-collect", continuation_cause="collect"
+        )
+    assert store.agent_task("duplicate-collect") is None
+    replay_calls = []
+
+    async def replay(_launcher, _request, _prompt, *, outcome, **_kwargs):
+        replay_calls.append(True)
+        assert len(replay_calls) == 1, "collection must never request a correction pass"
+        outcome.session_id = "worker-session"
+        outcome.answers = ["Completed remotely before delivery was lost."]
+        outcome.completed = True
+        if False:
+            yield ""
+
+    monkeypatch.setattr(auto_research_stream_module, "_stream_agent_events", replay)
+    launcher = _WorkerLauncher()
+    events = await _events(
+        stream_auto_research_worker_run(
+            service,
+            launcher,
+            AutoResearchRunRequest.model_validate(collected.request),
+            tmp_path / "data",
+            _execution(store, collected, continuation="collect"),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert events[-1].event == "done", [(event.event, event.text) for event in events]
+    assert launcher.calls == 0
+    assert len(replay_calls) == 1
+    assert store.episode(episode.episode_id).invocations_used == before
+    assert (stage / "patch.json").read_text(encoding="utf-8") == candidate
+    assert (stage / "watch.json").read_text(encoding="utf-8") == "retained watcher output"
+    assert (stage / "messages.json").read_text(encoding="utf-8") == "retained mail"
+    result = json.loads(next(event.text for event in events if event.event == "message"))
+    assert result["graph_update"]["status"] == ("applied" if valid_patch else "rejected")
+    assert result["graph_update"]["correction_rounds"] == 0
+    if valid_patch:
+        applied = service.history.load_patches()[-1]
+        assert applied.source_operation_id == worker.operation_id
+        assert service.history.state().revision == prior_revision + (0 if already_applied else 1)
+    else:
+        assert result["graph_update"]["repairable"] is False
+
+
+def test_collected_orchestrator_retains_original_apply_identity_and_ledger(tmp_path) -> None:
+    store, episode, root, _worker = _setup_auto_research(tmp_path, root_status="running")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="orchestrator-session", stage_root=str(stage)
+    )
+    store.fail_agent_task(root.operation_id, "delivery lost")
+    root = store.agent_task(root.operation_id)
+    collected = _recovery_task(
+        store, episode, root, operation_id="root-collect", continuation_cause="collect"
+    )
+    execution = _execution(store, collected, continuation="collect")
+    digest = hashlib.sha256(b"retained patch").hexdigest()
+    update = GraphUpdateResult(status="applied", applied_revision=7)
+    store.save_auto_research_apply_result(
+        AutoResearchApplyResultRecord(
+            apply_id="original-apply",
+            episode_id=episode.episode_id,
+            operation_id=root.operation_id,
+            patch_sha256=digest,
+            result={"result": {"graph_update": update.model_dump(mode="json")}},
+            created_at=store.now(),
+        )
+    )
+    service = SimpleNamespace(
+        history=SimpleNamespace(
+            load_patches=lambda: [
+                SimpleNamespace(
+                    admission="accepted",
+                    kind="work",
+                    source_operation_id=root.operation_id,
+                    source_effect_sha256=digest,
+                    source_effect_id="original-apply",
+                )
+            ]
+        )
+    )
+    assert _orchestrator_final_source_effect_id(service, execution, patch_digest=digest) == (
+        "original-apply",
+        True,
+    )
+    assert auto_research_stream_module._ordered_orchestrator_graph_updates(execution) == [update]
+    # A final Patch that had not reached Apply still gets the original turn's stable identity.
+    assert _orchestrator_final_source_effect_id(
+        service, execution, patch_digest="different-patch"
+    ) == _orchestrator_final_source_effect_id(
+        service, _execution(store, root), patch_digest="different-patch"
+    )

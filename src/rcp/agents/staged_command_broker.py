@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import signal
 import socket
 import stat
 import struct
@@ -389,8 +390,15 @@ def _copy(source, destination, close_destination=False):
                 destination.close()
 
 
+def _stop(_signal, _frame):
+    # The turn wrapper fences the whole owned group. Enter normal cleanup so
+    # the socket and provider pipes cannot outlive that completed invocation.
+    raise SystemExit(128 + _signal)
+
+
 def main(argv=None):
     namespace = _parser().parse_args(argv)
+    signal.signal(signal.SIGTERM, _stop)
     mailbox_id = namespace.mailbox_id
     if not _MAILBOX_ID.fullmatch(mailbox_id):
         print("broker mailbox id is malformed", file=sys.stderr)

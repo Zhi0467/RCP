@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rcp.agents.launcher import AgentProcessControl
+from rcp.runs.turn_collection import can_collect
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -12,6 +13,15 @@ if TYPE_CHECKING:
 
 def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
     """A task status or SSH exit is never a substitute for remote process absence."""
+    for operation_id in store.uncollected_remote_task_ids():
+        record = store.agent_task(operation_id)
+        if (
+            record is not None
+            and record.stage_host == host
+            and record.stage_root == root
+            and can_collect(store, record)
+        ):
+            raise ValueError("Collect the prior provider turn before reusing this workspace.")
     for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
         stopped = AgentProcessControl.remote_stopped(host, pid_file)
         if stopped is not True:

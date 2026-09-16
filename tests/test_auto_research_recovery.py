@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from rcp import background as background_module
 from rcp.agents import AgentEvent
+from rcp.agents.launcher import AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import (
@@ -22,7 +24,9 @@ from rcp.runs.auto_research_recovery import (
     AutoResearchOrchestratorTerminalFailure,
     reconcile_auto_research_task_settlement,
     reconcile_due_auto_research_recoveries,
+    reconcile_orphaned_auto_research_failures,
 )
+from rcp.runs.turn_collection import CollectedTurn, CollectionPending
 from rcp.storage import AppStore, ProjectRecord
 
 from .helpers import fabricated_authorizer, wait_for_task, wait_until, write_local_test_manifest
@@ -706,3 +710,203 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("session_checkpointed", [True, False])
+@pytest.mark.parametrize("protocol_complete", [True, False])
+@pytest.mark.parametrize("unreachable", [True, False])
+def test_auto_research_collection_admission_preserves_actor_and_waits_without_retry_spend(
+    tmp_path, monkeypatch, session_checkpointed, protocol_complete, unreachable
+) -> None:
+    store = _store(tmp_path)
+    manifest_path = Path(store.project("project").locator)
+    manifest_path.write_text(manifest_path.read_text().replace('host = ""', 'host = "test-host"'))
+    stage = tmp_path / "original-stage"
+    stage.mkdir()
+    pid_file = str(stage / "original.pid")
+    observed = []
+
+    async def stream(_project_id, _kind, request, execution):
+        observed.append((execution.continuation, request.session_id, request.actor_operation_id))
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("test-host", str(stage))
+            store.begin_remote_provider_pass(
+                execution.operation_id, "test-host", str(stage), pid_file, journaled=True
+            )
+            if session_checkpointed:
+                yield _sse(AgentEvent(event="session", session_id="original-session"))
+            yield _sse(AgentEvent(event="error", text="SSH delivery was interrupted"))
+            return
+        assert execution.continuation == "collect", "paid work must not be retried"
+        yield _sse(AgentEvent(event="answer", text="The existing remote work completed."))
+        yield _sse(AgentEvent(event="done"))
+
+    pending = True
+
+    def collected(_store, _record):
+        if pending:
+            if unreachable:
+                from rcp.transport import RemoteStageUnreachable
+
+                raise RemoteStageUnreachable("The host cannot be reached.")
+            raise CollectionPending("The original provider is still running.")
+        return CollectedTurn(
+            "root",
+            pid_file,
+            {
+                "protocol_complete": protocol_complete,
+                "journal_complete": True,
+                "root_thread_id": "original-session",
+            },
+            "",
+            None,
+        )
+
+    monkeypatch.setattr(background_module, "read_collected_turn", collected)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: True)
+    tasks = BackgroundAgentTasks(store, stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda *_args, **_kwargs: None)
+    _install_recovery_callback(tasks)
+    episode, root = _start(tasks)
+    original = wait_for_task(store, root.operation_id, expect="failed")
+    assert bool(original.native_session_id) == session_checkpointed
+    recovery = _wait_for_recovery(store, "task:root")
+    initial_attempts = recovery.attempts
+    initial_budget = store.episode_budget_meter(episode.episode_id)
+    store.mark_provider_login_failed(
+        "codex", "test-host", generation=0, detail="expired after execution", source="turn"
+    )
+    for _ in range(recovery.max_attempts + 1):
+        assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 1
+        recovery = store.auto_research_recovery("task:root")
+        assert recovery.status == "pending"
+        assert recovery.attempts == initial_attempts
+        assert store.auto_research_task_recovery_child(root.operation_id) is None
+        assert len(observed) == 1
+
+    pending = False
+    assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 1
+    recovery = store.auto_research_recovery("task:root")
+    child = wait_for_task(
+        store, recovery.admitted_operation_id, expect="succeeded" if protocol_complete else "failed"
+    )
+    assert store.agent_task(root.operation_id).native_session_id == "original-session"
+    assert child.native_session_id == "original-session"
+    assert child.stage_host == original.stage_host
+    assert child.stage_root == original.stage_root
+    assert child.authorized_by == original.authorized_by
+    assert child.dispatch_authority == original.dispatch_authority
+    assert child.runtime_id == original.runtime_id
+    assert child.graph_target == original.graph_target
+    assert child.request["actor_operation_id"] == root.operation_id
+    binding = store.auto_research_actor_binding(child.operation_id)
+    assert binding.actor_operation_id == root.operation_id
+    assert binding.current_operation_id == child.operation_id
+    assert store.episode_budget_meter(episode.episode_id) == initial_budget
+    if protocol_complete:
+        assert observed[-1] == ("collect", "original-session", root.operation_id)
+    else:
+        assert store.agent_task_has_receipt(child.operation_id, "provider_collection_incomplete")
+        wait_until(lambda: child.operation_id not in tasks._workers)
+        assert store.auto_research_recovery("task:root").status == "admitted"
+        assert reconcile_orphaned_auto_research_failures(tasks) == []
+        assert store.auto_research_recovery("task:root").status == "admitted"
+        assert len(observed) == 1
+    with pytest.raises(ValueError, match="no undelivered"):
+        tasks.collect(root.operation_id)
+
+
+@pytest.mark.parametrize("report_started", [False, True])
+def test_auto_research_collect_finishes_delivery_behind_its_durable_ending(
+    tmp_path, monkeypatch, report_started
+):
+    from rcp.runs.auto_research import auto_research_completion_signal, auto_research_wrapup_spec
+    from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
+
+    store = _store(tmp_path)
+    manifest_path = Path(store.project("project").locator)
+    manifest_path.write_text(manifest_path.read_text().replace('host = ""', 'host = "test-host"'))
+    stage = tmp_path / "original-stage"
+    stage.mkdir()
+    pid_file = str(stage / "original.pid")
+    launched = []
+
+    async def stream(_project_id, _kind, request, execution):
+        launched.append(execution.continuation)
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("test-host", str(stage))
+            store.begin_remote_provider_pass(
+                execution.operation_id, "test-host", str(stage), pid_file, journaled=True
+            )
+            yield _sse(AgentEvent(event="session", session_id="original-session"))
+            yield _sse(AgentEvent(event="error", text="Delivery interrupted after ending."))
+            return
+        assert execution.continuation == "collect"
+        assert request.actor_operation_id == "root"
+        yield _sse(AgentEvent(event="answer", text="Completed original work."))
+        yield _sse(AgentEvent(event="done"))
+
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: True)
+    monkeypatch.setattr(
+        background_module,
+        "read_collected_turn",
+        lambda *_args: CollectedTurn(
+            "root",
+            pid_file,
+            {
+                "protocol_complete": True,
+                "journal_complete": True,
+                "root_thread_id": "original-session",
+            },
+            "",
+            None,
+        ),
+    )
+    tasks = BackgroundAgentTasks(store, stream)
+    monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda *_args, **_kwargs: None)
+    episode, root = start_auto_research(
+        tasks,
+        "project",
+        AutoResearchStartRequest(
+            invocation_ceiling=4,
+            run_truth_scope=["repo"],
+            provider="codex",
+            model="gpt-5",
+            reasoning="medium",
+            run_on="laptop",
+        ),
+        authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
+        episode_id="auto_research",
+        operation_id="root",
+    )
+    source = wait_for_task(store, root.operation_id, expect="failed")
+    signal = auto_research_completion_signal(store, episode.episode_id)
+    if report_started:
+        begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
+        store.allocate_episode_report_attempt(episode.episode_id)
+    ended = store.episode(episode.episode_id)
+    assert ended.ending == "completed"
+    assert ended.wrapup_state == ("running" if report_started else "not_started")
+    meter = store.episode_budget_meter(episode.episode_id)
+    wrapup = store.episode_wrapup(episode.episode_id)
+
+    if report_started:
+        # A newer report owns the stage now; the old turn must not overwrite it.
+        with pytest.raises(ValueError, match="no undelivered"):
+            tasks.collect(root.operation_id)
+        assert launched == ["fresh"]
+    else:
+        child = tasks.collect(root.operation_id)
+        child = wait_for_task(store, child.operation_id, expect="succeeded")
+        assert launched == ["fresh", "collect"]
+        assert child.authorized_by == source.authorized_by
+        assert child.native_session_id == source.native_session_id
+        assert child.stage_root == source.stage_root
+    assert store.episode_budget_meter(episode.episode_id) == meter
+    assert store.episode(episode.episode_id).ending == ended.ending
+    assert store.episode(episode.episode_id).wrapup_state == ended.wrapup_state
+    assert store.episode_wrapup(episode.episode_id) == wrapup
+    with pytest.raises(ValueError, match="no undelivered"):
+        tasks.collect(root.operation_id)

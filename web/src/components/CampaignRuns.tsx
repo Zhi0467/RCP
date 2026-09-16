@@ -1,4 +1,5 @@
 import { graphViewHash } from "../graphTarget";
+import { taskRetryLabel } from "../agentTasks";
 import {
   ChevronDown,
   CirclePause,
@@ -320,8 +321,8 @@ export function AutoResearchEpisodeCard({
                   <RotateCcw size={12} />
                 )}
                 {controlTaskBusy
-                  ? `${episodeActionLabel(taskControl.kind)}…`
-                  : episodeActionLabel(taskControl.kind)}
+                  ? `${episodeActionLabel(taskControl.kind, taskControl.task)}…`
+                  : episodeActionLabel(taskControl.kind, taskControl.task)}
               </button>
             )}
             {episode.can_continue && (
@@ -580,7 +581,8 @@ function formatTimestamp(value: string, includeSeconds = false): string {
   }).format(parsed);
 }
 
-function episodeActionLabel(action: "pause" | "resume" | "retry"): string {
+function episodeActionLabel(action: "pause" | "resume" | "retry", task: AgentTask): string {
+  if (task.can_collect && action !== "pause") return taskRetryLabel(task);
   if (action === "pause") return "Pause";
   if (action === "resume") return "Resume";
   return "Retry";

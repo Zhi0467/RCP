@@ -386,3 +386,17 @@ test("worktree creation and integration preserve the ordinary conversation dispa
     assert.equal(request.writable_roots, undefined);
   }
 });
+
+test("an automatically completed continuation refreshes chat even between polls", () => {
+  const collected = task({
+    operation_id: "collected",
+    parent_operation_id: "lost",
+    status: "succeeded",
+    request: { chat_id: "chat-a", chat_scope: "project" },
+  });
+  const previous = new Map([["lost", "failed"]]);
+  assert.deepEqual(newlyUnreadChatTaskIds([collected], previous, null), ["collected"]);
+  assert.deepEqual(newlyUnreadChatTaskIds([collected], previous, "chat-a"), []);
+  previous.set("collected", "succeeded");
+  assert.deepEqual(newlyUnreadChatTaskIds([collected], previous, null), []);
+});

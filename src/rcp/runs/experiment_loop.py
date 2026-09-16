@@ -1273,7 +1273,7 @@ def prepare_experiment_episode_context_candidate(
     establish their own immutable candidate.
     """
 
-    if execution.continuation in {"resume", "retry"}:
+    if execution.continuation in {"resume", "retry", "collect"}:
         root_operation_id = root_experiment_loop_operation_id(execution)
         content = execution.store.agent_task_contract(
             root_operation_id,

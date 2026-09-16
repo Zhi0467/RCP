@@ -15,6 +15,7 @@ import {
   isActiveTask,
   reconstructTaskTranscript,
   taskKindLabel,
+  taskRetryLabel,
   taskStatusLabel,
 } from "../agentTasks";
 import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../types";
@@ -363,7 +364,11 @@ export function AgentTaskInspector({
 
         {task &&
           task.kind !== "auto_research" &&
-          (task.can_pause || task.can_resume || task.can_retry || task.awaiting_human) && (
+          (task.can_pause ||
+            task.can_resume ||
+            task.can_retry ||
+            task.can_collect ||
+            task.awaiting_human) && (
             <footer className="drawer-actions run-inspector-actions">
               <div>
                 {task.can_pause && (
@@ -371,17 +376,16 @@ export function AgentTaskInspector({
                     <CirclePause size={14} /> Pause
                   </button>
                 )}
-                {task.can_retry && (
+                {(task.can_retry || task.can_collect) && (
                   <button
                     className="button secondary"
                     disabled={actionBusy || mutatingActionsDisabled}
                     onClick={onRetry}
                   >
-                    <RotateCcw size={14} />{" "}
-                    {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
+                    <RotateCcw size={14} /> {taskRetryLabel(task)}
                   </button>
                 )}
-                {task.can_resume && (
+                {task.can_resume && !task.can_collect && (
                   <button
                     className="button primary"
                     disabled={actionBusy || mutatingActionsDisabled}

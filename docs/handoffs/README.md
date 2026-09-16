@@ -2,16 +2,6 @@
 
 Active:
 
-- [A finished turn survives a lost link](handoff-2026-09-15-turn-survives-transport-loss.md)
-  — drafted 2026-09-15 from an incident in which two completed Work turns were
-  destroyed at delivery when the controlling machine slept; nothing is
-  implemented. The remote side already survives; the turn is delivered as a live
-  stream and nothing durable is written, so a lost link discards finished work.
-  Four slices: the two recovery defects, an always-written journal, a collection
-  continuation that adopts a finished undelivered turn, and a Codex process that
-  cannot block on an undrained stdout. Live behavior when RCP is reachable is
-  unchanged, and no remote validator is required.
-
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
   slices implemented and driven against a copy of the production data;
@@ -51,6 +41,10 @@ the backed-up research project was transferred and verified through the desktop 
 2026-09-05. Existing two-member production use was accepted by the human;
 separate disposable-host SSH qualification was deliberately skipped. Unrun
 coverage remains explicit, rather than being relabeled as passed.
+
+The [lost-link durability handoff is closed](../archive/handoffs/handoff-2026-09-15-turn-survives-transport-loss.md):
+remote journals, provider-free collection, and automatic graph/chat catch-up are
+implemented and verified with disposable API, browser, episode, and real SSH-loss checks.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

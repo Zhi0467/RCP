@@ -466,6 +466,12 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
     tmp_path: Path, monkeypatch, stop_confirmed: bool
 ):
     import rcp.agents.launcher as launcher_module
+    from rcp.agents.turn_journal import staged_turn_journal_label, staged_turn_journal_source
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / staged_turn_journal_label()).write_text(staged_turn_journal_source())
+    pid_file = str(tmp_path / "fixture.pid")
 
     executable, _capture, unwanted = _provider(tmp_path, "claude", "delivered")
     launcher = AgentLauncher()
@@ -505,7 +511,7 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
                 capability="discuss",
                 control=control,
                 host="fixture-only",
-                remote_pid_file="fixture.pid",
+                remote_pid_file=pid_file,
             )
         ]
 
@@ -517,9 +523,8 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
         )
         assert receipt.status == "delivered"
         events = await asyncio.wait_for(task, 10)
-        assert stops and all(value == ("fixture-only", "fixture.pid") for value in stops)
-        if stop_confirmed:
-            assert len(stops) == 1
+        assert bool(stops) is (not stop_confirmed)
+        assert all(value == ("fixture-only", pid_file) for value in stops)
         assert not unwanted.exists()
         assert events[-1].event == ("done" if stop_confirmed else "error")
         if not stop_confirmed:

@@ -2110,6 +2110,7 @@ export interface ArtifactContextRequest {
 
 export interface AgentTask {
   operation_id: string;
+  chat_turn_operation_id?: string | null;
   project_id: string;
   kind: AgentTaskKind;
   status: AgentTaskStatus;
@@ -2148,6 +2149,7 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  can_collect: boolean;
   steer_visible: boolean;
   can_steer: boolean;
   steer_unavailable_reason: string | null;

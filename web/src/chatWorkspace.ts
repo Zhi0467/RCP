@@ -318,8 +318,12 @@ export function newlyUnreadChatTaskIds(
   return tasks.flatMap((task) => {
     const chatId = chatIdForTask(task);
     const previous = previousStatuses.get(task.operation_id);
+    const recoveredBetweenPolls =
+      previous === undefined &&
+      Boolean(task.parent_operation_id && previousStatuses.has(task.parent_operation_id));
     const becameTerminal =
-      previous !== undefined && previous !== task.status && !chatTaskNeedsAttention(task);
+      ((previous !== undefined && previous !== task.status) || recoveredBetweenPolls) &&
+      !chatTaskNeedsAttention(task);
     return chatId && chatId !== visibleChatId && becameTerminal ? [task.operation_id] : [];
   });
 }

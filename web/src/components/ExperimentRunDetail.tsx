@@ -173,7 +173,9 @@ export function ExperimentRunDetail({
   const recoveryProvider =
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
-  const canSwitchProvider = Boolean(currentTask && control.can_switch_provider);
+  const canSwitchProvider = Boolean(
+    currentTask && !currentTask.can_collect && control.can_switch_provider,
+  );
   const showStop = Boolean(control.episode_id && (stopBusy || control.can_stop));
   const baseRecommendation = experimentRecommendation(run);
   const recommendation =
@@ -216,13 +218,17 @@ export function ExperimentRunDetail({
               aria-busy={recoveryBusy}
               onClick={() => onRecover(recoveryAction)}
             >
-              {recoveryBusy
-                ? recoveryAction === "resume"
-                  ? `Resuming ${recoveryProvider}…`
-                  : `Retrying ${recoveryProvider}…`
-                : recoveryAction === "resume"
-                  ? `Resume ${recoveryProvider}`
-                  : `Retry ${recoveryProvider}`}
+              {currentTask?.can_collect
+                ? recoveryBusy
+                  ? "Collecting result…"
+                  : "Collect result"
+                : recoveryBusy
+                  ? recoveryAction === "resume"
+                    ? `Resuming ${recoveryProvider}…`
+                    : `Retrying ${recoveryProvider}…`
+                  : recoveryAction === "resume"
+                    ? `Resume ${recoveryProvider}`
+                    : `Retry ${recoveryProvider}`}
             </button>
           )}
           {canSwitchProvider && (

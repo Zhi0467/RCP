@@ -157,6 +157,8 @@ def _stage_auto_research_child_work_mail(
 ) -> str | None:
     """Stage only the batch durably claimed by this exact ordinary Work turn."""
 
+    if continuation == "collect":
+        return None
     mailbox = RunStageMailbox.for_stage(
         local_stage=local_stage / "inputs" if local_stage is not None else None,
         remote_stage=remote_stage,
@@ -430,7 +432,7 @@ async def _stage_auto_research_child_work_turn(
     request = resolved.request
     continuation = execution.continuation
     reusing_checkpoint = execution.reuses_native_checkpoint
-    resuming = continuation == "resume"
+    resuming = continuation in {"resume", "collect"}
     if reusing_checkpoint and not request.session_id:
         raise ValueError(
             "The continued Work turn has no native agent session; retry it from a clean attempt "
@@ -884,6 +886,14 @@ def _compose_child_prompt(
     *,
     mail_path: str | None,
 ) -> _ComposedWorkPrompt:
+    if turn.continuation == "collect":
+        assert turn.execution is not None
+        contract_path = _parent_task_contract_path(
+            turn.execution, turn.local_stage, turn.remote_stage
+        )
+        return _ComposedWorkPrompt(
+            contract_path=contract_path, prompt="", base_contract_path=contract_path
+        )
     if turn.resuming:
         return _compose_child_resume_prompt(
             turn,

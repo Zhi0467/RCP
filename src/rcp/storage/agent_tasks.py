@@ -92,6 +92,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_result",
     "remote_provider_started",
     "remote_provider_stopped",
+    "provider_collection_incomplete",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
@@ -104,6 +105,7 @@ _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
         "retry",
         "handoff",
         "graph_repair",
+        "collect",
         "watcher_wake",
         "graph_condition_wake",
         "message_wake",
@@ -174,6 +176,22 @@ class AgentTaskStoreMixin:
                 connection.execute("BEGIN IMMEDIATE")
                 if continuation_cause == "fresh":
                     self._require_project_accepts_new_work(connection, record.project_id)
+                if continuation_cause == "collect":
+                    parent = connection.execute(
+                        "SELECT * FROM graph_runs WHERE operation_id = ?",
+                        (record.parent_operation_id,),
+                    ).fetchone()
+                    if parent is None or parent["status"] not in {
+                        "failed",
+                        "paused",
+                        "interrupted",
+                    }:
+                        raise ValueError("Only an undelivered terminal turn can be collected.")
+                    if connection.execute(
+                        "SELECT 1 FROM graph_runs WHERE parent_operation_id = ? LIMIT 1",
+                        (record.parent_operation_id,),
+                    ).fetchone():
+                        raise AgentTaskAdmissionConflict("This turn already has a continuation.")
                 if self._has_active_chat_overlap(connection, record):
                     raise AgentTaskAdmissionConflict(
                         "Another task is already active in this conversation."
@@ -2445,8 +2463,39 @@ class AgentTaskStoreMixin:
         with self.connection() as connection:
             return self._unresolved_remote_provider_passes(connection, stage_host, stage_root)
 
+    def uncollected_remote_task_ids(self) -> list[str]:
+        """Interrupted remote turns with a journal and no admitted continuation."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT run.operation_id
+                FROM graph_runs AS run
+                WHERE run.status IN ('failed', 'interrupted')
+                    AND run.history_only = 0
+                    AND EXISTS (SELECT 1 FROM graph_run_receipts AS receipt
+                        WHERE receipt.operation_id = run.operation_id AND (
+                            (receipt.category = 'remote_provider_started'
+                             AND json_extract(receipt.payload_json, '$.journal_version') = 1)
+                            OR (receipt.category = 'operation_admitted'
+                                AND json_extract(receipt.payload_json, '$.continuation_cause') = 'collect')
+                        ))
+                    AND NOT EXISTS (SELECT 1 FROM graph_run_receipts AS incomplete
+                        WHERE incomplete.operation_id = run.operation_id
+                          AND incomplete.category = 'provider_collection_incomplete')
+                    AND NOT EXISTS (SELECT 1 FROM graph_runs AS child
+                        WHERE child.parent_operation_id = run.operation_id)
+                """
+            ).fetchall()
+        return [row["operation_id"] for row in rows]
+
     def begin_remote_provider_pass(
-        self, operation_id: str, stage_host: str, stage_root: str, pid_file: str
+        self,
+        operation_id: str,
+        stage_host: str,
+        stage_root: str,
+        pid_file: str,
+        *,
+        journaled: bool = False,
     ) -> None:
         """Atomically reserve an exact remote stage before launching one provider pass."""
         root = PurePosixPath(stage_root)
@@ -2460,7 +2509,12 @@ class AgentTaskStoreMixin:
         ):
             raise ValueError("A remote provider pass requires its exact host, stage and pidfile.")
         payload = self._bounded_receipt_payload(
-            {"stage_host": stage_host, "stage_root": stage_root, "pid_file": pid_file}
+            {
+                "stage_host": stage_host,
+                "stage_root": stage_root,
+                "pid_file": pid_file,
+                **({"journal_version": 1} if journaled else {}),
+            }
         )
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -3590,6 +3644,16 @@ class AgentTaskStoreMixin:
                 must_exist=True,
                 protect_from_cleanup=True,
             )
+        for operation_id in self.uncollected_remote_task_ids():
+            record = self.agent_task(operation_id)
+            if record is not None:
+                add(
+                    stage_host=record.stage_host,
+                    stage_root=record.stage_root,
+                    owner_ref=f"provider_collection:{operation_id}",
+                    must_exist=True,
+                    protect_from_cleanup=True,
+                )
         for row in task_rows:
             live = bool(row["live"])
             add(

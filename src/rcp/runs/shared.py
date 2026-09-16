@@ -22,13 +22,20 @@ from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.turn_journal import staged_turn_journal_label, staged_turn_journal_source
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
-from rcp.providers import AgentCapability, project_write_enforcement_mode
+from rcp.providers import AgentCapability, ProviderTurnRequest, project_write_enforcement_mode
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.turn_collection import (
+    collected_task_operation_id as collected_task_operation_id,
+)
+from rcp.runs.turn_collection import (
+    stream_collected_turn,
+)
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.transport.run_stage import run_stage_partition
@@ -597,6 +604,8 @@ def _record_agent_launch_receipt(
     continuation: str | None = None,
     extra: dict[str, object],
 ) -> None:
+    if execution is not None and execution.continuation == "collect":
+        return
     capability = extra.get("capability")
     scope_payload: dict[str, object] = {}
     if capability in {"work_auto", "orchestrate"}:
@@ -701,9 +710,13 @@ async def _stream_agent_events(
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
     """
+    collecting = execution is not None and execution.continuation == "collect"
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
-        if execution is not None and remote_stage is not None and remote_stage.root
+        if not collecting
+        and execution is not None
+        and remote_stage is not None
+        and remote_stage.root
         else None
     )
     remote_pass_recorded = False
@@ -715,6 +728,13 @@ async def _stream_agent_events(
                     execution.store,
                     execution_host,
                     str(remote_stage.root),
+                )
+            if not collecting and isinstance(remote_stage, RemoteRunStage):
+                _stage_or_reuse_task_input(
+                    None,
+                    remote_stage,
+                    staged_turn_journal_label(),
+                    staged_turn_journal_source(),
                 )
             await asyncio.to_thread(remote_stage.finalize_inputs)
         except (OSError, StateUnavailable, ValueError) as exc:
@@ -737,8 +757,26 @@ async def _stream_agent_events(
                 )
             ).generation
 
-    async with aclosing(
-        launcher.stream(
+    if collecting:
+        assert execution is not None
+        provider_stream = stream_collected_turn(
+            execution,
+            ProviderTurnRequest(
+                prompt=prompt,
+                binary=binary or request.provider,
+                cwd=workspace,
+                model=request.model,
+                reasoning=request.reasoning,
+                session_id=session_id,
+                read_dirs=read_dirs,
+                write_dirs=write_dirs,
+                write_scope=write_scope,
+                capability=capability,
+                provider_version=None,
+            ),
+        )
+    else:
+        provider_stream = launcher.stream(
             request.provider,
             prompt,
             cwd=workspace,
@@ -762,7 +800,7 @@ async def _stream_agent_events(
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
         )
-    ) as stream:
+    async with aclosing(provider_stream) as stream:
         async for event in stream:
             if event.event == "provider_exit":
                 try:
@@ -796,6 +834,7 @@ async def _stream_agent_events(
                     execution_host,
                     str(remote_stage.root),
                     remote_pid_file,
+                    journaled=True,
                 )
                 remote_pass_recorded = True
                 continue

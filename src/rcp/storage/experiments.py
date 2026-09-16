@@ -403,7 +403,7 @@ class ExperimentStoreMixin:
             (episode_id,),
         ).fetchone()
         if route is not None:
-            if route["state"] != "running":
+            if route["state"] != "running" and continuation_cause != "collect":
                 raise EpisodeNotRunning(
                     "the routed child Experiment is no longer accepting recovery work"
                 )
@@ -419,7 +419,9 @@ class ExperimentStoreMixin:
                 or parent.graph_target != episode.graph_target
             ):
                 raise ValueError("The Experiment recovery changed its parent graph target.")
-        if (
+        # Collection publishes an already-paid turn, including an ending whose
+        # canonical Apply committed before delivery was interrupted.
+        if continuation_cause != "collect" and (
             episode.status not in {"running", "stopping"}
             or episode.ending is not None
             or self._experiment_has_ending_receipt(connection, episode_id)

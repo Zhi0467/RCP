@@ -283,7 +283,7 @@ def _execution(
         created_at=now,
         updated_at=now,
         status_message="queued",
-        attempt=2 if parent_operation_id else 1,
+        attempt=(store.agent_task(parent_operation_id).attempt + 1) if parent_operation_id else 1,
         parent_operation_id=parent_operation_id,
         native_session_id=request.session_id,
         stage_root=stage_root,
@@ -297,7 +297,7 @@ def _execution(
     if request.patch_kind != "experiment_loop":
         store.create_agent_task(record)
     elif parent_operation_id is not None:
-        store.create_experiment_recovery_task(record)
+        store.create_experiment_recovery_task(record, continuation_cause=continuation)
     elif request.trigger == "watcher":
         stored = store.create_experiment_watcher_invocation(record, request.watcher_ids)
         assert stored is not None
@@ -1495,9 +1495,12 @@ async def test_completed_loop_correction_revalidates_retained_patch_against_live
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("collect_at", [None, "before_apply", "after_apply"])
 async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     manifest,
     tmp_path: Path,
+    monkeypatch,
+    collect_at,
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
@@ -1580,7 +1583,15 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
         stage_root=rejected_episode.stage_root,
         parent_operation_id="loop-rejected",
     )
-    repair_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
+
+    class RepairLauncher(_LoopLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if collect_at == "before_apply" and event.event == "done":
+                    raise OSError("repair delivery lost")
+                yield event
+
+    repair_launcher = RepairLauncher(native_session_id, tmp_path, write_handoff=False)
     repair_launcher.patch_payload = {
         "summary": "Finished the Experiment's operational work.",
         "ops": [
@@ -1593,15 +1604,63 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
         "change_summary": ["Finished the Experiment's operational work."],
     }
 
-    repair_events = await _events(
-        stream_experiment_loop_task(
-            service,
-            repair_launcher,
-            repair_request,
-            data_dir,
-            execution=repair_execution,
-        )
+    repair_stream = stream_experiment_loop_task(
+        service, repair_launcher, repair_request, data_dir, execution=repair_execution
     )
+    if collect_at == "before_apply":
+        with pytest.raises(OSError, match="repair delivery lost"):
+            await _events(repair_stream)
+    else:
+        repair_events = await _events(repair_stream)
+    if collect_at is not None:
+        store.fail_agent_task(repair_execution.operation_id, "repair delivery lost")
+        collected = _execution(
+            store,
+            project_id,
+            "collected-graph-repair",
+            repair_request,
+            continuation="collect",
+            stage_root=repair_execution.stage_root,
+            parent_operation_id=repair_execution.operation_id,
+        )
+
+        async def replay(turn, _launcher, _prompt, *, outcome, **_kwargs):
+            outcome.session_id = native_session_id
+            outcome.answers = ["A repair trace must not become another operational reply."]
+            outcome.completed = True
+            await turn.validator_lifecycle.close()
+            if False:
+                yield ""
+
+        monkeypatch.setattr(experiment_loop_task_module, "_stream_turn_agent_events", replay)
+        unused_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
+        repair_events = await _events(
+            stream_experiment_loop_task(
+                service, unused_launcher, repair_request, data_dir, execution=collected
+            )
+        )
+        assert unused_launcher.sessions == []
+        assert not [event for event in repair_events if event.event == "answer"]
+        repairs = [
+            patch
+            for patch in service.history.load_patches()
+            if patch.source_operation_id == repair_execution.operation_id
+        ]
+        assert len(repairs) == 1
+        records = [
+            json.loads(line)
+            for line in service.chat_path(
+                repair_request.chat_id,
+                chat_scope=repair_request.chat_scope,
+                node_id=repair_request.node_id,
+            )
+            .read_text()
+            .splitlines()
+        ]
+        assert len([item for item in records if item["role"] == "user"]) == 1
+        assert len([item for item in records if item["role"] == "assistant"]) == 2
+        assert records[-1]["text"] == ""
+        assert records[-1]["operationId"] == repair_execution.operation_id
     assert not [event for event in repair_events if event.event == "error"]
     assert repair_execution.stage_root is not None
     repair_stage = Path(repair_execution.stage_root)
@@ -1622,7 +1681,9 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
 
     repaired_episode = store.experiment_episode(episode_id)
     assert repaired_episode is not None
-    assert repaired_episode.last_turn_operation_id == "loop-graph-repair"
+    assert repaired_episode.last_turn_operation_id == (
+        "collected-graph-repair" if collect_at is not None else "loop-graph-repair"
+    )
     assert repaired_episode.last_turn_invocation == 1
     assert repaired_episode.last_graph_result == (
         f"applied as revision {applied_graph['applied_revision']}"
@@ -2483,3 +2544,125 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         "current-completed",
         "current-stopped",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_patch", [True, False, None])
+async def test_collect_experiment_preserves_handoff_and_settles_without_another_provider(
+    manifest, tmp_path, monkeypatch, valid_patch
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    episode_id = "00000000-0000-4000-8000-000000000099"
+    request = _loop_request(
+        episode_id,
+        "collect-chat",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    original = _execution(store, project_id, "lost-delivery", request)
+
+    class DisconnectedLauncher(_LoopLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if event.event == "done":
+                    raise OSError("delivery lost after remote completion")
+                yield event
+
+    launcher = DisconnectedLauncher("collected-session", tmp_path, write_handoff=True)
+    launcher.patch_payload = (
+        {
+            "summary": "Retained remote observation.",
+            "ops": [
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/collected-experiment",
+                            "type": "evidence",
+                            "title": "Collected Experiment observation",
+                            "observation": "The retained computation completed.",
+                            "origin": "analytic",
+                        }
+                    ],
+                }
+            ],
+            "repositories_read": [],
+            "change_summary": [],
+        }
+        if valid_patch
+        else {"invalid": True}
+    )
+    with pytest.raises(OSError, match="delivery lost"):
+        await _events(
+            stream_experiment_loop_task(service, launcher, request, data_dir, execution=original)
+        )
+    store.checkpoint_agent_task(original.operation_id, native_session_id="collected-session")
+    store.fail_agent_task(original.operation_id, "delivery lost")
+    workspace = launcher.workspaces[0]
+    retained = {name: (workspace / name).read_bytes() for name in ("patch.json", "watch.json")}
+    before = store.episode(episode_id).invocations_used
+    collect_request = request.model_copy(update={"session_id": "collected-session"})
+    collected = _execution(
+        store,
+        project_id,
+        "collect-delivery",
+        collect_request,
+        continuation="collect",
+        stage_root=original.stage_root,
+        parent_operation_id=original.operation_id,
+    )
+    with pytest.raises(ValueError, match="already active"):
+        _execution(
+            store,
+            project_id,
+            "duplicate-collection",
+            collect_request,
+            continuation="collect",
+            stage_root=original.stage_root,
+            parent_operation_id=original.operation_id,
+        )
+    assert store.agent_task("duplicate-collection") is None
+    replay_calls = []
+
+    async def replay(turn, _launcher, _prompt, *, outcome, **_kwargs):
+        replay_calls.append(True)
+        assert len(replay_calls) == 1, "collection must not request a correction pass"
+        if valid_patch is None:
+            (workspace / "patch.json").unlink()
+            turn.execution.collection_patch_error = "The final correction did not complete."
+        outcome.session_id = "collected-session"
+        outcome.answers = ["Inspected the bounded work."]
+        outcome.completed = True
+        await turn.validator_lifecycle.close()
+        if False:
+            yield ""
+
+    monkeypatch.setattr(experiment_loop_task_module, "_stream_turn_agent_events", replay)
+    unused_launcher = _LoopLauncher("collected-session", tmp_path, write_handoff=False)
+    events = await _events(
+        stream_experiment_loop_task(
+            service, unused_launcher, collect_request, data_dir, execution=collected
+        )
+    )
+    assert events[-1].event == "done", [(event.event, event.text) for event in events]
+    assert unused_launcher.sessions == []
+    assert len(replay_calls) == 1
+    assert store.episode(episode_id).invocations_used == before
+    for name, content in retained.items():
+        if valid_patch is None and name == "patch.json":
+            continue
+        assert (workspace / name).read_bytes() == content
+    result = _graph_update_from_events(events)
+    assert result["status"] == ("applied" if valid_patch else "rejected")
+    assert result["correction_rounds"] == 0
+    if valid_patch is None:
+        assert result["repairable"] is True
+        assert "correction did not complete" in " ".join(result["validation_messages"])
+    assert store.experiment_episode(episode_id).native_session_id == "collected-session"
+    assert any(watcher.episode_id == episode_id for watcher in store.watchers(project_id))

@@ -260,7 +260,8 @@ async def _process_experiment_watcher_maintenance(
                         break
 
             if (
-                not correctable
+                (execution is not None and execution.continuation == "collect")
+                or not correctable
                 or correction_round >= PATCH_CORRECTION_MAX_ROUNDS
                 or not native_session_id
             ):

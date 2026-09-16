@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import hashlib
+import inspect
+import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
+
+from rcp.agents import AgentEvent
+from rcp.agents.launcher import AgentProcessControl
+from rcp.providers import ProviderTurnRequest, profile_for, require_runtime_id
+from rcp.transport import RemoteRunStage, StateUnavailable, remote_turn_journal
+
+if TYPE_CHECKING:
+    from rcp.background import AgentTaskExecution
+    from rcp.storage import AgentTaskRecord, AppStore
+
+
+class CollectionPending(ValueError):
+    """The original provider is alive or its host cannot yet be reached."""
+
+
+def collection_source(store: AppStore, record: AgentTaskRecord) -> AgentTaskRecord:
+    seen: set[str] = set()
+    while store.agent_task_continuation_cause(record.operation_id) == "collect":
+        if record.operation_id in seen or not record.parent_operation_id:
+            raise ValueError("Collection has no valid original provider turn.")
+        seen.add(record.operation_id)
+        parent = store.agent_task(record.parent_operation_id)
+        if parent is None or (
+            parent.project_id != record.project_id
+            or parent.kind != record.kind
+            or parent.graph_target != record.graph_target
+            or parent.stage_root != record.stage_root
+            or parent.stage_host != record.stage_host
+        ):
+            raise ValueError("Collection changed its original task binding.")
+        record = parent
+    return record
+
+
+def collected_task_operation_id(execution: AgentTaskExecution) -> str:
+    if execution.continuation != "collect":
+        return execution.operation_id
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None:
+        raise ValueError("The collection task is missing.")
+    return collection_source(execution.store, record).operation_id
+
+
+def journal_pid_files(store: AppStore, record: AgentTaskRecord) -> list[str]:
+    record = collection_source(store, record)
+    result = []
+    for receipt in store.agent_task_receipts(record.operation_id):
+        if receipt.category != "remote_provider_started":
+            continue
+        payload = receipt.payload
+        if payload.get("journal_version") != 1:
+            return []
+        pid = payload.get("pid_file")
+        if not isinstance(pid, str) or PurePosixPath(pid).parent != PurePosixPath(
+            record.stage_root or ""
+        ):
+            raise ValueError("The provider journal lost its stage binding.")
+        result.append(pid)
+    return result
+
+
+def journal_pid_file(store: AppStore, record: AgentTaskRecord) -> str | None:
+    passes = journal_pid_files(store, record)
+    return passes[-1] if passes else None
+
+
+def can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
+    return bool(
+        not record.history_only
+        and not store.agent_task_has_receipt(record.operation_id, "provider_collection_incomplete")
+        and record.status in {"failed", "interrupted", "paused"}
+        and record.stage_host
+        and record.stage_root
+        and (
+            record.kind == "auto_research"
+            or (
+                record.kind in {"node_chat", "project_chat"}
+                and record.request.get("mode") == "work"
+            )
+        )
+        and not store.agent_task_has_continuation(record.operation_id)
+        and journal_pid_file(store, record)
+    )
+
+
+@dataclass(frozen=True)
+class CollectedTurn:
+    source_operation_id: str
+    pid_file: str
+    outcome: dict[str, object]
+    events: str
+    patch: str | None
+    passes: tuple[CollectedTurn, ...] = ()
+    correction_error: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return bool(
+            self.outcome.get("protocol_complete") is True
+            and self.outcome.get("journal_complete") is True
+            and not self.outcome.get("error")
+            and not self.outcome.get("stopped")
+        )
+
+    @property
+    def session_id(self) -> str | None:
+        root = self.outcome.get("root_thread_id")
+        if isinstance(root, str) and root:
+            return root
+        provider = self.outcome.get("provider")
+        if not isinstance(provider, str):
+            return None
+        profile = profile_for(provider)
+        for line in self.events.splitlines():
+            try:
+                decoded = profile.decode_event(json.loads(line), line)
+            except (ValueError, TypeError):
+                continue
+            if decoded.session_id:
+                return decoded.session_id
+        return None
+
+
+def read_collected_turn(store: AppStore, record: AgentTaskRecord) -> CollectedTurn:
+    source = collection_source(store, record)
+    pid_files = journal_pid_files(store, source)
+    if not pid_files or not source.stage_host or not source.stage_root:
+        raise ValueError("This turn has no durable provider journal to collect.")
+    stage = RemoteRunStage(source.stage_host).attach(source.stage_root)
+    # Never replace shared scratch while the last correction may still write it.
+    # Earlier passes were settled before this protected last start was admitted.
+    stopped = AgentProcessControl.remote_stopped(source.stage_host, pid_files[-1])
+    if stopped is not True:
+        raise CollectionPending(
+            "The original provider is still running; RCP will collect it when it finishes."
+            if stopped is False
+            else "The provider host is unavailable; collection is waiting for it to return."
+        )
+    passes = tuple(_read_pass(stage, source, pid) for pid in pid_files)
+    completed = [item for item in passes if item.complete]
+    if not completed:
+        return passes[-1]
+    operational = completed[0]
+    operational_index = passes.index(operational)
+    # A pre-prompt runtime fallback may precede the real turn. Every pass after
+    # prompt acceptance retains that native session and pinned runtime.
+    for item in passes[operational_index:]:
+        if item.session_id and item.session_id != operational.session_id:
+            raise ValueError("The provider correction changed its captured native session.")
+        runtime_id = item.outcome.get("runtime_id")
+        if runtime_id and runtime_id != operational.outcome.get("runtime_id"):
+            raise ValueError("The provider correction changed its captured runtime.")
+        if item.complete and source.runtime_id and runtime_id != source.runtime_id:
+            raise ValueError("The provider journal belongs to a different invocation.")
+    latest = completed[-1]
+    correction_error = None
+    if not passes[-1].complete:
+        correction_error = str(
+            passes[-1].outcome.get("error")
+            or "The graph correction stopped before completing. The last completed Patch is retained for repair."
+        )
+    patch = latest.patch
+    if latest is not operational and patch is None:
+        previous_patch = next(
+            (item.patch for item in reversed(completed[:-1]) if item.patch is not None), None
+        )
+        if previous_patch is not None:
+            patch = previous_patch
+            correction_error = (
+                correction_error
+                or "The correction completed without writing patch.json. The last completed Patch is retained for repair."
+            )
+    return CollectedTurn(
+        source.operation_id,
+        pid_files[-1],
+        operational.outcome,
+        operational.events,
+        patch,
+        passes,
+        correction_error,
+    )
+
+
+def _read_pass(stage: RemoteRunStage, source: AgentTaskRecord, pid_file: str) -> CollectedTurn:
+    # Each entry is independently bounded by the journal writer. The transport
+    # enforces the same overall ceiling before decoding anything into memory.
+    from rcp.limits import TURN_JOURNAL_MAX_BYTES
+
+    result = stage._ssh(
+        [
+            "python3",
+            "-c",
+            inspect.getsource(remote_turn_journal),
+            pid_file,
+            str(TURN_JOURNAL_MAX_BYTES),
+        ]
+    )
+    if result.returncode == 255:
+        raise CollectionPending("The provider host became unavailable during collection.")
+    if result.returncode:
+        raise StateUnavailable(result.stderr.strip() or "The provider journal cannot be read.")
+    document = json.loads(result.stdout)
+    if document.get("missing"):
+        return CollectedTurn(
+            source.operation_id,
+            pid_file,
+            {
+                "protocol_complete": False,
+                "journal_complete": False,
+                "error": "The provider stopped without a durable completion receipt.",
+            },
+            "",
+            None,
+        )
+    outcome = document.get("outcome")
+    events = document.get("events")
+    patch = document.get("patch")
+    if (
+        not isinstance(outcome, dict)
+        or not isinstance(events, str)
+        or (patch is not None and not isinstance(patch, str))
+    ):
+        raise ValueError("The provider journal is malformed.")
+    if (
+        outcome.get("version") != 1
+        or outcome.get("pid_file") != pid_file
+        or outcome.get("provider") != source.request.get("provider")
+    ):
+        raise ValueError("The provider journal belongs to a different invocation.")
+    require_runtime_id(str(outcome.get("provider")), str(outcome.get("runtime_id")))
+    for field, content in (("events_sha256", events), ("patch_sha256", patch)):
+        if (
+            content is not None
+            and outcome.get(field) != hashlib.sha256(content.encode()).hexdigest()
+        ):
+            raise ValueError("The provider journal changed after completion.")
+    return CollectedTurn(source.operation_id, pid_file, outcome, events, patch)
+
+
+def replay_collected_events(
+    collected: CollectedTurn, request: ProviderTurnRequest
+) -> list[AgentEvent]:
+    if not collected.complete:
+        return [
+            AgentEvent(
+                event="error",
+                text=str(
+                    collected.outcome.get("error")
+                    or "The remote provider stopped before completing this turn. Its retained output is incomplete."
+                ),
+            )
+        ]
+    events = _decode_pass(collected, request)
+    for item in collected.passes:
+        if item.pid_file == collected.outcome.get("pid_file"):
+            continue
+        if item.outcome.get("journal_complete") is True:
+            # Correction prose is not the operational answer. Its labelled usage
+            # still belongs to the original task's existing deduplication ledger.
+            events.extend(
+                AgentEvent(event="raw", usage=event.usage)
+                for event in _decode_pass(item, request)
+                if event.usage is not None
+            )
+    events.append(AgentEvent(event="done"))
+    return events
+
+
+def _decode_pass(collected: CollectedTurn, request: ProviderTurnRequest) -> list[AgentEvent]:
+    outcome = collected.outcome
+    request = dataclasses.replace(request, provider_version=outcome.get("provider_version"))
+    provider = str(outcome["provider"])
+    runtime_id = str(outcome["runtime_id"])
+    require_runtime_id(provider, runtime_id)
+    profile = profile_for(provider)
+    events: list[AgentEvent] = [AgentEvent(event="runtime", text=runtime_id)]
+    # JSONL profiles already own labelled answers and usage. Their live turn
+    # object additionally owns steering; collection never replays steering.
+    if runtime_id != "codex.app-server-stdio.v1":
+        for line in collected.events.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            decoded = profile.decode_event(value, line)
+            events.append(
+                AgentEvent(
+                    event=decoded.event,
+                    text=decoded.text,
+                    session_id=decoded.session_id,
+                    usage=decoded.usage,
+                )
+            )
+    else:
+        turn = profile.runtime(runtime_id).turn(request)
+        turn.initial_input()
+        for line in collected.events.splitlines():
+            if line.startswith("RCP_COMMAND_BROKER_READY:"):
+                continue
+            # Steering responses were already observed by the live pipe; no
+            # replacement interactive session exists to acknowledge them.
+            try:
+                value = json.loads(line)
+            except ValueError:
+                value = None
+            if isinstance(value, dict) and str(value.get("id", "")).startswith("steer:"):
+                continue
+            step = turn.receive_line(line)
+            events.extend(
+                AgentEvent(
+                    event=item.event, text=item.text, session_id=item.session_id, usage=item.usage
+                )
+                for item in step.events
+            )
+    return events
+
+
+async def stream_collected_turn(
+    execution: AgentTaskExecution,
+    request: ProviderTurnRequest,
+) -> AsyncIterator[AgentEvent]:
+    if execution.collection_consumed:
+        raise ValueError("Collection cannot launch or replay a correction turn.")
+    execution.collection_consumed = True
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None:
+        raise ValueError("The collection task is missing.")
+    collected = await asyncio.to_thread(read_collected_turn, execution.store, record)
+    events = replay_collected_events(collected, request)
+    execution.collection_patch_error = collected.correction_error
+    if not any(event.event == "error" for event in events):
+        stage = RemoteRunStage(record.stage_host or "").attach(record.stage_root or "")
+        if collected.patch is not None:
+            await asyncio.to_thread(stage.write_workspace_text, "patch.json", collected.patch)
+        else:
+            await asyncio.to_thread(stage.remove_workspace_file, "patch.json")
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "provider_turn_collected",
+        {
+            "source_operation_id": collected.source_operation_id,
+            "pid_file": collected.pid_file,
+            "complete": collected.outcome.get("protocol_complete") is True,
+            "correction_incomplete": collected.correction_error is not None,
+        },
+    )
+    for event in events:
+        yield event

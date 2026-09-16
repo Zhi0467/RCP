@@ -347,8 +347,37 @@ must be confirmed stopped before a correction or recovery can reuse the stage.
 Each remote pass has a unique pidfile and a durable start/stop receipt. An
 unresolved pass fences stage reuse across task failure and server restart; a
 read-only check may release that fence only after confirming process absence.
-Unreachable or unprovable process state keeps recovery blocked and preserves the
-stage and receipts for reconciliation.
+Unreachable or unprovable process state preserves the fence, stage, and receipts
+while recovery waits. Losing the controlling connection does not authorize
+terminating the original provider or launching its replacement.
+
+Every remote provider pass writes a bounded durability journal beside its
+pidfile, in `<pid_file>.turn/`: raw stdout in `events.jsonl`, bounded stderr,
+a completed `patch.json` snapshot when present, and an atomic `outcome.json`
+receipt binding provider/runtime identity, protocol completion, and content
+digests to that pass. The journal is separate from provider-native conversation
+history. Existing provider decoders recover labelled answers, session ids, and
+usage from its events; there is no second answer file. Overflow or incomplete
+evidence fails visibly and cannot authorize Apply.
+
+The live pipe remains the control channel for provider startup, broker commands,
+validation, steering acknowledgments, and Stop. The execution-host journal
+drains provider output independently of a blocked or lost uplink, within explicit
+disk and memory limits. It observes the provider's terminal protocol and fences
+later input, so a completed provider cannot remain alive merely because RCP
+stopped draining stdout. It grants no graph authority and runs no validator.
+
+Collection recovers an eligible undelivered remote Work or episode turn without
+launching a provider. It waits while the original provider is alive or its state
+is unknown; after confirmed process absence it reads that exact pass's completed
+journals. The operational pass supplies the answer; later correction passes
+supply their completed deliverables and usage without replacing that answer.
+A stopped pass without protocol completion is incomplete, not evidence
+that work should be rerun. Collection preserves the original authorizer,
+capability, host, stage, native session, graph target, and episode invocation.
+Existing decoding and finalization own its answer, accounting, and Patch Apply;
+collection never runs an automatic provider correction. Rejected Work Patches
+enter existing graph repair, subject to that surface's repair contract.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, host, stage, and external-effect
@@ -828,21 +857,26 @@ fallback diagnostic. This preserves the real startup failure for task consumers
 that stop reading at the first error.
 
 A settled failure is also named, because recovery differs by cause. SSH's own
-exit codes for a remote run mean the link died rather than the work, and RCP
-reattempts such a turn a bounded number of times with growing waits before
-leaving it to a human; the reattempt is the same recovery a human Retry
-performs, so it resumes the native session rather than repeating the turn. Those
+exit codes for a remote run can mean the link died rather than the work. Those
 exit codes decide this only for a turn that said nothing: ssh returns 255 for a
 provider that exits 255 as readily as for a link it lost, so a provider that
 reached its own terminal event or reported its own error is never blamed on the
-link, whatever the code. A reattempt stands down when anything else has already
-taken the turn over, so a wait that outlives the failure it was scheduled for
-cannot repeat finished work. A wait whose reattempt is refused keeps the waits
-that remain, because a host that is still returning is the case the longer waits
-exist for. The promise of a reattempt is durable while the wait holding it is
-not, so startup re-arms the waits a stopped process could not keep, at the wait
-the sequence had reached rather than at its first; a turn something else has
-already continued is not re-armed.
+link, whatever the code. A stage attachment that cannot reach its host also
+remains `transport_lost`; it is distinct from a missing or unsafe directory.
+
+Automatic transport recovery probes reachability before attempting recovery.
+An unreachable probe consumes no bounded attempt and admits no provider. A
+reachable host permits collection of the original journal; a still-running
+provider keeps the same recovery pending without spending an attempt. The timer
+is only a delay between probes, not evidence that the host has returned. A
+durable receipt keeps recovery owed across server restart.
+
+Where collection does not apply, ordinary Retry may resume an eligible native
+session; it does not always start cold. Provider reattempts and refused admissions
+after reachability is established retain their bounded, growing waits. Recovery
+stands down on shutdown or once another continuation has taken over, including
+when that changes during the probe. Startup re-arms only still-owed recovery at
+the attempt already reached.
 
 A provider whose CLI reports that its own login is no longer valid is named
 separately, because no unattended attempt can fix it: every one fails

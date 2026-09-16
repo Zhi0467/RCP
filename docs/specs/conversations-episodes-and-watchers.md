@@ -32,6 +32,38 @@ The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a
 different mode.
 
+## Collection after a lost connection
+
+A lost connection does not cancel an already-authorized remote Work turn. Its
+original provider continues within the captured scope while RCP retains the
+stage fence. Recovery waits for a reachable host and, if the provider is still
+alive, waits for it to finish. Neither wait spends another episode invocation
+or bounded retry attempt. Only a provider confirmed stopped without protocol
+completion is settled as incomplete.
+
+An eligible finished turn is collected through a parent/child continuation that
+launches no provider. It keeps the original human authority, mode, native
+session, host, stage, graph target, and episode invocation. The provider's
+labelled answer and optional Patch come from its completed per-pass journal,
+described in [provider durability](providers-and-containment.md#durable-task-lifecycle).
+Collection cannot reconstruct an interactive connection or resend steering.
+It stands down once a newer continuation, including an episode report, has
+taken over the source task. Collection cannot reclaim that newer task's stage.
+
+The existing finalization path validates and applies the collected Patch at most
+once on its original target. A collected answer without a Patch remains a valid
+Work outcome. A rejected collected Work Patch retains its answer and diagnostics
+and uses the existing graph-repair path; collection itself performs no provider
+correction. Auto-research retains its existing repair eligibility rather than
+advertising a repair action its surface cannot perform.
+
+Reconnect refreshes both the graph and the chat transcript when collection
+settles, including when it finishes between task polls. Transcript publication
+uses the original turn identity, so collecting again after a controller restart
+cannot duplicate the human prompt or final answer. If a later correction lost
+its connection, the operational answer stays separate from correction prose;
+an incomplete correction retains its Patch for repair without a new Apply.
+
 ## Native chat context
 
 Chat is not transcript ingestion. Canonical chat history exists for display,
@@ -333,6 +365,10 @@ is queued, running, or pausing, Runs shows **Stopping gracefully** and recommend
 waiting. If that turn pauses, fails, or is interrupted, the episode shows
 **Needs action** and only the exact available Resume, Retry, or Switch-provider
 recovery. Recovery cannot clear Stop or reenable watcher delivery.
+
+Collection of that already-authorized remote turn keeps the same Stop fence.
+It recovers completed output without another provider invocation; waiting for
+the original provider to finish does not authorize a watcher wake or a new turn.
 
 Stop and pause do not cancel compute jobs. Stop does not cancel external work,
 delete watcher history, edit Experiment status, create or close an attempt, or

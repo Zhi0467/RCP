@@ -46,6 +46,7 @@ from rcp.runs.shared import (
     _safe_stage_name,
     _stage_or_reuse_task_input,
     _touch_local_stage,
+    collected_task_operation_id,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
@@ -288,7 +289,7 @@ def _commit_chat_prompt_state(
         return
     logical_operation_id = (
         _logical_chat_turn_operation_id(execution.store, execution.operation_id)
-        if execution.continuation == "resume"
+        if execution.continuation in {"resume", "collect"}
         else execution.operation_id
     )
     content = execution.store.agent_task_contract(logical_operation_id, _CHAT_PROMPT_STATE_ROLE)
@@ -1008,7 +1009,9 @@ def _logical_chat_turn_operation_id(store: AppStore, operation_id: str) -> str:
             kind = record.kind
         elif record.project_id != project_id or record.kind != kind:
             raise ValueError("chat task provenance crosses a task boundary")
-        resumed = _attempt_was_resumed(store.agent_task_receipts(current_id), record)
+        resumed = store.agent_task_continuation_cause(
+            current_id
+        ) == "collect" or _attempt_was_resumed(store.agent_task_receipts(current_id), record)
         if not resumed:
             return current_id
         if record.parent_operation_id is None:
@@ -1336,7 +1339,9 @@ def _append_chat_exchange(
             "executionMachine": request.run_on,
             "cwd": str(service.manifest.research_dir.parent),
             "timestamp": timestamp,
-            "operationId": execution.operation_id if execution is not None else None,
+            "operationId": collected_task_operation_id(execution)
+            if execution is not None
+            else None,
             "mode": request.mode,
             "trigger": request.trigger,
             "activeComputeIds": request.active_compute_ids,
@@ -1366,7 +1371,13 @@ def _append_chat_exchange(
                 ),
             }
         )
-        _append_chat_records(service, path, records, reserve_prompt=True)
+        _append_chat_records(
+            service,
+            path,
+            records,
+            reserve_prompt=True,
+            reserve_answer=execution is not None and execution.continuation == "collect",
+        )
 
 
 def _append_chat_graph_receipt(
@@ -1393,7 +1404,7 @@ def _append_chat_graph_receipt(
             "executionMachine": request.run_on,
             "cwd": str(service.manifest.research_dir.parent),
             "timestamp": datetime.now(UTC).isoformat(),
-            "operationId": execution.operation_id,
+            "operationId": collected_task_operation_id(execution),
             "mode": "work",
             "trigger": request.trigger,
             "activeComputeIds": request.active_compute_ids,
@@ -1404,7 +1415,9 @@ def _append_chat_graph_receipt(
             "appliedRevision": graph_update.applied_revision,
             "graphUpdate": graph_update.model_dump(mode="json"),
         }
-        _append_chat_records(service, path, [record])
+        _append_chat_records(
+            service, path, [record], reserve_answer=execution.continuation == "collect"
+        )
     service.invalidate_source_index()
 
 
@@ -1414,6 +1427,7 @@ def _append_chat_records(
     records: list[dict[str, object]],
     *,
     reserve_prompt: bool = False,
+    reserve_answer: bool = False,
 ) -> None:
     """Append under the chat lock; callers own the StateWorkspace transaction."""
     records = [
@@ -1425,14 +1439,16 @@ def _append_chat_records(
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            if reserve_prompt and path.exists():
+            if (reserve_prompt or reserve_answer) and path.exists():
                 # A live steer may already have recorded this attempt's original
                 # human prompt. Inspect only identity, never use transcript as input.
                 existing = [json.loads(line) for line in path.read_text().splitlines() if line]
                 recorded = {
                     item.get("operationId")
                     for item in existing
-                    if item.get("role") == "user" and item.get("steering") is None
+                    if reserve_prompt
+                    and item.get("role") == "user"
+                    and item.get("steering") is None
                 }
                 records = [
                     item
@@ -1441,6 +1457,19 @@ def _append_chat_records(
                     or not item.get("operationId")
                     or item.get("operationId") not in recorded
                 ]
+                if reserve_answer:
+                    answered = {
+                        item.get("operationId")
+                        for item in existing
+                        if item.get("role") == "assistant" and item.get("steering") is None
+                    }
+                    records = [
+                        item
+                        for item in records
+                        if item.get("role") != "assistant"
+                        or not item.get("operationId")
+                        or item.get("operationId") not in answered
+                    ]
             with path.open("a", encoding="utf-8") as handle:
                 for record in records:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")

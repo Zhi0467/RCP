@@ -1,5 +1,9 @@
 from rcp.transport.repositories import RepositoryAccess, repository_access
-from rcp.transport.run_stage import ImportedProviderSourceReadback, RemoteRunStage
+from rcp.transport.run_stage import (
+    ImportedProviderSourceReadback,
+    RemoteRunStage,
+    RemoteStageUnreachable,
+)
 from rcp.transport.state import (
     BatchPublishFailed,
     LocalStateWorkspace,
@@ -33,6 +37,7 @@ __all__ = [
     "repository_access",
     "ImportedProviderSourceReadback",
     "RemoteRunStage",
+    "RemoteStageUnreachable",
     "RunStageMailbox",
     "TURN_HANDOFF_FILES",
     "clear_turn_handoff_files",

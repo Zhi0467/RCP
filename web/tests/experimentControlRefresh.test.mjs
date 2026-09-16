@@ -179,3 +179,32 @@ test("watcher polling reports persistent API failures instead of swallowing them
   );
   assert.doesNotMatch(source, /authoritative project reload surfaces persistent API failures/);
 });
+
+test("automatic collection completed between polls still refreshes the graph", () => {
+  const pending = withTaskAnswers({
+    operation_id: "lost",
+    kind: "project_chat",
+    status: "failed",
+    can_collect: true,
+    request: {},
+  });
+  const collected = withTaskAnswers({
+    operation_id: "collected",
+    parent_operation_id: "lost",
+    kind: "project_chat",
+    status: "succeeded",
+    can_collect: false,
+    applied_revision: 7,
+    request: {},
+  });
+  const known = new Map();
+  assert.deepEqual(reconcileKnownActiveTasks(known, [pending]), []);
+  const current = [{ ...pending, can_collect: false }, collected];
+  const terminal = reconcileKnownActiveTasks(known, current);
+  assert.equal(
+    terminal.some((task) => task.operation_id === "collected"),
+    true,
+  );
+  assert.equal(terminal.some(terminalTaskNeedsAuthoritativeProjectReload), true);
+  assert.deepEqual(reconcileKnownActiveTasks(known, current), []);
+});

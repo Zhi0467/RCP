@@ -196,3 +196,90 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+@pytest.mark.parametrize("graph_receipt", [False, True])
+@pytest.mark.parametrize("original_published", [False, True])
+def test_collect_chat_publication_is_idempotent_after_durable_append_crash(
+    manifest, tmp_path, monkeypatch, graph_receipt, original_published
+):
+    from rcp.agents.launcher import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.chat import _append_chat_graph_receipt
+    from rcp.service import GraphUpdateResult
+
+    from .test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    request = RunRequest(
+        chat_id=str(uuid.uuid4()), chat_scope="project", mode="work", message="Do the work."
+    )
+    original = _chat_task_execution(
+        store, operation_id="original", project_id=app.state.default_project_id, request=request
+    )
+
+    def publish(execution):
+        if graph_receipt:
+            _append_chat_graph_receipt(
+                service,
+                request.model_copy(update={"message": None}),
+                "native-session",
+                GraphUpdateResult(status="applied", applied_revision=1),
+                execution,
+            )
+        else:
+            _append_chat_exchange(
+                service, request, "Finished the work.", "native-session", None, execution=execution
+            )
+
+    def crash_publish(_paths):
+        raise OSError("crash after durable transcript append")
+
+    if original_published:
+        with monkeypatch.context() as patch:
+            patch.setattr(service.history.workspace, "publish", crash_publish)
+            with pytest.raises(OSError, match="durable transcript"):
+                publish(original)
+    store.fail_agent_task(original.operation_id, "Connection lost.")
+    parent = store.agent_task(original.operation_id)
+    for index in range(2):
+        child = parent.model_copy(
+            update={
+                "operation_id": f"collect-{index}",
+                "parent_operation_id": parent.operation_id,
+                "status": "queued",
+                "result": None,
+                "attempt": parent.attempt + 1,
+            }
+        )
+        store.create_agent_task(child, continuation_cause="collect")
+        store.mark_agent_task_running(child.operation_id)
+        execution = AgentTaskExecution(
+            operation_id=child.operation_id,
+            store=store,
+            control=AgentProcessControl(),
+            continuation="collect",
+        )
+        if index == 0:
+            with monkeypatch.context() as patch:
+                patch.setattr(service.history.workspace, "publish", crash_publish)
+                with pytest.raises(OSError, match="durable transcript"):
+                    publish(execution)
+            store.fail_agent_task(child.operation_id, "Delivery interrupted after append.")
+        else:
+            publish(execution)
+        parent = store.agent_task(child.operation_id)
+
+    records = [
+        json.loads(line)
+        for line in service.chat_path(request.chat_id, chat_scope="project", node_id=None)
+        .read_text()
+        .splitlines()
+    ]
+    assert [item["role"] for item in records] == (
+        ["assistant"] if graph_receipt else ["user", "assistant"]
+    )
+    assert {item["operationId"] for item in records} == {original.operation_id}
+    assert records[-1]["text"] == ("" if graph_receipt else "Finished the work.")

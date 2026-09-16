@@ -28,6 +28,22 @@ export function isActiveTask(task: AgentTask): boolean {
   return task.active;
 }
 
+export function taskNeedsPolling(task: AgentTask): boolean {
+  return task.active || task.can_collect;
+}
+
+export function taskRecoveryAction(
+  task: Pick<AgentTask, "can_collect">,
+  action: "pause" | "resume" | "retry",
+): "pause" | "resume" | "retry" | "collect" {
+  return task.can_collect && action !== "pause" ? "collect" : action;
+}
+
+export function taskRetryLabel(task: Pick<AgentTask, "can_collect" | "kind">): string {
+  if (task.can_collect) return "Collect result";
+  return task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry";
+}
+
 export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
   // A paused turn is the one awaiting-human state the human can still resume, and
   // its notification is the way back to it, so a later success never retires it.
@@ -148,9 +164,11 @@ export function chatTasksMissingFromHistory(
       message.operation_id && !message.steering ? [message.operation_id] : [],
     ),
   );
-  // Operation id is the turn identity. Matching by prompt text loses one of
-  // two legitimate turns when the human sends the same message twice.
-  return tasks.filter((task) => !persistedOperationIds.has(task.operation_id));
+  // Collection shares its source canonical turn; Retry begins a new one.
+  // Prompt text cannot identify turns because humans may repeat a message.
+  return tasks.filter(
+    (task) => !persistedOperationIds.has(task.chat_turn_operation_id ?? task.operation_id),
+  );
 }
 
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
@@ -185,7 +203,8 @@ export function reconcileChatHistoryArtifacts(
   });
   tasks.forEach((task) => {
     const artifacts = taskArtifacts(task);
-    const lineIndex = answerLineByOperationId.get(task.operation_id);
+    const turnOperationId = task.chat_turn_operation_id ?? task.operation_id;
+    const lineIndex = answerLineByOperationId.get(turnOperationId);
     if (lineIndex !== undefined) {
       if (artifacts.length) lines[lineIndex] = { ...lines[lineIndex], artifacts };
       return;
@@ -193,7 +212,7 @@ export function reconcileChatHistoryArtifacts(
     // The first steer reserves the original human message before the answer is
     // persisted. Keep that attempt's live answer or failure beside its receipts.
     const operationMessages = messages.filter(
-      (message) => message.operation_id === task.operation_id,
+      (message) => message.operation_id === turnOperationId,
     );
     if (
       operationMessages.some((message) => message.steering) &&

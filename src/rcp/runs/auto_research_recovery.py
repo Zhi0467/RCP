@@ -8,7 +8,9 @@ from rcp.runs.auto_research import (
     auto_research_failure_signal,
 )
 from rcp.runs.provider_login import ProviderSignedOut
+from rcp.runs.turn_collection import CollectionPending, can_collect
 from rcp.storage import EpisodeRecord
+from rcp.transport import RemoteStageUnreachable
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -78,6 +80,8 @@ def reconcile_auto_research_task_settlement(
         raise ValueError("Auto-research settlement received another episode mode")
     if request.role == "worker":
         return None
+    if store.agent_task_has_receipt(task.operation_id, "provider_collection_incomplete"):
+        return None
 
     structural = any(
         receipt.category == "auto_research_orchestrator_failure"
@@ -118,7 +122,9 @@ def reconcile_due_auto_research_recoveries(
         if operation_ids is not None and recovery.operation_id not in operation_ids:
             continue
         task = store.agent_task(recovery.operation_id)
-        if task is not None:
+        child = store.auto_research_task_recovery_child(recovery.operation_id)
+        collecting = task is not None and can_collect(store, task)
+        if child is None and task is not None and not collecting:
             try:
                 background.admit_provider_task(
                     task.project_id,
@@ -128,13 +134,20 @@ def reconcile_due_auto_research_recoveries(
             except ProviderSignedOut:
                 continue
         try:
-            child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:
-                child = background.retry(recovery.operation_id)
+                child = (
+                    background.collect(recovery.operation_id)
+                    if collecting
+                    else background.retry(recovery.operation_id)
+                )
             store.complete_auto_research_recovery(
                 recovery.recovery_id,
                 admitted_operation_id=child.operation_id,
                 expected_operation_id=recovery.operation_id,
+            )
+        except (CollectionPending, RemoteStageUnreachable) as exc:
+            store.defer_auto_research_recovery(
+                recovery.recovery_id, diagnostic=str(exc), consume_attempt=False
             )
         except Exception as exc:
             child = store.auto_research_task_recovery_child(recovery.operation_id)

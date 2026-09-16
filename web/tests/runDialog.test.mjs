@@ -3,6 +3,7 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -1042,4 +1043,82 @@ test("provider path state distinguishes a stale recorded executable", () => {
     providerPathPresentation({ path_state: "denied" }, "/protected/codex", "/protected/codex"),
     { label: "Recorded path unusable", kind: "error" },
   );
+});
+
+test("retained results expose one collection control in the inspector and failed chat", () => {
+  const now = new Date().toISOString();
+  const task = withTaskAnswers({
+    operation_id: "disconnected-turn",
+    project_id: "project",
+    kind: "project_chat",
+    status: "failed",
+    request: {
+      provider: "codex",
+      chat_id: "retained-chat",
+      message: "Finish this work.",
+      mode: "work",
+    },
+    created_at: now,
+    updated_at: now,
+    status_message: "The connection was lost.",
+    error: "The connection was lost.",
+    attempt: 1,
+    estimate_seconds: 60,
+    estimate_samples: 0,
+    phase: "failed",
+    elapsed_seconds: 10,
+    progress: 1,
+    can_pause: false,
+    can_resume: true,
+    can_retry: true,
+    can_collect: true,
+  });
+  const inspector = renderToStaticMarkup(
+    React.createElement(AgentTaskInspector, {
+      tasks: [task],
+      task,
+      loading: false,
+      actionBusy: false,
+      onSelect() {},
+      onPause() {},
+      onResume() {},
+      onRetry() {},
+      onClose() {},
+    }),
+  );
+  assert.equal(inspector.match(/Collect result/g)?.length, 1);
+  assert.doesNotMatch(inspector, />(?:<!-- -->)?\s*(?:Resume|Retry)(?:…)?<\/button>/);
+
+  const props = {
+    project,
+    node: null,
+    runScope: ["repo"],
+    tasks: [task],
+    activeTask: null,
+    historyMessages: [],
+    chatId: "retained-chat",
+    onStartTask() {},
+    onInspectTask() {},
+    onOpenInbox() {},
+    onRepairGraphUpdate() {},
+    onNewSession() {},
+    onClose() {},
+    onResumeTask() {},
+    onRetryTask() {},
+  };
+  const chat = renderToStaticMarkup(React.createElement(NodeChat, props));
+  assert.equal(chat.match(/Collect result/g)?.length, 1);
+  assert.doesNotMatch(chat, />(?:<!-- -->)?\s*(?:Resume|Retry)(?:…)?<\/button>/);
+
+  const continued = withTaskAnswers({
+    ...task,
+    operation_id: "collected-turn",
+    parent_operation_id: task.operation_id,
+    status: "succeeded",
+    can_collect: false,
+  });
+  const superseded = renderToStaticMarkup(
+    React.createElement(NodeChat, { ...props, tasks: [task, continued] }),
+  );
+  assert.doesNotMatch(superseded, /Collect result/);
 });

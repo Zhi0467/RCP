@@ -102,6 +102,9 @@ async def test_codex_exec_requires_terminal_protocol_event(
 def transported_launcher(monkeypatch):
     from rcp.agents import launcher as launcher_module
 
+    # These tests isolate launch/fallback ownership; the execution-host wrapper
+    # has its own real subprocess transport tests in test_turn_journal.py.
+    monkeypatch.setattr(launcher_module, "journal_command", lambda command, **kwargs: command)
     launcher = AgentLauncher()
     monkeypatch.setattr(
         launcher,
@@ -343,3 +346,50 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
     # it deliberately stays on the shared one.
     assert partitions[0] == "test-host:/tmp/rcp-run.op-one"
     assert set(partitions[1:]) <= {None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_state", [False, None])
+@pytest.mark.parametrize("finished", [False, True])
+async def test_lost_transport_observes_but_does_not_terminate_original_turn(
+    tmp_path, monkeypatch, transported_launcher, remote_state, finished
+):
+    from rcp.agents import AgentProcessControl
+
+    script = "import sys; sys.stdin.read(); print('{}'); "
+    if finished:
+        script += "print(" + repr(json.dumps({"type": "turn.completed"})) + "); "
+    script += "sys.exit(255)"
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", script],
+    )
+    probes = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "remote_stopped",
+        lambda host, pid: probes.append((host, pid)) or remote_state,
+    )
+
+    def unexpected_termination(*args):
+        pytest.fail("Losing SSH must not terminate the authorized remote turn")
+
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", unexpected_termination)
+    pid_file = str(tmp_path / "provider.pid")
+    events = [
+        event
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="fixture",
+            remote_pid_file=pid_file,
+        )
+    ]
+    assert probes == [("fixture", pid_file)]
+    receipt = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    assert receipt["remote_process_stopped"] is remote_state
+    assert receipt["return_code"] == 255
+    assert not any(event.event == "runtime_fallback" for event in events)

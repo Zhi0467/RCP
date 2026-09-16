@@ -94,6 +94,7 @@ from rcp.runs.shared import (
     _stage_task_input,
     _swept_stage_root,
     _task_token,
+    collected_task_operation_id,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work import (
@@ -107,6 +108,7 @@ from rcp.runs.tasks.work import (
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
+    _is_work_graph_repair,
     _record_work_graph_rejection,
     _record_work_lock_lost,
     _record_work_lock_wait,
@@ -171,9 +173,9 @@ def _work_patch_source_operation_id(
 ) -> str | None:
     if execution is None:
         return None
-    if execution.continuation != "graph_repair":
+    if not _is_work_graph_repair(execution):
         return root_experiment_loop_operation_id(execution)
-    return execution.operation_id
+    return collected_task_operation_id(execution)
 
 
 def _experiment_loop_retry_handoff_authorized(
@@ -242,7 +244,7 @@ async def _stage_work_turn(
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
     clear_stale_handoffs = _clears_stale_turn_handoffs(continuation)
-    resuming = continuation == "resume"
+    resuming = continuation in {"resume", "collect"}
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -1115,7 +1117,8 @@ async def _settle_watch_deliverable(
                 return
         assert failure is not None
         if (
-            not failure.correctable
+            turn.continuation == "collect"
+            or not failure.correctable
             or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
@@ -1321,7 +1324,20 @@ async def _apply_experiment_loop_turn(
         applied.stop = True
         return
     if final_patch_text is None:
-        applied.graph_update = GraphUpdateResult(status="none")
+        patch_error = turn.execution.collection_patch_error if turn.execution is not None else None
+        if patch_error:
+            applied.graph_update = GraphUpdateResult(
+                status="rejected",
+                validation_messages=_bounded_graph_messages(patch_error),
+                repairable=_work_graph_repairable(
+                    turn.execution,
+                    applied.native_session_id,
+                    _DeliverableFailure(patch_error, correctable=True),
+                ),
+            )
+            _record_work_graph_rejection(turn.execution, applied.graph_update)
+        else:
+            applied.graph_update = GraphUpdateResult(status="none")
     else:
         loop_patch_correction_rounds = 0
         while True:
@@ -1371,7 +1387,8 @@ async def _apply_experiment_loop_turn(
                     break
             assert final_failure is not None
             if (
-                not final_failure.correctable
+                turn.continuation == "collect"
+                or not final_failure.correctable
                 or loop_patch_correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
                 or not applied.native_session_id
             ):
@@ -1858,7 +1875,7 @@ async def stream_experiment_loop_task(
         )
         return
 
-    if execution is not None and execution.continuation == "graph_repair":
+    if _is_work_graph_repair(execution):
         async with aclosing(
             _stream_work_graph_repair(
                 service,
@@ -1893,7 +1910,15 @@ async def stream_experiment_loop_task(
         waking = turn.waking
         prompt_context = await _prepare_work_prompt_context(turn, staged)
         wake_episode = prompt_context.wake_episode
-        if resuming:
+        if turn.continuation == "collect":
+            assert execution is not None
+            contract_path = _parent_task_contract_path(
+                execution, turn.local_stage, turn.remote_stage
+            )
+            composed_prompt = _ComposedWorkPrompt(
+                contract_path=contract_path, prompt="", base_contract_path=contract_path
+            )
+        elif resuming:
             composed_prompt = _compose_resume_prompt(turn, staged, prompt_context)
         elif waking:
             composed_prompt = _compose_wake_prompt(turn, staged, prompt_context)
@@ -2193,6 +2218,7 @@ async def _stream_work_graph_repair(
     repair = settle_graph_repair_patch(
         outcome,
         provider=request.provider,
+        collection_patch_error=execution.collection_patch_error,
         read_patch=lambda: _read_chat_patch(workspace, remote_stage),
         apply_patch=lambda text: _apply_work_patch(
             service,
@@ -2207,7 +2233,7 @@ async def _stream_work_graph_repair(
     )
     for frame in repair.frames:
         yield frame
-    if repair.graph_update is None or repair.patch_text is None:
+    if repair.graph_update is None:
         return
     graph_update = repair.graph_update
     patch_text = repair.patch_text
@@ -2243,6 +2269,7 @@ async def _stream_work_graph_repair(
         return
     ending_signal = None
     if graph_update.status == "applied":
+        assert patch_text is not None
         semantic_ending = experiment_loop_semantic_ending(
             patch_text,
             request.control_node_id,

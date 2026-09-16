@@ -28,6 +28,7 @@ from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
 from rcp.agents.steering import LiveProviderSteering
+from rcp.agents.turn_journal import journal_command
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
@@ -1042,6 +1043,17 @@ class AgentLauncher:
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
+        journaled_remote = bool(host and remote_pid_file)
+        if journaled_remote:
+            assert remote_pid_file is not None
+            command = journal_command(
+                command,
+                pid_file=remote_pid_file,
+                provider=provider,
+                runtime_id=runtime.id,
+                provider_version=getattr(readiness, "version", None),
+                close_input_after_initial=turn.close_input_after_initial,
+            )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
@@ -1133,6 +1145,7 @@ class AgentLauncher:
         stdout_lines = None
         remote_stopped: bool | None = None
         prompt_delivered = False
+        protocol_complete = False
         try:
             assert process.stdin is not None
             assert process.stdout is not None
@@ -1246,7 +1259,12 @@ class AgentLauncher:
                     # Fence delivery and stop before yielding any result event.
                     stopped_at_result = True
                     process.stdin.close()
-                    if host and remote_pid_file:
+                    if journaled_remote:
+                        # The execution-host wrapper already fenced stdin and
+                        # owns termination plus the atomic completed receipt.
+                        # Killing its group here would destroy that receipt.
+                        pass
+                    elif host and remote_pid_file:
                         stopped_remote = await asyncio.to_thread(
                             AgentProcessControl._terminate_remote_after_hold,
                             host,
@@ -1256,7 +1274,8 @@ class AgentLauncher:
                         completion_stop_failed = not stopped_remote
                     elif host:
                         completion_stop_failed = True
-                    await AgentProcessControl._terminate(process, started_at)
+                    if not journaled_remote:
+                        await AgentProcessControl._terminate(process, started_at)
                 if step.delivers_prompt:
                     if prompt_delivered:
                         raise RuntimeError(
@@ -1342,9 +1361,17 @@ class AgentLauncher:
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
             if host and remote_pid_file:
-                remote_stopped = await asyncio.to_thread(
-                    AgentProcessControl._confirm_remote_stopped, host, remote_pid_file, started_at
-                )
+                if journaled_remote and prompt_delivered and transport_failure(return_code, host):
+                    remote_stopped = await asyncio.to_thread(
+                        AgentProcessControl.remote_stopped, host, remote_pid_file
+                    )
+                else:
+                    remote_stopped = await asyncio.to_thread(
+                        AgentProcessControl._confirm_remote_stopped,
+                        host,
+                        remote_pid_file,
+                        started_at,
+                    )
                 completion_stop_failed = not remote_stopped
                 if not prompt_delivered and remote_stopped:
                     yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
@@ -1433,7 +1460,17 @@ class AgentLauncher:
 
             async def cleanup() -> None:
                 try:
-                    if host and remote_pid_file and remote_stopped is not True:
+                    preserve_remote = (
+                        journaled_remote
+                        and prompt_delivered
+                        and not (control is not None and control.pause_requested.is_set())
+                    )
+                    if (
+                        host
+                        and remote_pid_file
+                        and remote_stopped is not True
+                        and not preserve_remote
+                    ):
                         await asyncio.to_thread(
                             AgentProcessControl._confirm_remote_stopped,
                             host,

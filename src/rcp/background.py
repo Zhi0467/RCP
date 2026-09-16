@@ -69,6 +69,12 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.turn_collection import (
+    CollectionPending,
+    can_collect,
+    collected_task_operation_id,
+    read_collected_turn,
+)
 from rcp.service import (
     CoachRequest,
     GraphUpdateResult,
@@ -85,7 +91,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
-from rcp.transport import RemoteRunStage
+from rcp.transport import RemoteRunStage, RemoteStageUnreachable
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +106,7 @@ _NATIVE_CHECKPOINT_CONTINUATIONS = frozenset(
         "resume",
         "retry",
         "graph_repair",
+        "collect",
         "watcher_wake",
         "graph_condition_wake",
         "message_wake",
@@ -218,6 +225,8 @@ class AgentTaskExecution:
     applied_revision: int | None = None
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
+    collection_consumed: bool = False
+    collection_patch_error: str | None = None
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
 
     @property
@@ -538,6 +547,8 @@ class BackgroundAgentTasks:
         previous = self._require_operation(operation_id)
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
+        if can_collect(self.store, previous):
+            return self.collect(operation_id, authorized_by=authorized_by)
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
                 "This task has no resumable native agent checkpoint. Retry it instead."
@@ -589,6 +600,10 @@ class BackgroundAgentTasks:
             raise ValueError("Episode report recovery is automatic and has no Retry control.")
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
+        if can_collect(self.store, previous):
+            if any(value is not None for value in (provider, model, reasoning, run_on, skills)):
+                raise ValueError("Collect the existing turn before changing its provider settings.")
+            return self.collect(operation_id, authorized_by=authorized_by)
         original = self._request_from_record(previous)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
@@ -782,6 +797,47 @@ class BackgroundAgentTasks:
                 level="warning",
             )
         return retried
+
+    def collect(
+        self,
+        operation_id: str,
+        *,
+        authorized_by: AuthorizedHuman | None = None,
+    ) -> AgentTaskRecord:
+        """Adopt a stopped provider's existing result without another invocation."""
+        self._require_startup_effects_open("provider turn collection")
+        previous = self._require_operation(operation_id)
+        if not can_collect(self.store, previous):
+            raise ValueError("This task has no undelivered provider turn to collect.")
+        collected = read_collected_turn(self.store, previous)
+        if collected.session_id:
+            if previous.native_session_id and previous.native_session_id != collected.session_id:
+                raise ValueError("The collected turn changed its captured provider session.")
+            if not previous.native_session_id:
+                self.store.checkpoint_agent_task(
+                    operation_id, native_session_id=collected.session_id
+                )
+                previous = self._require_operation(operation_id)
+        request = self._request_from_record(previous).model_copy(
+            update={"session_id": collected.session_id or previous.native_session_id}
+        )
+        if isinstance(request, AutoResearchRunRequest):
+            binding = self.store.auto_research_actor_binding(previous.operation_id)
+            if binding is None:
+                raise ValueError("The collected turn lost its Auto-research actor binding.")
+            request = request.model_copy(update={"actor_operation_id": binding.actor_operation_id})
+        return self._create_and_spawn(
+            previous.project_id,
+            previous.kind,
+            request,
+            parent=previous,
+            continuation="collect",
+            estimate_seconds=0,
+            estimate_samples=0,
+            stage_host=previous.stage_host,
+            stage_root=previous.stage_root,
+            authorized_by=previous.authorized_by,
+        )
 
     def repair_graph_update(
         self,
@@ -980,9 +1036,10 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task admission")
-        self.admit_provider_task(
-            project_id, request, execution_host=(stage_host or "") if stage_root else None
-        )
+        if continuation != "collect":
+            self.admit_provider_task(
+                project_id, request, execution_host=(stage_host or "") if stage_root else None
+            )
         episode: EpisodeRecord | None = None
         task_graph_target = (
             parent.graph_target if parent is not None else graph_target or GraphTargetRef()
@@ -1055,7 +1112,9 @@ class BackgroundAgentTasks:
         )
         now = self.store.now()
         verb = (
-            "repair its graph update"
+            "collect its completed turn"
+            if continuation == "collect"
+            else "repair its graph update"
             if continuation == "graph_repair"
             else "resume"
             if continuation == "resume"
@@ -1063,7 +1122,7 @@ class BackgroundAgentTasks:
             if continuation in {"retry", "handoff"}
             else "start"
         )
-        recovery = continuation in {"resume", "retry", "handoff", "graph_repair"}
+        recovery = continuation in {"resume", "retry", "handoff", "graph_repair", "collect"}
         task_record = AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
@@ -1109,7 +1168,7 @@ class BackgroundAgentTasks:
         if isinstance(request, AutoResearchRunRequest):
             assert episode is not None
             try:
-                if continuation in {"resume", "retry"}:
+                if continuation in {"resume", "retry", "collect"}:
                     record = self.store.create_auto_research_recovery_task(
                         task_record,
                         continuation_cause=continuation,
@@ -1162,6 +1221,7 @@ class BackgroundAgentTasks:
                 "retry",
                 "handoff",
                 "graph_repair",
+                "collect",
             }:
                 if claim_graph_repair_parent:
                     record = self.store.create_experiment_graph_repair_task(
@@ -1244,11 +1304,12 @@ class BackgroundAgentTasks:
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
         try:
-            self.admit_provider_task(
-                record.project_id,
-                request,
-                execution_host=(record.stage_host or "") if record.stage_root else None,
-            )
+            if self.store.agent_task_continuation_cause(operation_id) != "collect":
+                self.admit_provider_task(
+                    record.project_id,
+                    request,
+                    execution_host=(record.stage_host or "") if record.stage_root else None,
+                )
         except ProviderSignedOut:
             return record
 
@@ -1486,7 +1547,7 @@ class BackgroundAgentTasks:
         if (
             parent
             and isinstance(request, AutoResearchRunRequest)
-            and continuation not in {"resume", "retry", "handoff", "graph_repair"}
+            and continuation not in {"resume", "retry", "handoff", "graph_repair", "collect"}
         ):
             label = {
                 "fresh": f"Auto-research {request.role} turn",
@@ -1507,7 +1568,9 @@ class BackgroundAgentTasks:
             )
         elif parent:
             action = (
-                "Repairing the graph update from"
+                "Collecting the completed turn from"
+                if continuation == "collect"
+                else "Repairing the graph update from"
                 if continuation == "graph_repair"
                 else "Resuming"
                 if continuation == "resume"
@@ -1664,7 +1727,9 @@ class BackgroundAgentTasks:
                     operation_id,
                     str(exc),
                     result=result if partial or artifacts else None,
-                    failure_kind=self._failure_kind(operation_id, request, execution, str(exc)),
+                    failure_kind=self._failure_kind(
+                        operation_id, request, execution, str(exc), exception=exc
+                    ),
                 )
         else:
             # Only ingest runs owe a graph revision. A chat turn answers a
@@ -1744,9 +1809,13 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
         error: str,
+        *,
+        exception: Exception | None = None,
     ) -> AgentFailureKind | None:
         """Name this failure so recovery can offer the right next step."""
 
+        if isinstance(exception, (RemoteStageUnreachable, CollectionPending)):
+            return "transport_lost"
         provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:
@@ -1812,7 +1881,16 @@ class BackgroundAgentTasks:
         """
 
         settled = self.store.agent_task(record.operation_id)
-        if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
+        if (
+            settled is None
+            or not settled.can_retry
+            or (
+                settled.failure_kind != "transport_lost"
+                and not (
+                    settled.status in {"failed", "interrupted"} and can_collect(self.store, settled)
+                )
+            )
+        ):
             return
         attempt = self._transport_retry_attempt(settled)
         if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
@@ -1845,10 +1923,23 @@ class BackgroundAgentTasks:
                 if self._transport_retry_superseded(operation_id):
                     return
                 try:
+                    if not self._transport_retry_host_reachable(operation_id):
+                        self._schedule_transport_retry(operation_id, attempt=attempt)
+                        return
+                    # A probe may outlast shutdown or a human's recovery.
+                    with self._controls_lock:
+                        if self._shutdown_requested:
+                            return
+                    if self._transport_retry_superseded(operation_id):
+                        return
                     self.retry(
                         operation_id,
                         authorized_by=self.store.agent_task_authorizer(operation_id),
                     )
+                except (RemoteStageUnreachable, CollectionPending):
+                    # The link can disappear between the probe and admission.
+                    # No provider was launched, so keep the same attempt owed.
+                    self._schedule_transport_retry(operation_id, attempt=attempt)
                 except Exception as exc:
                     # The human still has Retry; a failed reattempt must not
                     # become a second failure report on top of the one they
@@ -1860,10 +1951,9 @@ class BackgroundAgentTasks:
                             {"exception_type": type(exc).__name__},
                             tier="diagnostic",
                         )
-                    # A host that is still rebooting refuses admission too, and
-                    # that is the case the later, longer waits exist for. No
-                    # child was admitted, so the receipt chain cannot carry the
-                    # count and this hands it to the next wait directly.
+                    # A reachable host may still refuse admission. No child was
+                    # admitted, so the receipt chain cannot carry the count and
+                    # this hands it to the next bounded wait directly.
                     if attempt + 1 < AGENT_TRANSPORT_RETRY_LIMIT:
                         with suppress(Exception):
                             self._schedule_transport_retry(operation_id, attempt=attempt + 1)
@@ -1888,6 +1978,35 @@ class BackgroundAgentTasks:
             self._transport_retry_timers.append(timer)
         timer.start()
 
+    def _transport_retry_host_reachable(self, operation_id: str) -> bool:
+        record = self._require_operation(operation_id)
+        host = record.stage_host
+        if host is None:
+            project = self.store.project(record.project_id)
+            if project is None:
+                raise KeyError(record.project_id)
+            host = provider_login_host(
+                load_manifest(project.locator), self._request_from_record(record).run_on
+            )
+        if not host:
+            return True
+        stage = RemoteRunStage(host)
+        reachable = (
+            stage.directory_exists(record.stage_root) is not None
+            if record.stage_root
+            else stage.host_reachable()
+        )
+        if not reachable and not self.store.agent_task_has_receipt(
+            operation_id, "transport_auto_retry_waiting_for_host"
+        ):
+            self.store.record_agent_task_receipt(
+                operation_id,
+                "transport_auto_retry_waiting_for_host",
+                {"reason": "The execution host is unreachable; no attempt was consumed."},
+                tier="summary",
+            )
+        return reachable
+
     def _rearm_owed_transport_retries(self) -> None:
         """Re-arm reattempts a previous process promised and could not keep.
 
@@ -1898,7 +2017,8 @@ class BackgroundAgentTasks:
         already elapsed was never written down.
         """
 
-        for operation_id in self.store.owed_transport_retry_operation_ids():
+        owed_operation_ids = set(self.store.owed_transport_retry_operation_ids())
+        for operation_id in owed_operation_ids:
             record = self.store.agent_task(operation_id)
             if record is None or not record.can_retry:
                 continue
@@ -1906,6 +2026,14 @@ class BackgroundAgentTasks:
             if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
                 continue
             self._schedule_transport_retry(operation_id, attempt=attempt)
+        # Restart may interrupt a provider before its SSH failure reached RCP.
+        # Its journal reservation is durable even without a retry promise.
+        for operation_id in self.store.uncollected_remote_task_ids():
+            if operation_id in owed_operation_ids:
+                continue
+            record = self.store.agent_task(operation_id)
+            if record is not None:
+                self._auto_retry_transport_loss(record)
 
     def _transport_retry_superseded(self, operation_id: str) -> bool:
         """Whether this turn was already taken over while the wait ran.
@@ -1973,6 +2101,26 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> AgentTaskOutcome:
+        if execution.continuation == "collect":
+            record = self._require_operation(execution.operation_id)
+            collected = await asyncio.to_thread(read_collected_turn, self.store, record)
+            if not collected.complete:
+                self.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "provider_collection_incomplete",
+                    {"source_operation_id": collected.source_operation_id},
+                )
+                self.store.finish_remote_provider_pass(
+                    collected.source_operation_id, collected.pid_file
+                )
+                raise TaskFailed(
+                    str(
+                        collected.outcome.get("error")
+                        or "The remote provider stopped without completing this turn. Retained output is incomplete."
+                    ),
+                    [],
+                    [],
+                )
         applied_revision: int | None = None
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []
@@ -1986,7 +2134,7 @@ class BackgroundAgentTasks:
                 event = _event_from_sse(frame)
                 if event.usage is not None:
                     usage_record = self.store.record_agent_usage(
-                        execution.operation_id,
+                        collected_task_operation_id(execution),
                         event.usage,
                     )
                     self.store.record_agent_task_receipt(

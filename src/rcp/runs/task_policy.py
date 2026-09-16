@@ -31,6 +31,7 @@ AgentTaskContinuation = Literal[
     "retry",
     "handoff",
     "graph_repair",
+    "collect",
     "watcher_wake",
     "graph_condition_wake",
     "message_wake",
@@ -248,7 +249,7 @@ def resolved_dispatch_authority(
                 "Authority refused action 'dispatch': the canonical Auto-research actor is missing."
             )
         if origin.dispatch_authority is None:
-            if continuation not in {"resume", "retry"}:
+            if continuation not in {"resume", "retry", "collect"}:
                 raise ValueError(
                     "Authority refused action 'dispatch': the canonical Auto-research actor "
                     "has no durable authority binding."

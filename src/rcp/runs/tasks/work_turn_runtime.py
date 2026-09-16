@@ -224,7 +224,7 @@ _NEW_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset(
         "lifecycle_wake",
     }
 )
-_SAME_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair"})
+_SAME_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair", "collect"})
 
 
 def clears_stale_turn_handoffs(continuation: AgentTaskContinuation) -> bool:
@@ -510,6 +510,8 @@ def apply_work_patch(
             byte_length=len(patch_text.encode("utf-8")),
         )
         if not patch.ops:
+            if execution is not None and execution.collection_patch_error:
+                raise ValueError(execution.collection_patch_error)
             return GraphUpdateResult(status="none"), None
         workspace = service.history.workspace
         with workspace.run_lock(
@@ -546,11 +548,15 @@ def apply_work_patch(
                     result = service.history.current_materialization()
                     appended = canonical_patch
                 else:
+                    if execution is not None and execution.collection_patch_error:
+                        raise ValueError(execution.collection_patch_error)
                     appended, result = service.history.append(
                         patch,
                         discard_on_reject=True,
                     )
             else:
+                if execution is not None and execution.collection_patch_error:
+                    raise ValueError(execution.collection_patch_error)
                 appended, result = service.history.append(
                     patch,
                     discard_on_reject=True,
@@ -625,6 +631,7 @@ def settle_graph_repair_patch(
     apply_patch: Callable[[str], tuple[GraphUpdateResult | None, DeliverableFailure | None]],
     bounded_messages: Callable[..., list[str]],
     record_rejection: Callable[[GraphUpdateResult], None],
+    collection_patch_error: str | None = None,
 ) -> GraphRepairPatchResult:
     """Read and apply a repaired Patch after its owner-specific correction prompt."""
 
@@ -648,6 +655,14 @@ def settle_graph_repair_patch(
             )
         )
     if patch_text is None:
+        if collection_patch_error:
+            graph_update = GraphUpdateResult(
+                status="rejected",
+                validation_messages=bounded_messages(collection_patch_error),
+                repairable=True,
+            )
+            record_rejection(graph_update)
+            return GraphRepairPatchResult(graph_update=graph_update)
         return GraphRepairPatchResult(
             frames=(_sse(AgentEvent(event="error", text="The repair did not write patch.json.")),)
         )

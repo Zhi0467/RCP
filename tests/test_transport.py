@@ -2171,6 +2171,8 @@ def test_remote_run_stage_probe_rejects_symlink_and_missing_root(tmp_path, monke
 
 
 def test_remote_run_stage_probe_keeps_ssh_failure_transient(monkeypatch) -> None:
+    from rcp.transport import RemoteStageUnreachable
+
     stage = RemoteRunStage("research.example")
     monkeypatch.setattr(
         stage,
@@ -2179,6 +2181,10 @@ def test_remote_run_stage_probe_keeps_ssh_failure_transient(monkeypatch) -> None
     )
 
     assert stage.directory_exists("/tmp/rcp-run.saved-stage") is None
+    with pytest.raises(RemoteStageUnreachable, match="connection lost"):
+        stage.attach("/tmp/rcp-run.saved-stage")
+    assert stage.root is None
+    assert not stage.host_reachable()
 
 
 def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) -> None:

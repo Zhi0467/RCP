@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isActiveTask, projectActivityTask } from "../agentTasks";
+import { isActiveTask, projectActivityTask, taskNeedsPolling } from "../agentTasks";
 import { api } from "../api";
 import type { AgentTask } from "../types";
 
@@ -31,11 +31,14 @@ export function reconcileKnownActiveTasks(
   current: AgentTask[],
 ): AgentTask[] {
   const terminal = current.filter(
-    (task) => knownActive.has(task.operation_id) && !isActiveTask(task),
+    (task) =>
+      (knownActive.has(task.operation_id) ||
+        (task.parent_operation_id && knownActive.get(task.parent_operation_id)?.can_collect)) &&
+      !taskNeedsPolling(task),
   );
   for (const task of terminal) knownActive.delete(task.operation_id);
   for (const task of current) {
-    if (isActiveTask(task)) knownActive.set(task.operation_id, task);
+    if (taskNeedsPolling(task)) knownActive.set(task.operation_id, task);
   }
   return terminal;
 }
@@ -54,7 +57,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
 
   const rememberActiveTasks = useCallback((nextTasks: AgentTask[]) => {
     for (const task of nextTasks) {
-      if (isActiveTask(task)) knownActiveTasks.current.set(task.operation_id, task);
+      if (taskNeedsPolling(task)) knownActiveTasks.current.set(task.operation_id, task);
     }
   }, []);
 
