@@ -386,15 +386,17 @@ export function AgentTaskInspector({
                   <CirclePause size={14} /> Pause
                 </button>
               )}
-              {(task.can_retry || task.can_collect) && !episodeLifecycleElsewhere && (
-                <button
-                  className="button secondary"
-                  disabled={actionBusy || mutatingActionsDisabled}
-                  onClick={onRetry}
-                >
-                  <RotateCcw size={14} /> {taskRetryLabel(task)}
-                </button>
-              )}
+              {(task.can_retry || task.can_collect) &&
+                !episodeLifecycleElsewhere &&
+                !task.episode_owns_recovery && (
+                  <button
+                    className="button secondary"
+                    disabled={actionBusy || mutatingActionsDisabled}
+                    onClick={onRetry}
+                  >
+                    <RotateCcw size={14} /> {taskRetryLabel(task)}
+                  </button>
+                )}
               {task.can_stop_remote_provider && (
                 <button
                   className="button secondary"
@@ -405,15 +407,18 @@ export function AgentTaskInspector({
                   <CirclePause size={14} /> Stop provider
                 </button>
               )}
-              {task.can_resume && !task.can_collect && !episodeLifecycleElsewhere && (
-                <button
-                  className="button primary"
-                  disabled={actionBusy || mutatingActionsDisabled}
-                  onClick={onResume}
-                >
-                  <Play size={14} /> Resume
-                </button>
-              )}
+              {task.can_resume &&
+                !task.can_collect &&
+                !episodeLifecycleElsewhere &&
+                !task.episode_owns_recovery && (
+                  <button
+                    className="button primary"
+                    disabled={actionBusy || mutatingActionsDisabled}
+                    onClick={onResume}
+                  >
+                    <Play size={14} /> Resume
+                  </button>
+                )}
             </div>
           </footer>
         )}

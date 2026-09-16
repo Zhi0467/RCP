@@ -42,7 +42,9 @@ from rcp.runs.auto_research_admission import (
     preflight_auto_research_task_resume,
     proven_committed_auto_research_dispatches,
     proven_reserved_auto_research_roots,
+    refuse_worker_recovery_outside_its_episode,
     retry_auto_research_task,
+    worker_recovery_belongs_to_its_episode,
 )
 from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
 from rcp.runs.auto_research_recovery import (
@@ -552,6 +554,7 @@ class BackgroundAgentTasks:
         previous = self._require_operation(operation_id)
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
+        refuse_worker_recovery_outside_its_episode(self.store, previous)
         if can_collect(self.store, previous):
             return self.collect(operation_id)
         if not previous.can_resume or not previous.native_session_id:
@@ -603,6 +606,7 @@ class BackgroundAgentTasks:
         previous = self._require_operation(operation_id)
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Retry control.")
+        refuse_worker_recovery_outside_its_episode(self.store, previous)
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         if can_collect(self.store, previous):
@@ -861,6 +865,7 @@ class BackgroundAgentTasks:
         previous = self._require_operation(operation_id)
         if previous.kind not in {"node_chat", "project_chat"}:
             raise ValueError("Only a conversation Work task can repair a graph update.")
+        refuse_worker_recovery_outside_its_episode(self.store, previous)
         request = self._request_from_record(previous)
         if not isinstance(request, RunRequest) or request.mode != "work":
             raise ValueError("Only a Work turn can repair a graph update.")
@@ -1922,6 +1927,10 @@ class BackgroundAgentTasks:
         if (
             settled is None
             or not settled.can_retry
+            # The episode owns its workers' recovery, and is told when one
+            # fails. Reattempting here would only spend the bounded attempts
+            # on a call that must refuse.
+            or worker_recovery_belongs_to_its_episode(self.store, settled)
             or (
                 settled.failure_kind != "transport_lost"
                 and not (
@@ -2058,7 +2067,11 @@ class BackgroundAgentTasks:
         owed_operation_ids = set(self.store.owed_transport_retry_operation_ids())
         for operation_id in owed_operation_ids:
             record = self.store.agent_task(operation_id)
-            if record is None or not record.can_retry:
+            if (
+                record is None
+                or not record.can_retry
+                or worker_recovery_belongs_to_its_episode(self.store, record)
+            ):
                 continue
             attempt = self._transport_retry_attempt(record)
             if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:

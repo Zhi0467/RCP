@@ -2151,6 +2151,8 @@ export interface AgentTask {
   can_retry: boolean;
   can_collect: boolean;
   can_stop_remote_provider: boolean;
+  //: An Auto-research worker attempt, whose episode owns Resume and Retry.
+  episode_owns_recovery: boolean;
   steer_visible: boolean;
   can_steer: boolean;
   steer_unavailable_reason: string | null;

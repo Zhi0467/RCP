@@ -52,6 +52,7 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.auto_research_admission import worker_recovery_belongs_to_its_episode
 from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
 from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.steering import (
@@ -218,6 +219,9 @@ def _agent_task_response(
     response = record.model_dump(mode="json")
     response["can_collect"] = can_collect(store, record)
     response["can_stop_remote_provider"] = can_stop_remote_provider(store, record)
+    # A worker attempt looks like an ordinary node Work task here, and the
+    # generic recovery controls would orphan it from its route.
+    response["episode_owns_recovery"] = worker_recovery_belongs_to_its_episode(store, record)
     if record.kind in {"node_chat", "project_chat"}:
         response["chat_turn_operation_id"] = projected_chat_turn_operation_id(store, record)
     steering = chat_steering_state(background_tasks, record)

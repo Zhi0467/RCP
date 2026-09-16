@@ -3365,3 +3365,36 @@ def test_an_incomplete_collection_still_reports_the_provider_diagnostic(
     assert "the model refused the request" in settled.status_message
     assert store.agent_task_has_receipt(child.operation_id, "provider_collection_incomplete")
     tasks.shutdown(timeout=0.1)
+
+
+def test_worker_recovery_is_refused_outside_its_episode(tmp_path: Path) -> None:
+    """A worker attempt is an ordinary node Work task to every generic control.
+
+    Recovering one here would spawn a task its route has never heard of: no
+    attempt row, and the route still naming the turn that failed, so the episode
+    would wait forever on a worker it had already replaced. The episode resumes
+    and replaces its own workers.
+    """
+
+    from tests.test_auto_research_children_storage import _auto_parent, _work_pair
+
+    store = _store(tmp_path)
+    episode, root = _auto_parent(store)
+    route, task = _work_pair(store, episode, root, worker_id="worker-one")
+    store.create_auto_research_child_work(route, task)
+    store.checkpoint_agent_task(task.operation_id, native_session_id="worker-session")
+    store.fail_agent_task(task.operation_id, "Link lost", failure_kind="transport_lost")
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    tasks.recover_at_startup()
+
+    for recover in (tasks.retry, tasks.resume, tasks.repair_graph_update):
+        with pytest.raises(ValueError, match="Auto-research worker attempt"):
+            recover(task.operation_id, authorized_by=episode.authorized_by)
+
+    # The automatic reattempt is the same call, so it must not spend its
+    # bounded attempts discovering that this one has to refuse.
+    tasks._auto_retry_transport_loss(store.agent_task(task.operation_id))
+    assert not store.agent_task_has_receipt(task.operation_id, "transport_auto_retry")
+    assert store.auto_research_child_work(route.worker_id).current_operation_id == (
+        task.operation_id
+    )

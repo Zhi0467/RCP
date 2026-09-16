@@ -42,6 +42,7 @@ from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskRecord,
+    AppStore,
     AutoResearchChildExperimentRecord,
     AutoResearchChildWorkRecord,
     AutoResearchLifecycleNoticeRecord,
@@ -1796,6 +1797,28 @@ def _require_auto_research_retry_target_ready(
     if readiness.path_state == "unreachable":
         raise OSError(detail)
     raise ValueError(detail)
+
+
+def worker_recovery_belongs_to_its_episode(store: AppStore, record: AgentTaskRecord) -> bool:
+    """Whether an Auto-research worker route, not a chat control, owns this turn.
+
+    A worker attempt is an ordinary node Work task everywhere except its route,
+    so the generic chat recovery would happily rerun it -- and produce a task the
+    route has never heard of, leaving the episode waiting on a worker it had
+    already replaced, and the orchestrator's own Resume pointed at the turn that
+    failed. The episode resumes and replaces its workers; nothing else may.
+    """
+
+    return store.auto_research_child_work_for_operation(record.operation_id) is not None
+
+
+def refuse_worker_recovery_outside_its_episode(store: AppStore, record: AgentTaskRecord) -> None:
+    if worker_recovery_belongs_to_its_episode(store, record):
+        raise ValueError(
+            "This task is an Auto-research worker attempt. Its episode resumes or "
+            "replaces the worker; recovering it here would leave the episode waiting "
+            "on the attempt that failed."
+        )
 
 
 def preflight_auto_research_task_resume(
