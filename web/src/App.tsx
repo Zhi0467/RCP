@@ -4846,6 +4846,7 @@ export default function App() {
           project={project}
           initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
+          runOnLocked={retryTask.episode_id !== null}
           busy={taskActionId === retryTask.operation_id}
           onClose={closeRetryTask}
           onRun={(config) => void retryAgentTask(retryTask, config)}

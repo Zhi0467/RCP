@@ -928,6 +928,36 @@ test("Experiment provider switch exposes provider controls but locks the executi
   assert.doesNotMatch(html, /Truth input subset|Additional message/);
 });
 
+test("a standalone retry may move machines while an episode-bound one stays pinned", () => {
+  // Only the caller knows whether anything is anchored to the machine, so the
+  // dialog locks by default and the standalone retry is the one that opts out.
+  const render = (props) =>
+    renderToStaticMarkup(
+      React.createElement(RunDialog, {
+        open: true,
+        kind: "node_chat",
+        mode: "retry",
+        project: {
+          ...project,
+          machines: [
+            { alias: "local", host: null },
+            { alias: "cluster", host: "" },
+          ],
+        },
+        initialScope: ["repo"],
+        initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
+        busy: false,
+        onClose() {},
+        onRun() {},
+        ...props,
+      }),
+    );
+
+  assert.match(render({ runOnLocked: false }), /<span>Run on <\/span>/);
+  assert.match(render({ runOnLocked: false }), /<option value="cluster">/);
+  assert.match(render({}), /<span>Run on <svg/);
+});
+
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {
   const initial = {
     provider: "codex",

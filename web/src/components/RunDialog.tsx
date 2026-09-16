@@ -11,6 +11,8 @@ interface Props {
   initialScope: string[];
   initialConfig?: AgentRunConfig;
   mode?: "start" | "retry";
+  /** A run pinned to its machine. Only a retry that nothing is anchored to may move. */
+  runOnLocked?: boolean;
   busy: boolean;
   onClose: () => void;
   onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
@@ -31,6 +33,7 @@ export function RunDialog({
   initialScope,
   initialConfig,
   mode = "start",
+  runOnLocked = true,
   busy,
   onClose,
   onRun,
@@ -141,7 +144,7 @@ export function RunDialog({
           onChange={setConfig}
           workLikeCapable={project.agent_profiles[kind]?.work_like_capable ?? true}
           runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
-          runOnLocked
+          runOnLocked={runOnLocked}
           collapsible
         />
         {hostlessRepositories.length > 0 && (
