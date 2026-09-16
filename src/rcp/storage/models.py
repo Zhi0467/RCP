@@ -1947,10 +1947,12 @@ class ProviderExit(NamedTuple):
     The exit code alone cannot name the failure: a provider that reports its
     own trouble and then exits through ssh leaves the same 255 a dropped link
     does. Whether the provider spoke for itself is what separates them.
+    A journaled launcher can additionally identify lost delivery after its prompt.
     """
 
     return_code: int | None
     spoke_for_itself: bool
+    delivery_lost: bool = False
 
 
 # A task is still moving through these; every other status is terminal. "pausing"

@@ -21,7 +21,7 @@ from rcp.transport import RemoteRunStage
 from rcp.transport.remote_turn_journal import read_journal
 
 
-def _failed_turn(tmp_path):
+def _failed_turn(tmp_path, *, status="failed", failure_kind="transport_lost"):
     store = AppStore(tmp_path / "state.sqlite3")
     root = tmp_path / "stage"
     root.mkdir(mode=0o700)
@@ -44,7 +44,12 @@ def _failed_turn(tmp_path):
     store.begin_remote_provider_pass(
         record.operation_id, "test-host", str(root), str(pid), journaled=True
     )
-    store.fail_agent_task(record.operation_id, "SSH disconnected", failure_kind="transport_lost")
+    if status == "paused":
+        store.pause_agent_task(record.operation_id)
+    elif status == "interrupted":
+        store.interrupt_active_agent_tasks()
+    else:
+        store.fail_agent_task(record.operation_id, "Provider ended", failure_kind=failure_kind)
     return store, store.agent_task(record.operation_id), pid
 
 

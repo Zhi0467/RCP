@@ -8,6 +8,7 @@ spent token on disk and kill the login until a human signs in again.
 import asyncio
 import errno
 import json
+import shlex
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ from rcp.agents.credential_gate import (
     remaining_startup_hold,
 )
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
+from rcp.agents.turn_journal import staged_turn_journal_label, staged_turn_journal_source
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
@@ -735,8 +737,6 @@ async def test_a_remote_stop_waits_out_the_hold_from_the_provider_start_line(
     executable.write_text(
         f"""#!{sys.executable}
 import json, sys, time
-time.sleep({handshake})
-print({REMOTE_PROVIDER_START_LINE!r}, flush=True)
 print(json.dumps({{"type": "result", "result": "Finished."}}), flush=True)
 time.sleep(30)
 """
@@ -749,11 +749,24 @@ time.sleep(30)
         {"installed": True, "authenticated": True, "binary_path": str(executable), "version": "1"},
     )()
     monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
-    monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
+    monkeypatch.setattr(
+        launcher_module,
+        "ssh_arguments",
+        lambda host, command, **kwargs: [
+            "sh",
+            "-c",
+            f"sleep {handshake}; echo {shlex.quote(REMOTE_PROVIDER_START_LINE)}; "
+            f"exec {shlex.join(command)}",
+        ],
+    )
     monkeypatch.setattr(
         AgentProcessControl, "_terminate_remote", staticmethod(lambda host, pid_file: True)
     )
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", staticmethod(lambda *args: True))
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / staged_turn_journal_label()).write_text(staged_turn_journal_source())
 
     started = time.monotonic()
     events = [
@@ -764,12 +777,12 @@ time.sleep(30)
             cwd=tmp_path,
             capability="discuss",
             host="fixture-only",
-            remote_pid_file="fixture.pid",
+            remote_pid_file=str(tmp_path / "fixture.pid"),
         )
     ]
     elapsed = time.monotonic() - started
 
-    assert events[-1].event == "done"
+    assert events[-1].event == "done", [(event.event, event.text) for event in events]
     assert elapsed >= handshake + PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS - 0.1, (
         f"the stop came {elapsed:.2f}s after launch; the hold was measured from the SSH client"
     )

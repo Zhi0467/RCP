@@ -859,10 +859,15 @@ that stop reading at the first error.
 A settled failure is also named, because recovery differs by cause. SSH's own
 exit codes for a remote run can mean the link died rather than the work. Those
 exit codes decide this only for a turn that said nothing: ssh returns 255 for a
-provider that exits 255 as readily as for a link it lost, so a provider that
-reached its own terminal event or reported its own error is never blamed on the
-link, whatever the code. A stage attachment that cannot reach its host also
-remains `transport_lost`; it is distinct from a missing or unsafe directory.
+provider that exits 255 as readily as for a link it lost. A provider's terminal
+event or own error takes precedence over the exit code alone. A stage attachment
+that cannot reach its host also remains `transport_lost`; it is distinct from a
+missing or unsafe directory.
+
+For journaled turns, the launcher separately records lost delivery after prompt
+acceptance when SSH fails without a provider error or human Pause. This remains
+`transport_lost` even if terminal output arrived before the link failed: the
+controller still has to collect and finalize that completed journal.
 
 Automatic transport recovery probes reachability before attempting recovery.
 An unreachable probe consumes no bounded attempt and admits no provider. A

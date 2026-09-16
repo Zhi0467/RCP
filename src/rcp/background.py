@@ -1829,6 +1829,8 @@ class BackgroundAgentTasks:
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
         )
+        if exit is not None and exit.delivery_lost and kind != "provider_auth":
+            return "transport_lost"
         if kind == "provider_auth" and provider:
             host = execution.stage_host or ""
             record_provider_failure(

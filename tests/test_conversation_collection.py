@@ -146,7 +146,7 @@ class JournaledWorkLauncher:
         )
         if self.partial_usage:
             decoded = profile_for("codex").decode_event(terminal, json.dumps(terminal))
-            yield AgentEvent(event="usage", usage=decoded.usage)
+            yield AgentEvent(event="raw", usage=decoded.usage)
         yield AgentEvent(
             event="provider_exit",
             text=json.dumps(

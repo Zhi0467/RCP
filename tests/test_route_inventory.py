@@ -178,6 +178,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
+    (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/collect"),
     (("GET",), "/api/projects/{project_id}/paper"),
     (("POST",), "/api/projects/{project_id}/paper/create"),
     (("PUT",), "/api/projects/{project_id}/paper"),
@@ -299,6 +300,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "result_views": "src/rcp/api/result_views.py",
     "resume_agent_task": "src/rcp/api/tasks.py",
     "retry_agent_task": "src/rcp/api/tasks.py",
+    "collect_agent_task": "src/rcp/api/tasks.py",
     "revoke_team_credential": "src/rcp/api/team.py",
     "rotate_team_credential": "src/rcp/api/team.py",
     "run_experiment": "src/rcp/api/experiments.py",
@@ -354,15 +356,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 150
-    assert len(_FROZEN_ROUTE_INVENTORY) == 150
+    assert len(entries) == 151
+    assert len(_FROZEN_ROUTE_INVENTORY) == 151
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 146
+    assert sum(isinstance(route, APIRoute) for route in routes) == 147
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -377,5 +379,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 138
+    assert len(observed) == 139
     assert observed == _HANDLER_MODULE_MAP

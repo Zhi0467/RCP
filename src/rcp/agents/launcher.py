@@ -1419,6 +1419,13 @@ class AgentLauncher:
                         "return_code": return_code,
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
+                        "delivery_lost": bool(
+                            journaled_remote
+                            and prompt_delivered
+                            and not paused
+                            and not provider_failed
+                            and transport_failure(return_code, host)
+                        ),
                         **(
                             {"remote_process_stopped": remote_stopped}
                             if host and remote_pid_file

@@ -49,6 +49,9 @@ described in [provider durability](providers-and-containment.md#durable-task-lif
 Collection cannot reconstruct an interactive connection or resend steering.
 It stands down once a newer continuation, including an episode report, has
 taken over the source task. Collection cannot reclaim that newer task's stage.
+Eligibility requires lost transport delivery, a controller interruption, or an
+unfinished collection attempt. An ordinary provider failure or a human Pause
+keeps its existing Retry or Resume behavior, even when a remote journal exists.
 
 The existing finalization path validates and applies the collected Patch at most
 once on its original target. A collected answer without a Patch remains a valid

@@ -28,6 +28,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.turn_collection import CollectedTurn, CollectionPending
 from rcp.storage import AppStore, ProjectRecord
+from rcp.transport import RemoteStageUnreachable
 
 from .helpers import fabricated_authorizer, wait_for_task, wait_until, write_local_test_manifest
 
@@ -735,8 +736,7 @@ def test_auto_research_collection_admission_preserves_actor_and_waits_without_re
             )
             if session_checkpointed:
                 yield _sse(AgentEvent(event="session", session_id="original-session"))
-            yield _sse(AgentEvent(event="error", text="SSH delivery was interrupted"))
-            return
+            raise RemoteStageUnreachable("SSH delivery was interrupted")
         assert execution.continuation == "collect", "paid work must not be retried"
         yield _sse(AgentEvent(event="answer", text="The existing remote work completed."))
         yield _sse(AgentEvent(event="done"))
@@ -839,8 +839,7 @@ def test_auto_research_collect_finishes_delivery_behind_its_durable_ending(
                 execution.operation_id, "test-host", str(stage), pid_file, journaled=True
             )
             yield _sse(AgentEvent(event="session", session_id="original-session"))
-            yield _sse(AgentEvent(event="error", text="Delivery interrupted after ending."))
-            return
+            raise RemoteStageUnreachable("Delivery interrupted after ending.")
         assert execution.continuation == "collect"
         assert request.actor_operation_id == "root"
         yield _sse(AgentEvent(event="answer", text="Completed original work."))

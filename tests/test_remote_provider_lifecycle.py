@@ -350,15 +350,19 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote_state", [False, None])
-@pytest.mark.parametrize("finished", [False, True])
-async def test_lost_transport_observes_but_does_not_terminate_original_turn(
-    tmp_path, monkeypatch, transported_launcher, remote_state, finished
+@pytest.mark.parametrize("result", ["pending", "complete", "error"])
+async def test_remote_exit_distinguishes_transport_loss_from_provider_error(
+    tmp_path, monkeypatch, transported_launcher, remote_state, result
 ):
     from rcp.agents import AgentProcessControl
 
     script = "import sys; sys.stdin.read(); print('{}'); "
-    if finished:
+    if result == "complete":
         script += "print(" + repr(json.dumps({"type": "turn.completed"})) + "); "
+    elif result == "error":
+        script += (
+            "print(" + repr(json.dumps({"type": "error", "message": "Provider failed."})) + "); "
+        )
     script += "sys.exit(255)"
     monkeypatch.setattr(
         transported_launcher,
@@ -373,6 +377,8 @@ async def test_lost_transport_observes_but_does_not_terminate_original_turn(
     )
 
     def unexpected_termination(*args):
+        if result == "error":
+            return True
         pytest.fail("Losing SSH must not terminate the authorized remote turn")
 
     monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", unexpected_termination)
@@ -392,4 +398,5 @@ async def test_lost_transport_observes_but_does_not_terminate_original_turn(
     receipt = json.loads(next(event.text for event in events if event.event == "provider_exit"))
     assert receipt["remote_process_stopped"] is remote_state
     assert receipt["return_code"] == 255
+    assert receipt["delivery_lost"] is (result != "error")
     assert not any(event.event == "runtime_fallback" for event in events)

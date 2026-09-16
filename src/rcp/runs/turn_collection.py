@@ -79,7 +79,16 @@ def can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
     return bool(
         not record.history_only
         and not store.agent_task_has_receipt(record.operation_id, "provider_collection_incomplete")
-        and record.status in {"failed", "interrupted", "paused"}
+        and (
+            record.status == "interrupted"
+            or (
+                record.status == "failed"
+                and (
+                    record.failure_kind == "transport_lost"
+                    or store.agent_task_continuation_cause(record.operation_id) == "collect"
+                )
+            )
+        )
         and record.stage_host
         and record.stage_root
         and (

@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.codex_app_server import CodexAppServerRuntime
+from rcp.agents.turn_journal import staged_turn_journal_label, staged_turn_journal_source
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.providers import ProviderTurnRequest
 
@@ -375,6 +376,9 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
 
     monkeypatch.setattr("rcp.agents.launcher.ssh_arguments", local_ssh)
     pid_file = tmp_path / "agent.pid"
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / staged_turn_journal_label()).write_text(staged_turn_journal_source())
     events = [
         event
         async for event in launcher.stream(

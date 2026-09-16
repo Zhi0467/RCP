@@ -2472,6 +2472,11 @@ class AgentTaskStoreMixin:
                 FROM graph_runs AS run
                 WHERE run.status IN ('failed', 'interrupted')
                     AND run.history_only = 0
+                    AND (run.status = 'interrupted' OR run.failure_kind = 'transport_lost'
+                        OR EXISTS (SELECT 1 FROM graph_run_receipts AS collection
+                            WHERE collection.operation_id = run.operation_id
+                              AND collection.category = 'operation_admitted'
+                              AND json_extract(collection.payload_json, '$.continuation_cause') = 'collect'))
                     AND EXISTS (SELECT 1 FROM graph_run_receipts AS receipt
                         WHERE receipt.operation_id = run.operation_id AND (
                             (receipt.category = 'remote_provider_started'
@@ -3467,6 +3472,7 @@ class AgentTaskStoreMixin:
         errors = counts.get("error") if isinstance(counts, dict) else None
         return ProviderExit(
             return_code=code if isinstance(code, int) and not isinstance(code, bool) else None,
+            delivery_lost=payload.get("delivery_lost") is True,
             spoke_for_itself=(
                 payload.get("explicit_terminal_event") is True
                 or (isinstance(errors, int) and not isinstance(errors, bool) and errors > 0)
