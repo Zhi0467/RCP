@@ -401,3 +401,43 @@ async def test_remote_exit_distinguishes_transport_loss_from_provider_error(
     # Recorded only when the link, not the provider, ended the turn.
     assert receipt.get("delivery_lost", False) is (result != "error")
     assert not any(event.event == "runtime_fallback" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_a_machine_without_python_names_the_prerequisite_not_the_shell(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """RCP's one unchecked prerequisite should read as a one-line fix.
+
+    A machine is configured by naming its provider binary, so that CLI was set up
+    on purpose. `python3` was not: RCP needs it for the stage, journal, and
+    process helpers, and a host without it answers with the shell's own
+    `command not found` and nothing a human can act on.
+    """
+
+    from rcp.agents import AgentProcessControl
+
+    script = (
+        "import sys; sys.stderr.write('bash: line 1: python3: command not found\\n'); sys.exit(127)"
+    )
+    monkeypatch.setattr(
+        transported_launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: True)
+
+    events = [
+        event
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="fixture",
+            remote_pid_file=str(tmp_path / "provider.pid"),
+        )
+    ]
+
+    failure = next(event for event in events if event.event == "error")
+    assert "no python3 on PATH" in failure.text
+    assert "fixture" in failure.text
+    assert "command not found" not in failure.text

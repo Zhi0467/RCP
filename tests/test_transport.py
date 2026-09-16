@@ -2655,3 +2655,46 @@ def test_remote_stage_resume_rejects_symlinked_artifact_scope(monkeypatch) -> No
             stage.prepare_artifact_directory("logical-turn", reuse=True)
     finally:
         shutil.rmtree(root)
+
+
+def test_a_machine_without_python_says_so_instead_of_echoing_the_shell(monkeypatch) -> None:
+    """The one prerequisite RCP never checks should not read as shell noise.
+
+    A machine is configured by naming its provider binary, so the CLI is set up
+    deliberately. `python3` is not: RCP just needs it for the stage, journal, and
+    process helpers, and a host without it answers every one of them with the
+    same 127. Saying what is missing is the difference between a dead end and a
+    one-line fix.
+    """
+
+    stage = RemoteRunStage("research.example")
+    shell_noise = "bash: line 1: python3: command not found\n"
+
+    def refuse(arguments, **_kwargs):
+        return subprocess.CompletedProcess(arguments, 127, "", shell_noise)
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+
+    result = stage._ssh(["python3", "-c", "pass"])
+
+    assert result.returncode == 127
+    assert "no python3 on PATH" in result.stderr
+    assert "research.example" in result.stderr
+    assert shell_noise not in result.stderr
+
+
+def test_a_provider_that_exits_127_for_its_own_reasons_keeps_its_own_words(monkeypatch) -> None:
+    """127 alone is not the interpreter: a provider may exit with it too."""
+
+    stage = RemoteRunStage("research.example")
+    provider_words = "codex: fatal: the requested model is unavailable\n"
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments, 127, "", provider_words
+        ),
+    )
+
+    assert stage._ssh(["python3", "-c", "pass"]).stderr == provider_words

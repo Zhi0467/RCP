@@ -26,7 +26,12 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
-from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
+from rcp.transport.ssh import (
+    missing_remote_interpreter,
+    missing_remote_interpreter_detail,
+    rsync_ssh_arguments,
+    ssh_arguments,
+)
 from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
 
 _REMOTE_TREE_HELPERS = """\
@@ -1417,7 +1422,7 @@ finally:
     def _ssh(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 text=True,
@@ -1426,6 +1431,17 @@ finally:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess([], 255, "", str(exc))
+        # Every caller reports this stderr as the reason the stage is unavailable.
+        # A host with no interpreter answers each of them with the same shell
+        # noise, so it is named once here rather than recognized at ten of them.
+        if missing_remote_interpreter(result.returncode, result.stderr):
+            return subprocess.CompletedProcess(
+                result.args, result.returncode, result.stdout, self._no_interpreter()
+            )
+        return result
+
+    def _no_interpreter(self) -> str:
+        return missing_remote_interpreter_detail(self.host)
 
     def _ssh_bytes(
         self,
@@ -1436,7 +1452,7 @@ finally:
     ) -> subprocess.CompletedProcess[bytes]:
         command = " ".join(shlex.quote(argument) for argument in arguments)
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 ssh_arguments(self.host, command, partition=self.transport_partition),
                 capture_output=True,
                 input=input_data,
@@ -1445,6 +1461,11 @@ finally:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess([], 255, b"", str(exc).encode())
+        if missing_remote_interpreter(result.returncode, result.stderr.decode("utf-8", "replace")):
+            return subprocess.CompletedProcess(
+                result.args, result.returncode, result.stdout, self._no_interpreter().encode()
+            )
+        return result
 
 
 def _safe_label(value: str) -> str:

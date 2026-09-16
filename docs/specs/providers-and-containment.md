@@ -360,6 +360,16 @@ history. Existing provider decoders recover labelled answers, session ids, and
 usage from its events; there is no second answer file. Overflow or incomplete
 evidence fails visibly and cannot authorize Apply.
 
+A remote execution machine needs two things and RCP checks one of them. Its
+manifest entry names the provider binary by absolute path, which startup probes.
+It must also have `python3` on `PATH`: every stage, journal, and process helper
+is shipped from its own source module and run there, and those helpers rely on
+symlink-safe directory descriptors, atomic replace with fsync, and non-blocking
+multi-stream draining that a shell cannot provide. Any `python3` from the last
+several years is enough, and nothing is installed on the host. A machine without
+one cannot run agent turns, and is told so by name rather than through the
+shell's own `command not found`.
+
 The live pipe remains the control channel for provider startup, broker commands,
 validation, steering acknowledgments, and Stop. The execution-host journal
 drains provider output independently of a blocked or lost uplink, within explicit

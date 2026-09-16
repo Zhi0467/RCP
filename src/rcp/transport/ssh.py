@@ -158,5 +158,34 @@ def _require_control_directory() -> Path:
     return directory
 
 
+# The shell's own "command not found". SSH returns the remote command's status,
+# so this is what a host without the interpreter answers with.
+_COMMAND_NOT_FOUND = 127
+
+
+def missing_remote_interpreter(return_code: int, stderr: str) -> bool:
+    """Whether this host answered that it has no `python3` to run RCP's helpers.
+
+    The text is checked as well as the code, because a provider is free to exit
+    127 for reasons of its own and must not be reported as a missing interpreter.
+    """
+
+    if return_code != _COMMAND_NOT_FOUND:
+        return False
+    text = stderr.casefold()
+    return "python3" in text and "not found" in text
+
+
+def missing_remote_interpreter_detail(host: str) -> str:
+    """Say what is missing and what it costs, in the one sentence a human reads."""
+
+    where = host or "this execution machine"
+    return (
+        f"{where} has no python3 on PATH. RCP runs its stage, journal, and process "
+        "helpers there, so this machine cannot run agent turns until one exists. "
+        "Any python3 from the last several years will do; nothing else is needed."
+    )
+
+
 def _control_directory_path() -> Path:
     return Path("/tmp") / f"rcp-ssh-{os.geteuid()}"

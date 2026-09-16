@@ -52,7 +52,11 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
-from rcp.transport.ssh import ssh_arguments
+from rcp.transport.ssh import (
+    missing_remote_interpreter,
+    missing_remote_interpreter_detail,
+    ssh_arguments,
+)
 from rcp.transport.state import _remote_script
 
 ProviderPathState = Literal[
@@ -1475,7 +1479,14 @@ class AgentLauncher:
                 self.invalidate_readiness(provider, host=host, binary=binary)
             elif return_code and not stopped_at_result:
                 self.invalidate_readiness(provider, host=host, binary=binary)
-                detail = stderr or _exit_reason(provider, return_code, host)
+                # Checked before stderr, because the shell's own "command not
+                # found" is non-empty and would otherwise be the whole answer a
+                # human gets for a machine that simply cannot run RCP's helpers.
+                detail = (
+                    missing_remote_interpreter_detail(host)
+                    if host and missing_remote_interpreter(return_code, stderr)
+                    else stderr or _exit_reason(provider, return_code, host)
+                )
                 yield AgentEvent(event="error", text=detail)
             elif turn.requires_protocol_completion and not protocol_complete:
                 self.invalidate_readiness(provider, host=host, binary=binary)
