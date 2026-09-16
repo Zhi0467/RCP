@@ -794,3 +794,12 @@ def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
     assert settled.retry_mode == "blocked"
     retried = store.agent_task(settled.operation_id or "")
     assert retried is not None and retried.attempt == 2
+
+    # The human answers the verdict by starting a turn, so the row stops holding
+    # a stopped ladder against whatever this attempt does next.
+    human = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    adopted = store.auto_research_recovery("task:root")
+    assert adopted is not None
+    assert adopted.status == "admitted"
+    assert adopted.attempts == 0
+    wait_for_task(store, human.operation_id, expect="failed")

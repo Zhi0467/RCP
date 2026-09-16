@@ -1618,6 +1618,33 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._agent_task_record(row) if row is not None else None
 
+    def adopt_settled_auto_research_recovery(
+        self,
+        operation_id: str,
+        *,
+        admitted_operation_id: str,
+    ) -> None:
+        """Hand a recovery the ladder stopped working on to the human's own attempt.
+
+        A blocked or exhausted row is a verdict about the failure that produced
+        it, and a human Retry is the answer that verdict was waiting for. Left
+        settled, it would keep the run parked on a failure that is no longer the
+        current one and deny the next, different one its bounded ladder.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE auto_research_recoveries
+                SET status = 'admitted', next_attempt_at = NULL, attempts = 0,
+                    admitted_operation_id = ?, updated_at = ?
+                WHERE operation_id = ? AND status IN ('blocked', 'exhausted')
+                """,
+                (admitted_operation_id, now, operation_id),
+            )
+
     def complete_auto_research_recovery(
         self,
         recovery_id: str,

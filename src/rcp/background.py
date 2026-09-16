@@ -864,7 +864,7 @@ class BackgroundAgentTasks:
         if not isinstance(original, AutoResearchRunRequest):
             raise ValueError("This task is not an Auto-research task.")
         _require_recoverable_machine(previous, original, run_on)
-        return retry_auto_research_task(
+        retried = retry_auto_research_task(
             self,
             previous,
             original,
@@ -875,6 +875,14 @@ class BackgroundAgentTasks:
             skills=skills,
             service=service,
         )
+        # Only a human reaches this entry point, and starting a turn is the
+        # answer a stopped ladder was waiting for. The automatic path settles
+        # its own row and must keep counting, so it is left alone.
+        self.store.adopt_settled_auto_research_recovery(
+            previous.operation_id,
+            admitted_operation_id=retried.operation_id,
+        )
+        return retried
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task pause")

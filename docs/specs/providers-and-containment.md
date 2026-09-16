@@ -879,7 +879,12 @@ a settled answer. RCP does not read provider prose for whether a reached limit
 belongs to the session or to the account: it offers the human the one thing that
 makes the next attempt different, a changed provider, model, or reasoning, and
 whether that attempt then succeeds is the provider's answer rather than a state
-RCP models. Reattempts, their refusals, and their exhaustion are receipts on the
+RCP models. A stopped ladder, whether it stopped on a repeat or ran out of
+waits, is a verdict on the failure that produced it, so the human's own Retry
+takes the record over: the next failure is judged on its own and gets a full
+ladder, while the automatic path keeps counting its attempts as before. A
+revoked login is the exception it already was, cleared by signing in rather than
+by retrying. Reattempts, their refusals, and their exhaustion are receipts on the
 failed turn.
 
 Provider-native skill inventory is app-scoped and separate from official RCP
