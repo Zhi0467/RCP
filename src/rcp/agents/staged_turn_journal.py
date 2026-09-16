@@ -69,16 +69,20 @@ class WireCompletion:
                 self.terminal = True
                 return
             params = value.get("params")
+            thread = params.get("threadId") if isinstance(params, dict) else None
+            if isinstance(thread, str) and self.thread_id is not None and thread != self.thread_id:
+                return
+            # The canonical decoder fences any server-to-client request before
+            # it inspects params or the thread, because an unattended turn
+            # cannot answer one. Checking it later here let a request carrying
+            # no params, or arriving before thread/start replied, keep stdin
+            # open on a link this wrapper exists to survive.
+            if "id" in value and "method" in value:
+                self.terminal = True
+                return
             if not isinstance(params, dict) or self.thread_id is None:
                 return
-            if isinstance(params.get("threadId"), str) and params["threadId"] != self.thread_id:
-                return
-            if (
-                value.get("method") == "error"
-                and params.get("willRetry") is not True
-                or "id" in value
-                and "method" in value
-            ):
+            if value.get("method") == "error" and params.get("willRetry") is not True:
                 self.terminal = True
                 return
             turn = params.get("turn")
