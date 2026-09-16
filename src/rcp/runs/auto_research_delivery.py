@@ -22,6 +22,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
 from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
 from rcp.runs.provider_login import ProviderSignedOut
+from rcp.runs.provider_process import remote_stage_awaits_collection
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -505,6 +506,15 @@ def deliver_pending_auto_research_mail(
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
         return None
+    # A stage still holding an uncollected turn refuses reuse, and this wake
+    # would learn that only after spending a paid invocation and claiming the
+    # group's notices and mail. The condition clears on its own once that turn
+    # is collected, and an unclaimed group is redelivered, so wait instead --
+    # the same answer a reached ceiling or a signed-out provider gives.
+    if remote_stage_awaits_collection(
+        background.store, current.stage_host or "", binding.stage_root
+    ):
+        return None
     request = AutoResearchRunRequest.model_validate(current.request).model_copy(
         update={
             "actor_operation_id": binding.actor_operation_id,
@@ -697,6 +707,13 @@ def deliver_auto_research_watcher_group(
         return None
     current = background.store.agent_task(binding.current_operation_id)
     if current is None:
+        return None
+    # Same reason as the mail wake: a stage still holding an uncollected
+    # turn refuses reuse, and this group would discover that only after a
+    # paid invocation claimed its notices and mail.
+    if remote_stage_awaits_collection(
+        background.store, current.stage_host or "", binding.stage_root
+    ):
         return None
     request = AutoResearchRunRequest.model_validate(current.request).model_copy(
         update={

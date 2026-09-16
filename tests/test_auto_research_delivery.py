@@ -1931,3 +1931,52 @@ def test_newest_notices_and_messages_are_a_bounded_suffix_in_order(tmp_path):
     messages = store.auto_research_messages(episode.episode_id, newest=2)
     assert [message.message_id for message in messages] == ["message-1", "message-2"]
     assert len(store.auto_research_messages(episode.episode_id)) == 3
+
+
+def test_watcher_wake_waits_while_the_stage_still_holds_an_uncollected_turn(
+    tmp_path, monkeypatch
+) -> None:
+    """A wake must not spend a paid invocation on a condition that clears itself.
+
+    A stage holding a finished-but-uncollected turn refuses reuse, and this wake
+    would discover that only after admitting a paid turn and claiming the
+    group's notices and mail. Collection arrives on its own, and an unclaimed
+    group is redelivered, so the wake waits -- the same answer a reached ceiling
+    or a signed-out provider already gives.
+    """
+
+    from rcp.runs import auto_research_delivery as delivery_module
+
+    store = _store(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("test-host", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    watcher = _arm_completed_graph_condition(store, episode, root)
+    before = store.episode_budget_meter(episode.episode_id)
+
+    monkeypatch.setattr(
+        delivery_module, "remote_stage_awaits_collection", lambda *_args, **_kwargs: True
+    )
+    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
+    assert store.episode_budget_meter(episode.episode_id) == before
+    assert not store.watcher(watcher.watcher_id).notified
+    assert store.watcher(watcher.watcher_id).notification_operation_id is None
+
+    monkeypatch.setattr(
+        delivery_module, "remote_stage_awaits_collection", lambda *_args, **_kwargs: False
+    )
+    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="succeeded")
+    assert (
+        store.episode_budget_meter(episode.episode_id).invocations_used
+        == before.invocations_used + 1
+    )

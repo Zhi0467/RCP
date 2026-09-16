@@ -11,8 +11,15 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 
-def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
-    """A task status or SSH exit is never a substitute for remote process absence."""
+def remote_stage_awaits_collection(store: AppStore, host: str, root: str) -> bool:
+    """Whether this stage still holds a finished turn nobody has collected.
+
+    Transient by construction: it clears as soon as that turn is collected.
+    Work that can wait should wait rather than spend anything on it.
+    """
+
+    if not host or not root:
+        return False
     for operation_id in store.uncollected_remote_task_ids():
         record = store.agent_task(operation_id)
         if (
@@ -21,7 +28,14 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
             and record.stage_root == root
             and can_collect(store, record)
         ):
-            raise ValueError("Collect the prior provider turn before reusing this workspace.")
+            return True
+    return False
+
+
+def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
+    """A task status or SSH exit is never a substitute for remote process absence."""
+    if remote_stage_awaits_collection(store, host, root):
+        raise ValueError("Collect the prior provider turn before reusing this workspace.")
     for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
         stopped = AgentProcessControl.remote_stopped(host, pid_file)
         if stopped is not True:
