@@ -2546,6 +2546,14 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
 
 
 def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest, tmp_path) -> None:
+    # A second reachable machine, so the refusal is about the pin rather than
+    # about a machine the project has never heard of.
+    manifest.path.write_text(
+        manifest.path.read_text(encoding="utf-8").replace(
+            "[[repositories]]", '[[machines]]\nalias = "gpu"\nhost = ""\n[[repositories]]', 1
+        ),
+        encoding="utf-8",
+    )
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     store_test_claude_token(app.state.background_tasks.store)
     loop = _Loop(app)
@@ -2577,7 +2585,9 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
         json={"run_on": "gpu"},
     )
     assert pinned.status_code == 409
-    assert "pinned execution machine" in pinned.json()["detail"]
+    # The machine exists and is reachable; the loop still stays where its
+    # canonical state and episode live.
+    assert "must run on canonical state machine 'laptop'" in pinned.json()["detail"]
 
 
 def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
