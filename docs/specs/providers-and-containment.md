@@ -871,11 +871,13 @@ controller still has to collect and finalize that completed journal.
 
 A link that stays up while the controller stops draining ends delivery just as
 surely. Past its uplink ceiling the journal detaches and drops what it cannot
-send, so a turn can complete on the host with its completion never leaving it.
-The journal reports that through its exit status, which is the only channel it
-has left, and the controller reads it as a lost link rather than a provider that
-failed its protocol. A turn whose completion did reach the controller still
-exits cleanly; undelivered diagnostics do not change that.
+send, so a turn can reach its own terminal event on the host without that event
+ever leaving it. The journal reports this through its exit status, the only
+channel it has left, and the controller reads it as a lost link rather than as a
+provider that failed its protocol. It applies whether the terminal event
+completed or failed the turn: collection then supplies the answer, or the
+provider's own reason for stopping. A terminal event that did reach the
+controller still exits cleanly; undelivered diagnostics do not change that.
 
 Automatic transport recovery probes reachability before attempting recovery.
 An unreachable probe consumes no bounded attempt and admits no provider. A
