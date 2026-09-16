@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl, _meaningful_stderr
+from rcp.limits import TURN_JOURNAL_MAX_EVENT_BYTES
 from rcp.providers import ProviderTurnRequest, profile_for, require_runtime_id
 from rcp.transport import RemoteRunStage, StateUnavailable, remote_turn_journal
 
@@ -87,6 +88,36 @@ def journal_pid_file(store: AppStore, record: AgentTaskRecord) -> str | None:
     return passes[-1] if passes else None
 
 
+def collectible_surface(store: AppStore, record: AgentTaskRecord) -> bool:
+    """Whether a finished turn on this task has a route that would adopt it.
+
+    Asked twice, and the two answers must not differ. `can_collect` asks it of a
+    turn that already failed, to decide whether to offer collection. A launch
+    asks it of a turn still running, to decide whether losing the transport
+    should leave the remote provider alive for that offer. One answer is what
+    stops RCP preserving a provider nothing will ever collect: the stage fence
+    would then block recovery while it ran, with no Stop control to end it, and
+    discard its journal once it exited.
+
+    An Auto-research child Work attempt is excluded despite being a Work chat.
+    Collection would adopt it through the ordinary chat route, recording no
+    attempt row and leaving the worker route pointed at the failed turn, so the
+    episode would never see that worker finish. Its own resume path stays
+    route-aware; do not build a second way in.
+    """
+
+    return bool(
+        (
+            record.kind == "auto_research"
+            or (
+                record.kind in {"node_chat", "project_chat"}
+                and record.request.get("mode") == "work"
+            )
+        )
+        and store.auto_research_child_work_for_operation(record.operation_id) is None
+    )
+
+
 def can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
     """Offer collection, and never fail a listing for one unbindable record.
 
@@ -118,13 +149,7 @@ def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
         )
         and record.stage_host
         and record.stage_root
-        and (
-            record.kind == "auto_research"
-            or (
-                record.kind in {"node_chat", "project_chat"}
-                and record.request.get("mode") == "work"
-            )
-        )
+        and collectible_surface(store, collection_source(store, record))
         and not store.agent_task_has_continuation(record.operation_id)
         and journal_pid_file(store, record)
     )
@@ -154,6 +179,15 @@ def can_stop_remote_provider(store: AppStore, record: AgentTaskRecord) -> bool:
         return False
 
 
+def _within_event_limit(line: str) -> bool:
+    # A UTF-8 character is at most four bytes, so a short line is under the
+    # limit without measuring; only a long one is worth encoding to find out.
+    return (
+        len(line) * 4 <= TURN_JOURNAL_MAX_EVENT_BYTES
+        or len(line.encode("utf-8", "surrogateescape")) <= TURN_JOURNAL_MAX_EVENT_BYTES
+    )
+
+
 @dataclass(frozen=True)
 class CollectedTurn:
     source_operation_id: str
@@ -175,6 +209,19 @@ class CollectedTurn:
         )
 
     @property
+    def observed_events(self) -> list[str]:
+        """The journal lines the live pipe would have decoded, in order.
+
+        Both observers stop at the per-event limit: the wrapper refuses to feed
+        an over-long line to its protocol reader, and the live reader drops the
+        same line and notes the omission instead of parsing it. Only the journal
+        keeps the bytes, because it is the forensic record. Reading them back as
+        events would let collection act on one the live turn had refused.
+        """
+
+        return [line for line in self.events.splitlines() if _within_event_limit(line)]
+
+    @property
     def session_id(self) -> str | None:
         root = self.outcome.get("root_thread_id")
         if isinstance(root, str) and root:
@@ -183,7 +230,7 @@ class CollectedTurn:
         if not isinstance(provider, str):
             return None
         profile = profile_for(provider)
-        for line in self.events.splitlines():
+        for line in self.observed_events:
             try:
                 decoded = profile.decode_event(json.loads(line), line)
             except (ValueError, TypeError):
@@ -401,7 +448,7 @@ def _declared_failure_reason(collected: CollectedTurn) -> str | None:
         profile = profile_for(str(outcome.get("provider") or ""))
     except (KeyError, ValueError):
         return None
-    for line in reversed(collected.events.splitlines()):
+    for line in reversed(collected.observed_events):
         try:
             value = json.loads(line)
         except ValueError:
@@ -464,7 +511,7 @@ def _decode_pass(collected: CollectedTurn, request: ProviderTurnRequest) -> list
     # JSONL profiles already own labelled answers and usage. Their live turn
     # object additionally owns steering; collection never replays steering.
     if runtime_id != "codex.app-server-stdio.v1":
-        for line in collected.events.splitlines():
+        for line in collected.observed_events:
             try:
                 value = json.loads(line)
             except ValueError:
@@ -481,7 +528,7 @@ def _decode_pass(collected: CollectedTurn, request: ProviderTurnRequest) -> list
     else:
         turn = profile.runtime(runtime_id).turn(request)
         turn.initial_input()
-        for line in collected.events.splitlines():
+        for line in collected.observed_events:
             if line.startswith("RCP_COMMAND_BROKER_READY:"):
                 continue
             # Steering responses were already observed by the live pipe; no

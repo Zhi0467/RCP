@@ -228,7 +228,9 @@ class WorkComputeCommands:
         operation_ids = {self.execution.operation_id}
         current = store.agent_task(self.execution.operation_id)
         cause = self.execution.continuation
-        while current and cause in {"resume", "retry", "graph_repair", "handoff"}:
+        # Collection continues the same logical turn, so it inherits the source
+        # attempt's running helper jobs and must be held to the same watchers.
+        while current and cause in {"resume", "retry", "graph_repair", "handoff", "collect"}:
             parent = (
                 store.agent_task(current.parent_operation_id)
                 if current.parent_operation_id

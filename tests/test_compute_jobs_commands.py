@@ -429,17 +429,32 @@ def test_helper_handoff_required_only_while_this_turns_job_is_running(commands):
     assert commands.store.compute_job(job.job_id).status == "exited"
 
 
-def test_retry_cannot_abandon_a_running_helper_from_its_failed_parent(commands):
+@pytest.mark.parametrize("continuation", ["retry", "collect"])
+def test_recovery_cannot_abandon_a_running_helper_from_its_failed_parent(commands, continuation):
+    """Every continuation of the same logical turn inherits its helper jobs.
+
+    Collection adopts a finished provider turn whose handoff was written by the
+    source attempt, so a helper that attempt launched is still running and still
+    has to be watched. Reading only the collection's own operation would find
+    none and let the turn settle while the job ran on unobserved.
+    """
+
     response = commands.launch()
     parent = commands.store.agent_task("work-turn")
     commands.store.create_agent_task(
         parent.model_copy(
-            update={"operation_id": "retry", "parent_operation_id": "work-turn", "attempt": 2}
+            update={
+                "operation_id": continuation,
+                "parent_operation_id": "work-turn",
+                "attempt": 2,
+            }
         )
     )
     handler = replace(
         commands.handler,
-        execution=replace(commands.handler.execution, operation_id="retry", continuation="retry"),
+        execution=replace(
+            commands.handler.execution, operation_id=continuation, continuation=continuation
+        ),
     )
     with pytest.raises(ValueError, match="shell watchers"):
         handler.validate_handoff(set())

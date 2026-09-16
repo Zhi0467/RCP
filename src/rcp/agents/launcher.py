@@ -889,6 +889,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        preserve_on_transport_loss: bool = False,
         transport_partition: str | None = None,
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
@@ -926,6 +927,7 @@ class AgentLauncher:
                             if remote_pid_file and index
                             else remote_pid_file
                         ),
+                        preserve_on_transport_loss=preserve_on_transport_loss,
                         transport_partition=transport_partition,
                         invocation_gate=invocation_gate,
                         capability=capability,
@@ -969,6 +971,7 @@ class AgentLauncher:
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
+        preserve_on_transport_loss: bool = False,
         transport_partition: str | None = None,
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
@@ -1502,8 +1505,13 @@ class AgentLauncher:
 
             async def cleanup() -> None:
                 try:
+                    # Leaving the group alive is only ever worth it for a turn
+                    # something will come back for. On every other surface the
+                    # journal is discarded anyway, and a survivor would hold the
+                    # stage fence against recovery with no Stop control to end it.
                     preserve_remote = (
                         journaled_remote
+                        and preserve_on_transport_loss
                         and prompt_delivered
                         and not (control is not None and control.pause_requested.is_set())
                     )

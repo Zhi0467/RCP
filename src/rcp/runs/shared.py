@@ -34,6 +34,7 @@ from rcp.runs.turn_collection import (
     collected_task_operation_id as collected_task_operation_id,
 )
 from rcp.runs.turn_collection import (
+    collectible_surface,
     stream_collected_turn,
 )
 from rcp.service import CoachRequest, ProjectService, RunRequest
@@ -686,6 +687,20 @@ class _ProviderOutcome:
     exit_recorded: bool = False
 
 
+def _turn_would_be_collected(execution: AgentTaskExecution | None) -> bool:
+    """Whether losing the transport here leaves a turn somebody comes back for.
+
+    Only then is it worth letting the remote provider outlive its uplink. The
+    surface decides that, so ask the module that owns collection rather than
+    reading the task kind here.
+    """
+
+    if execution is None:
+        return False
+    record = execution.store.agent_task(execution.operation_id)
+    return record is not None and collectible_surface(execution.store, record)
+
+
 async def _stream_agent_events(
     launcher: AgentLauncher,
     request: RunRequest,
@@ -789,6 +804,7 @@ async def _stream_agent_events(
             host=execution_host,
             control=execution.control if execution is not None else None,
             remote_pid_file=remote_pid_file,
+            preserve_on_transport_loss=_turn_would_be_collected(execution),
             transport_partition=(
                 run_stage_partition(execution_host, remote_stage.root)
                 if remote_stage is not None

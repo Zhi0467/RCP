@@ -349,6 +349,50 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 
 
 @pytest.mark.asyncio
+async def test_transport_loss_terminates_a_turn_no_route_will_collect(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """A journalled launch nothing can adopt keeps the pre-collection ending.
+
+    Discuss, seed and refresh, and episode reports all run journalled on a
+    remote stage, so preservation would otherwise follow from the journal alone.
+    Their result is never collected, so a survivor would only hold the stage
+    fence against recovery -- alive, uncollectable, and with no Stop control.
+    """
+
+    from rcp.agents import AgentProcessControl
+
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdin.read(); sys.exit(255)",
+        ],
+    )
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda host, pid: False)
+    terminated = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "_confirm_remote_stopped",
+        lambda host, pid, started_at: terminated.append((host, pid)),
+    )
+    pid_file = str(tmp_path / "provider.pid")
+    async for _event in transported_launcher.stream(
+        "codex",
+        "prompt",
+        cwd=tmp_path,
+        capability="scratch_patch",
+        host="fixture",
+        remote_pid_file=pid_file,
+    ):
+        pass
+
+    assert terminated == [("fixture", pid_file)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("remote_state", [False, None])
 @pytest.mark.parametrize("result", ["pending", "complete", "error"])
 async def test_remote_exit_distinguishes_transport_loss_from_provider_error(
@@ -392,6 +436,7 @@ async def test_remote_exit_distinguishes_transport_loss_from_provider_error(
             capability="scratch_patch",
             host="fixture",
             remote_pid_file=pid_file,
+            preserve_on_transport_loss=True,
         )
     ]
     assert probes == [("fixture", pid_file)]

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents.launcher import AgentProcessControl
+from rcp.limits import TURN_JOURNAL_MAX_EVENT_BYTES
 from rcp.providers import ProviderTurnRequest
 from rcp.runs.turn_collection import (
     CollectedTurn,
@@ -721,3 +722,63 @@ def test_provider_silence_reads_in_units_a_human_acts_on():
     assert describe_provider_silence(12.0) == "under a minute"
     assert describe_provider_silence(300.0) == "5m"
     assert describe_provider_silence(3_660.0) == "1h 01m"
+
+
+def test_collection_is_not_offered_for_a_routed_child_work_turn(tmp_path):
+    """An Auto-research worker is an ordinary Work chat everywhere but its route.
+
+    Collection would adopt it as one: no attempt row, and the route still naming
+    the failed turn as current, so the episode would wait on a worker that had
+    already been replaced. Its own resume path knows the route; this one does
+    not, so the offer is withdrawn rather than answered wrongly.
+    """
+
+    from tests.test_auto_research_children_storage import _auto_parent, _project, _work_pair
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_parent(store)
+    route, task = _work_pair(store, episode, root, worker_id="worker-one")
+    store.create_auto_research_child_work(route, task)
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    pid = stage / "agent.pid"
+    store.checkpoint_agent_task(task.operation_id, stage_host="test-host", stage_root=str(stage))
+    store.begin_remote_provider_pass(
+        task.operation_id, "test-host", str(stage), str(pid), journaled=True
+    )
+    store.fail_agent_task(task.operation_id, "Provider ended", failure_kind="transport_lost")
+    failed = store.agent_task(task.operation_id)
+    assert failed is not None and failed.failure_kind == "transport_lost"
+    assert store.auto_research_child_work_for_operation(task.operation_id) is not None
+    assert can_collect(store, failed) is False
+
+
+def test_collection_ignores_an_event_the_live_pipe_would_have_omitted():
+    """The journal keeps an oversized event; neither reader is allowed to decode it.
+
+    The wrapper stops feeding a line to its protocol reader once it passes the
+    per-event limit, and the live pipe drops the same line and reports the
+    omission instead of parsing it. Only the journal keeps the bytes, so reading
+    them back as events would let a collected turn act on one the live turn had
+    already refused -- here, adopting a provider session the human never saw.
+    """
+
+    oversized = json.dumps(
+        {
+            "type": "thread.started",
+            "thread_id": "never-delivered",
+            "pad": "x" * TURN_JOURNAL_MAX_EVENT_BYTES,
+        }
+    )
+    delivered = json.dumps({"type": "thread.started", "thread_id": "native-thread"})
+    collected = CollectedTurn(
+        source_operation_id="original",
+        pid_file="/stage/agent.pid",
+        outcome={"provider": "codex", "runtime_id": "codex.exec-json.v1"},
+        events="\n".join((oversized, delivered)),
+        patch=None,
+    )
+
+    assert collected.observed_events == [delivered]
+    assert collected.session_id == "native-thread"
