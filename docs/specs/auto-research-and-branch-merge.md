@@ -168,6 +168,12 @@ harvest never costs a wake. Budget exhaustion retains notices but cannot create
 an unauthorized turn. Clear refuses before acknowledgment if even its compact
 full response exceeds the bound.
 
+A wake of any kind waits while its target's stage still holds a finished turn
+nobody has collected. That stage refuses reuse, so admitting would spend the
+allocation and claim the wake's notices and mail only to fail; the condition
+clears when the turn is collected, and an unclaimed wake is redelivered. This is
+the answer a reached invocation ceiling or a signed-out provider already gives.
+
 Every Stop and every replacement records who initiated it (`human:<member>`,
 `orchestrator:<operation>`, or `system:<reason>`) in the same transaction as
 the fence. A notice born from a stop the orchestrator itself requested, or from

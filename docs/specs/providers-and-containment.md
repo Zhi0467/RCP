@@ -869,6 +869,14 @@ acceptance when SSH fails without a provider error or human Pause. This remains
 `transport_lost` even if terminal output arrived before the link failed: the
 controller still has to collect and finalize that completed journal.
 
+A link that stays up while the controller stops draining ends delivery just as
+surely. Past its uplink ceiling the journal detaches and drops what it cannot
+send, so a turn can complete on the host with its completion never leaving it.
+The journal reports that through its exit status, which is the only channel it
+has left, and the controller reads it as a lost link rather than a provider that
+failed its protocol. A turn whose completion did reach the controller still
+exits cleanly; undelivered diagnostics do not change that.
+
 Automatic transport recovery probes reachability before attempting recovery.
 An unreachable probe consumes no bounded attempt and admits no provider. A
 reachable host permits collection of the original journal; a still-running
