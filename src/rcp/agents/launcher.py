@@ -1411,6 +1411,16 @@ class AgentLauncher:
                 if paused or turn_failed
                 else profile.launch_degradation(stderr, requested_reasoning=reasoning)
             )
+            # A journalled remote turn whose link ended it: the work may well have
+            # finished on the host, so recovery offers its result rather than a
+            # rerun. Recorded only when true, like every other optional fact here.
+            delivery_lost = bool(
+                journaled_remote
+                and prompt_delivered
+                and not paused
+                and not provider_failed
+                and transport_failure(return_code, host)
+            )
             yield AgentEvent(
                 event="provider_exit",
                 text=json.dumps(
@@ -1418,13 +1428,7 @@ class AgentLauncher:
                         "return_code": return_code,
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
-                        "delivery_lost": bool(
-                            journaled_remote
-                            and prompt_delivered
-                            and not paused
-                            and not provider_failed
-                            and transport_failure(return_code, host)
-                        ),
+                        **({"delivery_lost": True} if delivery_lost else {}),
                         **(
                             {"remote_process_stopped": remote_stopped}
                             if host and remote_pid_file

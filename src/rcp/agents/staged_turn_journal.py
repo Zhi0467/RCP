@@ -211,6 +211,7 @@ def run(args):
     upstream_open = {1: True, 2: True}
     input_pending = bytearray()
     detached = False
+    terminal_uplinked = False
     stdin_open = True
     terminal_at = None
     signalled_at = None
@@ -321,10 +322,17 @@ def run(args):
                 if not detached:
                     if sum(map(len, pending.values())) + len(data) > args.max_uplink_bytes:
                         detached = True
+                        terminal_uplinked = terminal_uplinked and not pending[1]
                         pending[1].clear()
                         pending[2].clear()
                     else:
                         pending[channel].extend(data)
+                        # The completion travels at the tail of this chunk: the
+                        # output reader stops feeding at the terminal event, and
+                        # channel 1 is drained without forwarding after it.
+                        terminal_uplinked = terminal_uplinked or (
+                            channel == 1 and observer.terminal
+                        )
             for descriptor in writable:
                 if descriptor in pending:
                     buffer = pending[descriptor]
@@ -341,6 +349,9 @@ def run(args):
                     if descriptor in pending:
                         detached = True
                         upstream_open[descriptor] = False
+                        # A failure on either channel drops both buffers, so the
+                        # completion can be lost to a write error on the other.
+                        terminal_uplinked = terminal_uplinked and not pending[1]
                         pending[1].clear()
                         pending[2].clear()
                     else:
@@ -416,7 +427,17 @@ def run(args):
         "steer_requests": observer.steer_requests,
     }
     _atomic_write(directory / "outcome.json", json.dumps(outcome, sort_keys=True).encode())
-    return 0 if observer.complete and not error and not external_stop else (return_code or 1)
+    if observer.complete and not error and not external_stop:
+        # A controller can stop draining while the link itself stays up, which
+        # backs this buffer past its ceiling and drops everything after. The turn
+        # finished and its journal holds the answer, but RCP never saw the
+        # completion, so the exit status has to say the link ended this turn
+        # rather than the work. 255 is the code RCP already reads that way, and
+        # the one a connection that had actually dropped would have produced.
+        # Only the completion's own channel decides it: undelivered stderr costs
+        # the turn nothing.
+        return 0 if terminal_uplinked and not pending[1] else 255
+    return return_code or 1
 
 
 def main(argv=None):

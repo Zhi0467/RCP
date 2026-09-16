@@ -398,5 +398,6 @@ async def test_remote_exit_distinguishes_transport_loss_from_provider_error(
     receipt = json.loads(next(event.text for event in events if event.event == "provider_exit"))
     assert receipt["remote_process_stopped"] is remote_state
     assert receipt["return_code"] == 255
-    assert receipt["delivery_lost"] is (result != "error")
+    # Recorded only when the link, not the provider, ended the turn.
+    assert receipt.get("delivery_lost", False) is (result != "error")
     assert not any(event.event == "runtime_fallback" for event in events)

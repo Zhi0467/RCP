@@ -68,7 +68,7 @@ def _start(
     )
 
 
-def _finish(process):
+def _finish(process, expected=0):
     try:
         process.wait(timeout=10)
     finally:
@@ -76,7 +76,7 @@ def _finish(process):
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
     stderr = process.stderr.read()
-    assert process.returncode == 0, stderr.decode()
+    assert process.returncode == expected, stderr.decode()
 
 
 @pytest.mark.parametrize("broken_reader", [False, True])
@@ -107,7 +107,11 @@ time.sleep(30)
     process.stdin.close()  # Lost transport, not an authorized stop.
     if broken_reader:
         process.stdout.close()
-    _finish(process)
+    # The turn finished, but its completion never reached the controller. The
+    # exit status is the only channel left to say so, and 255 is what RCP reads
+    # as a lost link. Exiting 0 here would have RCP call this a protocol failure,
+    # withhold collection, and offer a Retry that repeats work already done.
+    _finish(process, expected=255)
     directory = tmp_path / "provider.pid.turn"
     outcome = json.loads((directory / "outcome.json").read_text())
     events = (directory / "events.jsonl").read_bytes()
