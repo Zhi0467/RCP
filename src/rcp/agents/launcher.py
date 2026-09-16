@@ -1145,7 +1145,6 @@ class AgentLauncher:
         stdout_lines = None
         remote_stopped: bool | None = None
         prompt_delivered = False
-        protocol_complete = False
         try:
             assert process.stdin is not None
             assert process.stdout is not None

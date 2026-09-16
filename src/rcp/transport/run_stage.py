@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import validate_result_view_id
@@ -215,6 +217,18 @@ for target in glob.glob('/tmp/rcp-run.*'):
         """Check transport before recovery admits a new provider invocation."""
 
         return self._ssh(["true"]).returncode == 0
+
+    def run_shipped_module(
+        self, module: ModuleType, *arguments: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Execute a module's own source on the host, never a hand-copied string.
+
+        Keeps the one place that ships remote-executed code beside the transport
+        that sends it, so a caller cannot reach past this boundary to build its
+        own command.
+        """
+
+        return self._ssh(["python3", "-c", inspect.getsource(module), *arguments])
 
     def _directory_probe(self, root: str) -> subprocess.CompletedProcess[str]:
         """Check the saved root itself without following an unsafe replacement."""

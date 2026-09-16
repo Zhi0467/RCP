@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
-import inspect
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -235,15 +234,7 @@ def _read_pass(stage: RemoteRunStage, source: AgentTaskRecord, pid_file: str) ->
     # enforces the same overall ceiling before decoding anything into memory.
     from rcp.limits import TURN_JOURNAL_MAX_BYTES
 
-    result = stage._ssh(
-        [
-            "python3",
-            "-c",
-            inspect.getsource(remote_turn_journal),
-            pid_file,
-            str(TURN_JOURNAL_MAX_BYTES),
-        ]
-    )
+    result = stage.run_shipped_module(remote_turn_journal, pid_file, str(TURN_JOURNAL_MAX_BYTES))
     if result.returncode == 255:
         raise CollectionPending("The provider host became unavailable during collection.")
     if result.returncode:

@@ -245,6 +245,68 @@ def test_claude_terminal_success_matches_canonical_decoder(subtype):
     assert observer.complete is (decoded.event != "error")
 
 
+def _canonical_app_server_turn(tmp_path, *, handshake: bool):
+    from rcp.agents.codex_app_server import CodexAppServerRuntime
+    from rcp.providers import ProviderTurnRequest
+
+    turn = CodexAppServerRuntime().turn(
+        ProviderTurnRequest(
+            prompt="fence",
+            binary="codex",
+            cwd=tmp_path,
+            model=None,
+            reasoning=None,
+            session_id="fence-thread",
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="paper_readonly",
+            provider_version="0.153.4",
+        )
+    )
+    observer = WireCompletion("codex.app-server-stdio.v1")
+    if handshake:
+        for message in (
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"config": {}}},
+            {
+                "id": 3,
+                "result": {
+                    "thread": {"id": "fence-thread"},
+                    "approvalPolicy": "never",
+                    "sandbox": {"type": "readOnly"},
+                },
+            },
+        ):
+            turn.receive_line(json.dumps(message))
+        observer.input({"id": 3, "method": "thread/resume"})
+        observer.output({"id": 3, "result": {"thread": {"id": "fence-thread"}}})
+    return turn, observer
+
+
+@pytest.mark.parametrize("handshake", [False, True])
+@pytest.mark.parametrize(
+    "request_message",
+    [
+        {"id": 7, "method": "applyPatchApproval"},
+        {"id": 7, "method": "applyPatchApproval", "params": {}},
+        {"id": 7, "method": "execCommandApproval", "params": {"threadId": "fence-thread"}},
+    ],
+)
+def test_app_server_request_fence_matches_canonical_decoder(tmp_path, handshake, request_message):
+    """An unattended turn cannot answer a request, so both decoders must stop it.
+
+    The wrapper is the only fence once the uplink is gone, so a request it lets
+    through leaves stdin open on exactly the link it exists to survive.
+    """
+
+    turn, observer = _canonical_app_server_turn(tmp_path, handshake=handshake)
+    canonical = turn.receive_line(json.dumps(request_message))
+    observer.output(request_message)
+    assert canonical.complete and canonical.explicit_terminal
+    assert observer.terminal
+
+
 @pytest.mark.parametrize("link_directory", [False, True])
 def test_patch_snapshot_refuses_symlink_boundary(tmp_path, link_directory):
     from rcp.agents.staged_turn_journal import _patch_snapshot
