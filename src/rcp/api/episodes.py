@@ -35,6 +35,7 @@ from rcp.storage import (
     ExperimentEpisodeProjectionSnapshot,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.models import GraphWatcherRecord, NodeStatusGraphCondition
 
 OperationalEpisodeTaskKind = Literal[
     "seed",
@@ -314,6 +315,10 @@ class EpisodeResponse(BaseModel):
     # reaching its own conclusion from `status`, `ending`, and task rows.
     health: EpisodeHealth
     blocked_reason: EpisodeBlockedReason | None
+    # Decisions this episode armed a wake on and cannot retire itself. They
+    # live on its graph branch, which canonical Inbox attention never covers,
+    # so the run card is the only place a human learns the choice is owed.
+    awaiting_decision_ids: list[str]
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
     run_section: EpisodeRunSection
@@ -495,6 +500,7 @@ def serialize_episode(
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
         blocked_reason=blocked_reason,
+        awaiting_decision_ids=_awaiting_decision_ids(store, episode),
         recommendation=next_step,
         task_control=task_control,
         run_section=_episode_run_section(health),
@@ -749,6 +755,29 @@ def _episode_projection(
         return "active", "wait", None, None
     pause = "pause" if task is not None and task.status == "running" and task.can_pause else None
     return "active", "continue", pause, None
+
+
+def _awaiting_decision_ids(store: AppStore, episode: EpisodeRecord) -> list[str]:
+    """Decisions whose armed wake only a human choice can meet.
+
+    An active condition naming `decided` is unmet by definition, and the one
+    agent permitted to meet it is the orchestrator asleep behind it, so the
+    human owes the choice. Read from the condition rather than the branch
+    graph, which this projection does not load.
+    """
+
+    if episode.mode != "auto_research":
+        return []
+    return sorted(
+        {
+            watcher.condition.node_id
+            for watcher in store.episode_watchers(episode.episode_id)
+            if isinstance(watcher, GraphWatcherRecord)
+            and watcher.status == "active"
+            and isinstance(watcher.condition, NodeStatusGraphCondition)
+            and "decided" in watcher.condition.status_in
+        }
+    )
 
 
 def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:

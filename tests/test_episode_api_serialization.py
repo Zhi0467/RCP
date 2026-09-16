@@ -1039,3 +1039,47 @@ def test_project_readiness_includes_only_its_machine_account_logins(manifest, tm
         ("claude", ""),
     }
     assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"
+
+
+def test_a_parked_episode_names_the_decisions_only_a_human_can_settle(tmp_path) -> None:
+    """An armed `decided` wake is a choice owed, and nothing else says so.
+
+    The Decision lives on the episode's own branch, which canonical Inbox
+    attention never covers, and the one agent allowed to settle it is the
+    orchestrator asleep behind the wake. Without this the run card reads
+    "waiting", as if the episode were still moving on its own.
+    """
+
+    from rcp.storage.models import GraphWatcherRecord, WatcherContinuation
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "parked")
+    continuation = WatcherContinuation.model_validate({"provider": "codex", "run_on": "local"})
+    store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id=watcher_id,
+                project_id=episode.project_id,
+                origin_operation_id=root.operation_id,
+                origin_task_kind="auto_research",
+                chat_id="root-chat",
+                episode_id=episode.episode_id,
+                graph_target=episode.graph_target,
+                continuation=continuation,
+                condition={"node_id": node_id, "status_in": status_in},
+                armed_revision=0,
+                created_at=store.now(),
+            )
+            for watcher_id, node_id, status_in in (
+                ("owed-b", "decision/budget", ["decided"]),
+                ("owed-a", "decision/scale", ["decided", "revisit"]),
+                # An ordinary node wake is work the episode still does itself.
+                ("running", "experiment/pilot", ["done"]),
+            )
+        ]
+    )
+
+    projected = serialize_episode(store, "project", episode, include_graph_branch=False)
+
+    assert projected.awaiting_decision_ids == ["decision/budget", "decision/scale"]

@@ -747,6 +747,43 @@ test("a blocked login leads the recovery instruction", () => {
   );
 });
 
+test("an episode parked on a Decision says the choice is owed", () => {
+  // The wake it armed can only be met by a human choosing on the episode's own
+  // branch, which Inbox attention never covers. "Wait" alone would read as
+  // progress the human need not touch.
+  const parked = {
+    ...episode,
+    health: "active",
+    recommendation: "wait",
+    blocked_reason: null,
+    awaiting_decision_ids: ["decision/scale"],
+  };
+  assert.match(
+    episodeProjection(parked).recommendation.label,
+    /^A Decision is waiting on your choice\./,
+  );
+
+  const several = { ...parked, awaiting_decision_ids: ["decision/scale", "decision/budget"] };
+  assert.match(
+    episodeProjection(several).recommendation.label,
+    /^2 Decisions are waiting on your choice\./,
+  );
+});
+
+test("a blocked login outranks a Decision the episode is parked on", () => {
+  const blocked = {
+    ...episode,
+    health: "needs_action",
+    recommendation: "retry",
+    blocked_reason: "sign_in",
+    awaiting_decision_ids: ["decision/scale"],
+  };
+  assert.equal(
+    episodeProjection(blocked).recommendation.label,
+    "The provider login is dead. Sign in again, then retry the current turn",
+  );
+});
+
 test("the login notice names each signed-out account once and offers verification", async () => {
   const { ProviderLoginNotice } = await server.ssrLoadModule(
     "/src/components/ProviderLoginNotice.tsx",

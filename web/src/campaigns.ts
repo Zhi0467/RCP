@@ -138,6 +138,13 @@ export function blockedReasonLead(
   return label;
 }
 
+export function awaitingDecisionLead(ids: string[] | undefined, label: string): string {
+  const owed = ids?.length ?? 0;
+  if (owed === 0) return label;
+  const subject = owed === 1 ? "A Decision is" : `${owed} Decisions are`;
+  return `${subject} waiting on your choice. ${label}`;
+}
+
 export function episodeProjection(
   episode: Episode,
   tasks: AgentTask[] = episode.tasks,
@@ -157,7 +164,11 @@ export function episodeProjection(
     healthLabel: EPISODE_HEALTH_LABELS[episode.health],
     recommendation: {
       kind: episode.recommendation,
-      label: blockedReasonLead(episode.blocked_reason, episode.ending, label),
+      // A dead login or a spent authorization outranks the choice: neither the
+      // episode nor the human can act on the Decision until it is cleared.
+      label: episode.blocked_reason
+        ? blockedReasonLead(episode.blocked_reason, episode.ending, label)
+        : awaitingDecisionLead(episode.awaiting_decision_ids, label),
       task,
     },
     taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,

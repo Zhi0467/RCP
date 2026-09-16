@@ -2285,6 +2285,10 @@ export interface Episode {
   live: boolean;
   health: EpisodeHealth;
   blocked_reason: EpisodeBlockedReason | null;
+  //: Decisions this episode parked on and cannot settle itself. They live on
+  //: its branch, which Inbox attention never covers, so the card is the only
+  //: place the choice is owed.
+  awaiting_decision_ids: string[];
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
   run_section: EpisodeRunSection;

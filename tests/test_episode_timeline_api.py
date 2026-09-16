@@ -361,6 +361,11 @@ def test_experiment_timeline_watcher_history(tmp_path):
     assert by_id["notice:shell:armed"].parent_event_id == "turn:loop-root"
     assert by_id["notice:shell:completed"].parent_event_id == "wake:watcher-wake"
     assert by_id["notice:graph:stopped"].parent_event_id == "turn:loop-root"
+    # Between turns an armed graph condition is the only record of what the
+    # episode is waiting for, so the timeline names it rather than saying only
+    # that something was armed.
+    assert by_id["notice:graph:armed"].title == "Waiting for exp-one to reach completed"
+    assert by_id["notice:shell:armed"].title == "Watcher armed"
 
 
 def test_harvested_notice_and_suppressed_wake_provenance(manifest, tmp_path):
