@@ -373,15 +373,18 @@ def preview_repository_file(
         manifest = load_manifest(record.locator)
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # Clients preflight with HEAD before opening the same URL, so a cited line is
+    # not sought twice through a large file: availability reads only its head.
+    head = request.method == "HEAD"
     try:
-        source = load_repository_source_for_path(manifest, path, line=line)
-        document = repository_source_document(source, line=line)
+        source = load_repository_source_for_path(manifest, path, line=None if head else line)
+        document = b"" if head else repository_source_document(source, line=line)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return Response(
-        b"" if request.method == "HEAD" else document,
+        document,
         media_type="text/html",
         headers={
             "Cache-Control": "no-store",

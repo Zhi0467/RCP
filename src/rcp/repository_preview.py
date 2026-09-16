@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import html
+import inspect
 import json
-import os
 import re
 import shlex
-import stat
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
+from rcp import repository_window
 from rcp.config import Manifest
 from rcp.limits import (
     REPOSITORY_PREVIEW_MAX_BYTES,
     REPOSITORY_PREVIEW_TIMEOUT_SECONDS,
     REPOSITORY_PREVIEW_WINDOW_LINES,
 )
+from rcp.repository_window import WindowUnreadable, read_window
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnavailable
 
@@ -23,75 +24,6 @@ REPOSITORY_PREVIEW_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
-
-# Reads one bounded window. A file within the byte limit is returned whole so an
-# ordinary preview is unchanged; a larger one returns only the lines around the
-# cited line, because a cited line in a multi-gigabyte log is still evidence.
-_REMOTE_READER = """
-import json,os,stat,sys
-root,relative=sys.argv[1],sys.argv[2]
-limit,line,window=int(sys.argv[3]),int(sys.argv[4]),int(sys.argv[5])
-parts=relative.split('/')
-if (not relative or relative.startswith('/') or
-        any(part in ('','.','..') for part in parts)):
-    raise SystemExit(45)
-if not hasattr(os,'O_DIRECTORY') or not hasattr(os,'O_NOFOLLOW'):
-    raise SystemExit(45)
-directory_flags=(os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|
-                 getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_CLOEXEC',0))
-file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_CLOEXEC',0)
-fds=[]
-try:
-    fd=os.open(root,directory_flags); fds.append(fd)
-    for part in parts[:-1]:
-        fd=os.open(part,directory_flags,dir_fd=fd); fds.append(fd)
-    file_fd=os.open(parts[-1],file_flags,dir_fd=fd); fds.append(file_fd)
-    info=os.fstat(file_fd)
-    if not stat.S_ISREG(info.st_mode): raise SystemExit(45)
-    if info.st_size<=limit:
-        chunks=[];remaining=limit+1
-        while remaining:
-            chunk=os.read(file_fd,min(1024*1024,remaining))
-            if not chunk: break
-            chunks.append(chunk); remaining-=len(chunk)
-        data=b''.join(chunks)
-        sys.stdout.write(json.dumps({'start_line':1,'complete':len(data)<=limit,
-                                     'total_bytes':max(info.st_size,len(data))})+'\\n')
-        sys.stdout.flush()
-        sys.stdout.buffer.write(data[:limit])
-    else:
-        first=max(1,line-window) if line else 1
-        last=line+window if line else 2*window
-        anchor=line or first
-        collected=[];start=first;total=0;current=1;buffer=b'';value=b''
-        while current<=last:
-            index=buffer.find(b'\\n')
-            if index<0:
-                if len(value)<limit: value=(value+buffer)[:limit]
-                buffer=b'' if (current>=anchor and len(value)>=limit) else os.read(file_fd,1024*1024)
-                if buffer: continue
-                if not value: break
-            else:
-                if len(value)<limit: value=(value+buffer[:index])[:limit]
-                buffer=buffer[index+1:]
-            if current>=first:
-                collected.append(value); total+=len(value)+1
-                while total>limit and len(collected)>1 and start<anchor:
-                    total-=len(collected.pop(0))+1; start+=1
-                if total>limit and start>=anchor: break
-            value=b''
-            current+=1
-        sys.stdout.write(json.dumps(
-            {'start_line':start,'complete':False,'total_bytes':info.st_size})+'\\n')
-        sys.stdout.flush()
-        sys.stdout.buffer.write(b'\\n'.join(collected)[:limit])
-except FileNotFoundError:
-    raise SystemExit(44)
-except (NotADirectoryError,OSError):
-    raise SystemExit(45)
-finally:
-    for item in reversed(fds): os.close(item)
-"""
 
 
 @dataclass(frozen=True)
@@ -260,12 +192,6 @@ def _trim_partial_utf8_tail(data: bytes) -> bytes:
     return data
 
 
-def _window_bounds(line: int | None, window: int) -> tuple[int, int]:
-    if line is None:
-        return 1, 2 * window
-    return max(1, line - window), line + window
-
-
 def _relative_parts(relative_path: str) -> tuple[str, ...]:
     if not relative_path or PurePosixPath(relative_path).is_absolute():
         raise ValueError("Repository file path must be relative")
@@ -298,102 +224,30 @@ def _read_local_file(
     line: int | None,
     max_bytes: int,
 ) -> _SourceWindow:
-    repository_root = Path(root)
-    if not repository_root.is_absolute():
+    if not root.startswith("/"):
         raise ValueError("Local repository root must be absolute")
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        raise ValueError("This platform cannot preview repository files without following links")
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    descriptors: list[int] = []
     try:
-        directory_fd = os.open(repository_root, directory_flags)
-        descriptors.append(directory_fd)
-        for part in parts[:-1]:
-            directory_fd = os.open(part, directory_flags, dir_fd=directory_fd)
-            descriptors.append(directory_fd)
-        file_fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
-        descriptors.append(file_fd)
-        metadata = os.fstat(file_fd)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("Repository path is not a bounded regular file")
-        if metadata.st_size <= max_bytes:
-            chunks: list[bytes] = []
-            # A file still being appended can outgrow the size just measured, so the
-            # read stays bounded and the extra byte reports that growth honestly.
-            remaining = max_bytes + 1
-            while remaining:
-                chunk = os.read(file_fd, min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-            return _SourceWindow(
-                data=data[:max_bytes],
-                start_line=1,
-                complete=len(data) <= max_bytes,
-                total_bytes=max(metadata.st_size, len(data)),
-            )
-        first, last = _window_bounds(line, REPOSITORY_PREVIEW_WINDOW_LINES)
-        anchor = line or first
-        collected: list[bytes] = []
-        start = first
-        total = 0
-        current = 1
-        buffer = b""
-        value = b""
-        while current <= last:
-            index = buffer.find(b"\n")
-            # One line is held at most to the byte bound, so a file with no
-            # delimiter cannot grow this reader's memory with the file.
-            if index < 0:
-                if len(value) < max_bytes:
-                    value = (value + buffer)[:max_bytes]
-                # Once the cited line alone fills the budget, every later byte of it
-                # is discarded anyway, so stop rather than scan to its delimiter.
-                exhausted = current >= anchor and len(value) >= max_bytes
-                buffer = b"" if exhausted else os.read(file_fd, 1024 * 1024)
-                if buffer:
-                    continue
-                if not value:
-                    break
-            else:
-                if len(value) < max_bytes:
-                    value = (value + buffer[:index])[:max_bytes]
-                buffer = buffer[index + 1 :]
-            if current >= first:
-                collected.append(value)
-                total += len(value) + 1
-                # The cited line is the evidence, so leading context is what gives
-                # way to the byte bound; the header states the range that survived.
-                while total > max_bytes and len(collected) > 1 and start < anchor:
-                    total -= len(collected.pop(0)) + 1
-                    start += 1
-                if total > max_bytes and start >= anchor:
-                    break
-            value = b""
-            current += 1
-        return _SourceWindow(
-            data=b"\n".join(collected)[:max_bytes],
-            start_line=start,
-            complete=False,
-            total_bytes=metadata.st_size,
+        data, start_line, complete, total_bytes = read_window(
+            root,
+            parts,
+            line=line,
+            max_bytes=max_bytes,
+            window=REPOSITORY_PREVIEW_WINDOW_LINES,
         )
     except FileNotFoundError as exc:
         raise FileNotFoundError("Repository file not found") from exc
+    except WindowUnreadable as exc:
+        raise ValueError("Repository path is not a bounded regular file") from exc
     except NotADirectoryError as exc:
         raise ValueError("Repository path is not a regular file") from exc
     except OSError as exc:
         raise ValueError("Repository file cannot be previewed safely") from exc
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+    return _SourceWindow(
+        data=data,
+        start_line=start_line,
+        complete=complete,
+        total_bytes=total_bytes,
+    )
 
 
 def _read_remote_file(
@@ -412,7 +266,7 @@ def _read_remote_file(
         [
             "python3",
             "-c",
-            _REMOTE_READER,
+            inspect.getsource(repository_window),
             root,
             relative_path,
             str(max_bytes),
@@ -429,9 +283,9 @@ def _read_remote_file(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise StateUnavailable("Repository SSH host is unavailable") from exc
-    if result.returncode == 44:
+    if result.returncode == repository_window.MISSING_EXIT:
         raise FileNotFoundError("Repository file not found")
-    if result.returncode == 45:
+    if result.returncode == repository_window.UNREADABLE_EXIT:
         raise ValueError("Remote repository file cannot be previewed safely")
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()

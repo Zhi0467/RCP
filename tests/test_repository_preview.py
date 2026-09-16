@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import shlex
 import subprocess
@@ -10,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rcp.repository_preview as preview_module
+import rcp.repository_window as window_module
 from rcp.repository_preview import (
     RepositorySource,
     load_repository_source,
@@ -181,14 +183,14 @@ def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch
     root = Path(manifest.repository_map["repo-a"].path)
     (root / "one-line.log").write_bytes(b"x" * 20_000_000)
     reads = 0
-    real_read = preview_module.os.read
+    real_read = window_module.os.read
 
     def counted_read(fd: int, size: int) -> bytes:
         nonlocal reads
         reads += 1
         return real_read(fd, size)
 
-    monkeypatch.setattr(preview_module.os, "read", counted_read)
+    monkeypatch.setattr(window_module.os, "read", counted_read)
     source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024)
 
     assert source.text == "x" * 1024
@@ -216,7 +218,7 @@ def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
             repository_source_document(source, line=outside)
 
 
-def test_shipped_remote_reader_windows_the_same_way_as_the_local_reader(tmp_path) -> None:
+def test_the_shipped_reader_source_windows_the_same_way_as_the_local_call(tmp_path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     (root / "trajectory.jsonl").write_text(_numbered_lines(500), encoding="utf-8")
@@ -225,7 +227,7 @@ def test_shipped_remote_reader_windows_the_same_way_as_the_local_reader(tmp_path
         [
             sys.executable,
             "-c",
-            preview_module._REMOTE_READER,
+            inspect.getsource(window_module),
             str(root),
             "trajectory.jsonl",
             "3000",
@@ -247,7 +249,7 @@ def test_shipped_remote_reader_windows_the_same_way_as_the_local_reader(tmp_path
         [
             sys.executable,
             "-c",
-            preview_module._REMOTE_READER,
+            inspect.getsource(window_module),
             str(root),
             "trajectory.jsonl",
             "300",
@@ -265,7 +267,9 @@ def test_shipped_remote_reader_windows_the_same_way_as_the_local_reader(tmp_path
     assert len(tight_payload) <= 300
 
 
-def test_repository_preview_route_windows_an_oversized_file(manifest, tmp_path) -> None:
+def test_repository_preview_route_windows_an_oversized_file(
+    manifest, tmp_path, monkeypatch
+) -> None:
     source_path = Path(manifest.repository_map["repo-b"].path) / "trajectory.jsonl"
     oversized = preview_module.REPOSITORY_PREVIEW_MAX_BYTES // 10 + 1000
     source_path.write_text(_numbered_lines(oversized), encoding="utf-8")
@@ -281,6 +285,25 @@ def test_repository_preview_route_windows_an_oversized_file(manifest, tmp_path) 
     assert 'id="L250" class="line selected"' in response.text
     assert 'id="L150" class="line"' in response.text
     assert "line 0149" not in response.text
+
+    # The availability preflight must not seek the cited line a second time.
+    reads = 0
+    real_read = window_module.os.read
+
+    def counted_read(fd: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        return real_read(fd, size)
+
+    monkeypatch.setattr(window_module.os, "read", counted_read)
+    head = client.head(
+        f"/api/projects/{app.state.default_project_id}/repositories/files/preview",
+        params={"path": str(source_path), "line": 250},
+    )
+
+    assert head.status_code == 200
+    assert head.content == b""
+    assert reads <= 2
 
 
 def test_remote_repository_source_uses_multiplexed_ssh_reader(
