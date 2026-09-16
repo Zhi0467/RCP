@@ -215,7 +215,10 @@ active only after a mechanically successful handoff; automatic work never
 silently switches or starts fresh. The switch is offered only where the actor
 can accept a new binding: a rebinding starts a clean native session, which an
 Auto-research worker never gets and which a stopping episode refuses from
-anyone, so neither shows one beside the exact Retry they do permit. Because the switch exists to change the binding, it holds its
+anyone, so neither shows one beside the exact Retry they do permit. A turn that
+belongs to no episode carries its switch in its own task drawer, which is both
+its only recovery surface and the only one where the execution machine is free
+to move. Because the switch exists to change the binding, it holds its
 submission until the selection actually differs from the one that failed, and
 the execution machine is part of that selection wherever the recovery is free to
 move it. A run that can retry unchanged keeps its own plain Retry and never

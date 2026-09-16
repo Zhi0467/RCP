@@ -917,6 +917,46 @@ test("retry keeps the original task boundary and exposes provider configuration"
   assert.doesNotMatch(html, /<button class="button primary" disabled=""[^>]*>.*Retry<\/button>/s);
 });
 
+test("only a standalone turn gets its switch in the task drawer", () => {
+  const base = {
+    operation_id: "task",
+    project_id: "project",
+    kind: "node_chat",
+    status: "failed",
+    attempt: 1,
+    created_at: "2026-09-16T00:00:00Z",
+    can_retry: true,
+    can_pause: false,
+    can_resume: false,
+    episode_id: null,
+    request: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
+  };
+  const render = (task) =>
+    renderToStaticMarkup(
+      React.createElement(AgentTaskInspector, {
+        tasks: [task],
+        task,
+        loading: false,
+        actionBusy: false,
+        onSelect() {},
+        onPause() {},
+        onResume() {},
+        onRetry() {},
+        onSwitchProvider() {},
+        onClose() {},
+      }),
+    );
+
+  // Its drawer is the only recovery surface it has, and the only one whose
+  // machine may move.
+  assert.match(render(base), /Switch provider…/);
+  // An episode-bound turn keeps its switch on the card that knows whether that
+  // episode still admits one; seed and refresh open the dialog through Retry.
+  assert.doesNotMatch(render({ ...base, episode_id: "episode" }), /Switch provider…/);
+  assert.doesNotMatch(render({ ...base, kind: "seed" }), /Switch provider…/);
+  assert.doesNotMatch(render({ ...base, can_retry: false }), /Switch provider…/);
+});
+
 test("Experiment provider switch exposes provider controls but locks the execution machine", () => {
   const html = renderToStaticMarkup(
     React.createElement(RunDialog, {
