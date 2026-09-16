@@ -1397,8 +1397,16 @@ class AgentLauncher:
                 assert stderr_task is not None
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
+            # A host with no python3 ran none of RCP's helpers, so the wrapper
+            # never started and there is no group to stop. The probe that would
+            # say so is itself python3, and its unknown answer would otherwise
+            # be reported as unverifiable process state -- the one message that
+            # hides the actual prerequisite from the human who can install it.
+            host_lacks_interpreter = bool(host and missing_remote_interpreter(return_code, stderr))
             if host and remote_pid_file:
-                if journaled_remote and prompt_delivered and transport_failure(return_code, host):
+                if host_lacks_interpreter:
+                    remote_stopped = True
+                elif journaled_remote and prompt_delivered and transport_failure(return_code, host):
                     remote_stopped = await asyncio.to_thread(
                         AgentProcessControl.remote_stopped, host, remote_pid_file
                     )
@@ -1422,7 +1430,9 @@ class AgentLauncher:
                     )
                     return
                 detail = (
-                    pre_prompt_error
+                    missing_remote_interpreter_detail(host)
+                    if host_lacks_interpreter
+                    else pre_prompt_error
                     or stderr
                     or (
                         _exit_reason(provider, return_code, host)
@@ -1497,7 +1507,7 @@ class AgentLauncher:
                 # human gets for a machine that simply cannot run RCP's helpers.
                 detail = (
                     missing_remote_interpreter_detail(host)
-                    if host and missing_remote_interpreter(return_code, stderr)
+                    if host_lacks_interpreter
                     else stderr or _exit_reason(provider, return_code, host)
                 )
                 yield AgentEvent(event="error", text=detail)

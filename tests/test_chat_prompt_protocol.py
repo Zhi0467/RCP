@@ -922,3 +922,93 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
     assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]
+
+
+def test_collection_does_not_repeat_a_commit_its_source_already_made(tmp_path) -> None:
+    """A turn can commit its session context and still never reach a terminal status.
+
+    Restart marks that attempt interrupted and collection replays it. The swap
+    it would repeat still expects the pre-turn digest, while the row already
+    holds the one that commit wrote, so every collection attempt would fail on a
+    comparison against its own predecessor's success.
+    """
+
+    from rcp.runs import chat as chat_module
+
+    store = AppStore(tmp_path / "state.sqlite3")
+    request = RunRequest(
+        provider="codex",
+        run_on="workstation",
+        chat_scope="project",
+        chat_id="chat-1",
+        message="Do the work.",
+        mode="work",
+    )
+
+    def _task(operation_id: str, parent: str | None = None) -> AgentTaskRecord:
+        return AgentTaskRecord(
+            operation_id=operation_id,
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Running",
+            parent_operation_id=parent,
+        )
+
+    def _created(operation_id: str, *, cause: str, parent: bool) -> None:
+        store.record_agent_task_receipt(
+            operation_id,
+            "operation_created",
+            {
+                "kind": "project_chat",
+                "attempt": 1,
+                "has_parent": parent,
+                "continuation_cause": cause,
+                "resumed": parent,
+            },
+        )
+
+    store.create_agent_task(_task("source-turn"))
+    _created("source-turn", cause="fresh", parent=False)
+    candidate = chat_module._ChatPromptCandidate(
+        snapshot=chat_module._ChatMasterSnapshot(
+            master_context_version=CHAT_MASTER_CONTEXT_VERSION,
+            master_context_path="/inputs/master.md",
+            contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
+            values={},
+        ),
+        expected_snapshot_sha256=None,
+    )
+    content = candidate.model_dump_json(indent=2)
+    store.record_agent_task_contract(
+        "source-turn",
+        chat_module._CHAT_PROMPT_STATE_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+    def _execution(operation_id: str, continuation: str) -> AgentTaskExecution:
+        execution = AgentTaskExecution(
+            operation_id=operation_id, store=store, control=AgentProcessControl()
+        )
+        execution.continuation = continuation
+        return execution
+
+    chat_module._commit_chat_prompt_state(
+        _execution("source-turn", "fresh"), request, "native-session"
+    )
+    committed = store.chat_session_context("codex", "workstation", "native-session")
+    assert committed is not None and committed.committed_operation_id == "source-turn"
+
+    # The controller stops here: restart interrupts the attempt that committed,
+    # and recovery adopts its finished turn.
+    store.interrupt_active_agent_tasks()
+    store.create_agent_task(_task("collection-child", "source-turn"), continuation_cause="collect")
+    _created("collection-child", cause="collect", parent=True)
+    chat_module._commit_chat_prompt_state(
+        _execution("collection-child", "collect"), request, "native-session"
+    )
+    assert store.chat_session_context("codex", "workstation", "native-session") == committed

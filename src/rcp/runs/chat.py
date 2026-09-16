@@ -305,6 +305,21 @@ def _commit_chat_prompt_state(
     if request.provider is None or request.run_on is None:
         raise ValueError("The chat provider and execution machine are unavailable at commit.")
     snapshot_json = candidate.snapshot.model_dump_json()
+    snapshot_sha256 = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+    committed = execution.store.chat_session_context(
+        request.provider, request.run_on, native_session_id
+    )
+    if (
+        committed is not None
+        and committed.snapshot_sha256 == snapshot_sha256
+        and _logical_chat_turn_operation_id(execution.store, committed.committed_operation_id)
+        == logical_operation_id
+    ):
+        # This logical turn already committed this candidate, and the controller
+        # stopped before its task could reach a terminal status. The swap it
+        # would repeat still expects the pre-turn digest, so repeating it would
+        # compare against the value that commit itself wrote and refuse for good.
+        return
     execution.store.commit_chat_session_context(
         provider=request.provider,
         execution_machine=request.run_on,
@@ -315,7 +330,7 @@ def _commit_chat_prompt_state(
         node_id=request.node_id,
         protocol_version=candidate.snapshot.master_context_version,
         snapshot_json=snapshot_json,
-        snapshot_sha256=hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
+        snapshot_sha256=snapshot_sha256,
         committed_operation_id=execution.operation_id,
         expected_snapshot_sha256=candidate.expected_snapshot_sha256,
     )

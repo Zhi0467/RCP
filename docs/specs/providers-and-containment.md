@@ -368,7 +368,10 @@ symlink-safe directory descriptors, atomic replace with fsync, and non-blocking
 multi-stream draining that a shell cannot provide. Any `python3` from the last
 several years is enough, and nothing is installed on the host. A machine without
 one cannot run agent turns, and is told so by name rather than through the
-shell's own `command not found`.
+shell's own `command not found`. That name is reached before the process probe,
+which is itself one of those helpers and could only report an unverifiable
+process state; the pass settles rather than fencing the stage against the retry
+that follows installing the interpreter.
 
 The live pipe remains the control channel for provider startup, broker commands,
 validation, steering acknowledgments, and Stop. The execution-host journal
@@ -378,8 +381,11 @@ later input, so a completed provider cannot remain alive merely because RCP
 stopped draining stdout. It grants no graph authority and runs no validator.
 
 Collection recovers an eligible undelivered remote Work or episode turn without
-launching a provider. It waits while the original provider is alive or its state
-is unknown; after confirmed process absence it reads that exact pass's completed
+launching a provider. Eligibility requires durable evidence that a turn was
+handed to that pass. A pass is recorded before its SSH command runs, so a stop
+inside that window leaves a reservation with no wrapper and no turn; such a
+reservation is retried, never collected. It waits while the original provider is
+alive or its state is unknown; after confirmed process absence it reads that exact pass's completed
 journals. It never forces that absence, because a group stopped mid-write would
 lose the turn being recovered. A provider found alive reports how long it has
 written nothing, which is the only thing distinguishing a long tool call from a
@@ -390,7 +396,11 @@ alive, and withdraws as soon as that pass is confirmed stopped. The operational 
 supply their completed deliverables and usage without replacing that answer.
 A stopped pass without protocol completion is incomplete, not evidence
 that work should be rerun. Collection preserves the original authorizer,
-capability, host, stage, native session, graph target, and episode invocation.
+capability, host, stage, native session, graph target, and episode invocation,
+reading them from what the turn recorded rather than resolving the surface's
+profile again: a machine edited while the link was down must not move the host
+out from under a journal that one host already wrote. A logical turn that
+already committed its chat-session context is not asked to commit it again.
 Existing decoding and finalization own its answer, accounting, and Patch Apply;
 collection never runs an automatic provider correction. Rejected Work Patches
 enter existing graph repair, subject to that surface's repair contract.

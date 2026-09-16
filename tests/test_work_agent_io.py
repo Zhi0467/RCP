@@ -798,3 +798,40 @@ async def test_collect_graph_repair_keeps_patch_only_purpose_and_applies_once(
         "",
     ]
     assert records[-1]["operationId"] == repair.operation_id
+
+
+@pytest.mark.asyncio
+async def test_collection_resolves_from_the_stage_its_turn_is_bound_to(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """A machine edited during the disconnect must not move a finished turn's host.
+
+    Collection starts no provider: it reads a journal one named host already
+    wrote. Deriving that host from the current manifest again lets an edit made
+    while the link was down reject the saved machine or resolve a different one,
+    after which remote-stage validation refuses the stage the turn is bound to
+    and the completed result is discarded rather than delivered.
+    """
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    request = _request()
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="collected-turn",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    execution.continuation = "collect"
+    execution.stage_host = "the-host-the-turn-ran-on"
+    execution.stage_root = "/tmp/rcp-run.bound-stage"
+    monkeypatch.setattr(
+        service,
+        "resolve_agent_profile",
+        lambda *_args, **_kwargs: pytest.fail("Collection must not re-resolve the launch profile"),
+    )
+
+    resolved = work_module._resolve_work_execution(service, request, execution)
+
+    assert resolved.execution_host == "the-host-the-turn-ran-on"
+    assert resolved.request == request

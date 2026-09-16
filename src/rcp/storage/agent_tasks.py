@@ -94,6 +94,10 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "remote_provider_stopped",
     "remote_provider_still_running",
     "provider_collection_incomplete",
+    # Collection reads this to know a turn was actually handed to the pass it
+    # would adopt. Pruned, a finished turn would look like a reservation that
+    # never launched and its result would be discarded.
+    "provider_runtime_selected",
     # Collection of a Retry reads this to know which deliverables the attempt
     # inherited rather than wrote. Pruned, a stale Patch would read as new.
     "retry_deliverable_baseline",
@@ -2186,24 +2190,27 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
-    def remote_provider_start_receipts(self, operation_id: str) -> list[AgentTaskReceiptRecord]:
-        """Every journalled pass this task opened, with no projection ceiling.
+    def remote_provider_pass_receipts(
+        self, operation_id: str, category: str
+    ) -> list[AgentTaskReceiptRecord]:
+        """One remote-pass category for this task, with no projection ceiling.
 
         `agent_task_receipts` pages the oldest receipts for display. Collection
-        reads these to find the pass whose journal it must adopt, and a turn that
-        ran enough compute commands to fill that page would hide its own latest
-        pass behind them -- replaying an earlier one and retaining a Patch the
-        correction had already replaced.
+        reads which pass to adopt and which process RCP last saw it under, and a
+        turn that ran enough compute commands to fill that page would hide both
+        behind them -- replaying an earlier pass and retaining a Patch the
+        correction had already replaced, or withholding the Stop control from a
+        provider still wedged on the host.
         """
 
         with self.connection() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM graph_run_receipts
-                WHERE operation_id = ? AND category = 'remote_provider_started'
+                WHERE operation_id = ? AND category = ?
                 ORDER BY receipt_id ASC
                 """,
-                (operation_id,),
+                (operation_id, category),
             ).fetchall()
         receipts = []
         for row in rows:

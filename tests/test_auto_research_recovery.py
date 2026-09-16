@@ -734,6 +734,9 @@ def test_auto_research_collection_admission_preserves_actor_and_waits_without_re
             store.begin_remote_provider_pass(
                 execution.operation_id, "test-host", str(stage), pid_file, journaled=True
             )
+            # What a launch announces when it hands the turn to the provider, and
+            # what marks this pass as one a turn actually reached.
+            yield _sse(AgentEvent(event="runtime", text="codex.exec-json.v1"))
             if session_checkpointed:
                 yield _sse(AgentEvent(event="session", session_id="original-session"))
             raise RemoteStageUnreachable("SSH delivery was interrupted")
@@ -838,6 +841,9 @@ def test_auto_research_collect_finishes_delivery_behind_its_durable_ending(
             store.begin_remote_provider_pass(
                 execution.operation_id, "test-host", str(stage), pid_file, journaled=True
             )
+            # What a launch announces when it hands the turn to the provider, and
+            # what marks this pass as one a turn actually reached.
+            yield _sse(AgentEvent(event="runtime", text="codex.exec-json.v1"))
             yield _sse(AgentEvent(event="session", session_id="original-session"))
             raise RemoteStageUnreachable("Delivery interrupted after ending.")
         assert execution.continuation == "collect"

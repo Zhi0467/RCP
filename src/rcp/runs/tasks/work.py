@@ -234,6 +234,19 @@ def _resolve_work_execution(
     execution: AgentTaskExecution | None,
 ) -> _ResolvedWorkExecution:
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
+    if execution is not None and execution.continuation == "collect":
+        # Collection starts no provider: it reads a journal one named host
+        # already wrote. Resolving the profile again would let a machine edited
+        # during the disconnect move the host out from under that stage, and a
+        # finished turn would be discarded rather than delivered. The saved
+        # request already carries the launch this turn actually ran under.
+        return _ResolvedWorkExecution(
+            request=request,
+            execution_machine_alias=request.run_on or "",
+            execution_host=execution.stage_host or "",
+            provider_binary=None,
+            revision_preflight=_preflight_result_view_revision(request, execution),
+        )
     profile = service.resolve_agent_profile(
         surface,
         provider=request.provider,

@@ -68,7 +68,9 @@ def collected_task_operation_id(execution: AgentTaskExecution) -> str:
 def journal_pid_files(store: AppStore, record: AgentTaskRecord) -> list[str]:
     record = collection_source(store, record)
     result = []
-    for receipt in store.remote_provider_start_receipts(record.operation_id):
+    for receipt in store.remote_provider_pass_receipts(
+        record.operation_id, "remote_provider_started"
+    ):
         payload = receipt.payload
         if payload.get("journal_version") != 1:
             return []
@@ -147,9 +149,28 @@ def _can_collect(store: AppStore, record: AgentTaskRecord) -> bool:
         )
         and record.stage_host
         and record.stage_root
+        and _prompt_reached_the_provider(store, record)
         and collectible_surface(store, collection_source(store, record))
         and not store.agent_task_has_continuation(record.operation_id)
         and journal_pid_file(store, record)
+    )
+
+
+def _prompt_reached_the_provider(store: AppStore, record: AgentTaskRecord) -> bool:
+    """Whether a turn was ever handed to the pass this would adopt.
+
+    A pass is reserved before its SSH command runs, so that a live group nobody
+    wrote down can never exist. RCP stopping inside that window leaves the
+    reservation behind with no wrapper, no pidfile and no turn: every probe of
+    it answers unknown, and offering collection would keep asking forever. The
+    runtime checkpoint is written at prompt delivery and nowhere else, so its
+    absence says the prompt never left this machine. The task row carries a
+    runtime from admission onwards; only this receipt marks the moment a turn
+    was handed over.
+    """
+
+    return store.agent_task_has_receipt(
+        collection_source(store, record).operation_id, "provider_runtime_selected"
     )
 
 
@@ -162,11 +183,10 @@ def recorded_provider_identity(
     sighting that could not say which one it was does not authorize one later.
     """
 
-    for receipt in store.agent_task_receipts(source.operation_id):
-        if (
-            receipt.category == "remote_provider_still_running"
-            and receipt.payload.get("pid_file") == pid_file
-        ):
+    for receipt in store.remote_provider_pass_receipts(
+        source.operation_id, "remote_provider_still_running"
+    ):
+        if receipt.payload.get("pid_file") == pid_file:
             identity = receipt.payload.get("identity")
             if isinstance(identity, str) and identity:
                 return identity

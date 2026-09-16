@@ -53,6 +53,9 @@ def _failed_turn(tmp_path, *, status="failed", failure_kind="transport_lost"):
     store.begin_remote_provider_pass(
         record.operation_id, "test-host", str(root), str(pid), journaled=True
     )
+    store.checkpoint_agent_task_runtime(
+        record.operation_id, provider="codex", runtime_id="codex.exec-json.v1"
+    )
     if status == "paused":
         store.pause_agent_task(record.operation_id)
     elif status == "interrupted":
@@ -889,3 +892,77 @@ def test_a_collected_retry_refuses_the_patch_it_only_inherited(tmp_path):
     baseline = _capture_retry_deliverable_baseline(turn)
     assert baseline.patch_digest == inherited
     assert baseline.experiment_watch_digests == {"out": "d"}
+
+
+def test_a_reservation_that_never_launched_is_retried_not_collected(tmp_path):
+    """A pass is written down before its SSH command runs, so one can outlive nothing.
+
+    RCP stopping inside that window leaves a start receipt with no wrapper, no
+    pidfile and no turn. Every probe of it answers unknown, so offering
+    collection would keep rescheduling the same attempt and divert the ordinary
+    Retry that would actually recover the work.
+    """
+
+    store = AppStore(tmp_path / "state.sqlite3")
+    root = tmp_path / "stage"
+    root.mkdir(mode=0o700)
+    pid = root / "agent.pid"
+    record = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="reserved",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={"provider": "codex", "mode": "work"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Running",
+            stage_host="test-host",
+            stage_root=str(root),
+            native_session_id="native-thread",
+        )
+    )
+    store.begin_remote_provider_pass(
+        record.operation_id, "test-host", str(root), str(pid), journaled=True
+    )
+    store.interrupt_active_agent_tasks()
+    reserved = store.agent_task(record.operation_id)
+    assert not can_collect(store, reserved)
+
+    # The same reservation, once its turn was actually handed over.
+    store.checkpoint_agent_task_runtime(
+        record.operation_id, provider="codex", runtime_id="codex.exec-json.v1"
+    )
+    assert can_collect(store, store.agent_task(record.operation_id))
+
+
+def test_the_stop_identity_is_found_past_the_receipt_display_ceiling(tmp_path):
+    """A wedged provider must stay stoppable however much the turn recorded.
+
+    The sighting that authorizes a delayed stop is written after everything the
+    turn did. Read through the oldest-first display page, a turn that filled it
+    with its own compute commands would hide that sighting, and the Stop control
+    would be withheld from the one provider that still needs it.
+    """
+
+    from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT
+
+    store, record, pid = _failed_turn(tmp_path)
+    for index in range(AGENT_TASK_RECEIPT_LIST_LIMIT):
+        store.record_agent_task_receipt(
+            record.operation_id, "compute_command_started", {"index": index}, tier="summary"
+        )
+    store.record_agent_task_receipt(
+        record.operation_id,
+        "remote_provider_still_running",
+        {"pid_file": str(pid), "identity": "boot:4242"},
+        tier="summary",
+    )
+
+    assert not any(
+        receipt.category == "remote_provider_still_running"
+        for receipt in store.agent_task_receipts(record.operation_id)
+    )
+    current = store.agent_task(record.operation_id)
+    assert recorded_provider_identity(store, current, str(pid)) == "boot:4242"
+    assert can_stop_remote_provider(store, current)

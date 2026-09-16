@@ -153,7 +153,11 @@ on an old control map and never implements transition rules.
 Human edits that the backend manifest proves rule-inert may update a local draft
 immediately. A possible trigger, absent manifest, or stale tag previews through
 the backend. A preview conflict retains the invalid edit and last valid draft
-separately. Sync revalidates the complete batch against live canonical main and
+separately. A staged candidate survives a poll that moved no canonical state
+while its replacement is in flight, so the view never falls back to canonical for
+the length of one request; a preview that is refused or fails leaves no candidate
+behind, because nothing asks again and the stale one would shadow polled state
+for as long as the edit stays staged. Sync revalidates the complete batch against live canonical main and
 commits once or not at all.
 
 Human Sync accepts built-in and active custom nodes through the existing

@@ -2335,6 +2335,19 @@ export default function App() {
     const requestedProjectId = projectId;
     const request = toHumanSyncRequest(normalizedPreviewDraft, graph);
     let cancelled = false;
+    // A preview that could not be established leaves nothing to show. Retaining
+    // the previous projection is how an unchanged-revision poll avoids flicker
+    // while its replacement is in flight, but nothing re-requests after a
+    // refusal: the retained candidate would then shadow freshly polled
+    // operational state for as long as the draft stays staged. The conflict
+    // still stands beside canonical state, so Sync stays refused.
+    const refusePreview = (conflict: string) =>
+      dispatchProjectSession({
+        kind: "draft_preview_changed",
+        projection: null,
+        conflict,
+        pending: false,
+      });
     void api<TransitionPreviewResponse>(graphPath(`${apiBase}/sync/preview`), {
       method: "POST",
       body: JSON.stringify(request),
@@ -2344,22 +2357,12 @@ export default function App() {
         const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
-          dispatchProjectSession({
-            kind: "draft_preview_changed",
-            projection: getProjectSessionState().draftTransitionProjection,
-            conflict: "Staged transition preview omitted its canonical base head.",
-            pending: false,
-          });
+          refusePreview("Staged transition preview omitted its canonical base head.");
           return;
         }
         const traceMismatch = previewTraceMismatch(response, projection);
         if (traceMismatch) {
-          dispatchProjectSession({
-            kind: "draft_preview_changed",
-            projection: getProjectSessionState().draftTransitionProjection,
-            conflict: traceMismatch,
-            pending: false,
-          });
+          refusePreview(traceMismatch);
           return;
         }
         const currentProjection: ProjectTransitionProjection<
@@ -2383,12 +2386,7 @@ export default function App() {
           manifest_ruleset_tag: null,
         });
         if (structuralRefusal) {
-          dispatchProjectSession({
-            kind: "draft_preview_changed",
-            projection: getProjectSessionState().draftTransitionProjection,
-            conflict: `Staged transition preview was refused: ${structuralRefusal}.`,
-            pending: false,
-          });
+          refusePreview(`Staged transition preview was refused: ${structuralRefusal}.`);
           return;
         }
         if (
@@ -2415,12 +2413,7 @@ export default function App() {
           manifest_ruleset_tag: matchingManifestTag,
         });
         if (refusal) {
-          dispatchProjectSession({
-            kind: "draft_preview_changed",
-            projection: getProjectSessionState().draftTransitionProjection,
-            conflict: `Staged transition preview was refused: ${refusal}.`,
-            pending: false,
-          });
+          refusePreview(`Staged transition preview was refused: ${refusal}.`);
           return;
         }
         const next = reduceProjectTransitionProjection(currentProjection, {
@@ -2438,12 +2431,7 @@ export default function App() {
       })
       .catch((error) => {
         if (cancelled || !isActiveGraph(requestedProjectId)) return;
-        dispatchProjectSession({
-          kind: "draft_preview_changed",
-          projection: getProjectSessionState().draftTransitionProjection,
-          conflict: error instanceof Error ? error.message : String(error),
-          pending: false,
-        });
+        refusePreview(error instanceof Error ? error.message : String(error));
       });
     return () => {
       cancelled = true;

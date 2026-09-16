@@ -486,3 +486,51 @@ async def test_a_machine_without_python_names_the_prerequisite_not_the_shell(
     assert "no python3 on PATH" in failure.text
     assert "fixture" in failure.text
     assert "command not found" not in failure.text
+
+
+@pytest.mark.asyncio
+async def test_the_python_prerequisite_is_named_before_a_probe_that_needs_python(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """The probe that would report the missing interpreter is itself that interpreter.
+
+    Asked on a host with no `python3`, it can only answer that the process state
+    is unknown, and an unknown state reports as blocked recovery -- the one
+    message that hides the prerequisite from the human who can install it. The
+    shell already said what was missing, so nothing needs to be asked.
+    """
+
+    from rcp.agents import AgentProcessControl
+
+    script = (
+        "import sys; sys.stderr.write('bash: line 1: python3: command not found\\n'); sys.exit(127)"
+    )
+    monkeypatch.setattr(
+        transported_launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    for probe in ("remote_stopped", "_confirm_remote_stopped"):
+        monkeypatch.setattr(
+            AgentProcessControl,
+            probe,
+            lambda *_args, **_kwargs: pytest.fail("A host with no python3 cannot answer a probe"),
+        )
+
+    events = [
+        event
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="fixture",
+            remote_pid_file=str(tmp_path / "provider.pid"),
+        )
+    ]
+
+    failure = next(event for event in events if event.event == "error")
+    assert "no python3 on PATH" in failure.text
+    assert "Recovery is blocked" not in failure.text
+    # The pass must settle too, or the stage stays fenced against the retry that
+    # follows the human installing the interpreter.
+    exit_event = next(event for event in events if event.event == "provider_exit")
+    assert json.loads(exit_event.text)["remote_process_stopped"] is True
