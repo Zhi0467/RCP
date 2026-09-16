@@ -764,6 +764,10 @@ def _awaiting_decision_ids(store: AppStore, episode: EpisodeRecord) -> list[str]
     agent permitted to meet it is the orchestrator asleep behind it, so the
     human owes the choice. Read from the condition rather than the branch
     graph, which this projection does not load.
+
+    A worker's own condition is excluded: the orchestrator is awake behind that
+    one and may decide it under the episode's branch authority, so naming it
+    here would tell a human they are owed a choice nobody is waiting on them for.
     """
 
     if episode.mode != "auto_research":
@@ -773,6 +777,7 @@ def _awaiting_decision_ids(store: AppStore, episode: EpisodeRecord) -> list[str]
             watcher.condition.node_id
             for watcher in store.episode_watchers(episode.episode_id)
             if isinstance(watcher, GraphWatcherRecord)
+            and watcher.worker_id is None
             and watcher.status == "active"
             and isinstance(watcher.condition, NodeStatusGraphCondition)
             and "decided" in watcher.condition.status_in

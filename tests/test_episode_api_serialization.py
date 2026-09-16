@@ -1083,3 +1083,52 @@ def test_a_parked_episode_names_the_decisions_only_a_human_can_settle(tmp_path) 
     projected = serialize_episode(store, "project", episode, include_graph_branch=False)
 
     assert projected.awaiting_decision_ids == ["decision/budget", "decision/scale"]
+
+
+def test_a_workers_own_decision_wake_is_not_a_choice_owed_to_a_human(tmp_path) -> None:
+    """The orchestrator is awake behind a worker's wake, and may settle it itself.
+
+    A child Work task arms its graph conditions on the same episode, so they
+    arrive here beside the orchestrator's own. Naming one in the human queue
+    would report a choice nobody is waiting on a human for: the episode's branch
+    authority covers exactly this Decision.
+    """
+
+    from rcp.storage.models import GraphWatcherRecord, WatcherContinuation
+    from tests.test_auto_research_children_storage import _auto_parent, _work_pair
+    from tests.test_auto_research_children_storage import _project as _seed_child_project
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _seed_child_project(store)
+    episode, root = _auto_parent(store)
+    route, task = _work_pair(store, episode, root, worker_id="worker-decides")
+    store.create_auto_research_child_work(route, task)
+
+    for origin, worker_id, node_id in (
+        (root.operation_id, None, "decision/owed"),
+        (task.operation_id, route.worker_id, "decision/worker-owned"),
+    ):
+        store.create_watchers(
+            [
+                GraphWatcherRecord(
+                    watcher_id=f"wake-{node_id}",
+                    project_id=episode.project_id,
+                    origin_operation_id=origin,
+                    origin_task_kind="auto_research" if worker_id is None else "node_chat",
+                    chat_id=f"chat-{node_id}",
+                    episode_id=episode.episode_id,
+                    worker_id=worker_id,
+                    graph_target=episode.graph_target,
+                    continuation=WatcherContinuation.model_validate(
+                        {"provider": "codex", "run_on": "local"}
+                    ),
+                    condition={"node_id": node_id, "status_in": ["decided"]},
+                    armed_revision=0,
+                    created_at=store.now(),
+                )
+            ]
+        )
+
+    projected = serialize_episode(store, episode.project_id, episode, include_graph_branch=False)
+
+    assert projected.awaiting_decision_ids == ["decision/owed"]
