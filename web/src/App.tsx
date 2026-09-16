@@ -5037,15 +5037,21 @@ function isExperimentLoopRecovery(task: AgentTask): boolean {
   return task.request.patch_kind === "experiment_loop";
 }
 
+/**
+ * A turn bound to an episode keeps the machine its watchers and stage live on;
+ * a standalone turn may move to a reachable one. Everything else is rebindable
+ * on every recovery.
+ */
 export function taskRetryRequestBody(
-  _task: AgentTask,
+  task: AgentTask,
   config: AgentRunConfig,
-): Omit<AgentRunConfig, "run_on"> {
-  return {
+): AgentRunConfig | Omit<AgentRunConfig, "run_on"> {
+  const rebound = {
     provider: config.provider,
     model: config.model,
     reasoning: config.reasoning,
   };
+  return task.episode_id ? rebound : { ...rebound, run_on: config.run_on };
 }
 
 function isSetupRoute(): boolean {

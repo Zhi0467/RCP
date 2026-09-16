@@ -23,7 +23,7 @@ const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/type
 
 after(() => server.close());
 
-test("no retry submits run_on, whatever kind of task it recovers", () => {
+test("a retry rebinds everything but an episode's own execution machine", () => {
   const config = {
     provider: "claude",
     model: "claude-sonnet-4-5",
@@ -33,12 +33,16 @@ test("no retry submits run_on, whatever kind of task it recovers", () => {
   const rebound = { provider: "claude", model: "claude-sonnet-4-5", reasoning: "high" };
 
   for (const task of [
-    { kind: "node_chat", request: { patch_kind: "experiment_loop" } },
-    { kind: "auto_research", request: {} },
-    { kind: "node_chat", request: {} },
-    { kind: "seed", request: {} },
+    { kind: "node_chat", episode_id: "exp-1", request: { patch_kind: "experiment_loop" } },
+    { kind: "auto_research", episode_id: "auto-1", request: {} },
   ]) {
     assert.deepEqual(taskRetryRequestBody(task, config), rebound);
+  }
+  for (const task of [
+    { kind: "node_chat", episode_id: null, request: {} },
+    { kind: "seed", episode_id: null, request: {} },
+  ]) {
+    assert.deepEqual(taskRetryRequestBody(task, config), { ...rebound, run_on: "cluster" });
   }
 });
 

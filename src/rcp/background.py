@@ -591,9 +591,11 @@ class BackgroundAgentTasks:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
         # Provider, model, and reasoning are one niche and a human may change
-        # any of them on any recovery. The execution machine is not: moving it
-        # moves the stage and write roots the turn is bound to.
-        if run_on is not None and run_on != original.run_on:
+        # any of them on any recovery. The execution machine is different only
+        # where an episode is bound to it: its watchers, stage, and children
+        # live on that machine and moving the turn would orphan them. A
+        # standalone turn owns nothing there, so it may move to a reachable one.
+        if run_on is not None and run_on != original.run_on and previous.episode_id is not None:
             raise ValueError("Recovery cannot change its pinned execution machine.")
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(

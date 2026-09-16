@@ -1607,7 +1607,7 @@ def retry_auto_research_task(
     }
     # A rebound recovery cannot resume the session the old binding owns, so it
     # starts fresh the way a spent session or a missing checkpoint already does.
-    # The machine never appears here; `retry` pins it for every kind.
+    # The machine never appears here; `retry` pins it for every episode task.
     rebound = {
         key: value
         for key, value in requested.items()
