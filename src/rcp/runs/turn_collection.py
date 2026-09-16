@@ -396,5 +396,10 @@ async def stream_collected_turn(
             "correction_incomplete": collected.correction_error is not None,
         },
     )
+    # `read_collected_turn` refuses unless this pass is proven stopped, so the
+    # receipt it left open is now answerable. The incomplete path already closes
+    # it; a success that did not would leave the stage protected from sweep and
+    # projected as live until some later turn happened to reuse the workspace.
+    execution.store.finish_remote_provider_pass(collected.source_operation_id, collected.pid_file)
     for event in events:
         yield event

@@ -446,6 +446,10 @@ async def test_collection_stream_restores_only_finished_patch_and_sets_repair_ga
         "Finished the original work."
     ]
     assert events[-1].event == "done"
+    # A collection that succeeded proved the pass stopped, so it must answer the
+    # start receipt it read. Leaving it open keeps the stage protected from
+    # sweep and projected as live until some later turn reuses the workspace.
+    assert store.unresolved_remote_provider_passes("test-host", record.stage_root) == []
 
 
 def test_collection_accepts_bytes_the_live_pipe_would_have_decoded(tmp_path, monkeypatch):
