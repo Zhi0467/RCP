@@ -186,6 +186,23 @@ def test_the_fence_ends_a_turn_where_the_canonical_decoder_ends_it(tmp_path, run
     assert step.explicit_terminal == fence.terminal
 
 
+@pytest.mark.parametrize("method", ["initialize", "config/read", "thread/start"])
+def test_a_rejected_handshake_ends_the_turn_in_both_decoders(tmp_path, method) -> None:
+    """A server that refuses to start is still a server left running.
+
+    Its error reply is the only end this turn will ever have, and the fence is
+    what stops a persistent one sitting there with nothing to close it.
+    """
+
+    turn, fence = _canonical_app_server_turn(tmp_path, handshake=False)
+    rejection = {"id": 1, "error": {"code": -32603, "message": "refused"}}
+    fence.input({"id": 1, "method": method})
+    step = turn.receive_line(json.dumps(rejection))
+    fence.output(rejection)
+
+    assert step.explicit_terminal == fence.terminal is True
+
+
 def test_the_protocol_corpus_covers_both_verdicts(tmp_path):
     """A corpus both decoders agreed to ignore entirely would prove nothing."""
 

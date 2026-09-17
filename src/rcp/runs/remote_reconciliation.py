@@ -54,6 +54,15 @@ class JournalUnavailable(Exception):
     """The host could not be asked, which is never an answer about the pass."""
 
 
+class JournalCorrupt(Exception):
+    """The host was asked and its evidence cannot be trusted, which is an answer."""
+
+
+#: What the shipped reader exits with when it rejects the journal itself, as
+#: opposed to any status ssh or a broken link produces.
+_JOURNAL_REJECTED = 3
+
+
 def read_remote_journal(host: str, pid_file: str) -> dict[str, object] | None:
     """Read one stopped pass's journal off its host, or None if it wrote none."""
 
@@ -74,6 +83,8 @@ def read_remote_journal(host: str, pid_file: str) -> dict[str, object] | None:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise JournalUnavailable(str(exc)) from exc
+    if result.returncode == _JOURNAL_REJECTED:
+        raise JournalCorrupt(result.stderr.strip() or "The provider journal is unreadable.")
     if result.returncode != 0:
         raise JournalUnavailable(result.stderr.strip() or "The provider journal could not be read.")
     try:
@@ -113,6 +124,10 @@ def reconcile_remote_pass(
         return Reconciliation("wait", "The provider is still running on its host.", pid_file)
     try:
         journal = read_journal(host, pid_file)
+    except JournalCorrupt as exc:
+        # The host answered. Waiting for it to answer differently is waiting
+        # forever, and this turn is owed a human rather than a timer.
+        return Reconciliation("fail", f"The provider journal cannot be trusted: {exc}", pid_file)
     except JournalUnavailable as exc:
         return Reconciliation("wait", f"The provider journal could not be read: {exc}", pid_file)
     if journal is None:

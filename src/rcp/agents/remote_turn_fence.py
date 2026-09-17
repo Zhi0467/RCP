@@ -21,7 +21,9 @@ class TurnFence:
     def __init__(self, runtime_id: str):
         self.runtime_id = runtime_id
         self.requests: dict[object, str] = {}
-        self.message_ids: set[str] = set()
+        # Ordered, because which one arrived first is which one was the
+        # prompt. A reader rebuilding this turn needs that, and a set loses it.
+        self.message_ids: dict[str, None] = {}
         self.outstanding: set[str] = set()
         self.thread_id: str | None = None
         # The thread a resume asked for, known before the reply names it.
@@ -44,10 +46,15 @@ class TurnFence:
         if not isinstance(value, dict):
             return
         if value.get("type") == "user" and isinstance(value.get("uuid"), str):
-            self.message_ids.add(value["uuid"])
+            self.message_ids.setdefault(value["uuid"], None)
         method = value.get("method")
         identifier = value.get("id")
-        if method in {"thread/start", "thread/resume", "turn/start"}:
+        if isinstance(method, str) and identifier is not None:
+            # Every request this side sends, not only the ones whose replies are
+            # interesting. A server that rejects `initialize` or `config/read`
+            # answers with an error and then sits there; the canonical decoder
+            # ends the turn on that, and a fence that had not written the request
+            # down would leave a persistent server running with no turn to end.
             self.requests[identifier] = method
             params = value.get("params")
             if method == "thread/resume" and isinstance(params, dict):

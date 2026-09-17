@@ -81,6 +81,18 @@ class RecordedProviderTurn:
         return [line for line in self.events.split("\n") if line and _within_event_limit(line)]
 
     @property
+    def input_message_ids(self) -> list[str]:
+        """The inputs this pass sent, in the order it sent them."""
+
+        value = self.outcome.get("input_message_ids")
+        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+    @property
+    def steer_requests(self) -> dict[str, object]:
+        value = self.outcome.get("steer_requests")
+        return {str(key): item for key, item in value.items()} if isinstance(value, dict) else {}
+
+    @property
     def session_id(self) -> str | None:
         root = self.outcome.get("root_thread_id")
         return root if isinstance(root, str) and root else None
@@ -156,6 +168,9 @@ def decode_recorded_turn(
     request = dataclasses.replace(request, provider_version=recorded.provider_version)
     turn = profile_for(recorded.provider).runtime(recorded.runtime_id).turn(request)
     turn.initial_input()
+    # Before a single output line: a turn that does not know which inputs it sent
+    # cannot recognise the answers to them.
+    turn.adopt_recorded_inputs(recorded.input_message_ids, recorded.steer_requests)
     events: list[AgentEvent] = [AgentEvent(event="runtime", text=recorded.runtime_id)]
     complete = False
     for line in recorded.observed_lines:

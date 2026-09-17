@@ -373,7 +373,7 @@ def run(args):
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,
-                "input_message_ids": sorted(fence.message_ids),
+                "input_message_ids": list(fence.message_ids),
                 "steer_requests": {str(key): value for key, value in fence.steer_requests.items()},
             },
             sort_keys=True,

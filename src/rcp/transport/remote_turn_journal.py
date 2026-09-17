@@ -75,8 +75,12 @@ def main() -> int:
         print(json.dumps({"missing": True}))
         return 0
     except (OSError, ValueError) as exc:
+        # A distinct status, because the caller must tell "this host cannot be
+        # asked" from "this host answered and its evidence is bad". The first
+        # waits; the second is a turn that will never be recoverable and has to
+        # say so to a human.
         print(str(exc), file=sys.stderr)
-        return 1
+        return 3
     print(json.dumps(result, separators=(",", ":")))
     return 0
 

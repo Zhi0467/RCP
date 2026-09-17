@@ -174,3 +174,40 @@ def test_nothing_is_planned_once_the_pass_is_settled(tmp_path) -> None:
     store.finish_remote_provider_pass("first", "/stage/one.pid")
 
     assert _plan(store, stopped=lambda *_: True, read_journal=lambda *_: None) == []
+
+
+def test_a_host_that_answered_with_bad_evidence_fails_rather_than_waits(waiting) -> None:
+    """Waiting for a reachable host to answer differently is waiting forever."""
+
+    from rcp.runs.remote_reconciliation import JournalCorrupt
+
+    result = _reconcile(waiting, stopped=True, raises=JournalCorrupt("unsafe entry"))
+
+    assert result.action == "fail"
+    assert "cannot be trusted" in result.reason
+
+
+def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_path) -> None:
+    """The two exits mean different things, so the reader must not share one."""
+
+    import subprocess
+    import sys
+
+    from rcp.transport.state import _remote_script
+
+    stage = tmp_path / "stage"
+    (stage / "agent.pid.turn").mkdir(parents=True)
+    (stage / "agent.pid.turn" / "outcome.json").write_text("not json", encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _remote_script("remote_turn_journal.py"),
+            str(stage / "agent.pid"),
+            "1000000",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 3

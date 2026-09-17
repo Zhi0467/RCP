@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import uuid
@@ -794,3 +795,37 @@ async def test_a_recorded_result_is_rejected_where_a_live_one_would_be_corrected
     assert live_launcher.calls > 1
     assert '"status":"rejected"' in str(recorded[0]["text"])
     assert recorded_launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) -> None:
+    """A retry's own output must not become its own predecessor.
+
+    Recapturing the baseline at finalization reads the stage the provider has
+    already written to, so the digests match and settlement quietly drops the
+    graph update the retry existed to produce.
+    """
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, _staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    await primed.validator_lifecycle.close()
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "retry_deliverable_baseline",
+        {"patch_sha256": "the-previous-attempt", "watch_sha256": None},
+        tier="diagnostic",
+    )
+    (primed.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
+
+    baseline = work_module._recorded_retry_deliverable_baseline(execution)
+
+    assert baseline.patch_digest == "the-previous-attempt"
+    assert (
+        baseline.patch_digest
+        != hashlib.sha256(
+            (primed.workspace / "patch.json").read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+    )

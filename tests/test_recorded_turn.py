@@ -154,3 +154,68 @@ def test_a_record_that_lost_evidence_is_never_called_complete(tmp_path, field) -
 
     assert damaged.intact is False
     assert decode_recorded_turn(damaged, _request(tmp_path)).complete is False
+
+
+_CLAUDE_PROMPT = "11111111-1111-4111-8111-111111111111"
+_CLAUDE_STEER = "22222222-2222-4222-8222-222222222222"
+
+_CLAUDE_STEERED_TURN = (
+    {"type": "system", "subtype": "init", "session_id": "recorded-thread"},
+    {"type": "command_lifecycle", "command_uuid": _CLAUDE_PROMPT, "state": "started"},
+    {"type": "command_lifecycle", "command_uuid": _CLAUDE_STEER, "state": "started"},
+    {"type": "result", "subtype": "success", "user_message_uuids": [_CLAUDE_PROMPT]},
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "after the steer"}]}},
+    {
+        "type": "result",
+        "subtype": "success",
+        "result": "the real answer",
+        "user_message_uuids": [_CLAUDE_STEER],
+    },
+)
+
+
+def _claude_journal(events: str) -> dict[str, object]:
+    import hashlib
+
+    return {
+        "outcome": {
+            "version": 1,
+            "pid_file": "/stage/one.pid",
+            "provider": "claude",
+            "runtime_id": "claude.stream-json.v1",
+            "provider_version": "1.0.0",
+            "accepted": True,
+            "terminal_event": True,
+            "journal_complete": True,
+            "error": None,
+            "stopped": False,
+            "events_sha256": hashlib.sha256(events.encode("utf-8", "surrogateescape")).hexdigest(),
+            "patch_present": False,
+            "patch_sha256": None,
+            "root_thread_id": "recorded-thread",
+            "input_message_ids": [_CLAUDE_PROMPT, _CLAUDE_STEER],
+            "steer_requests": {},
+        },
+        "events": events,
+        "stderr": "",
+        "patch": None,
+    }
+
+
+def test_a_steered_turn_replays_the_reply_it_actually_finished_with(tmp_path) -> None:
+    """A fresh turn mints its own input ids and would not know its own traffic.
+
+    The host wrote the real ones down because stdin is never persisted. Without
+    them the first result -- the one that only settles the prompt, while a steer
+    is still out -- reads as the end, and the answer the human waited for is the
+    part that gets dropped.
+    """
+
+    events = "".join(json.dumps(item) + "\n" for item in _CLAUDE_STEERED_TURN)
+    recorded = recorded_provider_turn("/stage/one.pid", _claude_journal(events))
+    request = _request(tmp_path).__class__(**{**_request(tmp_path).__dict__, "binary": "claude"})
+
+    verdict = decode_recorded_turn(recorded, request)
+
+    assert recorded.input_message_ids == [_CLAUDE_PROMPT, _CLAUDE_STEER]
+    assert any(event.text == "the real answer" for event in verdict.events)

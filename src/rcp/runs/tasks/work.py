@@ -836,6 +836,7 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         {
             "patch_sha256": patch_digest,
             "watch_sha256": watch_digest,
+            "experiment_watch_sha256": experiment_watch_digests,
         },
         tier="diagnostic",
     )
@@ -2443,6 +2444,31 @@ def _record_work_graph_rejection(
     )
 
 
+def _recorded_retry_deliverable_baseline(
+    execution: AgentTaskExecution,
+) -> _RetryDeliverableBaseline:
+    """The baseline this turn captured before it launched, read back.
+
+    Recapturing it here would read the stage the provider has since written to,
+    so the retry's own output would be its own predecessor -- identical digests,
+    and settlement would drop the graph update and watcher request the retry was
+    run to produce. A missing receipt yields no predecessor at all, which errs
+    toward applying the deliverable rather than discarding it.
+    """
+
+    for receipt in reversed(execution.store.agent_task_receipts(execution.operation_id)):
+        if receipt.category != "retry_deliverable_baseline":
+            continue
+        payload = receipt.payload
+        digests = payload.get("experiment_watch_sha256")
+        return _RetryDeliverableBaseline(
+            patch_digest=payload.get("patch_sha256"),
+            watch_digest=payload.get("watch_sha256"),
+            experiment_watch_digests=digests if isinstance(digests, dict) else {},
+        )
+    return _RetryDeliverableBaseline(None, None, {})
+
+
 async def finalize_recorded_work_result(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -2475,7 +2501,7 @@ async def finalize_recorded_work_result(
                 launcher,
                 staged,
                 _ComposedWorkPrompt(contract_path="", prompt="", base_contract_path=""),
-                _capture_retry_deliverable_baseline(turn),
+                _recorded_retry_deliverable_baseline(execution),
                 answer,
                 maximum_corrections=0,
             )
