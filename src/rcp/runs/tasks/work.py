@@ -82,6 +82,7 @@ from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
     provider_turn_request,
+    refuse_recorded_session_mismatch,
     retained_artifact_directory,
     write_recorded_patch,
 )
@@ -205,6 +206,10 @@ class _StoredWorkFinalizationContext(BaseModel):
     experiment_resources: list[_StoredExperimentFinalizationResource]
     skill_selection: SkillSelection
     compute_commands: bool
+    # The native session this launch pinned its provider to, so recovery can
+    # refuse a journal that continued a different one. Absent in snapshots
+    # written before continuations were recoverable, which pinned nothing.
+    required_session_id: str | None = None
 
 
 def _read_correction_patch(
@@ -399,6 +404,7 @@ def _record_work_finalization_context(
     staged: _StagedWorkInputs,
     *,
     role: str = WORK_FINALIZATION_CONTEXT_ROLE,
+    required_session_id: str | None = None,
 ) -> None:
     """Retain this launch under the role of the owner that will settle it.
 
@@ -433,6 +439,7 @@ def _record_work_finalization_context(
         ],
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands is not None,
+        required_session_id=required_session_id,
     )
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
@@ -520,6 +527,7 @@ def _load_work_finalization_context(
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
         finalization_role=role,
+        required_session_id=stored.required_session_id,
     )
 
 
@@ -2868,6 +2876,13 @@ def open_recorded_work_turn(
 
     turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
     verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    refusal = refuse_recorded_session_mismatch(
+        execution, turn.outcome, verdict, turn.required_session_id
+    )
+    if refusal:
+        # Nothing about this pass is accepted, so its Patch does not reach the
+        # stage either.
+        return turn, refusal
     # The verified Patch replaces whatever the stage holds. A stage is mutable
     # and this value is not, so settling from the record means settling from
     # the record.

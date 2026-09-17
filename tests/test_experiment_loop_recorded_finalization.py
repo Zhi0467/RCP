@@ -51,6 +51,7 @@ async def _retained_loop_turn(
     *,
     operation_id: str = "loop-recorded",
     episode_context: str | None = None,
+    required_session_id: str | None = None,
 ):
     """One staged loop turn whose launch snapshot is already written down.
 
@@ -82,7 +83,9 @@ async def _retained_loop_turn(
     )
     execution.bind_write_scope(turn.write_scope, resumes_native_session=False)
     prompt_context = await loop_module._prepare_work_prompt_context(turn, staged)
-    loop_module._record_work_finalization_context(turn, staged, role=_ROLE)
+    loop_module._record_work_finalization_context(
+        turn, staged, role=_ROLE, required_session_id=required_session_id
+    )
     if episode_context is None:
         loop_module._record_experiment_loop_episode_context(turn, prompt_context)
     else:
@@ -680,3 +683,33 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
     assert "error" not in events
     assert "remote_result_pending" in events
     assert store.experiment_episode(_EPISODE_ID).last_turn_operation_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_loop_continuation_refuses_another_native_session(
+    manifest, tmp_path: Path
+) -> None:
+    """A continuation that answered elsewhere arms nothing under this episode.
+
+    The loop's result binds the episode to the session a later wake resumes, so
+    adopting a session the launch never pinned would hand the next wake a thread
+    this episode never authorized.
+    """
+
+    service, request, execution, _workspace = await _retained_loop_turn(
+        manifest, tmp_path, required_session_id="committed-session"
+    )
+
+    events = await _finalize(
+        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    )
+
+    assert [item["event"] for item in events] == ["error"]
+    assert "exact saved native session" in str(events[0]["text"])
+    episode = execution.store.experiment_episode(_EPISODE_ID)
+    assert episode is None or episode.native_session_id != "recorded-thread"
+    assert any(
+        receipt.category == "continuation_context_unavailable"
+        and receipt.payload.get("reason") == "native_session_mismatch"
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    )

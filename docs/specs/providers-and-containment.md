@@ -768,6 +768,14 @@ not whatever the directory happens to hold when RCP reconnects. A journal that
 predates deliverable snapshots is silent about a handoff rather than claiming
 there was none, and recovery leaves that file alone rather than deleting it.
 
+A continuation pinned to an exact native provider session is held to it when it
+is recovered exactly as it is live. The launch retains the session it pinned
+beside the rest of its snapshot, and a journal that answered on a different one
+is refused before its Patch reaches the stage, before that session is adopted
+and before any watcher is armed -- the same refusal, and the same operational
+receipt, that stops such a turn live before any result is accepted. A launch
+that pinned no session pins none on recovery.
+
 A restart preserves a task holding such a pass instead of interrupting it, and
 leaves it waiting for a remote result. Reconciliation then asks the host one
 question with five answers: unreachable and still running both wait, without

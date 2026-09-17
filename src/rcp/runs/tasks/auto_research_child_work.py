@@ -1151,7 +1151,10 @@ async def stream_auto_research_child_work_run(
         # Only a remote turn can outlive this connection, and only under this
         # owner's own role: a child settles differently from ordinary Work.
         _record_work_finalization_context(
-            turn, staged, role=AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE
+            turn,
+            staged,
+            role=AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
+            required_session_id=required_session_id,
         )
     async with aclosing(
         _launch_and_stream_work_turn(

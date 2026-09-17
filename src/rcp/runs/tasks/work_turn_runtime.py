@@ -198,6 +198,9 @@ class WorkFinalizationContext:
     #: one. Owners share this type and never a role, so anything asking whether
     #: this turn is recoverable must ask about its own owner's role.
     finalization_role: str | None = None
+    #: The native provider session this launch pinned, when it pinned one. A
+    #: recovered continuation is held to it exactly as the live stream was.
+    required_session_id: str | None = None
     answer: str | None = None
 
     @property

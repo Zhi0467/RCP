@@ -90,6 +90,56 @@ def _restore(
         (workspace / target).write_text(content, encoding="utf-8")
 
 
+def refuse_recorded_session_mismatch(
+    execution: AgentTaskExecution | None,
+    outcome: _ProviderOutcome,
+    verdict: RecordedVerdict,
+    required_session_id: str | None,
+) -> list[str]:
+    """Hold a recovered continuation to the session its launch pinned.
+
+    A continuation that must resume an exact native session is stopped live
+    before any result is accepted when the provider answers on a different one.
+    The link dropping does not relax that: the journal is read after the fact,
+    so without this the fresh session would be checkpointed and its Patch
+    applied or its watchers armed under the episode the original session owns.
+
+    Returns no frames when the launch pinned nothing, or when the journal
+    continued what it pinned.
+    """
+
+    if required_session_id is None:
+        return []
+    session_id = next(
+        (
+            event.session_id
+            for event in verdict.events
+            if event.event == "session" and event.session_id
+        ),
+        None,
+    )
+    if session_id is None or session_id == required_session_id:
+        return []
+    outcome.failed = True
+    if execution is not None:
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "continuation_context_unavailable",
+            {"reason": "native_session_mismatch", "retry_required": True},
+        )
+    return [
+        _sse(
+            AgentEvent(
+                event="error",
+                text=(
+                    "The provider did not continue the exact saved native session. "
+                    "This continuation was stopped before accepting any result."
+                ),
+            )
+        )
+    ]
+
+
 def absorb_recorded_events(
     outcome: _ProviderOutcome,
     verdict: RecordedVerdict,

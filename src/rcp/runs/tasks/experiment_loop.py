@@ -83,7 +83,11 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.recorded_settlement import absorb_recorded_events, provider_turn_request
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
+)
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -2191,11 +2195,19 @@ async def stream_experiment_loop_task(
     finalization = _work_finalization_context(
         turn, staged, role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
     )
+    # One value, enforced by the live stream and retained for recovery, so the
+    # two cannot come to disagree about which session this turn may continue.
+    required_session_id = _required_work_continuation_session_id(
+        turn.request, turn.execution, session_id=turn.request.session_id
+    )
     if turn.execution_host:
         # Only a remote turn can outlive this connection, and only a turn whose
         # settling facts are already written down can be recovered.
         _record_work_finalization_context(
-            turn, staged, role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
+            turn,
+            staged,
+            role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
+            required_session_id=required_session_id,
         )
         _record_experiment_loop_episode_context(turn, prompt_context)
     async with aclosing(
@@ -2206,6 +2218,7 @@ async def stream_experiment_loop_task(
             prompt,
             contract_path,
             wake_episode,
+            required_session_id=required_session_id,
             supervise_remote=bool(turn.execution_host),
         )
     ) as stream:
@@ -2254,6 +2267,15 @@ async def finalize_recorded_experiment_loop_result(
     )
     episode = _load_experiment_loop_episode_context(execution)
     verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    refusal = refuse_recorded_session_mismatch(
+        execution, turn.outcome, verdict, turn.required_session_id
+    )
+    if refusal:
+        # A wake or continuation that answered on another session arms nothing
+        # and admits no Patch, so neither reaches the stage.
+        for frame in refusal:
+            yield frame
+        return
     # The verified Patch replaces whatever the stage holds, before anything reads
     # the stage. Half of this turn's admission is that Patch, and a stage that
     # changed after the host finished would admit a different one.
