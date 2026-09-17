@@ -103,6 +103,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work import (
+    _WORK_PRIMARY_ANSWER_ROLE,
     WorkTurn,
     _AppliedWorkTurn,
     _bounded_graph_messages,
@@ -122,6 +123,7 @@ from rcp.runs.tasks.work import (
     _rejected_graph_update_for_repair,
     _resolve_work_execution,
     _ResolvedWorkExecution,
+    _retained_primary_answer,
     _RetryDeliverableBaseline,
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
@@ -1294,7 +1296,7 @@ async def _settle_watch_deliverable(
                 if event.event not in {"answer", "done"}:
                     yield frame
         settled.native_session_id = correction_outcome.session_id or settled.native_session_id
-        if correction_outcome.paused:
+        if correction_outcome.paused or correction_outcome.remote_result_pending:
             settled.stop = True
             return
         if correction_error or not correction_outcome.completed:
@@ -1573,7 +1575,7 @@ async def _apply_experiment_loop_turn(
                 async for frame in stream:
                     yield frame
             applied.native_session_id = correction_outcome.session_id or applied.native_session_id
-            if correction_outcome.paused:
+            if correction_outcome.paused or correction_outcome.remote_result_pending:
                 applied.stop = True
                 return
             if not correction_outcome.completed:
@@ -1849,7 +1851,13 @@ def _settle_experiment_loop_outcome(
     """
 
     frames: list[str] = []
-    answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    # A correction of this turn is supervised too, so a recovered journal may be
+    # the correction rather than the pass. Its prose is not the human reply.
+    retained_answer = _retained_primary_answer(turn)
+    answer = (
+        retained_answer
+        or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    )
     if not turn.outcome.completed:
         if turn.outcome.failed or turn.outcome.paused:
             return frames
@@ -1902,6 +1910,23 @@ def _settle_experiment_loop_outcome(
             )
         artifacts = []
     turn.answer = answer
+    if (
+        retained_answer is None
+        and turn.execution is not None
+        and turn.finalization_role is not None
+        and turn.execution.store.agent_task_contract(
+            turn.execution.operation_id, turn.finalization_role
+        )
+        is not None
+    ):
+        # Corrections have their own journals, but their prose is not the human
+        # reply. Retain the completed primary answer before any starts.
+        turn.execution.store.record_agent_task_contract(
+            turn.execution.operation_id,
+            _WORK_PRIMARY_ANSWER_ROLE,
+            answer,
+            hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        )
     frames.append(_sse(AgentEvent(event="answer", text=answer)))
     frames.extend(_sse(AgentEvent(event="artifact", artifact=item)) for item in artifacts)
     return frames

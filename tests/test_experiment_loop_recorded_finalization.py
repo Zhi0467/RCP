@@ -521,3 +521,128 @@ async def test_a_supervised_loop_correction_is_itself_supervised(
 
     assert corrections, "the invalid handoff should have asked for a correction"
     assert all(item["supervise_remote"] is True for item in corrections)
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_loop_correction_does_not_replace_the_reply(
+    manifest, tmp_path: Path
+) -> None:
+    """A correction's prose is not the Experiment's answer.
+
+    The loop's corrections are supervised, so a link lost during one hands
+    reconciliation that journal. Without the completed reply already retained,
+    the correction's final-assistant text would be written into the chat as the
+    Experiment's own answer.
+    """
+
+    import rcp.runs.tasks.work as work_module
+
+    service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
+    await _finalize(
+        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    )
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module._WORK_PRIMARY_ANSWER_ROLE
+        )
+        == _ANSWER
+    )
+
+    # Now the correction's own journal arrives for the same task.
+    events = await _finalize(
+        service,
+        request,
+        execution,
+        _recorded_pass("", "Rewrote the observer command.", _watch_handoff(tmp_path)),
+    )
+
+    assert [item["text"] for item in events if item["event"] == "answer"] == [_ANSWER]
+
+
+@pytest.mark.asyncio
+async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    """A supervised correction can outlive its link too.
+
+    Its journal is owed to this same task, so settlement stops and waits for it
+    rather than reading the missing result as a turn that failed.
+    """
+
+    from rcp.agents import AgentEvent
+    from rcp.runs.shared import _sse
+
+    from .test_experiment_loop_agent_io import _LoopLauncher
+
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    request = _loop_request(
+        _EPISODE_ID,
+        "chat-loop-pending-correction",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    execution = _execution(store, project_id, "loop-pending-correction", request)
+
+    stage = loop_module._stage_work_turn
+
+    async def remote_stage_work_turn(*args, **kwargs):
+        turn, staged = await stage(*args, **kwargs)
+        turn.execution_host = "recorded-host"
+        return turn, staged
+
+    stream = loop_module._stream_turn_agent_events
+
+    async def pending_correction(turn, launcher, prompt, **kwargs):
+        if kwargs.get("supervise_remote"):
+            kwargs["outcome"].remote_result_pending = True
+            yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
+            return
+        async for frame in stream(turn, launcher, prompt, **kwargs):
+            yield frame
+
+    monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
+
+    launcher = _LoopLauncher("provider-session-pending", tmp_path, write_handoff=False)
+
+    async def invalid_handoff(_provider, prompt, **kwargs):
+        Path(kwargs["cwd"]).joinpath("watch.json").write_text(
+            json.dumps({"external": [{"check_command": ""}], "graph": []}), encoding="utf-8"
+        )
+        async for event in _LoopLauncher.stream(launcher, _provider, prompt, **kwargs):
+            yield event
+
+    launcher.stream = invalid_handoff  # type: ignore[assignment]
+    # The pass itself lands; only its correction loses the link.
+    calls: list[int] = []
+
+    async def live_then_pending(turn, agent_launcher, prompt, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            async for frame in stream(turn, agent_launcher, prompt, **kwargs):
+                yield frame
+            return
+        kwargs["outcome"].remote_result_pending = True
+        yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
+
+    monkeypatch.setattr(loop_module, "_stream_turn_agent_events", live_then_pending)
+
+    frames = [
+        frame
+        async for frame in loop_module.stream_experiment_loop_task(
+            service, launcher, request, data_dir, execution=execution
+        )
+    ]
+    events = [json.loads(frame.removeprefix("data: "))["event"] for frame in frames]
+
+    assert len(calls) >= 2, "the invalid handoff should have asked for a correction"
+    # No verdict: the correction's own journal settles this task later.
+    assert "error" not in events
+    assert "remote_result_pending" in events
+    assert store.experiment_episode(_EPISODE_ID).last_turn_operation_id is None
