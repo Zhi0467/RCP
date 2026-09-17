@@ -706,6 +706,36 @@ without changing this local/SSH identity rule.
 Remote canonical-state locking and publication are specified in
 [Graph, history, and transitions](graph-history-and-transitions.md#canonical-publication).
 
+### A remote turn outliving its connection
+
+Provider execution state and controller connection state are separate things.
+Losing SSH says nothing about the provider, which on a remote host keeps working
+and finishes into a stage RCP can read later. So a lost link is not a failure of
+the turn, and recovering one is not a new turn: the pass belongs to the operation
+that opened it and is finalized on that same operation, under the authority,
+graph target, episode and accounting identity it already had.
+
+A supervised pass is journalled on its execution host. The supervisor forwards
+output while recording it, and writes its acceptance of the prompt before a byte
+of it reaches the provider. That host-written acceptance, never the presence of a
+receipt in RCP's own database, is what says work may have begun: a controller
+that died in that window has no receipt of its own, and its silence is not the
+host's answer.
+
+The supervisor publishes no verdict. It decides only where the turn ends, which a
+persistent server makes unavoidable, and hands over its bytes. What the turn was
+worth is read from those bytes by the same decoder that reads a live one, so the
+two cannot drift apart.
+
+A restart preserves a task holding such a pass instead of interrupting it, and
+leaves it waiting for a remote result. Reconciliation then asks the host one
+question with five answers: unreachable and still running both wait, without
+limit; a stopped pass whose journal reached the turn's end finalizes that task; a
+stopped pass whose journal did not, or that never took the prompt, fails it
+visibly for a human to retry; an already settled pass is left alone. Waiting is
+never cut short by a timeout, and nothing replaces a provider that may still be
+working.
+
 ## Seed and Refresh ingestion
 
 Seed and Refresh alone ingest provider conversation logs. RCP supplies the

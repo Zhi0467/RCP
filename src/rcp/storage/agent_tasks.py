@@ -4051,6 +4051,15 @@ class AgentTaskStoreMixin:
             return None
         return dispatch_attempt_id
 
+    def operation_ids_awaiting_remote_result(self) -> list[str]:
+        """Tasks whose remote pass is still outstanding, oldest first.
+
+        The same set the restart sweep preserves, read back by whoever goes to
+        ask the host about them.
+        """
+
+        return sorted(self._supervised_remote_pass_operation_ids())
+
     def _supervised_remote_pass_operation_ids(self) -> set[str]:
         """Tasks whose provider may still be working under a journal on its host.
 

@@ -697,11 +697,26 @@ def _one_result_app(root: Path):
         run_truth_scope=["repo-a"],
         mode="work",
     )
+    store = app.state.background_tasks.store
     execution = _chat_task_execution(
-        app.state.background_tasks.store,
+        store,
         operation_id="work-one-result",
         project_id=app.state.default_project_id,
         request=request,
+    )
+    # A real dispatch leaves this behind, and the stage a second staging attaches
+    # to is validated against it. The fixture builds its execution directly, so
+    # it has to leave the same trace a launch would.
+    store.record_agent_task_receipt(
+        "work-one-result",
+        "operation_created",
+        {
+            "kind": "project_chat",
+            "attempt": 1,
+            "has_parent": False,
+            "continuation_cause": "fresh",
+            "resumed": False,
+        },
     )
     return app.state.service, request, execution
 
@@ -725,33 +740,22 @@ async def _delivered_from_record(
 ) -> tuple[list[dict[str, object]], ScriptedLauncher]:
     service, request, execution = _one_result_app(root)
     launcher = ScriptedLauncher([{}], message="")
+    # Open the stage this turn would have run in, then put into it what a
+    # provider that finished after the link dropped would have left behind.
     resolved = work_module._resolve_work_execution(service, request, execution)
-    turn, staged = await work_module._stage_work_turn(service, resolved, root / "data", execution)
-    try:
-        await work_module._prepare_work_prompt_context(turn, staged)
-        composed = work_module._compose_fresh_prompt(turn, staged)
-        # What a provider that finished after the link dropped left on its host.
-        (turn.workspace / "patch.json").write_text(patch_text, encoding="utf-8")
-        turn.outcome.completed = True
-        turn.outcome.session_id = launcher.native_session_id
-        turn.outcome.answers.append(answer)
-        frames = [
-            frame
-            async for frame in work_module.finalize_work_result(
-                turn,
-                launcher,
-                staged,
-                composed,
-                work_module._capture_retry_deliverable_baseline(turn),
-                answer,
-                maximum_corrections=0,
-            )
-        ]
-        return _decided_output(frames), launcher
-    finally:
-        # The provider stream closes this mailbox on the live path. A recorded
-        # result has no stream, so whoever skipped one owns the close.
-        await turn.validator_lifecycle.close()
+    primed, _staged = await work_module._stage_work_turn(
+        service, resolved, root / "data", execution
+    )
+    await primed.validator_lifecycle.close()
+    (primed.workspace / "patch.json").write_text(patch_text, encoding="utf-8")
+
+    frames = [
+        frame
+        async for frame in work_module.finalize_recorded_work_result(
+            service, launcher, request, root / "data", execution, answer
+        )
+    ]
+    return _decided_output(frames), launcher
 
 
 @pytest.mark.asyncio

@@ -256,11 +256,25 @@ async def _stage_work_turn(
     resolved: _ResolvedWorkExecution,
     data_dir: Path,
     execution: AgentTaskExecution | None,
+    *,
+    for_recorded_result: bool = False,
 ) -> tuple[WorkTurn, _StagedWorkInputs]:
+    """Build the turn context this Work turn runs in, or is finalized from.
+
+    `for_recorded_result` stages a turn whose provider has already finished
+    somewhere else. Nothing here may then disturb the stage: the deliverables
+    being collected are sitting in it, and the sweep that clears a new turn's
+    stale handoffs would delete exactly those. It also records no context
+    receipt, because the context was already recorded when this turn launched.
+    """
+
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
-    clear_stale_handoffs = _clears_stale_turn_handoffs(continuation)
-    resuming = continuation == "resume"
+    clear_stale_handoffs = not for_recorded_result and _clears_stale_turn_handoffs(continuation)
+    # A recorded result reuses its stage for the same reason a resume does:
+    # what it came for is already in there. Preparing the artifact directory
+    # fresh would discard the very outputs being collected.
+    resuming = for_recorded_result or continuation == "resume"
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -282,7 +296,8 @@ async def _stage_work_turn(
                 resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
             )
         surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
-        _record_chat_context_receipt(execution, context, surface=surface)
+        if not for_recorded_result:
+            _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
         saved_stage = execution is not None and execution.stage_root is not None
         if resolved.execution_host:
@@ -2426,3 +2441,48 @@ def _record_work_graph_rejection(
         f"Operational work completed, but the graph update was rejected: {detail}",
         level="warning",
     )
+
+
+async def finalize_recorded_work_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    answer: str,
+) -> AsyncIterator[str]:
+    """Finalize a Work turn whose provider finished somewhere RCP could not watch.
+
+    The same door `stream_work_run` walks through once its provider stops, opened
+    from the other side. No provider is launched, no prompt is composed, and no
+    correction is asked for; the turn's own operation id owns everything this
+    writes, because it is the same turn.
+    """
+
+    resolved = _resolve_work_execution(service, request, execution)
+    turn, staged = await _stage_work_turn(
+        service, resolved, data_dir, execution, for_recorded_result=True
+    )
+    try:
+        turn.outcome.completed = True
+        turn.outcome.session_id = execution.store.agent_task(
+            execution.operation_id
+        ).native_session_id
+        turn.outcome.answers.append(answer)
+        async with aclosing(
+            finalize_work_result(
+                turn,
+                launcher,
+                staged,
+                _ComposedWorkPrompt(contract_path="", prompt="", base_contract_path=""),
+                _capture_retry_deliverable_baseline(turn),
+                answer,
+                maximum_corrections=0,
+            )
+        ) as stream:
+            async for frame in stream:
+                yield frame
+    finally:
+        # The provider stream closes this mailbox on the live path. There is no
+        # stream here, so whoever skipped one owns the close.
+        await turn.validator_lifecycle.close()

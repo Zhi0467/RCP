@@ -1,7 +1,10 @@
 # Finalize disconnected remote turns on their original tasks
 
 Date: 2026-09-16
-Status: implementation steps 1-2 complete; steps 3-5 remain. PR #162 is draft and
+Status: steps 1-2 complete; step 3 decided and tested, not yet driven; step 4
+complete for Work only. Nothing launches under the supervisor yet, so no real
+turn behaves differently today. Remaining work is listed under "What is not
+wired yet". PR #162 is draft and
 must not be merged or extended. Its journal, process-safety work, failures, and
 tests are evidence for this replacement, not a branch to build upon. This
 handoff closes when the replacement PR is implemented, its focused and full CI
@@ -160,12 +163,40 @@ durable evidence fails that same task.
    `_remote_turn_supervisor_script`. `rcp/runs/recorded_turn.py` binds and
    verifies one journal, then replays it through the runtime object the live
    pipe drives, so the turn is judged once.
-3. Add waiting and reconciliation on the original task across live disconnect
-   and RCP restart.
-4. Route every journaled remote task owner through the same mechanism with one
-   small explicit owner table.
+3. **Decided and tested; not yet driven.** A supervised pass survives the
+   restart sweep and its task waits at `awaiting_remote_result`
+   (`_supervised_remote_pass_operation_ids`). `rcp/runs/remote_reconciliation.py`
+   holds the whole table -- unreachable and running wait, a stopped pass with a
+   whole journal finalizes, a stopped pass without one fails, a settled pass is
+   left alone -- and every row is covered without a host.
+4. **Complete for Work.** `finalize_recorded_work_result` stages the turn with
+   `for_recorded_result=True` and calls the same finalizer live delivery calls.
+   `RECORDED_FINALIZERS` in `rcp/runs/remote_finalization.py` is the routing
+   table; a kind absent from it keeps waiting rather than being settled by an
+   owner that never agreed to settle it.
 5. Remove transitional duplication before review. The finished diff has one
    live/recorded finalization path per owner and no child-collection remnants.
+
+## What is not wired yet
+
+Everything below is absent rather than half-built, and none of it changes a real
+turn today.
+
+- **The launcher does not start the supervisor.** No pass is reserved with
+  `supervised=True`, so nothing yet reaches the restart preservation or the
+  reconciliation table in production.
+- **Nothing drives the plan.** `plan_remote_reconciliation` says what each
+  waiting task is owed; no caller yet executes that, settles the task, or
+  re-arms the poll. Startup recovery is the natural first caller, beside
+  `_rearm_owed_transport_retries`.
+- **Live disconnect does not set the waiting phase.** Only the restart path
+  does. A link that drops while RCP stays up still takes the old route.
+- **Only Work has a recorded owner.** Auto-research, the Experiment loop,
+  seed/refresh, and result views are unrouted; their finalizers need the same
+  extraction Work got, and `auto_research_child_work.py` and
+  `experiment_loop.py` already assemble theirs from the same parts.
+- **Restartable finalization is unproven.** The idempotence contract above has
+  no crash-matrix coverage yet.
 
 If step 1 cannot produce a clean shared finalizer without recreating PR #162's
 branch matrix, stop and report the concrete coupling before adding journal or UI
