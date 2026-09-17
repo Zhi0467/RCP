@@ -4052,13 +4052,62 @@ class AgentTaskStoreMixin:
         return dispatch_attempt_id
 
     def operation_ids_awaiting_remote_result(self) -> list[str]:
-        """Tasks whose remote pass is still outstanding, oldest first.
+        """Tasks nobody is watching, whose remote pass is still outstanding.
 
-        The same set the restart sweep preserves, read back by whoever goes to
-        ask the host about them.
+        Narrower than what the restart sweep preserves, and deliberately so. That
+        set includes a turn a live worker is streaming right now: its pass is
+        unresolved because it has not finished, not because it was abandoned. A
+        reconciler let loose on those would race the worker to finalize the same
+        task the moment a provider stopped before its consumer wrote the stop
+        down. The durable phase is what says no one is watching.
         """
 
-        return sorted(self._supervised_remote_pass_operation_ids())
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT operation_id FROM graph_runs
+                WHERE phase = 'awaiting_remote_result'
+                  AND status IN ('queued', 'running', 'pausing')
+                ORDER BY operation_id
+                """
+            ).fetchall()
+        outstanding = self._supervised_remote_pass_operation_ids()
+        return [str(row["operation_id"]) for row in rows if str(row["operation_id"]) in outstanding]
+
+    def claim_recorded_finalization(self, operation_id: str) -> bool:
+        """Take sole ownership of finalizing this task, or report someone else has.
+
+        A pass receipt describes a remote process. It does not say who may settle
+        the task, and two settlers would apply one turn twice. This moves the
+        durable phase in a single statement, so exactly one caller sees it move.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE graph_runs
+                SET phase = 'finalizing_recorded_result', updated_at = ?
+                WHERE operation_id = ? AND phase = 'awaiting_remote_result'
+                """,
+                (now, operation_id),
+            ).rowcount
+        return changed == 1
+
+    def release_recorded_finalization(self, operation_id: str) -> None:
+        """Hand the claim back when finalization did not settle the task."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET phase = 'awaiting_remote_result', updated_at = ?
+                WHERE operation_id = ? AND phase = 'finalizing_recorded_result'
+                """,
+                (now, operation_id),
+            )
 
     def _supervised_remote_pass_operation_ids(self) -> set[str]:
         """Tasks whose provider may still be working under a journal on its host.

@@ -32,7 +32,13 @@ def _journal(*, accepted=True, terminal=True, intact=True, events=""):
         "patch_present": False,
         "patch_sha256": None,
     }
-    return {"outcome": outcome, "events": events, "stderr": "", "patch": None}
+    return {
+        "accepted": ({"version": 1, "pid_file": "/stage/one.pid", "at": 1.0} if accepted else None),
+        "outcome": outcome,
+        "events": events,
+        "stderr": "",
+        "patch": None,
+    }
 
 
 @pytest.fixture
@@ -157,6 +163,7 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
     store = _store(tmp_path)
     store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
     store.checkpoint_agent_task("first", stage_host="remote", stage_root="/stage")
+    store.interrupt_active_agent_tasks()
     events = json.dumps({"type": "turn.completed"}) + "\n"
 
     planned = _plan(store, stopped=lambda *_: True, read_journal=lambda *_: _journal(events=events))
@@ -166,6 +173,39 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
     assert planned[0].reconciliation.action == "wait"
     assert "No recorded-result owner" in planned[0].reconciliation.reason
     assert planned[0].actionable is False
+
+
+def test_a_turn_a_live_worker_is_watching_is_never_planned(tmp_path) -> None:
+    """An unresolved pass is not an abandoned one.
+
+    A worker streaming its provider right now holds exactly the same receipt: the
+    pass is open because the turn has not finished. Planning against that races
+    the worker to settle one turn twice, so only the durable phase -- which no
+    live worker sets -- admits a task here.
+    """
+
+    store = _store(tmp_path)
+    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
+    store.checkpoint_agent_task("first", stage_host="remote", stage_root="/stage")
+
+    assert store.operation_ids_awaiting_remote_result() == []
+    assert _plan(store, stopped=lambda *_: True, read_journal=lambda *_: None) == []
+
+
+def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
+    """Two settlers would apply one turn twice, so the claim has to be exclusive."""
+
+    store = _store(tmp_path)
+    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
+    store.interrupt_active_agent_tasks()
+
+    assert store.claim_recorded_finalization("first") is True
+    assert store.claim_recorded_finalization("first") is False
+    assert store.operation_ids_awaiting_remote_result() == []
+
+    store.release_recorded_finalization("first")
+
+    assert store.operation_ids_awaiting_remote_result() == ["first"]
 
 
 def test_nothing_is_planned_once_the_pass_is_settled(tmp_path) -> None:

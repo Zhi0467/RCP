@@ -47,11 +47,9 @@ class RecordedProviderTurn:
     stderr: str
     patch: str | None
 
-    @property
-    def accepted(self) -> bool:
-        """Whether the host took responsibility for this pass's prompt."""
-
-        return self.outcome.get("accepted") is True
+    #: Derived only from the host's own `accepted.json`, never from the copy the
+    #: end-of-pass outcome carries. One linearization point, one fact.
+    accepted: bool
 
     @property
     def intact(self) -> bool:
@@ -142,6 +140,19 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
             or hashlib.sha256(patch.encode("utf-8", "surrogateescape")).hexdigest() != patch_digest
         ):
             raise ValueError("The provider journal's patch does not match the digest it recorded.")
+    marker = journal.get("accepted")
+    if marker is not None and (
+        not isinstance(marker, dict)
+        or marker.get("version") != 1
+        or marker.get("pid_file") != pid_file
+    ):
+        raise ValueError("The provider journal's acceptance marker does not name this pass.")
+    accepted = marker is not None
+    if outcome.get("accepted") is not accepted:
+        # Two independent claims about whether work may have begun. Believing
+        # either one over the other is a guess, and the guess that says "nothing
+        # ran" is the one that authorizes a second provider.
+        raise ValueError("The provider journal disagrees with itself about acceptance.")
     version = outcome.get("provider_version")
     return RecordedProviderTurn(
         pid_file=pid_file,
@@ -152,6 +163,7 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         events=events,
         stderr=str(journal.get("stderr") or ""),
         patch=patch,
+        accepted=accepted,
     )
 
 

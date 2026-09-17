@@ -35,7 +35,9 @@ def _request(tmp_path: Path) -> ProviderTurnRequest:
 
 def _journal_from_disk(directory: Path) -> dict[str, object]:
     outcome = json.loads((directory / "outcome.json").read_text(encoding="utf-8"))
+    marker = directory / "accepted.json"
     return {
+        "accepted": json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None,
         "outcome": outcome,
         "events": (directory / "events.jsonl").read_text(encoding="utf-8"),
         "stderr": (directory / "stderr.txt").read_text(encoding="utf-8"),
@@ -196,6 +198,7 @@ def _claude_journal(events: str) -> dict[str, object]:
             "input_message_ids": [_CLAUDE_PROMPT, _CLAUDE_STEER],
             "steer_requests": {},
         },
+        "accepted": {"version": 1, "pid_file": "/stage/one.pid", "at": 1.0},
         "events": events,
         "stderr": "",
         "patch": None,
