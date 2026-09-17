@@ -620,3 +620,173 @@ async def test_operational_continuation_renders_current_launch_client(
         assert previous_command not in contract
     finally:
         await turn.validator_lifecycle.close()
+
+
+def _decided_output(frames: list[str]) -> list[dict[str, object]]:
+    """What a finished Work turn decided, in the terms a reader of it sees.
+
+    Artifact and answer frames carry a stage path and a session id that two
+    independent runs cannot share; the frames that say what the turn concluded
+    carry neither, and those are the comparison.
+    """
+
+    decided = []
+    for frame in frames:
+        event = json.loads(frame.removeprefix("data: ").strip())
+        if event["event"] in {"message", "error", "done", "paused"}:
+            decided.append({key: value for key, value in event.items() if value not in (None, "")})
+    return decided
+
+
+def _isolated_manifest(root: Path) -> Path:
+    """The fixture manifest under a root of its own.
+
+    Two apps built from one manifest fight over the project identity it names,
+    so a test that delivers the same result twice gives each delivery its own.
+    """
+
+    repo_a = root / "repo-a"
+    repo_b = root / "repo-b"
+    research = repo_a / ".research"
+    research.mkdir(parents=True)
+    repo_b.mkdir()
+    path = research / "manifest.toml"
+    path.write_text(
+        f'''name = "test-paper"
+
+[[machines]]
+alias = "laptop"
+host = ""
+
+[[repositories]]
+alias = "repo-a"
+machine = "laptop"
+path = "{repo_a}"
+
+[[repositories]]
+alias = "repo-b"
+machine = "laptop"
+path = "{repo_b}"
+
+[project]
+truth_scope = ["repo-a", "repo-b"]
+
+[state]
+repository = "repo-a"
+
+[agent]
+default_run_truth_scope = ["repo-a"]
+
+[execution]
+run_on = "laptop"
+''',
+        encoding="utf-8",
+    )
+    return path
+
+
+def _one_result_app(root: Path):
+    """An app of its own, so two deliveries of one result never share a graph."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    app = create_named_app(str(_isolated_manifest(root)), data_dir=root / "data")
+    request = RunRequest(
+        chat_scope="project",
+        chat_id="chat-one-result",
+        message="Run the check and reflect any graph change.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="work-one-result",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    return app.state.service, request, execution
+
+
+async def _delivered_live(
+    root: Path, turns: list[dict[str, str]], answer: str
+) -> tuple[list[dict[str, object]], ScriptedLauncher]:
+    service, request, execution = _one_result_app(root)
+    launcher = ScriptedLauncher(turns, message=answer)
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service, launcher, request, root / "data", execution=execution
+        )
+    ]
+    return _decided_output(frames), launcher
+
+
+async def _delivered_from_record(
+    root: Path, patch_text: str, answer: str
+) -> tuple[list[dict[str, object]], ScriptedLauncher]:
+    service, request, execution = _one_result_app(root)
+    launcher = ScriptedLauncher([{}], message="")
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    turn, staged = await work_module._stage_work_turn(service, resolved, root / "data", execution)
+    try:
+        await work_module._prepare_work_prompt_context(turn, staged)
+        composed = work_module._compose_fresh_prompt(turn, staged)
+        # What a provider that finished after the link dropped left on its host.
+        (turn.workspace / "patch.json").write_text(patch_text, encoding="utf-8")
+        turn.outcome.completed = True
+        turn.outcome.session_id = launcher.native_session_id
+        turn.outcome.answers.append(answer)
+        frames = [
+            frame
+            async for frame in work_module.finalize_work_result(
+                turn,
+                launcher,
+                staged,
+                composed,
+                work_module._capture_retry_deliverable_baseline(turn),
+                answer,
+                maximum_corrections=0,
+            )
+        ]
+        return _decided_output(frames), launcher
+    finally:
+        # The provider stream closes this mailbox on the live path. A recorded
+        # result has no stream, so whoever skipped one owns the close.
+        await turn.validator_lifecycle.close()
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_result_finalizes_the_way_its_live_delivery_would(tmp_path) -> None:
+    """One provider result, two links: the durable output cannot tell them apart."""
+
+    patch_text = agent_patch_json(seed_patch())
+    answer = "The Work turn reflected one graph change."
+
+    live, _ = await _delivered_live(tmp_path / "live", [{"patch.json": patch_text}], answer)
+    recorded, _ = await _delivered_from_record(tmp_path / "recorded", patch_text, answer)
+
+    assert recorded == live
+    assert [item["event"] for item in live] == ["message", "done"]
+    assert '"status":"applied"' in str(live[0]["text"])
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_result_is_rejected_where_a_live_one_would_be_corrected(tmp_path) -> None:
+    """Correcting a bad deliverable needs a provider still listening; a record has none."""
+
+    answer = "The Work turn reflected one graph change."
+    live, live_launcher = await _delivered_live(
+        tmp_path / "live",
+        [
+            {"patch.json": agent_patch_json(shape_invalid_patch())},
+            {"patch.json": agent_patch_json(seed_patch())},
+        ],
+        answer,
+    )
+    recorded, recorded_launcher = await _delivered_from_record(
+        tmp_path / "recorded", agent_patch_json(shape_invalid_patch()), answer
+    )
+
+    assert '"status":"applied"' in str(live[0]["text"])
+    assert live_launcher.calls > 1
+    assert '"status":"rejected"' in str(recorded[0]["text"])
+    assert recorded_launcher.calls == 0
