@@ -638,3 +638,59 @@ async def test_a_pass_is_not_called_delivered_before_its_prompt_is_written(
                 break
 
     assert order == ["write", "delivered"]
+
+
+@pytest.mark.asyncio
+async def test_a_pipe_that_was_already_gone_delivers_no_pass(tmp_path, monkeypatch):
+    """A swallowed write is not a delivery, however far the launch otherwise got."""
+
+    from rcp.agents import AgentProcessControl
+    from rcp.agents import launcher as launcher_module
+
+    launcher = AgentLauncher()
+    monkeypatch.setattr(launcher_module, "journal_command", lambda command, **kwargs: command)
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *args, **kwargs: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True
+        ),
+    )
+    monkeypatch.setattr(
+        launcher, "_remote_login_command", lambda command, **kwargs: shlex.join(command)
+    )
+    monkeypatch.setattr(
+        launcher_module, "ssh_arguments", lambda host, command, **kwargs: shlex.split(command)
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", "import sys; sys.stdin.read()"],
+    )
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", lambda *_args: True)
+
+    write_stdin = launcher_module._write_stdin
+
+    async def refused(stream, data, **kwargs):
+        class _Closed:
+            def write(self, _payload):
+                raise BrokenPipeError
+
+        await write_stdin(_Closed(), data, **kwargs)
+
+    monkeypatch.setattr(launcher_module, "_write_stdin", refused)
+
+    events = [
+        event.event
+        async for event in launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="fixture",
+            remote_pid_file=str(tmp_path / "provider.pid"),
+        )
+    ]
+
+    assert "remote_process_start" in events
+    assert "remote_prompt_delivered" not in events

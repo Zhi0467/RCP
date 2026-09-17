@@ -1203,24 +1203,26 @@ class AgentLauncher:
                 # From this point a write may be partial even if drain raises;
                 # retrying through another runtime could duplicate the turn.
                 prompt_delivered = True
-            prompt_issued = asyncio.Event() if journaled_remote and prompt_delivered else None
+            prompt_write = _PromptWrite() if journaled_remote and prompt_delivered else None
             stdin_task = asyncio.create_task(
                 _feed_stdin(
                     process.stdin,
                     prompt_bytes,
                     close=turn.close_input_after_initial,
-                    issued=prompt_issued,
+                    wrote=prompt_write,
                 )
             )
-            if prompt_issued is not None:
+            if prompt_write is not None:
                 # Announced once the prompt is on its way to this exact pass, so
                 # what recovery reads as a delivered pass is never one a stop
                 # caught while the turn was still on this machine. Creating the
-                # task above only schedules the write, so wait for the write
-                # itself: a consumer that stops right here would otherwise
-                # record a delivered pass whose prompt never left.
-                await prompt_issued.wait()
-                yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
+                # task above only schedules the write, so wait for the attempt,
+                # and say nothing when the pipe was already gone: neither a
+                # consumer stopping here nor a dead link may leave a pass
+                # recorded as holding a turn it was never handed.
+                await prompt_write.settled.wait()
+                if prompt_write.left:
+                    yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
             stderr_task = (
                 asyncio.create_task(
                     _read_bounded_text(
@@ -1340,9 +1342,12 @@ class AgentLauncher:
                     # Mark this before the actual write: a partial JSON-RPC
                     # request is already beyond the safe fallback boundary.
                     prompt_delivered = True
+                outgoing_left = True
                 for outgoing in step.outgoing:
-                    await _write_stdin(process.stdin, outgoing)
-                if step.delivers_prompt and journaled_remote:
+                    written = _PromptWrite()
+                    await _write_stdin(process.stdin, outgoing, wrote=written)
+                    outgoing_left = outgoing_left and written.left
+                if step.delivers_prompt and journaled_remote and outgoing_left:
                     yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
                 for decoded in step.events:
                     event = AgentEvent(
@@ -1736,26 +1741,39 @@ def _exit_reason(provider: str, return_code: int, host: str) -> str:
     return f"{provider} exited {return_code}{where}."
 
 
-async def _write_stdin(stream, data: bytes, *, issued: asyncio.Event | None = None) -> None:
+class _PromptWrite:
+    """Whether the prompt's own write left, told as soon as the attempt is over.
+
+    Two facts, because a waiter needs both: `settled` releases it whether the
+    write went out or the pipe was already gone, and `left` is the answer it
+    came for. Settled before the drain on purpose -- the question is whether the
+    bytes were handed over, and waiting for the far end to read them would stall
+    the reads that surface why it has not.
+    """
+
+    def __init__(self) -> None:
+        self.settled = asyncio.Event()
+        self.left = False
+
+
+async def _write_stdin(stream, data: bytes, *, wrote: _PromptWrite | None = None) -> None:
     try:
-        try:
-            stream.write(data)
-        finally:
-            # Set the moment the bytes are handed to the pipe, never after the
-            # drain: a waiter here is asking whether the write left, and waiting
-            # for the far end to read it would stall the reads that surface why
-            # it has not.
-            if issued is not None:
-                issued.set()
-        await stream.drain()
+        stream.write(data)
     except (BrokenPipeError, ConnectionResetError):
-        pass
+        if wrote is not None:
+            wrote.settled.set()
+        return
+    if wrote is not None:
+        wrote.left = True
+        wrote.settled.set()
+    with suppress(BrokenPipeError, ConnectionResetError):
+        await stream.drain()
 
 
 async def _feed_stdin(
-    stream, data: bytes, *, close: bool = True, issued: asyncio.Event | None = None
+    stream, data: bytes, *, close: bool = True, wrote: _PromptWrite | None = None
 ) -> None:
-    await _write_stdin(stream, data, issued=issued)
+    await _write_stdin(stream, data, wrote=wrote)
     if close:
         stream.close()
         with suppress(BrokenPipeError, ConnectionResetError):

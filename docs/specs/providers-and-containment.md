@@ -392,8 +392,8 @@ handed to that exact pass. A pass is recorded before its SSH command runs, and
 the runtime is checkpointed before the prompt is written, so a stop inside
 either window leaves a pass no turn ever reached. The launcher names the pass
 again once the prompt's own write has left for it -- not when that write is
-merely queued -- and that is the evidence: one turn can open several passes, so
-it names the pidfile. A pass caught before its prompt is skipped, and the turn
+merely queued, and not at all when the pipe refused it -- and that is the
+evidence: one turn can open several passes, so it names the pidfile. A pass caught before its prompt is skipped, and the turn
 is collected from the passes that did run, or retried when none did. Such a
 pass holds nothing afterwards either: it has no pidfile for a probe to find, so
 the workspace gate settles it on the unverifiable answer it will always get
