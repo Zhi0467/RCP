@@ -102,6 +102,7 @@ class WorkTurn:
     outcome: _ProviderOutcome
     answer: str | None = None
     compute_commands: WorkComputeCommands | None = None
+    supervise_remote: bool = False
 
     @property
     def continuation(self) -> AgentTaskContinuation:

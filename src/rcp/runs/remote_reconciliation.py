@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -100,8 +101,8 @@ def reconcile_remote_pass(
     store: AppStore,
     record: AgentTaskRecord,
     *,
-    stopped=AgentProcessControl.remote_stopped,
-    read_journal=read_remote_journal,
+    stopped: Callable[[str, str], bool | None] = AgentProcessControl.remote_stopped,
+    read_journal: Callable[[str, str], dict[str, object] | None] = read_remote_journal,
 ) -> Reconciliation:
     """Decide what this task's outstanding remote pass is owed."""
 

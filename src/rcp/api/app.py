@@ -982,7 +982,7 @@ def create_app(
     ) -> AsyncIterator[str]:
         """Apply one host-recorded pass through its task owner's finalizer."""
 
-        finalizer = recorded_finalizer(kind)
+        finalizer = recorded_finalizer(store, execution.operation_id)
         if finalizer is None:
             raise ValueError(f"No recorded-result owner is registered for {kind}.")
         service = _project_service(catalog, project_id)

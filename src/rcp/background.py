@@ -71,6 +71,7 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
     CoachRequest,
     GraphUpdateResult,
@@ -392,6 +393,9 @@ class BackgroundAgentTasks:
         self._shutdown_requested = False
         self._transport_retry_timers: list[threading.Timer] = []
         self._remote_reconciliation_timer: threading.Timer | None = None
+        self._remote_reconciliation_worker: threading.Thread | None = None
+        self._remote_reconciliation_requested = False
+        self._remote_result_lock = threading.Lock()
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
@@ -915,7 +919,11 @@ class BackgroundAgentTasks:
         if current.kind == "episode_report":
             raise ValueError("Episode report generation has no manual Pause control.")
         if current.phase == "awaiting_remote_result":
-            return self._pause_waiting_remote_result(current)
+            with self._remote_result_lock:
+                current = self._require_operation(operation_id)
+                if current.phase != "awaiting_remote_result":
+                    raise ValueError("This task's recorded result is already being finalized.")
+                return self._pause_waiting_remote_result(current)
         if current.phase == "finalizing_recorded_result":
             raise ValueError("This task's recorded result is already being finalized.")
         record = self.store.request_agent_task_pause(operation_id)
@@ -940,6 +948,10 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The execution host is unreachable, so RCP left the remote turn running."
             )
+        if stopped is True:
+            raise ValueError(
+                "The remote provider already stopped; RCP will reconcile its recorded result."
+            )
         if stopped is False:
             if identity is None:
                 raise ValueError(
@@ -953,6 +965,15 @@ class BackgroundAgentTasks:
                 raise ValueError(
                     "RCP could not confirm that the remote provider stopped; no delayed stop was queued."
                 )
+        # The provider may have finished between the probe and the stop signal.
+        # Preserve a completed or temporarily unreadable journal for its owner.
+        from rcp.runs.remote_reconciliation import reconcile_remote_pass
+
+        result = reconcile_remote_pass(self.store, record, stopped=lambda *_: True)
+        if result.action != "fail":
+            raise ValueError(
+                "The remote provider stopped; RCP will reconcile its recorded result before Pause."
+            )
         self.store.request_agent_task_pause(record.operation_id)
         self.store.finish_remote_provider_pass(record.operation_id, pid_file)
         self.store.pause_agent_task(
@@ -1011,6 +1032,7 @@ class BackgroundAgentTasks:
                 self._transport_retry_timers.clear()
                 reconciliation_timer = self._remote_reconciliation_timer
                 self._remote_reconciliation_timer = None
+                workers.append(self._remote_reconciliation_worker)
         for timer in pending_retries:
             timer.cancel()
         if reconciliation_timer is not None:
@@ -1042,10 +1064,14 @@ class BackgroundAgentTasks:
             self._accepting_watcher_deliveries = False
 
     def runtime_is_idle(self) -> bool:
-        """Report whether every already-launched provider worker has settled."""
+        """Report whether provider workers and recorded finalization have settled."""
 
         with self._controls_lock:
-            return not self._workers and not self._controls
+            return (
+                not self._workers
+                and not self._controls
+                and self._remote_reconciliation_worker is None
+            )
 
     def _create_and_spawn(
         self,
@@ -1917,12 +1943,21 @@ class BackgroundAgentTasks:
                     self._remote_reconciliation_timer = None
                 if self._shutdown_requested:
                     return
+                self._remote_reconciliation_worker = threading.current_thread()
             retry = False
             try:
+                self._require_startup_effects_open("remote result reconciliation")
                 retry = self._reconcile_remote_results()
+            except MaintenanceAdmissionClosed:
+                retry = True
             except Exception:
                 logger.exception("Remote result reconciliation failed")
                 retry = True
+            finally:
+                with self._controls_lock:
+                    self._remote_reconciliation_worker = None
+                    retry = retry or self._remote_reconciliation_requested
+                    self._remote_reconciliation_requested = False
             if retry:
                 self._schedule_remote_reconciliation(
                     delay=REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS
@@ -1932,6 +1967,9 @@ class BackgroundAgentTasks:
         timer.daemon = True
         with self._controls_lock:
             if self._shutdown_requested or self._remote_reconciliation_timer is not None:
+                return
+            if self._remote_reconciliation_worker is not None:
+                self._remote_reconciliation_requested = True
                 return
             self._remote_reconciliation_timer = timer
         timer.start()
@@ -1951,8 +1989,9 @@ class BackgroundAgentTasks:
                 continue
             if decision.action == "settled" or not waiting.actionable:
                 continue
-            if not self.store.claim_recorded_finalization(waiting.record.operation_id):
-                continue
+            with self._remote_result_lock:
+                if not self.store.claim_recorded_finalization(waiting.record.operation_id):
+                    continue
 
             try:
                 record = self._require_operation(waiting.record.operation_id)

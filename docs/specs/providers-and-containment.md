@@ -712,7 +712,17 @@ Ordinary human Work is the currently registered owner for durable remote-turn
 finalization. Other provider task owners keep their existing launch behavior
 until they expose their own typed, idempotent post-provider finalizer; recovery
 must not route their results through Work merely because they share launch
-plumbing.
+plumbing. The routing table selects the owner from the finalization contract
+retained by that owner at launch, never from the task's chat kind. Shared staging
+and local-only Work do not register a remote finalization context.
+
+Automatic graph, watcher, and Experiment watcher-maintenance corrections within
+ordinary Work use the same supervision. Before any correction, Work retains the
+primary answer in an immutable database checkpoint. Replaying a correction
+applies its deliverables while preserving that original reply and starting no
+further correction calls. Recorded finalization cannot enable corrections
+without a complete live launch context. Manual graph-repair tasks retain their
+separate existing launch behavior.
 
 Provider execution state and controller connection state are separate things.
 Losing SSH says nothing about the provider, which on a remote host keeps working
@@ -741,6 +751,13 @@ stopped pass whose journal did not, or that never took the prompt, fails it
 visibly for a human to retry; an already settled pass is left alone. Waiting is
 never cut short by a timeout, and nothing replaces a provider that may still be
 working.
+
+Pause of a waiting task is immediate and requires a reachable host and verified
+process identity. If the provider already stopped, or finishes before the Stop
+arrives, its completed journal stays available for finalization. RCP refuses the
+Pause instead of discarding that output; an unreadable journal also stays
+unresolved. There is no delayed kill intent. Active reconciliation counts as
+runtime work for maintenance draining and joins the bounded shutdown wait.
 
 ## Seed and Refresh ingestion
 

@@ -847,6 +847,7 @@ async def _delivered_from_record(
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, root / "data", execution
     )
+    work_module._record_work_finalization_context(primed, _staged)
     execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
@@ -921,6 +922,7 @@ async def test_recorded_finalization_never_reenters_launch_preparation(
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, tmp_path / "data", execution
     )
+    work_module._record_work_finalization_context(primed, _staged)
     execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
@@ -961,6 +963,7 @@ async def test_recorded_finalization_can_resume_without_applying_the_turn_twice(
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, tmp_path / "data", execution
     )
+    work_module._record_work_finalization_context(primed, _staged)
     execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
@@ -1040,3 +1043,155 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
             (primed.workspace / "patch.json").read_text(encoding="utf-8").encode("utf-8")
         ).hexdigest()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deliverable", ["patch.json", "watch.json", "experiment-watch"])
+async def test_work_correction_disconnect_waits_and_recovers_original_reply(
+    tmp_path, monkeypatch, deliverable
+) -> None:
+    """Every automatic correction keeps the task and its completed human reply."""
+
+    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
+    import rcp.runs.tasks.work_turn_runtime as runtime_module
+    from rcp.agents import AgentEvent
+    from rcp.runs.experiment_loop import experiment_watcher_output_name
+    from rcp.runs.shared import _sse
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
+    await primed.validator_lifecycle.close()
+    # Exercise the owner's remote opt-in while keeping filesystem I/O local.
+    # The actual SSH supervisor is covered by the remote provider journey.
+    primed.supervise_remote = True
+    primed.outcome.completed = True
+    primed.outcome.session_id = "recorded-thread"
+    original_answer = "The research work is complete."
+    primed.outcome.answers = [original_answer]
+    finalization = work_module._work_finalization_context(primed, staged)
+    assert work_module._settle_work_outcome(finalization) == []
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module._WORK_PRIMARY_ANSWER_ROLE
+        )
+        == original_answer
+    )
+
+    correction_calls = []
+
+    async def disconnected_correction(*_args, **kwargs):
+        correction_calls.append(kwargs)
+        assert kwargs["supervise_remote"] is True
+        kwargs["outcome"].remote_result_pending = True
+        yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
+
+    monkeypatch.setattr(runtime_module, "_stream_agent_events", disconnected_correction)
+    monkeypatch.setattr(maintenance_module, "_stream_agent_events", disconnected_correction)
+    if deliverable == "experiment-watch":
+        name = experiment_watcher_output_name("exp/test")
+        resource = SimpleNamespace(control_node_id="exp/test", graph_target=None)
+        finalization.experiment_resources = [
+            SimpleNamespace(resource=resource, watch_path=str(primed.workspace / name))
+        ]
+        monkeypatch.setattr(
+            maintenance_module,
+            "_experiment_maintenance_binding",
+            lambda *_args: SimpleNamespace(origin_task_kind="project_chat"),
+        )
+        monkeypatch.setattr(
+            execution.store, "admit_experiment_watcher_maintenance", lambda *_args: None
+        )
+    else:
+        name = deliverable
+    (primed.workspace / name).write_text("not valid JSON", encoding="utf-8")
+    if deliverable != "patch.json":
+        # Later corrections can disconnect after the graph is already applied.
+        (primed.workspace / "patch.json").write_text(
+            agent_patch_json(seed_patch()), encoding="utf-8"
+        )
+    launcher = ScriptedLauncher([{}], message="must not launch")
+    frames = [
+        frame
+        async for frame in work_module.finalize_work_result(
+            finalization,
+            launcher,
+            work_module._RetryDeliverableBaseline(None, None, {}),
+            original_answer,
+            launch_turn=primed,
+            staged=staged,
+            composed=composed,
+        )
+    ]
+    assert len(correction_calls) == 1
+    assert [json.loads(frame.removeprefix("data: "))["event"] for frame in frames] == [
+        "remote_result_pending"
+    ]
+    if deliverable != "patch.json":
+        assert service.history.state().revision == 2
+    assert not any(
+        receipt.category in {"graph_patch_rejected", "experiment_watcher_maintenance_rejected"}
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    )
+
+    # The host finishes its correction while RCP is disconnected. Its reply is
+    # maintenance prose; only its deliverables may replace the primary output.
+    (primed.workspace / name).unlink()
+    recorded = _recorded_pass(agent_patch_json(seed_patch()), "I repaired the handoff file.")
+    for _attempt in range(2):
+        recovered = [
+            frame
+            async for frame in work_module.finalize_recorded_work_result(
+                service, launcher, request, tmp_path / "unused", execution, recorded
+            )
+        ]
+        assert _decided_output(recovered)[-1] == {"event": "done"}
+    transcript = [
+        json.loads(line)
+        for line in service.chat_path(
+            request.chat_id, chat_scope=request.chat_scope, node_id=request.node_id
+        )
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    replies = [item for item in transcript if item["role"] == "assistant"]
+    assert len(replies) == 1
+    assert replies[0]["text"] == original_answer
+    assert service.history.state().revision == 2
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_finalization_cannot_enable_corrections_without_launch_context(tmp_path) -> None:
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    turn, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    await turn.validator_lifecycle.close()
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module.WORK_FINALIZATION_CONTEXT_ROLE
+        )
+        is None
+    )
+    (turn.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
+    launcher = ScriptedLauncher([{}], message="must not launch")
+    with pytest.raises(ValueError, match="complete live launch context"):
+        async for _frame in work_module.finalize_work_result(
+            work_module._work_finalization_context(turn, staged),
+            launcher,
+            work_module._RetryDeliverableBaseline(None, None, {}),
+            "A recorded answer",
+            maximum_corrections=1,
+        ):
+            pass
+    assert service.history.state().revision == 1
+    assert launcher.calls == 0

@@ -157,7 +157,8 @@ from rcp.watchers import (
 # Auto-research shares the same patch-failure value while its orchestration remains separate.
 _WorkPatchFailure = _DeliverableFailure
 
-_WORK_FINALIZATION_CONTEXT_ROLE = "work_finalization_context"
+WORK_FINALIZATION_CONTEXT_ROLE = "work_finalization_context"
+_WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
 
 
 class _StoredResultViewFinalization(BaseModel):
@@ -418,7 +419,7 @@ def _record_work_finalization_context(
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
         execution.operation_id,
-        _WORK_FINALIZATION_CONTEXT_ROLE,
+        WORK_FINALIZATION_CONTEXT_ROLE,
         content,
         hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
@@ -433,7 +434,7 @@ def _load_work_finalization_context(
 
     content = execution.store.agent_task_contract(
         execution.operation_id,
-        _WORK_FINALIZATION_CONTEXT_ROLE,
+        WORK_FINALIZATION_CONTEXT_ROLE,
     )
     if content is None:
         raise ValueError("The Work turn has no retained finalization context.")
@@ -765,7 +766,6 @@ async def _stage_work_turn(
             attachment_pointers=attachment_pointers,
             repositories=repositories,
         )
-        _record_work_finalization_context(turn, staged)
         return turn, staged
     except BaseException as exc:
         if validator_lifecycle is not None:
@@ -1590,6 +1590,7 @@ async def _settle_patch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -1611,7 +1612,7 @@ async def _settle_patch_deliverable(
                     continue
                 yield frame
         settled.native_session_id = correction_outcome.session_id or settled.native_session_id
-        if correction_outcome.paused:
+        if correction_outcome.paused or correction_outcome.remote_result_pending:
             settled.stop = True
             return
         if correction_error or not correction_outcome.completed:
@@ -1787,6 +1788,7 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
             async with aclosing(correction_stream) as stream:
                 async for frame in stream:
@@ -1802,7 +1804,7 @@ async def _settle_watch_deliverable(
         finally:
             await correction_lifecycle.close(primary_error=primary_error)
         settled.native_session_id = correction_outcome.session_id or settled.native_session_id
-        if correction_outcome.paused:
+        if correction_outcome.paused or correction_outcome.remote_result_pending:
             settled.stop = True
             return
         if correction_error or not correction_outcome.completed:
@@ -1856,6 +1858,7 @@ async def _apply_work_turn(
         provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
+        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
     )
     applied.native_session_id = native_session_id
     for frame in maintenance_frames:
@@ -1925,6 +1928,7 @@ async def _launch_and_stream_work_turn(
     *,
     supervise_remote: bool = False,
 ) -> AsyncIterator[str]:
+    turn.supervise_remote = supervise_remote
     try:
         _record_agent_launch_receipt(
             turn.execution,
@@ -2003,7 +2007,17 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     caller knows the rest of the finalization is not owed.
     """
 
-    answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    retained_answer = (
+        turn.execution.store.agent_task_contract(
+            turn.execution.operation_id, _WORK_PRIMARY_ANSWER_ROLE
+        )
+        if turn.execution is not None
+        else None
+    )
+    answer = (
+        retained_answer
+        or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    )
     if not turn.outcome.completed:
         if turn.outcome.failed or turn.outcome.paused:
             return []
@@ -2030,6 +2044,21 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
         native_session_id=turn.outcome.session_id,
     )
     turn.answer = answer
+    if turn.execution is not None:
+        store = turn.execution.store
+        operation_id = turn.execution.operation_id
+        if (
+            store.agent_task_contract(operation_id, WORK_FINALIZATION_CONTEXT_ROLE) is not None
+            and retained_answer is None
+        ):
+            # Corrections have their own journals, but their prose is not the
+            # human reply. Retain the completed primary answer before any starts.
+            store.record_agent_task_contract(
+                operation_id,
+                _WORK_PRIMARY_ANSWER_ROLE,
+                answer,
+                hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+            )
     return []
 
 
@@ -2087,6 +2116,9 @@ async def finalize_work_result(
     deliverable means asking the provider again, and the turn whose link dropped
     has nobody left to ask; the owner's existing rejection is the answer instead.
     """
+
+    if maximum_corrections and (launch_turn is None or staged is None or composed is None):
+        raise ValueError("Work corrections require a complete live launch context.")
 
     settled = _SettledWorkDeliverables(native_session_id=turn.outcome.session_id)
     async with aclosing(
@@ -2192,6 +2224,8 @@ async def stream_work_run(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
+        if turn.execution_host:
+            _record_work_finalization_context(turn, staged)
         resuming = turn.resuming
         await _prepare_work_prompt_context(turn, staged)
         if resuming:

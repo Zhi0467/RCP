@@ -85,6 +85,7 @@ async def _process_experiment_watcher_maintenance(
     provider_binary: str | None,
     retry_output_digests: dict[str, str],
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+    supervise_remote: bool = False,
 ) -> tuple[list[str], str | None, bool]:
     """Admit, validate, and atomically persist each physical Experiment watcher file."""
 
@@ -327,6 +328,7 @@ async def _process_experiment_watcher_maintenance(
                     capability="work_auto",
                     outcome=correction_outcome,
                     binary=provider_binary,
+                    supervise_remote=supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -336,7 +338,7 @@ async def _process_experiment_watcher_maintenance(
                     elif event.event not in {"answer", "done"}:
                         frames.append(frame)
             native_session_id = correction_outcome.session_id or native_session_id
-            if correction_outcome.paused:
+            if correction_outcome.paused or correction_outcome.remote_result_pending:
                 return frames, native_session_id, True
             if correction_error or not correction_outcome.completed:
                 problem = correction_error or (

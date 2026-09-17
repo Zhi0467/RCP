@@ -1,15 +1,20 @@
 # Finalize disconnected remote turns on their original tasks
 
 Date: 2026-09-16
-Status: implemented for ordinary Work turns in PR #165. The launcher now uses
+Status: completed 2026-09-17 for ordinary Work turns in PR #165, including their
+automatic graph, watcher, and watcher-maintenance corrections. The launcher uses
 the host supervisor, live disconnect and startup both drive one reconciler, and
 recorded delivery enters Work through a retained launch-time finalization
-context rather than staging a second turn. The full local suite passes (5,452
-passed, 13 skipped), and a disposable real-SSH run proved host acceptance,
+context rather than staging a second turn. Review fixes pass 197 affected tests
+with 2 skips; the earlier full local suite passed 5,452 tests with 13 skips.
+A disposable real-SSH run proved host acceptance,
 forced link loss, same-task waiting, host-side completion, and fresh-process
-finalization into one transcript. The served browser journey and PR #162
-closure remain. Final-head PR CI passes on Python 3.11 and 3.12,
-lint, old-data upgrade, and the web suite. PR #162 is draft and must not be
+finalization into one transcript. A served-browser journey also proved SSH
+disconnect, same-task waiting and automatic completion with one recovered answer;
+browser console and served responses were inspected. Pause preserves completed
+journals, owner routing follows retained finalization contracts, and maintenance
+draining tracks active reconciliation. Merge and disposition of draft PR #162
+remain human PR actions. PR #162 is draft and must not be
 merged or extended. Its journal, process-safety work, failures, and tests are
 evidence for this replacement, not a branch to build upon.
 
@@ -25,8 +30,9 @@ The boundary is:
 
 `durable provider result -> original task owner -> idempotent finalizer`
 
-Task and episode kinds select the owning finalizer. They do not make recovery a
-new task attempt.
+The finalization contract retained by the launching owner selects its finalizer.
+Task and episode kinds alone do not identify that owner or make recovery a new
+task attempt.
 
 ## Settled behavior
 
@@ -42,7 +48,8 @@ new task attempt.
 4. **Stop remains explicit and immediate.** Keep the existing human Stop with
    process-identity verification. If the host is unreachable, reject Stop
    visibly and require another click after it returns. Never queue a delayed
-   kill.
+   kill. If the provider has already finished, preserve its journal for normal
+   finalization and refuse Pause. The same rule covers completion during Stop.
 5. **Bad evidence never triggers automatic work.** Once the host proves the
    provider stopped, an incomplete, corrupt, or invalid journal fails the
    original task visibly. Only a human may Retry.
@@ -178,16 +185,17 @@ durable evidence fails that same task.
    resolving a profile, staging inputs, opening a validator mailbox, composing a
    prompt, or launching a provider, then calls the same finalizer live delivery
    calls.
-   `RECORDED_FINALIZERS` in `rcp/runs/remote_finalization.py` is the routing
-   table; a kind absent from it keeps waiting rather than being settled by an
-   owner that never agreed to settle it.
+   `RECORDED_FINALIZERS` in `rcp/runs/remote_finalization.py` maps retained
+   finalization-contract roles to their owners. A task without a registered
+   owner's contract keeps waiting rather than being settled by Work because it
+   happens to share the same chat kind.
 5. **Done for the implemented owner.** Work has one live/recorded finalization
    path and no child-collection task, continuation, identity remapping, or
    automatic correction pass. Re-entry uses the original operation's existing
    idempotency boundaries for Apply, transcript, session context, usage,
    result views, artifacts, and watchers.
 
-## Remaining verification and scope
+## Completed verification and scope
 
 - **Done: drive the host boundary.** A disposable app sent an ordinary Work
   turn over real SSH, waited for the host acceptance marker, killed only that
@@ -196,13 +204,19 @@ durable evidence fails that same task.
   same data in a fresh process. The original operation succeeded with one task,
   one assistant transcript entry, its native session, usage, and no unresolved
   remote pass.
-- **Finish the served journey and repository gates.** Drive the same loss from
-  the served browser while inspecting network, console, and server logs. The
-  full local suite and final-head PR CI are green; then close draft PR #162 as
-  superseded.
+- **Done: served journey.** Sent Work from a disposable served browser,
+  severed its real SSH connection after host acceptance, observed the original
+  task remain active, and let the host finish. The browser then showed the
+  original task completed and one recovered answer. Browser console had no
+  warnings or errors; task and transcript responses and server logs were
+  inspected. Focused regression coverage proves Pause/finalization races,
+  maintenance draining, and repeated recovery during each automatic correction.
 - **Only ordinary Work launches are supervised in this PR.** Auto-research,
   Experiment-loop, Seed/Refresh, Discuss, paper-coach, and report owners remain
-  on their existing launch behavior. Adding one requires that owner's own typed,
+  on their existing launch behavior, as do separate manual graph-repair tasks.
+  Automatic corrections within ordinary Work are supervised and retain the
+  primary answer in an immutable database checkpoint. Adding another owner
+  requires that owner's own typed,
   idempotent post-provider finalizer first; the routing table remains the only
   integration point.
 

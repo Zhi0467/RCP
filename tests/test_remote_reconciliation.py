@@ -144,17 +144,41 @@ def _plan(store, **probes):
     return plan_remote_reconciliation(store, **probes)
 
 
-def test_a_chat_turn_is_routed_to_the_work_owner() -> None:
-    """The routing is a table, not a branch anyone can forget to extend."""
+@pytest.mark.parametrize("kind", ["project_chat", "node_chat"])
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_chat_kind_alone_never_selects_a_recorded_owner(tmp_path, kind, mode) -> None:
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.storage import AgentTaskRecord
 
-    from rcp.runs.remote_finalization import RECORDED_FINALIZERS, recorded_finalizer
-    from rcp.runs.tasks.work import finalize_recorded_work_result
+    store = _store(tmp_path)
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="chat",
+            project_id="chat",
+            kind=kind,
+            status="queued",
+            request={"mode": mode},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Queued",
+        )
+    )
+    assert recorded_finalizer(store, "chat") is None
 
-    assert recorded_finalizer("project_chat") is finalize_recorded_work_result
-    assert recorded_finalizer("node_chat") is finalize_recorded_work_result
-    assert recorded_finalizer("seed") is None
-    # Every registered owner finalizes; none of them launches.
-    assert set(RECORDED_FINALIZERS) == {"node_chat", "project_chat"}
+
+def test_the_owner_that_retained_the_context_finalizes_it(tmp_path) -> None:
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE, finalize_recorded_work_result
+
+    store = _store(tmp_path)
+    content = "{}"
+    store.record_agent_task_contract(
+        "first",
+        WORK_FINALIZATION_CONTEXT_ROLE,
+        content,
+        hashlib.sha256(content.encode()).hexdigest(),
+    )
+    assert recorded_finalizer(store, "first") is finalize_recorded_work_result
 
 
 def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path) -> None:
