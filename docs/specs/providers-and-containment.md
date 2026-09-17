@@ -774,7 +774,16 @@ there was none, and recovery leaves those files alone rather than deleting them.
 A host that cannot be reached is never a verdict about watcher maintenance. An
 outage while reading, validating or persisting those outputs leaves the task
 waiting for its stage, rather than completing it with the maintenance silently
-undone or recording a permanent refusal the turn never earned.
+undone or recording a permanent refusal the turn never earned. A live pass that
+was supervised is already journalled where it ran, so such an outage leaves that
+turn waiting for its own recorded result instead of failing it; an unsupervised
+remote turn has no journal to return to, and fails as it always did.
+
+Settlement reports an unreachable stage the same way it reports a deliverable
+the agent botched, so the read that failed is what says which happened. A
+failure carrying that mark leaves the task waiting; one that does not is the
+turn's real verdict and stands, whether or not the host is still answering by
+the time it is recorded.
 
 A continuation pinned to an exact native provider session is held to it when it
 is recovered exactly as it is live. The launch retains the session it pinned

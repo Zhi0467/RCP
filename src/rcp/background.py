@@ -222,6 +222,12 @@ class AgentTaskExecution:
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
+    #: Set when a stage read during this run failed because the host could not
+    #: be reached, rather than because a deliverable was bad. Only the read that
+    #: failed knows which of the two happened, and by the time settlement has
+    #: turned it into a failure the difference is gone. In memory because it
+    #: describes this attempt, not the task.
+    stage_unreachable: bool = False
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -2066,11 +2072,12 @@ class BackgroundAgentTasks:
                 retry = True
                 continue
             except TaskFailed as exc:
-                if self._recorded_stage_unreachable(record):
-                    # Settlement reads the stage again after reconciliation read
-                    # the journal, and those reads report a host that vanished
-                    # mid-read as an unreadable deliverable. A verdict about the
-                    # turn cannot be drawn while its stage cannot be seen.
+                if execution.stage_unreachable:
+                    # This failure is the outage, not a verdict: a stage read
+                    # during settlement could not reach the host and settlement
+                    # reported it the way it reports a deliverable the agent
+                    # botched. A journalled provider error stays a real failure,
+                    # even if the host goes away immediately afterwards.
                     self.store.release_recorded_finalization(record.operation_id)
                     retry = True
                     continue
@@ -2103,20 +2110,6 @@ class BackgroundAgentTasks:
                 self._stream_closed(record, request, execution)
             self._task_settled(record, request, execution)
         return retry
-
-    def _recorded_stage_unreachable(self, record: AgentTaskRecord) -> bool:
-        """Whether the stage a recorded verdict was read from cannot be seen now.
-
-        Only a transport outage counts. A stage that was genuinely removed is a
-        real answer, and the failure it caused stands.
-        """
-
-        if not record.stage_host or not record.stage_root:
-            return False
-        try:
-            return RemoteRunStage(record.stage_host).directory_exists(record.stage_root) is None
-        except Exception:
-            return False
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.

@@ -3528,12 +3528,12 @@ def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
     """Settlement reads the stage again, long after the journal was read.
 
     Those reads report an unreachable host as an unreadable deliverable, which
-    reads exactly like an agent that wrote nonsense. No verdict about the turn
-    can be drawn while its stage cannot be seen.
+    reads exactly like an agent that wrote nonsense. Only the read that failed
+    can still tell the two apart, so it says which happened and no verdict is
+    drawn about a turn whose stage could not be seen.
     """
 
     from rcp.runs import remote_finalization
-    from rcp.transport import RemoteRunStage
 
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "stage-vanished-mid-settlement")
@@ -3545,10 +3545,10 @@ def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
             "finalize", "Finished", pid_file, _recorded_turn(pid_file)
         ),
     )
-    # "could not ask", which is what an SSH outage looks like from here.
-    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
 
-    async def unreadable_deliverable(*_args):
+    async def unreadable_deliverable(_project_id, _kind, _request, execution, _pass):
+        # What settlement does when its stage read could not reach the host.
+        execution.stage_unreachable = True
         yield _sse(
             AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
         )
@@ -3570,7 +3570,6 @@ def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
     """A stage that is genuinely gone is an answer, not a silence."""
 
     from rcp.runs import remote_finalization
-    from rcp.transport import RemoteRunStage
 
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "stage-removed")
@@ -3582,7 +3581,6 @@ def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
             "finalize", "Finished", pid_file, _recorded_turn(pid_file)
         ),
     )
-    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: False)
 
     async def unreadable_deliverable(*_args):
         yield _sse(
@@ -3593,3 +3591,43 @@ def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
     tasks._reconcile_remote_results()
 
     assert store.agent_task(waiting.operation_id).status == "failed"
+
+
+def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A journalled provider error is a verdict; the host's later silence is not.
+
+    Asking the host whether it is still there after the fact cannot tell these
+    apart, and answering "wait" to both leaves a decided turn waiting forever
+    once that host is decommissioned. Only the read that failed knows, so only
+    the read that failed says.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "verdict-then-silence")
+    pid_file = "/stage/verdict-then-silence.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+    # The host is unreachable by the time anyone could ask, which is exactly the
+    # state that used to suppress the verdict below.
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
+
+    async def provider_said_it_failed(_project_id, _kind, _request, _execution, _pass):
+        # No stage read failed: the journal itself carries the provider's error.
+        yield _sse(AgentEvent(event="error", text="The provider refused the task."))
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=provider_said_it_failed)
+    tasks._reconcile_remote_results()
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None and task.status == "failed"
+    assert "refused" in (task.error or "")

@@ -1123,6 +1123,7 @@ def _read_initial_patch_deliverable(
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The agent wrote a patch file that could not be read: {exc}",
@@ -1149,6 +1150,7 @@ def _read_initial_watch_deliverable(
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The watcher request could not be read: {exc}",
@@ -1378,6 +1380,7 @@ async def _validate_watch_deliverable(
     except ValueError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except (OSError, ReplayHalted, StateUnavailable) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=False))
 
     if not turn.execution.store.agent_task_has_receipt(
@@ -2003,6 +2006,22 @@ async def _launch_and_stream_work_turn(
     turn.answer = finalization.answer
     if finalization.answer is not None:
         yield _sse(AgentEvent(event="answer", text=finalization.answer))
+
+
+def _note_stage_unreachable(
+    execution: AgentTaskExecution | None,
+    exc: BaseException,
+) -> None:
+    """Mark a deliverable failure that was really the host going away.
+
+    Settlement reports an unreachable stage the same way it reports a
+    deliverable the agent botched, because at that point both are just a read
+    that did not return. Only here is the difference still visible, and
+    reconciliation needs it to tell a real verdict from an outage.
+    """
+
+    if isinstance(exc, StateUnavailable) and execution is not None:
+        execution.stage_unreachable = True
 
 
 def _retained_primary_answer(turn: WorkFinalizationContext) -> str | None:
