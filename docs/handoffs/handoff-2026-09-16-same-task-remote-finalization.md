@@ -7,10 +7,11 @@ recorded delivery enters Work through a retained launch-time finalization
 context rather than staging a second turn. The full local suite passes (5,452
 passed, 13 skipped), and a disposable real-SSH run proved host acceptance,
 forced link loss, same-task waiting, host-side completion, and fresh-process
-finalization into one transcript. The served browser journey, final-head PR CI,
-and PR #162 closure remain. PR #162 is draft and must not be merged or extended.
-Its journal, process-safety work, failures, and tests are evidence for this
-replacement, not a branch to build upon.
+finalization into one transcript. The served browser journey and PR #162
+closure remain. Final-head PR CI passes on Python 3.11 and 3.12,
+lint, old-data upgrade, and the web suite. PR #162 is draft and must not be
+merged or extended. Its journal, process-safety work, failures, and tests are
+evidence for this replacement, not a branch to build upon.
 
 ## Human journey
 
@@ -197,8 +198,8 @@ durable evidence fails that same task.
   remote pass.
 - **Finish the served journey and repository gates.** Drive the same loss from
   the served browser while inspecting network, console, and server logs. The
-  full local suite is green; run PR CI on the final head, then close draft PR
-  #162 as superseded.
+  full local suite and final-head PR CI are green; then close draft PR #162 as
+  superseded.
 - **Only ordinary Work launches are supervised in this PR.** Auto-research,
   Experiment-loop, Seed/Refresh, Discuss, paper-coach, and report owners remain
   on their existing launch behavior. Adding one requires that owner's own typed,

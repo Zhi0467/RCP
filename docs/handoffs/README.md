@@ -8,8 +8,8 @@ Active:
   task waiting, reconnect automatically finalizes the same remote pass through
   Work's idempotent finalizer, unreachable hosts wait without timeout, Stop is
   never delayed, and invalid evidence requires human Retry. The served-browser
-  journey and final-head PR CI remain. Draft PR #162 is evidence only and must
-  be closed as superseded after this replacement is verified.
+  journey remains; final-head PR CI is green. Draft PR #162 is evidence only
+  and must be closed as superseded after this replacement is verified.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
