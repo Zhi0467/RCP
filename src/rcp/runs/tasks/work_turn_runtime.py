@@ -105,6 +105,10 @@ class WorkTurn:
     supervise_remote: bool = False
 
     @property
+    def run_truth_scope(self) -> list[str]:
+        return self.context.run_truth_scope
+
+    @property
     def continuation(self) -> AgentTaskContinuation:
         return self.execution.continuation if self.execution is not None else "fresh"
 
@@ -195,6 +199,12 @@ class WorkFinalizationContext:
     @property
     def surface(self) -> AgentSurface:
         return "project_chat" if self.request.chat_scope == "project" else "node_chat"
+
+    @property
+    def write_dirs(self) -> list[Path]:
+        # Every launch builds these from the same scope, so recovery derives
+        # them rather than retaining a second copy that could disagree.
+        return [Path(item) for item in self.write_scope.repository_roots]
 
     @property
     def continuation(self) -> AgentTaskContinuation:

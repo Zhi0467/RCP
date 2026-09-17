@@ -165,6 +165,11 @@ PATCH_SELF_CHECK_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # here raises it everywhere, which is the point.
 PATCH_CORRECTION_MAX_ROUNDS = 2
 
+# The Experiment loop corrects a watcher handoff once. Its deliverable is a joint
+# Patch/watch admission, so a second round costs a full loop turn to re-decide
+# what the first round already had every fact to fix.
+EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS = 1
+
 # Durable external-work watchers.
 WATCHER_CHECK_TIMEOUT_SECONDS = 15
 WATCHER_POLL_INTERVAL_SECONDS = 5

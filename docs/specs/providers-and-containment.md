@@ -708,21 +708,37 @@ Remote canonical-state locking and publication are specified in
 
 ### A remote turn outliving its connection
 
-Ordinary human Work is the currently registered owner for durable remote-turn
-finalization. Other provider task owners keep their existing launch behavior
-until they expose their own typed, idempotent post-provider finalizer; recovery
-must not route their results through Work merely because they share launch
-plumbing. The routing table selects the owner from the finalization contract
-retained by that owner at launch, never from the task's chat kind. Shared staging
-and local-only Work do not register a remote finalization context.
+Four owners register durable remote-turn finalization: ordinary human Work,
+Discuss, the Experiment loop, and the Auto-research child Work turn. Each retains
+its own launch snapshot under its own contract role, and the routing table
+selects the owner from that retained contract, never from the task's chat kind --
+one chat kind names all four. A task with no retained contract, or with more than
+one, is visibly left waiting rather than settled by a neighbour that shares its
+launch plumbing. Remaining provider task owners keep their existing launch
+behavior until they expose their own typed, idempotent post-provider finalizer.
+Shared staging and local-only turns register no remote finalization context: a
+local provider dies with the process that launched it, so there is no finished
+pass left to fetch.
+
+What an owner settles is its own. Work applies its Patch, arms its watchers and
+answers its chat. Discuss answers its chat and republishes the session binding
+that lets the next message continue the same provider conversation. The
+Auto-research child settles under the parent episode's authority, admitting no
+second child to go and fetch its result. The Experiment loop reaches its joint
+Patch/watch admission and binds the episode to the session a later wake resumes;
+it settles against the episode its launch read, whose baseline, control snapshot
+and committed wake session are written down before the provider starts, so a
+reconnect cannot commit a pass belonging to a different invocation.
 
 Automatic graph, watcher, and Experiment watcher-maintenance corrections within
 ordinary Work use the same supervision. Before any correction, Work retains the
 primary answer in an immutable database checkpoint. Replaying a correction
 applies its deliverables while preserving that original reply and starting no
-further correction calls. Recorded finalization cannot enable corrections
-without a complete live launch context. Manual graph-repair tasks retain their
-separate existing launch behavior.
+further correction calls. No recorded finalization may correct a deliverable:
+the provider that could answer a correction stopped when its connection did, so
+a deliverable a live turn would have sent back is rejected instead, and a
+recorded pass offered a correction round fails rather than launching one. Manual
+graph-repair tasks retain their separate existing launch behavior.
 
 Provider execution state and controller connection state are separate things.
 Losing SSH says nothing about the provider, which on a remote host keeps working
