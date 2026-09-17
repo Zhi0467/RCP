@@ -24,7 +24,7 @@ class _Stage:
         return []
 
 
-async def _consume(store, launcher, tmp_path, *, stage=None):
+async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=False):
     outcome = _ProviderOutcome()
     events = [
         event
@@ -43,9 +43,40 @@ async def _consume(store, launcher, tmp_path, *, stage=None):
             capability="work_auto",
             outcome=outcome,
             binary=None,
+            supervise_remote=supervise_remote,
         )
     ]
     return outcome, events
+
+
+@pytest.mark.asyncio
+async def test_supervised_stream_records_ownership_and_forwards_pending_state(tmp_path):
+    store = _store(tmp_path)
+
+    class Launcher:
+        async def stream(self, *_args, **kwargs):
+            assert kwargs["supervise_remote"] is True
+            pid = kwargs["remote_pid_file"]
+            yield AgentEvent(event="remote_process_start", text=pid)
+            yield AgentEvent(
+                event="remote_result_pending",
+                text="The execution host accepted this turn.",
+            )
+
+    _outcome, events = await _consume(
+        store,
+        Launcher(),
+        tmp_path,
+        supervise_remote=True,
+    )
+
+    assert "remote_result_pending" in events[0]
+    started = next(
+        receipt
+        for receipt in store.agent_task_receipts("first")
+        if receipt.category == "remote_provider_started"
+    )
+    assert started.payload["supervised"] is True
 
 
 @pytest.mark.asyncio

@@ -119,6 +119,8 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
 )
 from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.runs.recorded_turn import RecordedProviderTurn
+from rcp.runs.remote_finalization import recorded_finalizer
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -971,12 +973,40 @@ def create_app(
             async for frame in stream:
                 yield frame
 
+    async def background_recorded_task_stream(
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+        recorded: RecordedProviderTurn,
+    ) -> AsyncIterator[str]:
+        """Apply one host-recorded pass through its task owner's finalizer."""
+
+        finalizer = recorded_finalizer(store, execution.operation_id)
+        if finalizer is None:
+            raise ValueError(f"No recorded-result owner is registered for {kind}.")
+        service = _project_service(catalog, project_id)
+        task = store.agent_task(execution.operation_id)
+        if task is None or task.project_id != project_id:
+            raise ValueError("Recorded finalization lost its durable project task.")
+        if task.graph_target.kind == "branch":
+            service = service.for_graph_target(
+                task.graph_target,
+                expected_episode_id=task.graph_target.branch_id,
+            )
+        async with aclosing(
+            finalizer(service, launcher, request, app_data, execution, recorded)
+        ) as stream:
+            async for frame in stream:
+                yield frame
+
     background_tasks = BackgroundAgentTasks(
         store,
         background_task_stream,
         on_stream_closed=refresh_cached_project_after_stream,
         startup_effect_fence=startup_effect_fence,
         runtime_admission_gate=background_admission_gate,
+        recorded_stream=background_recorded_task_stream,
     )
     if control_server is not None:
         member_removal_coordinator = MemberRemovalCoordinator(

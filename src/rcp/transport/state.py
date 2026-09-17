@@ -126,6 +126,25 @@ def _remote_lock_holder_script() -> str:
     )
 
 
+@lru_cache(maxsize=1)
+def _remote_turn_supervisor_script() -> str:
+    """Compose the shipped turn fence into the turn supervisor's source.
+
+    The fence is its own module because it is the one piece of protocol
+    knowledge that exists twice -- here and in RCP's canonical decoder -- and a
+    test compares the two on real traffic. It travels prepended rather than
+    imported, because the execution host has the standard library and nothing
+    else.
+    """
+
+    fence = (
+        importlib.resources.files("rcp.agents")
+        .joinpath("remote_turn_fence.py")
+        .read_text(encoding="utf-8")
+    )
+    return f"{fence}\n{_remote_script('remote_turn_supervisor.py')}"
+
+
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
 patches=$1
 if [ ! -d "$patches" ]; then

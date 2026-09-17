@@ -38,6 +38,12 @@ from rcp.limits import (
     REMOTE_PROVIDER_STOP_POLL_SECONDS,
     REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_TERM_WAIT_SECONDS,
+    TURN_JOURNAL_MAX_BYTES,
+    TURN_JOURNAL_MAX_CONTROL_MESSAGES,
+    TURN_JOURNAL_MAX_EVENT_BYTES,
+    TURN_JOURNAL_MAX_PATCH_BYTES,
+    TURN_JOURNAL_MAX_STDERR_BYTES,
+    TURN_JOURNAL_MAX_UPLINK_BYTES,
 )
 from rcp.providers import (
     AgentCapability,
@@ -52,7 +58,7 @@ from rcp.providers import (
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import _remote_script
+from rcp.transport.state import _remote_script, _remote_turn_supervisor_script
 
 ProviderPathState = Literal[
     "resolved",
@@ -180,6 +186,9 @@ class AgentEvent(BaseModel):
         # Internal process ownership receipts; these convey no prompt authority.
         "remote_process_start",
         "remote_process_stop",
+        # The run connection ended after the execution host accepted a
+        # supervised turn. The original task now waits for that host's journal.
+        "remote_result_pending",
         # Internal diagnostic emitted when a runtime failed before it could have
         # delivered the prompt and another candidate is about to be tried. API
         # pumps record it instead of forwarding it as UI text.
@@ -192,6 +201,56 @@ class AgentEvent(BaseModel):
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
     usage: ProviderUsage | None = None
+
+
+def _supervised_remote_turn_command(
+    command: list[str],
+    *,
+    pid_file: str,
+    provider: str,
+    runtime_id: str,
+    provider_version: str | None,
+    patch_path: str,
+    close_input_after_initial: bool,
+) -> list[str]:
+    """Wrap one remote provider pass in the execution-host journal."""
+
+    wrapped = [
+        "python3",
+        "-c",
+        _remote_turn_supervisor_script(),
+        "--pid-file",
+        pid_file,
+        "--provider",
+        provider,
+        "--runtime-id",
+        runtime_id,
+        "--patch-path",
+        patch_path,
+        "--max-journal-bytes",
+        str(TURN_JOURNAL_MAX_BYTES),
+        "--max-event-bytes",
+        str(TURN_JOURNAL_MAX_EVENT_BYTES),
+        "--max-stderr-bytes",
+        str(TURN_JOURNAL_MAX_STDERR_BYTES),
+        "--max-patch-bytes",
+        str(TURN_JOURNAL_MAX_PATCH_BYTES),
+        "--max-uplink-bytes",
+        str(TURN_JOURNAL_MAX_UPLINK_BYTES),
+        "--max-control-messages",
+        str(TURN_JOURNAL_MAX_CONTROL_MESSAGES),
+        "--stop-hold-seconds",
+        str(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
+        "--stop-grace-seconds",
+        str(REMOTE_PROVIDER_TERM_WAIT_SECONDS),
+        "--poll-seconds",
+        str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
+    ]
+    if provider_version:
+        wrapped.extend(("--provider-version", provider_version))
+    if close_input_after_initial:
+        wrapped.append("--close-input-after-initial")
+    return [*wrapped, "--", *command]
 
 
 class AgentProcessControl:
@@ -328,6 +387,13 @@ class AgentProcessControl:
         stop it. `test_provider_turn_rides_the_master_of_its_own_run` fails if
         this or `_terminate_remote` ever takes one.
         """
+        stopped, _identity = AgentProcessControl.remote_process_state(host, pid_file)
+        return stopped
+
+    @staticmethod
+    def remote_process_state(host: str, pid_file: str) -> tuple[bool | None, str | None]:
+        """Observe absence and, for a live supervised group, its process identity."""
+
         command = [
             "python3",
             "-c",
@@ -344,8 +410,15 @@ class AgentProcessControl:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
-            return None
-        return {0: True, 1: False}.get(result.returncode)
+            return None, None
+        stopped = {0: True, 1: False}.get(result.returncode)
+        identity = None
+        if stopped is False:
+            with suppress(json.JSONDecodeError, TypeError, ValueError):
+                payload = json.loads(result.stdout)
+                if isinstance(payload, dict) and isinstance(payload.get("identity"), str):
+                    identity = payload["identity"]
+        return stopped, identity
 
     @staticmethod
     def _confirm_remote_stopped(host: str, pid_file: str, started_at: float) -> bool:
@@ -364,8 +437,26 @@ class AgentProcessControl:
             time.sleep(remaining)
         return cls._terminate_remote(host, pid_file)
 
+    @classmethod
+    def stop_remote_process(
+        cls,
+        host: str,
+        pid_file: str,
+        *,
+        expected_identity: str,
+    ) -> bool:
+        """Stop a detached group only while it is still the one just observed."""
+
+        if not expected_identity:
+            return False
+        return cls._terminate_remote(host, pid_file, expect_identity=expected_identity)
+
     @staticmethod
-    def _terminate_remote(host: str, pid_file: str) -> bool:
+    def _terminate_remote(
+        host: str,
+        pid_file: str,
+        expect_identity: str | None = None,
+    ) -> bool:
         # Shared connection on purpose; see `remote_stopped`.
         command = [
             "python3",
@@ -377,6 +468,8 @@ class AgentProcessControl:
             str(REMOTE_PROVIDER_KILL_WAIT_SECONDS),
             str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
         ]
+        if expect_identity is not None:
+            command.append(expect_identity)
         try:
             result = subprocess.run(
                 ssh_arguments(host, shlex.join(command)),
@@ -869,6 +962,7 @@ class AgentLauncher:
         binary: str | None = None,
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
+        supervise_remote: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -906,6 +1000,7 @@ class AgentLauncher:
                         binary=binary,
                         runtime_id=runtime.id,
                         before_start=before_start,
+                        supervise_remote=supervise_remote,
                     )
                 ) as stream:
                     async for event in stream:
@@ -949,6 +1044,7 @@ class AgentLauncher:
         binary: str | None = None,
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
+        supervise_remote: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1042,6 +1138,18 @@ class AgentLauncher:
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
+        if supervise_remote:
+            if not host or remote_pid_file is None:
+                raise ValueError("A supervised provider turn requires a remote pidfile.")
+            command = _supervised_remote_turn_command(
+                command,
+                pid_file=remote_pid_file,
+                provider=provider,
+                runtime_id=runtime.id,
+                provider_version=getattr(readiness, "version", None),
+                patch_path=str(cwd / "patch.json"),
+                close_input_after_initial=turn.close_input_after_initial,
+            )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
@@ -1132,6 +1240,7 @@ class AgentLauncher:
         stdout_task: asyncio.Task[tuple[bytes | None, int]] | None = None
         stdout_lines = None
         remote_stopped: bool | None = None
+        remote_result_pending = False
         prompt_delivered = False
         try:
             assert process.stdin is not None
@@ -1341,7 +1450,10 @@ class AgentLauncher:
                 assert stderr_task is not None
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
-            if host and remote_pid_file:
+            remote_result_pending = bool(
+                supervise_remote and prompt_delivered and transport_failure(return_code, host)
+            )
+            if host and remote_pid_file and not remote_result_pending:
                 remote_stopped = await asyncio.to_thread(
                     AgentProcessControl._confirm_remote_stopped, host, remote_pid_file, started_at
                 )
@@ -1397,6 +1509,7 @@ class AgentLauncher:
                             if host and remote_pid_file
                             else {}
                         ),
+                        **({"delivery_lost": True} if remote_result_pending else {}),
                         **({"stopped_at_result": True} if stopped_at_result else {}),
                         **({"degradation": degradation} if degradation else {}),
                     },
@@ -1404,7 +1517,12 @@ class AgentLauncher:
                     separators=(",", ":"),
                 ),
             )
-            if paused:
+            if remote_result_pending:
+                yield AgentEvent(
+                    event="remote_result_pending",
+                    text="The connection ended after the remote host accepted this turn.",
+                )
+            elif paused:
                 yield AgentEvent(event="paused", text="Provider process paused.")
             elif completion_stop_failed:
                 yield AgentEvent(
@@ -1433,7 +1551,12 @@ class AgentLauncher:
 
             async def cleanup() -> None:
                 try:
-                    if host and remote_pid_file and remote_stopped is not True:
+                    if (
+                        host
+                        and remote_pid_file
+                        and remote_stopped is not True
+                        and not remote_result_pending
+                    ):
                         await asyncio.to_thread(
                             AgentProcessControl._confirm_remote_stopped,
                             host,

@@ -656,6 +656,58 @@ def _record_result_view_rejection(
         )
 
 
+def _replayed_result_view(
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    prepared: _PreparedResultView,
+    snapshot: ResultViewSnapshot,
+    native_session_id: str | None,
+) -> ResultViewRecord | None:
+    """Return this operation's already-published view, after proving it is identical."""
+
+    existing = execution.store.result_view_for_diagnostics(prepared.view_id)
+    if existing is None or existing.latest_operation_id != execution.operation_id:
+        return None
+    task = _result_view_task(execution)
+    expected = {
+        "project": (existing.project_id, task.project_id),
+        "Experiment": (existing.experiment_id, request.node_id or ""),
+        "conversation": (existing.chat_id, request.chat_id or ""),
+        "provider": (existing.provider, request.provider or ""),
+        "model": (existing.model, request.model or ""),
+        "reasoning": (existing.reasoning, request.reasoning or ""),
+        "execution machine": (existing.run_on, request.run_on or ""),
+        "native session": (existing.native_session_id, native_session_id or ""),
+        "stage host": (existing.stage_host, execution.stage_host or ""),
+        "stage root": (existing.stage_root, execution.stage_root or ""),
+        "source name": (existing.source_name, snapshot.name),
+        "content digest": (existing.content_sha256, snapshot.sha256),
+        "content size": (existing.size_bytes, snapshot.size),
+    }
+    expected_origin = (
+        prepared.origin_operation_id
+        if prepared.action == "create"
+        else prepared.record.origin_operation_id
+        if prepared.record is not None
+        else None
+    )
+    expected["origin"] = (existing.origin_operation_id, expected_origin)
+    mismatched = [label for label, (saved, current) in expected.items() if saved != current]
+    if mismatched:
+        raise ValueError(
+            "the already-published result view has a mismatched "
+            + ", ".join(mismatched)
+            + " binding"
+        )
+    stored = execution.store.result_view_bytes(
+        existing.view_id,
+        expected_content_sha256=existing.content_sha256,
+    )
+    if stored != snapshot.data:
+        raise ValueError("the already-published result view bytes changed during finalization")
+    return existing
+
+
 def _finalize_result_view_turn(
     request: RunRequest,
     execution: AgentTaskExecution | None,
@@ -679,7 +731,19 @@ def _finalize_result_view_turn(
         )
         now = datetime.fromisoformat(execution.store.now()).astimezone(UTC)
         expires_at = _result_view_expiry(now)
-        if prepared.action == "create":
+        replayed = _replayed_result_view(
+            request,
+            execution,
+            prepared,
+            snapshot,
+            native_session_id,
+        )
+        if replayed is not None:
+            record = replayed
+            category = (
+                "result_view_created" if prepared.action == "create" else "result_view_revised"
+            )
+        elif prepared.action == "create":
             if not native_session_id:
                 raise ValueError("the provider returned no native session for later revision")
             task = _result_view_task(execution)
@@ -746,12 +810,13 @@ def _finalize_result_view_turn(
         "stage_host": record.stage_host,
         "stage_root": record.stage_root,
     }
-    with suppress(Exception):
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            category,
-            payload,
-        )
+    if not execution.store.agent_task_has_receipt(execution.operation_id, category):
+        with suppress(Exception):
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                category,
+                payload,
+            )
     with suppress(Exception):
         execution.store.record_agent_task_event(
             execution.operation_id,

@@ -147,6 +147,18 @@ class _CodexAppServerTurn(ProviderTurn):
             return ProviderSteeringState(False, "The provider turn is not running.")
         return ProviderSteeringState(True, turn_id=self._turn_id)
 
+    def adopt_recorded_inputs(
+        self, message_ids: list[str], steer_requests: dict[str, object]
+    ) -> None:
+        # A steer's response carries the request id that asked for it. Without
+        # these the replay meets an answer to a question it never asked, which
+        # reads as a server-to-client request and fences a turn that was fine.
+        for request_id, expected_turn_id in steer_requests.items():
+            self._steers[str(request_id)] = (
+                str(request_id),
+                str(expected_turn_id) if expected_turn_id is not None else "",
+            )
+
     def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
         state = self.steering_state()
         if not state.can_steer:

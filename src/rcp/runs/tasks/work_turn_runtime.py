@@ -102,6 +102,7 @@ class WorkTurn:
     outcome: _ProviderOutcome
     answer: str | None = None
     compute_commands: WorkComputeCommands | None = None
+    supervise_remote: bool = False
 
     @property
     def continuation(self) -> AgentTaskContinuation:
@@ -161,6 +162,51 @@ class StagedWorkInputs:
     skill_pointers: list[dict[str, object]]
     attachment_pointers: list[dict[str, object]]
     repositories: list[dict[str, object]]
+
+
+@dataclass
+class WorkFinalizationContext:
+    """The launch-time facts needed after a Work provider has stopped.
+
+    Live delivery and recorded delivery both enter finalization through this
+    value.  It deliberately excludes prompt inputs, validator credentials and
+    provider-launch controls: rebuilding any of those after a disconnect would
+    turn result application back into a second launch preparation pass.
+    """
+
+    service: ProjectService
+    request: RunRequest
+    execution: AgentTaskExecution | None
+    run_truth_scope: list[str]
+    workspace: Path
+    local_stage: Path | None
+    remote_stage: RemoteRunStage | None
+    execution_host: str
+    write_scope: ProjectWriteScope
+    outcome: _ProviderOutcome
+    artifact_scope_id: str
+    artifact_directory: Path | PurePosixPath
+    prepared_result_view: _PreparedResultView | None
+    experiment_resources: list[StagedExperimentWatcherResource]
+    skill_selection: SkillSelection
+    compute_commands: WorkComputeCommands | None
+    answer: str | None = None
+
+    @property
+    def surface(self) -> AgentSurface:
+        return "project_chat" if self.request.chat_scope == "project" else "node_chat"
+
+    @property
+    def continuation(self) -> AgentTaskContinuation:
+        return self.execution.continuation if self.execution is not None else "fresh"
+
+    @property
+    def uses_master_protocol(self) -> bool:
+        return (
+            self.request.trigger in {"human", "orchestrator"}
+            and self.request.patch_kind == "work"
+            and self.continuation not in {"retry", "handoff"}
+        )
 
 
 @dataclass(frozen=True)
@@ -245,6 +291,7 @@ async def stream_turn_agent_events(
     outcome: _ProviderOutcome,
     validator_staged: StagedCommandMailbox | None = None,
     validator_lifecycle: WorkValidatorMailboxLifecycle | None = None,
+    supervise_remote: bool = False,
 ) -> AsyncIterator[str]:
     """Stream one provider continuation from a staged Work execution context."""
 
@@ -268,6 +315,7 @@ async def stream_turn_agent_events(
                 validator_lifecycle if validator_staged is not None else turn.validator_lifecycle
             ),
             required_session_id=required_session_id,
+            supervise_remote=supervise_remote,
         )
     ) as stream:
         async for frame in stream:
@@ -292,6 +340,7 @@ async def stream_work_agent_events(
     validator_staged: StagedCommandMailbox,
     validator_lifecycle: WorkValidatorMailboxLifecycle,
     required_session_id: str | None = None,
+    supervise_remote: bool = False,
 ) -> AsyncIterator[str]:
     primary_error: BaseException | None = None
     try:
@@ -313,6 +362,7 @@ async def stream_work_agent_events(
                 binary=binary,
                 invocation_gate=validator_staged.invocation_gate,
                 required_session_id=required_session_id,
+                supervise_remote=supervise_remote,
             )
         ) as stream:
             async for frame in stream:

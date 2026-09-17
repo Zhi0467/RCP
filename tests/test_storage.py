@@ -2441,6 +2441,37 @@ def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_
     assert snapshot.input_processed.cells[0].task_kind == "refresh"
 
 
+def test_recorded_agent_usage_reuses_the_original_report(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="recorded-operation",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={"provider": "codex", "model": "gpt"},
+            created_at=now,
+            updated_at=now,
+            status_message="finalizing",
+        )
+    )
+    usage = ProviderUsage(
+        provider_profile="codex.turn.v1",
+        provider_event_type="turn.completed",
+        dedupe_key="turn-1",
+        processed_input_tokens=1_000,
+        generated_tokens=100,
+    )
+
+    first = store.record_agent_usage("recorded-operation", usage, idempotent=True)
+    replay = store.record_agent_usage("recorded-operation", usage, idempotent=True)
+
+    assert replay == first
+    assert store.agent_usage("project") == [first]
+
+
 def test_concurrent_agent_usage_reports_count_one_dedupe_key_once(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.upsert_project(_project("project"))

@@ -1830,66 +1830,76 @@ class AgentTaskStoreMixin:
         assert stored is not None
         return stored
 
-    def record_agent_usage(self, operation_id: str, usage: ProviderUsage) -> AgentUsageRecord:
+    def record_agent_usage(
+        self,
+        operation_id: str,
+        usage: ProviderUsage,
+        *,
+        idempotent: bool = False,
+    ) -> AgentUsageRecord:
         """Persist one provider usage report and mark duplicate reports excluded."""
 
         task = self.agent_task(operation_id)
         if task is None:
             raise ValueError(f"Cannot attribute provider usage to unknown task {operation_id!r}")
         usage_id = str(uuid.uuid4())
+        recorded_usage_id = usage_id
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             duplicate = connection.execute(
                 """
-                SELECT 1 FROM agent_usage
+                SELECT usage_id FROM agent_usage
                 WHERE operation_id = ? AND provider_profile = ? AND dedupe_key = ?
                     AND counted = 1
                 LIMIT 1
                 """,
                 (operation_id, usage.provider_profile, usage.dedupe_key),
             ).fetchone()
-            counted = duplicate is None
-            count_reason: AgentUsageCountReason = "counted" if counted else "duplicate"
-            connection.execute(
-                """
-                INSERT INTO agent_usage (
-                    usage_id, project_id, operation_id, provider, model,
-                    task_kind, provider_profile, provider_event_type, dedupe_key, counted,
-                    count_reason, created_at, processed_input_tokens,
-                    generated_tokens, cached_input_tokens,
-                    cache_creation_input_tokens, cache_write_input_tokens,
-                    reasoning_output_tokens, reported_input_tokens,
-                    reported_output_tokens, reported_total_tokens,
-                    provider_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    usage_id,
-                    task.project_id,
-                    operation_id,
-                    task.request.get("provider") or "unknown",
-                    task.request.get("model"),
-                    task.kind,
-                    usage.provider_profile,
-                    usage.provider_event_type,
-                    usage.dedupe_key,
-                    int(counted),
-                    count_reason,
-                    now,
-                    usage.processed_input_tokens,
-                    usage.generated_tokens,
-                    usage.cached_input_tokens,
-                    usage.cache_creation_input_tokens,
-                    usage.cache_write_input_tokens,
-                    usage.reasoning_output_tokens,
-                    usage.reported_input_tokens,
-                    usage.reported_output_tokens,
-                    usage.reported_total_tokens,
-                    json.dumps(usage.provider_fields, separators=(",", ":")),
-                ),
-            )
-        record = self.agent_usage_record(usage_id)
+            if duplicate is not None and idempotent:
+                recorded_usage_id = str(duplicate["usage_id"])
+            else:
+                counted = duplicate is None
+                count_reason: AgentUsageCountReason = "counted" if counted else "duplicate"
+                connection.execute(
+                    """
+                    INSERT INTO agent_usage (
+                        usage_id, project_id, operation_id, provider, model,
+                        task_kind, provider_profile, provider_event_type, dedupe_key, counted,
+                        count_reason, created_at, processed_input_tokens,
+                        generated_tokens, cached_input_tokens,
+                        cache_creation_input_tokens, cache_write_input_tokens,
+                        reasoning_output_tokens, reported_input_tokens,
+                        reported_output_tokens, reported_total_tokens,
+                        provider_fields_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        usage_id,
+                        task.project_id,
+                        operation_id,
+                        task.request.get("provider") or "unknown",
+                        task.request.get("model"),
+                        task.kind,
+                        usage.provider_profile,
+                        usage.provider_event_type,
+                        usage.dedupe_key,
+                        int(counted),
+                        count_reason,
+                        now,
+                        usage.processed_input_tokens,
+                        usage.generated_tokens,
+                        usage.cached_input_tokens,
+                        usage.cache_creation_input_tokens,
+                        usage.cache_write_input_tokens,
+                        usage.reasoning_output_tokens,
+                        usage.reported_input_tokens,
+                        usage.reported_output_tokens,
+                        usage.reported_total_tokens,
+                        json.dumps(usage.provider_fields, separators=(",", ":")),
+                    ),
+                )
+        record = self.agent_usage_record(recorded_usage_id)
         assert record is not None
         return record
 
@@ -2446,9 +2456,20 @@ class AgentTaskStoreMixin:
             return self._unresolved_remote_provider_passes(connection, stage_host, stage_root)
 
     def begin_remote_provider_pass(
-        self, operation_id: str, stage_host: str, stage_root: str, pid_file: str
+        self,
+        operation_id: str,
+        stage_host: str,
+        stage_root: str,
+        pid_file: str,
+        *,
+        supervised: bool = False,
     ) -> None:
-        """Atomically reserve an exact remote stage before launching one provider pass."""
+        """Atomically reserve an exact remote stage before launching one provider pass.
+
+        `supervised` says a turn supervisor is writing a journal under this
+        pidfile. It is what lets a restart tell a pass whose result is still
+        recoverable from a pass whose only record died with the process.
+        """
         root = PurePosixPath(stage_root)
         pid = PurePosixPath(pid_file)
         if (
@@ -2460,7 +2481,12 @@ class AgentTaskStoreMixin:
         ):
             raise ValueError("A remote provider pass requires its exact host, stage and pidfile.")
         payload = self._bounded_receipt_payload(
-            {"stage_host": stage_host, "stage_root": stage_root, "pid_file": pid_file}
+            {
+                "stage_host": stage_host,
+                "stage_root": stage_root,
+                "pid_file": pid_file,
+                "supervised": supervised,
+            }
         )
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2495,36 +2521,44 @@ class AgentTaskStoreMixin:
         """Record confirmed absence for exactly one previously reserved process group."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            started = connection.execute(
+            self._finish_remote_provider_pass(connection, operation_id, pid_file)
+
+    def _finish_remote_provider_pass(
+        self,
+        connection: sqlite3.Connection,
+        operation_id: str,
+        pid_file: str,
+    ) -> None:
+        started = connection.execute(
+            """
+            SELECT payload_json FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'remote_provider_started'
+              AND json_extract(payload_json, '$.pid_file') = ?
+            """,
+            (operation_id, pid_file),
+        ).fetchone()
+        if started is None:
+            raise ValueError("The remote provider pass has no matching start receipt.")
+        if (
+            connection.execute(
                 """
-                SELECT payload_json FROM graph_run_receipts
-                WHERE operation_id = ? AND category = 'remote_provider_started'
-                  AND json_extract(payload_json, '$.pid_file') = ?
-                """,
-                (operation_id, pid_file),
-            ).fetchone()
-            if started is None:
-                raise ValueError("The remote provider pass has no matching start receipt.")
-            if (
-                connection.execute(
-                    """
                 SELECT 1 FROM graph_run_receipts
                 WHERE operation_id = ? AND category = 'remote_provider_stopped'
                   AND json_extract(payload_json, '$.pid_file') = ?
                 """,
-                    (operation_id, pid_file),
-                ).fetchone()
-                is not None
-            ):
-                return
-            self._insert_agent_task_receipt(
-                connection,
-                operation_id,
-                "remote_provider_stopped",
-                started["payload_json"],
-                tier="summary",
-                created_at=self.now(),
-            )
+                (operation_id, pid_file),
+            ).fetchone()
+            is not None
+        ):
+            return
+        self._insert_agent_task_receipt(
+            connection,
+            operation_id,
+            "remote_provider_stopped",
+            started["payload_json"],
+            tier="summary",
+            created_at=self.now(),
+        )
 
     def record_agent_task_receipt(
         self,
@@ -3792,6 +3826,7 @@ class AgentTaskStoreMixin:
         *,
         applied_revision: int | None,
         result: dict[str, object],
+        remote_pid_file: str | None = None,
     ) -> None:
         now = self.now()
         result_json = self._bounded_result_json(result)
@@ -3849,6 +3884,8 @@ class AgentTaskStoreMixin:
                     created_at=now,
                 )
             else:
+                if remote_pid_file is not None:
+                    self._finish_remote_provider_pass(connection, operation_id, remote_pid_file)
                 if not graph_rejected:
                     connection.execute(
                         "DELETE FROM graph_run_outputs WHERE operation_id = ?",
@@ -3884,6 +3921,7 @@ class AgentTaskStoreMixin:
         status: Literal["failed", "interrupted"] = "failed",
         result: dict[str, object] | None = None,
         failure_kind: AgentFailureKind | None = None,
+        remote_pid_file: str | None = None,
     ) -> None:
         """Record a failure, keeping any output the task produced before it.
 
@@ -3923,6 +3961,8 @@ class AgentTaskStoreMixin:
                     created_at=now,
                 )
             else:
+                if remote_pid_file is not None:
+                    self._finish_remote_provider_pass(connection, operation_id, remote_pid_file)
                 self._insert_agent_task_event(
                     connection,
                     operation_id,
@@ -4035,6 +4075,94 @@ class AgentTaskStoreMixin:
             return None
         return dispatch_attempt_id
 
+    def operation_ids_awaiting_remote_result(self) -> list[str]:
+        """Tasks nobody is watching, whose remote pass is still outstanding.
+
+        Narrower than what the restart sweep preserves, and deliberately so. That
+        set includes a turn a live worker is streaming right now: its pass is
+        unresolved because it has not finished, not because it was abandoned. A
+        reconciler let loose on those would race the worker to finalize the same
+        task the moment a provider stopped before its consumer wrote the stop
+        down. The durable phase is what says no one is watching.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT operation_id FROM graph_runs
+                WHERE phase = 'awaiting_remote_result'
+                  AND status IN ('queued', 'running', 'pausing')
+                ORDER BY operation_id
+                """
+            ).fetchall()
+        outstanding = self._supervised_remote_pass_operation_ids()
+        return [str(row["operation_id"]) for row in rows if str(row["operation_id"]) in outstanding]
+
+    def claim_recorded_finalization(self, operation_id: str) -> bool:
+        """Take sole ownership of finalizing this task, or report someone else has.
+
+        A pass receipt describes a remote process. It does not say who may settle
+        the task, and two settlers would apply one turn twice. This moves the
+        durable phase in a single statement, so exactly one caller sees it move.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE graph_runs
+                SET phase = 'finalizing_recorded_result', updated_at = ?
+                WHERE operation_id = ? AND phase = 'awaiting_remote_result'
+                """,
+                (now, operation_id),
+            ).rowcount
+        return changed == 1
+
+    def release_recorded_finalization(self, operation_id: str) -> None:
+        """Hand the claim back when finalization did not settle the task."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET phase = 'awaiting_remote_result', updated_at = ?
+                WHERE operation_id = ? AND phase = 'finalizing_recorded_result'
+                """,
+                (now, operation_id),
+            )
+
+    def _supervised_remote_pass_operation_ids(self) -> set[str]:
+        """Tasks whose provider may still be working under a journal on its host.
+
+        The two preserved sets mean opposite things and both have to survive a
+        restart. One is work proven never to have started. This is work that may
+        well have finished: the process watching it is the one that died, and its
+        result is sitting on a host waiting to be read. Interrupting these would
+        throw away exactly what this design exists to keep.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT started.operation_id
+                FROM graph_run_receipts AS started
+                JOIN graph_runs AS run ON run.operation_id = started.operation_id
+                WHERE started.category = 'remote_provider_started'
+                  AND json_extract(started.payload_json, '$.supervised') = 1
+                  AND run.status IN ('queued', 'running', 'pausing')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS stopped
+                      WHERE stopped.category = 'remote_provider_stopped'
+                        AND stopped.operation_id = started.operation_id
+                        AND json_extract(stopped.payload_json, '$.pid_file') =
+                            json_extract(started.payload_json, '$.pid_file')
+                  )
+                """
+            ).fetchall()
+        return {str(row["operation_id"]) for row in rows}
+
     def interrupt_active_agent_tasks(
         self,
         *,
@@ -4046,9 +4174,14 @@ class AgentTaskStoreMixin:
             "when available, or retry from the beginning."
         )
         preserved = sorted(
-            operation_id
-            for operation_id in (preserve_operation_ids or set())
-            if self.agent_task_dispatch_was_proven_not_started(operation_id)
+            {
+                *(
+                    operation_id
+                    for operation_id in (preserve_operation_ids or set())
+                    if self.agent_task_dispatch_was_proven_not_started(operation_id)
+                ),
+                *self._supervised_remote_pass_operation_ids(),
+            }
         )
         preserve_clause = ""
         preserve_arguments: tuple[str, ...] = ()
@@ -4056,12 +4189,30 @@ class AgentTaskStoreMixin:
             placeholders = ",".join("?" for _ in preserved)
             preserve_clause = f" AND operation_id NOT IN ({placeholders})"
             preserve_arguments = tuple(preserved)
+        waiting = sorted(self._supervised_remote_pass_operation_ids())
         active_statuses = tuple(sorted(AGENT_TASK_TRANSITIONS["interrupted"]))
         active_placeholders = ",".join("?" for _ in active_statuses)
         active_clause = f"status IN ({active_placeholders}){preserve_clause}"
         interrupted: list[str] = []
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if waiting:
+                # These kept their status because their provider may still be
+                # working. Say so, so nothing reads the spinner as a worker this
+                # process is running: there is no local worker, only a host with
+                # the answer on it.
+                connection.execute(
+                    f"""
+                    UPDATE graph_runs
+                    SET phase = 'awaiting_remote_result', status_message = ?, updated_at = ?
+                    WHERE operation_id IN ({",".join("?" for _ in waiting)})
+                    """,
+                    (
+                        "Waiting for the remote result of a turn RCP stopped watching.",
+                        now,
+                        *waiting,
+                    ),
+                )
             interrupted = [
                 str(row["operation_id"])
                 for row in connection.execute(

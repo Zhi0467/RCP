@@ -675,6 +675,7 @@ class _ProviderOutcome:
     trace_messages: list[str] = dataclasses.field(default_factory=list)
     exit_evidence: dict[str, object] | None = None
     exit_recorded: bool = False
+    remote_result_pending: bool = False
 
 
 async def _stream_agent_events(
@@ -695,6 +696,7 @@ async def _stream_agent_events(
     binary: str | None,
     invocation_gate: ProviderInvocationGate | None = None,
     required_session_id: str | None = None,
+    supervise_remote: bool = False,
 ) -> AsyncIterator[str]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
@@ -761,6 +763,7 @@ async def _stream_agent_events(
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
+            supervise_remote=supervise_remote,
         )
     ) as stream:
         async for event in stream:
@@ -796,6 +799,7 @@ async def _stream_agent_events(
                     execution_host,
                     str(remote_stage.root),
                     remote_pid_file,
+                    supervised=supervise_remote,
                 )
                 remote_pass_recorded = True
                 continue
@@ -804,10 +808,12 @@ async def _stream_agent_events(
                 execution.store.finish_remote_provider_pass(execution.operation_id, event.text)
                 remote_pass_recorded = False
                 continue
-            if event.event in {"runtime", "runtime_fallback"}:
+            if event.event in {"runtime", "runtime_fallback", "remote_result_pending"}:
                 # Background consumes these. It durably checkpoints the runtime
                 # before the launcher writes the prompt, and records why an
                 # earlier candidate was passed over rather than showing it.
+                if event.event == "remote_result_pending":
+                    outcome.remote_result_pending = True
                 yield _sse(event)
                 continue
             if event.event == "paused":

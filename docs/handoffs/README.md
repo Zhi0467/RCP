@@ -32,6 +32,11 @@ Active:
   verified. The separate controller fix and unfinished Ubuntu reboot/restore
   cases remain; the original deployment handoff is archived.
 
+The [same-task remote finalization handoff is complete](../archive/handoffs/handoff-2026-09-16-same-task-remote-finalization.md):
+ordinary Work and its automatic corrections retain their task across connection
+loss. Real-SSH restart and served-browser recovery journeys are verified. PR #165
+awaits human merge; draft PR #162 remains superseded evidence.
+
 The [phone-access handoff is closed](../archive/handoffs/handoff-2026-09-09-phone-access-device-sessions.md):
 device sessions, the Devices panel, pairing, and single-session desktops shipped;
 the tailnet is an operator procedure in `docs/server.md`.

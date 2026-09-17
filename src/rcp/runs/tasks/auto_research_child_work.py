@@ -98,6 +98,7 @@ from rcp.runs.tasks.work import (
     _stream_work_graph_repair,
     _validate_work_patch_live,
     _work_execution_instructions,
+    _work_finalization_context,
     _WorkValidatorMailboxLifecycle,
 )
 from rcp.service import ProjectService, RunRequest
@@ -992,9 +993,11 @@ async def stream_auto_research_child_work_run(
 
     assert turn is not None
     required_session_id = turn.request.session_id if execution.reuses_native_checkpoint else None
+    finalization = _work_finalization_context(turn, staged)
     async with aclosing(
         _launch_and_stream_work_turn(
             turn,
+            finalization,
             launcher,
             composed.prompt,
             composed.contract_path,
@@ -1005,18 +1008,19 @@ async def stream_auto_research_child_work_run(
     ) as stream:
         async for frame in stream:
             yield frame
-    if turn.answer is None:
+    if finalization.answer is None:
         return
 
     settled = _SettledWorkDeliverables(native_session_id=turn.outcome.session_id)
     async with aclosing(
         _settle_patch_deliverable(
-            turn,
+            finalization,
             launcher,
-            staged,
-            composed,
             retry_baseline.patch_digest,
             settled,
+            launch_turn=turn,
+            staged=staged,
+            composed=composed,
             required_session_id=required_session_id,
         )
     ) as stream:
@@ -1055,17 +1059,23 @@ async def stream_auto_research_child_work_run(
         return
     async with aclosing(
         _settle_watch_deliverable(
-            turn, launcher, staged, composed, retry_baseline.watch_digest, settled
+            finalization,
+            launcher,
+            retry_baseline.watch_digest,
+            settled,
+            launch_turn=turn,
+            staged=staged,
+            composed=composed,
         )
     ) as stream:
         async for frame in stream:
             yield frame
     if settled.stop:
         return
-    final_turn = turn
+    final_turn = finalization
     if turn.continuation == "message_wake" and turn.request.message is None:
         final_turn = replace(
-            turn,
+            finalization,
             request=turn.request.model_copy(
                 update={
                     "message": (
@@ -1075,7 +1085,7 @@ async def stream_auto_research_child_work_run(
                 }
             ),
         )
-    for frame in _finalize_work_turn(final_turn, turn.answer, settled.graph_update):
+    for frame in _finalize_work_turn(final_turn, finalization.answer, settled.graph_update):
         yield frame
 
 

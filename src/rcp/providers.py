@@ -186,6 +186,20 @@ class ProviderTurn:
     def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
         raise ValueError(self.steering_state().reason)
 
+    def adopt_recorded_inputs(
+        self, message_ids: list[str], steer_requests: dict[str, object]
+    ) -> None:
+        """Take on the input identities a recorded pass actually sent.
+
+        Replaying a journal builds a fresh turn, which would otherwise mint its
+        own ids and then fail to recognise its own recorded traffic. The host
+        wrote these down for exactly this: stdin is the live control channel and
+        is never persisted, so the identities travel instead of the bytes.
+
+        A runtime that does not key anything off its inputs has nothing to take
+        on, which is why this does nothing by default.
+        """
+
 
 class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
@@ -296,6 +310,17 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
 
     def initial_input(self) -> bytes:
         return self._user_input(self._turn_id, self._prompt)
+
+    def adopt_recorded_inputs(
+        self, message_ids: list[str], steer_requests: dict[str, object]
+    ) -> None:
+        if not message_ids:
+            return
+        # The first is the prompt; the rest are steers this turn accepted. A
+        # result naming any of them belongs to this turn, and a fresh id would
+        # have let the first result end a turn that was still answering.
+        self._turn_id = message_ids[0]
+        self._generated = set(message_ids)
 
     def steering_state(self) -> ProviderSteeringState:
         if self._completed:
