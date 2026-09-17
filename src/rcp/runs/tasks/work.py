@@ -2844,6 +2844,11 @@ def open_recorded_work_turn(
     _write_recorded_patch(turn, recorded)
     frames = absorb_recorded_events(turn.outcome, verdict)
     frames.extend(_settle_work_outcome(turn))
+    if turn.answer is not None:
+        # The live path emits this from its launch stream after settling. The
+        # task's own durable result is read off this frame, so a recovered turn
+        # that never emits one completes with no answer of its own.
+        frames.append(_sse(AgentEvent(event="answer", text=turn.answer)))
     return turn, frames
 
 

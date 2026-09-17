@@ -62,6 +62,10 @@ async def test_a_recorded_child_pass_settles_on_its_own_task(tmp_path) -> None:
     assert '"status":"applied"' in str(decided[0]["text"])
     assert decided[-1] == {"event": "done"}
     assert service.history.state().revision == 2
+    # The task's own durable result is read off this frame, so a recovered turn
+    # that never emits one completes with no answer of its own.
+    events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    assert [item["text"] for item in events if item["event"] == "answer"] == [_ANSWER]
     # No provider is asked for anything: the turn already happened.
     assert launcher.calls == 0
 
