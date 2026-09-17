@@ -42,7 +42,6 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
-from rcp.providers import ProviderTurnRequest
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -79,9 +78,14 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    attach_retained_stage,
+    provider_turn_request,
+    retained_artifact_directory,
+)
 from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
-    RecordedVerdict,
     decode_recorded_turn,
 )
 from rcp.runs.shared import (
@@ -445,41 +449,25 @@ def _load_work_finalization_context(
     task = execution.store.agent_task(execution.operation_id)
     if task is None or task.request != request.model_dump(mode="json"):
         raise ValueError("The Work finalization request does not match its durable task.")
-    if (execution.stage_host or "", execution.stage_root) != (
-        stored.stage_host,
-        stored.stage_root,
-    ):
-        raise ValueError("The retained Work finalization context belongs to another task stage.")
     if execution.write_scope_fingerprint != stored.write_scope.fingerprint:
         raise ValueError("The retained Work finalization write scope changed after launch.")
-
-    if stored.stage_host:
-        remote_stage = RemoteRunStage(stored.stage_host).attach(stored.stage_root)
-        local_stage = None
-        allowed_workspaces = {str(remote_stage.workspace)}
-    else:
-        local_stage = Path(stored.stage_root)
-        if not local_stage.is_absolute() or local_stage.is_symlink() or not local_stage.is_dir():
-            raise ValueError("The retained local Work stage is unavailable or unsafe.")
-        remote_stage = None
-        # Older reusable conversations used the stage itself as the provider
-        # cwd. The launch snapshot names which layout this exact turn used.
-        allowed_workspaces = {str(local_stage), str(local_stage / "workspace")}
-    if (
-        stored.workspace not in allowed_workspaces
-        or stored.write_scope.workspace_root != stored.workspace
-    ):
+    local_stage, remote_stage, workspace = attach_retained_stage(
+        execution,
+        owner="Work",
+        stage_host=stored.stage_host,
+        stage_root=stored.stage_root,
+        workspace=stored.workspace,
+    )
+    # Work alone binds a write scope, so only Work can check that the scope it
+    # enforced names the workspace this turn actually ran in.
+    if stored.write_scope.workspace_root != stored.workspace:
         raise ValueError("The retained Work workspace changed after launch.")
-    workspace = Path(stored.workspace)
-    if (
-        local_stage is not None
-        and workspace != local_stage
-        and (not workspace.is_dir() or workspace.is_symlink())
-    ):
-        raise ValueError("The retained Work workspace is unavailable or unsafe.")
-    expected_artifact_directory = str(workspace / "turns" / stored.artifact_scope_id / "artifacts")
-    if stored.artifact_directory != expected_artifact_directory:
-        raise ValueError("The retained Work artifact boundary is invalid.")
+    artifact_directory = retained_artifact_directory(
+        workspace,
+        stored.artifact_scope_id,
+        stored.artifact_directory,
+        owner="Work",
+    )
 
     experiment_resources = [
         StagedExperimentWatcherResource(
@@ -512,7 +500,7 @@ def _load_work_finalization_context(
         write_scope=stored.write_scope,
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
-        artifact_directory=Path(stored.artifact_directory),
+        artifact_directory=artifact_directory,
         prepared_result_view=_prepared_result_view(stored.result_view),
         experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
@@ -2820,43 +2808,6 @@ def _recorded_retry_deliverable_baseline(
     return _RetryDeliverableBaseline(None, None, {})
 
 
-def _absorb_recorded_events(
-    turn: WorkFinalizationContext,
-    verdict: RecordedVerdict,
-) -> list[str]:
-    """Read the decoded pass into this turn's outcome, as the live loop would.
-
-    The same five event kinds, meaning the same five things. A recorded turn is
-    not handed a conclusion; it reaches one by reading its own events, which is
-    why a failure recorded on a host stays a failure here.
-    """
-
-    frames = []
-    for event in verdict.events:
-        if event.session_id:
-            turn.outcome.session_id = event.session_id
-        if event.event == "session":
-            frames.append(_sse(event))
-            continue
-        if event.event == "answer":
-            turn.outcome.answers.append(event.text)
-            if event.usage is not None:
-                frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
-            continue
-        if event.event == "message":
-            if event.text.strip() and len(turn.outcome.trace_messages) < 16:
-                turn.outcome.trace_messages.append(event.text.strip()[:16_000])
-            continue
-        if event.event == "error":
-            turn.outcome.failed = True
-            frames.append(_sse(event))
-            continue
-        if event.usage is not None:
-            frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
-    turn.outcome.completed = verdict.complete and not turn.outcome.failed
-    return frames
-
-
 async def finalize_recorded_work_result(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -2877,12 +2828,12 @@ async def finalize_recorded_work_result(
 
     del data_dir  # Recovery uses only launch-time facts retained by this task.
     turn = _load_work_finalization_context(service, request, execution)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn, recorded))
+    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
     # The verified Patch replaces whatever the stage holds. A stage is mutable
     # and this value is not, so settling from the record means settling from
     # the record.
     _write_recorded_patch(turn, recorded)
-    for frame in _absorb_recorded_events(turn, verdict):
+    for frame in absorb_recorded_events(turn.outcome, verdict):
         yield frame
     for frame in _settle_work_outcome(turn):
         yield frame
@@ -2916,27 +2867,3 @@ def _write_recorded_patch(
         turn.remote_stage.write_workspace_text(target, recorded.patch)
     else:
         (turn.workspace / target).write_text(recorded.patch, encoding="utf-8")
-
-
-def provider_turn_request(
-    turn: WorkFinalizationContext,
-    recorded: RecordedProviderTurn,
-) -> ProviderTurnRequest:
-    """The request shape the decoder needs, from what this turn already knows."""
-
-    return ProviderTurnRequest(
-        prompt="",
-        binary=recorded.provider,
-        cwd=turn.workspace,
-        model=None,
-        reasoning=None,
-        session_id=recorded.session_id,
-        read_dirs=[],
-        write_dirs=[],
-        write_scope=None,
-        # Nothing launches from this request; it exists so the decoder can build
-        # the runtime that reads the wire. Naming the turn's real capability here
-        # would ask for a write scope no reader needs and no recovery has.
-        capability="paper_readonly",
-        provider_version=recorded.provider_version,
-    )
