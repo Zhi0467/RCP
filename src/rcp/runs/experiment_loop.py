@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from rcp.agents.schema import (
+    EXPERIMENT_WATCH_OUTPUT_PREFIX as _EXPERIMENT_WATCH_OUTPUT_PREFIX,
+)
+from rcp.agents.schema import (
+    EXPERIMENT_WATCH_OUTPUT_SUFFIX as _EXPERIMENT_WATCH_OUTPUT_SUFFIX,
+)
+from rcp.agents.schema import (
     CreateEdgesOperation as AgentCreateEdgesOperation,
 )
 from rcp.agents.schema import (
@@ -113,10 +119,6 @@ class ExperimentLoopSemanticEnding:
     @property
     def partial(self) -> bool:
         return self.ending == "human_pause"
-
-
-_EXPERIMENT_WATCH_OUTPUT_PREFIX = "experiment-watch-"
-_EXPERIMENT_WATCH_OUTPUT_SUFFIX = ".json"
 
 
 @dataclass(frozen=True)

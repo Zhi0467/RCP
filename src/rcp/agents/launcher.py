@@ -27,6 +27,7 @@ from rcp.agents.failure_kinds import transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
+from rcp.agents.schema import EXPERIMENT_WATCH_OUTPUT_GLOB
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -212,6 +213,7 @@ def _supervised_remote_turn_command(
     provider_version: str | None,
     patch_path: str,
     watch_path: str,
+    experiment_watch_glob: str,
     close_input_after_initial: bool,
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
@@ -230,6 +232,8 @@ def _supervised_remote_turn_command(
         patch_path,
         "--watch-path",
         watch_path,
+        "--experiment-watch-glob",
+        experiment_watch_glob,
         "--max-journal-bytes",
         str(TURN_JOURNAL_MAX_BYTES),
         "--max-event-bytes",
@@ -1152,6 +1156,7 @@ class AgentLauncher:
                 provider_version=getattr(readiness, "version", None),
                 patch_path=str(cwd / "patch.json"),
                 watch_path=str(cwd / "watch.json"),
+                experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
                 close_input_after_initial=turn.close_input_after_initial,
             )
         if control is not None and control.pause_requested.is_set():

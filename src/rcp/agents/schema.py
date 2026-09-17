@@ -26,6 +26,13 @@ from rcp.core.models import (
 )
 from rcp.core.operations import GraphOperation, HumanEditCause, NewGlossaryTerm, operation_dict
 
+#: One physical Experiment watcher output, named for the resource it selects.
+#: The launch supervisor snapshots these by pattern and the settling turn reads
+#: them by name, so both sides spell the layout from here rather than twice.
+EXPERIMENT_WATCH_OUTPUT_PREFIX = "experiment-watch-"
+EXPERIMENT_WATCH_OUTPUT_SUFFIX = ".json"
+EXPERIMENT_WATCH_OUTPUT_GLOB = f"{EXPERIMENT_WATCH_OUTPUT_PREFIX}*{EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
+
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _NODE_ID = rf"[a-z][a-z0-9]*(?:_[a-z0-9]+)*/{_SLUG}"
 

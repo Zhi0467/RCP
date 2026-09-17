@@ -15,6 +15,7 @@ was worth.
 """
 
 import argparse
+import glob
 import hashlib
 import json
 import os
@@ -330,6 +331,8 @@ def run(args):
     patch_sha256 = None
     watch_present = False
     watch_sha256 = None
+    experiment_watch = {}
+    experiment_watch_snapshotted = False
     if fence.terminal and journal_complete and not error and not external_stop:
         try:
             patch_present, patch_sha256 = _deliverable_snapshot(
@@ -340,6 +343,24 @@ def run(args):
             watch_present, watch_sha256 = _deliverable_snapshot(
                 args.watch_path, directory / "watch.json", args.max_patch_bytes
             )
+            # Experiment watcher maintenance writes one file per resource, so
+            # unlike the two above this set is discovered rather than named. The
+            # settling turn discovers it the same way off the stage, which is
+            # exactly why the bytes have to be pinned here.
+            experiment_watch_directory = directory / "experiment-watch"
+            sources = sorted(glob.glob(args.experiment_watch_glob))
+            if sources:
+                experiment_watch_directory.mkdir(mode=0o700)
+            for source in sources:
+                name = os.path.basename(source)
+                present, digest = _deliverable_snapshot(
+                    source,
+                    experiment_watch_directory / name,
+                    args.max_patch_bytes,
+                )
+                if present:
+                    experiment_watch[name] = digest
+            experiment_watch_snapshotted = True
         except (OSError, ValueError) as exc:
             error = str(exc)
     if error and not detached:
@@ -383,6 +404,10 @@ def run(args):
                 "patch_sha256": patch_sha256,
                 "watch_present": watch_present,
                 "watch_sha256": watch_sha256,
+                # Absent entirely in a journal written before these were
+                # snapshotted, which is not the same as a turn that wrote none.
+                "experiment_watch_snapshotted": experiment_watch_snapshotted,
+                "experiment_watch_sha256": experiment_watch,
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,
@@ -421,7 +446,14 @@ def _exit_status(return_code):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    for name in ("pid-file", "provider", "runtime-id", "patch-path", "watch-path"):
+    for name in (
+        "pid-file",
+        "provider",
+        "runtime-id",
+        "patch-path",
+        "watch-path",
+        "experiment-watch-glob",
+    ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")
     for name in (

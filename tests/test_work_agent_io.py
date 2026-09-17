@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import threading
@@ -794,7 +795,12 @@ async def _delivered_live(
     return _decided_output(frames), launcher, _durable_state(service, execution.store, root)
 
 
-def _recorded_pass(patch_text: str, answer: str, watch_text: str | None = None):
+def _recorded_pass(
+    patch_text: str,
+    answer: str,
+    watch_text: str | None = None,
+    experiment_watch: dict[str, str] | None = None,
+):
     """One completed Codex pass, as a host would have recorded it."""
 
     from rcp.runs.recorded_turn import recorded_provider_turn
@@ -827,6 +833,11 @@ def _recorded_pass(patch_text: str, answer: str, watch_text: str | None = None):
             if watch_text is not None
             else None
         ),
+        "experiment_watch_snapshotted": True,
+        "experiment_watch_sha256": {
+            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for name, text in (experiment_watch or {}).items()
+        },
         "root_thread_id": "recorded-thread",
         "input_message_ids": [],
         "steer_requests": {},
@@ -840,6 +851,7 @@ def _recorded_pass(patch_text: str, answer: str, watch_text: str | None = None):
             "stderr": "",
             "patch": patch_text,
             "watch": watch_text,
+            "experiment_watch": dict(experiment_watch or {}),
         },
     )
 
@@ -1300,3 +1312,101 @@ async def test_a_recorded_correction_that_failed_keeps_the_reply_it_already_gave
     assert "answer" in kinds and "error" in kinds
     assert kinds.index("answer") < kinds.index("error")
     assert next(item["text"] for item in events_out if item["event"] == "answer") == original_answer
+
+
+def test_recovery_makes_the_stage_hold_exactly_the_watcher_outputs_the_pass_wrote(
+    tmp_path,
+) -> None:
+    """Watcher maintenance is read by discovery, so the whole set is evidence.
+
+    Settling reads whichever `experiment-watch-*.json` files the stage holds at
+    the time. A file replaced after the host finished would arm different
+    observers under this turn's authority, and one added afterwards would be
+    admitted as this turn's, so restoring the record has to remove it.
+    """
+
+    from rcp.runs.recorded_settlement import write_recorded_patch
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    kept = '{"observers": [{"check_command": "true"}], "stops": []}'
+    # The stage as RCP finds it: one output rewritten, one invented, and the
+    # third -- which the pass did write -- deleted outright.
+    workspace.joinpath("experiment-watch-aaaa.json").write_text("{}", encoding="utf-8")
+    workspace.joinpath("experiment-watch-cccc.json").write_text("{}", encoding="utf-8")
+
+    recorded = _recorded_pass(
+        "",
+        "done",
+        experiment_watch={
+            "experiment-watch-aaaa.json": kept,
+            "experiment-watch-bbbb.json": kept,
+        },
+    )
+    write_recorded_patch(workspace, None, recorded)
+
+    assert sorted(item.name for item in workspace.glob("experiment-watch-*.json")) == [
+        "experiment-watch-aaaa.json",
+        "experiment-watch-bbbb.json",
+    ]
+    assert workspace.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == kept
+    assert workspace.joinpath("experiment-watch-bbbb.json").read_text(encoding="utf-8") == kept
+
+
+def test_a_journal_predating_watcher_snapshots_leaves_the_stage_alone(tmp_path) -> None:
+    """Silence about the set is not a claim that the pass wrote none."""
+
+    from rcp.runs.recorded_settlement import write_recorded_patch
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    existing = '{"observers": [], "stops": []}'
+    workspace.joinpath("experiment-watch-aaaa.json").write_text(existing, encoding="utf-8")
+
+    recorded = _recorded_pass("", "done")
+    older = dataclasses.replace(recorded, experiment_watch={}, experiment_watch_snapshotted=False)
+    write_recorded_patch(workspace, None, older)
+
+    assert workspace.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == existing
+
+
+@pytest.mark.asyncio
+async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
+    tmp_path, monkeypatch
+) -> None:
+    """An unreachable host is not a turn that asked for no maintenance.
+
+    Swallowing the outage completes the task as a success with its requested
+    maintenance silently undone, and nothing retries it: Background only sees a
+    finalizer that ran to the end. Letting it out is what leaves the task
+    waiting for its stage to come back.
+    """
+
+    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
+    from rcp.transport import StateUnavailable
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    await primed.validator_lifecycle.close()
+
+    def host_went_away(*_args, **_kwargs):
+        raise StateUnavailable("could not inspect chat watcher outputs: ssh exited 255")
+
+    monkeypatch.setattr(maintenance_module, "read_experiment_watcher_outputs", host_went_away)
+
+    with pytest.raises(StateUnavailable):
+        async for _frame in work_module.finalize_recorded_work_result(
+            service,
+            ScriptedLauncher([{}], message="must not launch"),
+            request,
+            tmp_path / "not-used",
+            execution,
+            _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
+        ):
+            pass

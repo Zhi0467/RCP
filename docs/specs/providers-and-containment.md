@@ -764,9 +764,17 @@ two cannot drift apart. The supervisor also snapshots the turn's deliverables
 beside its journal, Patch and watcher handoff alike, each under its own digest.
 A stage is mutable and a recorded pass is not, so every owner restores those
 snapshots before reading any deliverable: what settles is what the host proved,
-not whatever the directory happens to hold when RCP reconnects. A journal that
+not whatever the directory happens to hold when RCP reconnects. Experiment watcher
+maintenance writes one file per resource, so that set is discovered rather than
+named: the host snapshots all of it, and recovery makes the stage hold exactly
+the set the pass wrote, removing one that appeared afterwards. A journal that
 predates deliverable snapshots is silent about a handoff rather than claiming
-there was none, and recovery leaves that file alone rather than deleting it.
+there was none, and recovery leaves those files alone rather than deleting them.
+
+A host that cannot be reached is never a verdict about watcher maintenance. An
+outage while reading, validating or persisting those outputs leaves the task
+waiting for its stage, rather than completing it with the maintenance silently
+undone or recording a permanent refusal the turn never earned.
 
 A continuation pinned to an exact native provider session is held to it when it
 is recovered exactly as it is live. The launch retains the session it pinned

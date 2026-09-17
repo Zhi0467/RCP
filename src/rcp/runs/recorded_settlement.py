@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
 from rcp.providers import ProviderTurnRequest
+from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
 from rcp.transport import RemoteRunStage
 
@@ -70,6 +71,15 @@ def write_recorded_patch(
     _restore(workspace, remote_stage, "patch.json", recorded.patch)
     if recorded.watch_snapshotted:
         _restore(workspace, remote_stage, "watch.json", recorded.watch)
+    if recorded.experiment_watch_snapshotted:
+        # Experiment watcher maintenance is read by discovery, so restoring the
+        # recorded files is not enough: the stage's set has to become the pass's
+        # set, or one added afterwards would be admitted as this turn's.
+        for name in _experiment_watcher_output_names(workspace, remote_stage):
+            if name not in recorded.experiment_watch:
+                _restore(workspace, remote_stage, name, None)
+        for name, content in sorted(recorded.experiment_watch.items()):
+            _restore(workspace, remote_stage, name, content)
 
 
 def _restore(
