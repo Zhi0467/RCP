@@ -1,7 +1,7 @@
 # Finalize disconnected remote turns on their original tasks
 
 Date: 2026-09-16
-Status: implementation step 1 complete; steps 2-5 remain. PR #162 is draft and
+Status: implementation steps 1-2 complete; steps 3-5 remain. PR #162 is draft and
 must not be merged or extended. Its journal, process-safety work, failures, and
 tests are evidence for this replacement, not a branch to build upon. This
 handoff closes when the replacement PR is implemented, its focused and full CI
@@ -150,10 +150,16 @@ durable evidence fails that same task.
    nobody is listening to. `tests/test_work_agent_io.py` delivers one result to
    two apps that share no graph -- streamed, and read out of a stage a departed
    provider left -- and pins their durable output equal.
-2. Add the host-owned acceptance and journal contract. Evaluate and simplify
-   the journal and process helpers from draft PR #162; do not copy them
-   wholesale. Reuse canonical provider decoders and share terminal observation
-   instead of maintaining two protocol implementations.
+2. **Done.** `rcp/agents/remote_turn_fence.py` holds the one piece of protocol
+   knowledge that must exist twice -- where a turn ends -- and
+   `tests/test_remote_turn_fence.py` compares it to the canonical decoder on the
+   protocol corpus. It publishes no verdict.
+   `rcp/transport/remote_turn_supervisor.py` journals the pass and writes
+   `accepted.json` before the prompt's first byte reaches the provider; it is
+   shipped with the fence composed ahead of it by
+   `_remote_turn_supervisor_script`. `rcp/runs/recorded_turn.py` binds and
+   verifies one journal, then replays it through the runtime object the live
+   pipe drives, so the turn is judged once.
 3. Add waiting and reconciliation on the original task across live disconnect
    and RCP restart.
 4. Route every journaled remote task owner through the same mechanism with one
