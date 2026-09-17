@@ -260,12 +260,34 @@ def _load_discuss_finalization_context(
     )
 
 
+def _warn_discuss_patch_discarded(execution: AgentTaskExecution, message: str) -> None:
+    """Say this once for this task, however many times recovery reaches it.
+
+    The receipt that guards the discard is written last, so a crash before it
+    replays the whole discard. Its own message is what keeps this warning from
+    being told twice; nothing else about a warning is unique.
+    """
+
+    if any(
+        item.message == message
+        for item in execution.store.agent_task_events(execution.operation_id)
+    ):
+        return
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        message,
+        level="warning",
+    )
+
+
 def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
     """Keep a stray patch as evidence, never as a graph change.
 
     Authority to change the graph rides on the human's request. An agent cannot
     grant it to itself by writing the file. Recorded settlement can reach this
-    twice, so the receipt this turn already carries is the one that stands.
+    twice, and can also die partway through it, so the receipt is written last
+    and everything before it is safe to repeat: the patch text upserts and the
+    warning knows whether it has already been told.
     """
 
     execution = context.execution
@@ -276,6 +298,10 @@ def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
     try:
         patch_text = _read_chat_patch(context.workspace, context.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _warn_discuss_patch_discarded(
+            execution,
+            "Discuss wrote an unreadable patch.json; RCP discarded it without changing the graph.",
+        )
         execution.store.record_agent_task_receipt(
             execution.operation_id,
             "discuss_patch_discarded",
@@ -285,20 +311,14 @@ def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
             },
             tier="diagnostic",
         )
-        execution.store.record_agent_task_event(
-            execution.operation_id,
-            "Discuss wrote an unreadable patch.json; RCP discarded it without changing the graph.",
-            level="warning",
-        )
         return
     if patch_text is None:
         return
     execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-    execution.store.record_agent_task_event(
-        execution.operation_id,
+    _warn_discuss_patch_discarded(
+        execution,
         "Discuss has no graph authority, so the patch the agent wrote was "
         "discarded. Switch to Work for a deliberate graph update.",
-        level="warning",
     )
     execution.store.record_agent_task_receipt(
         execution.operation_id,

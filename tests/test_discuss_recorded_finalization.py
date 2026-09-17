@@ -233,3 +233,53 @@ def test_a_moved_discuss_stage_refuses_to_finalize(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="belongs to another stage"):
         discuss_module._load_discuss_finalization_context(service, request, execution)
+
+
+@pytest.mark.asyncio
+async def test_a_discard_interrupted_before_its_receipt_still_warns_once(tmp_path) -> None:
+    """The crash window between the warning and its guard is the real one.
+
+    A completed discard is guarded by its receipt. A discard that died after
+    warning has no receipt, so the next recovery runs the whole thing again --
+    and must not tell the human twice, nor stay silent because an earlier
+    attempt already spoke.
+    """
+
+    service, request, execution = _discuss_app(tmp_path)
+    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    (Path(execution.stage_root) / "workspace").mkdir(parents=True)
+    context = _retained_context(service, request, execution)
+    discuss_module._record_discuss_finalization_context(context)
+    (Path(execution.stage_root) / "workspace" / "patch.json").write_text(
+        '{"operations": []}', encoding="utf-8"
+    )
+
+    class _DiedBeforeItsReceipt(RuntimeError):
+        pass
+
+    original = execution.store.record_agent_task_receipt
+
+    def die_before_the_guard(operation_id, category, *args, **kwargs):
+        if category == "discuss_patch_discarded":
+            raise _DiedBeforeItsReceipt
+        return original(operation_id, category, *args, **kwargs)
+
+    execution.store.record_agent_task_receipt = die_before_the_guard  # type: ignore[method-assign]
+    with pytest.raises(_DiedBeforeItsReceipt):
+        discuss_module._discard_discuss_patch(context)
+    execution.store.record_agent_task_receipt = original  # type: ignore[method-assign]
+
+    discuss_module._discard_discuss_patch(context)
+
+    warnings = [
+        event
+        for event in execution.store.agent_task_events(execution.operation_id)
+        if event.level == "warning" and "no graph authority" in event.message
+    ]
+    assert len(warnings) == 1
+    discarded = [
+        receipt
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+        if receipt.category == "discuss_patch_discarded"
+    ]
+    assert len(discarded) == 1
