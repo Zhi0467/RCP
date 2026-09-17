@@ -1752,21 +1752,25 @@ async def _apply_experiment_loop_turn(
         hashlib.sha256(watch_text.encode("utf-8")).hexdigest() if watch_text is not None else None
     )
     root_id = root_experiment_loop_operation_id(execution)
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "experiment_loop_handoff_prepared",
-        {
-            "episode_id": turn.request.control_episode_id,
-            "invocation": turn.request.control_invocation,
-            "root_operation_id": root_id,
-            "patch_sha256": patch_digest,
-            "watch_sha256": watch_digest,
-            "graph_status": applied.graph_update.status,
-            "applied_revision": applied.graph_update.applied_revision,
-            "watcher_ids": prepared_watcher_ids,
-            "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
-        },
-    )
+    invocation = turn.request.control_invocation
+    if not _handoff_receipt_recorded(
+        execution, execution.operation_id, "experiment_loop_handoff_prepared", invocation
+    ):
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "experiment_loop_handoff_prepared",
+            {
+                "episode_id": turn.request.control_episode_id,
+                "invocation": invocation,
+                "root_operation_id": root_id,
+                "patch_sha256": patch_digest,
+                "watch_sha256": watch_digest,
+                "graph_status": applied.graph_update.status,
+                "applied_revision": applied.graph_update.applied_revision,
+                "watcher_ids": prepared_watcher_ids,
+                "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
+            },
+        )
     try:
         armed = await asyncio.to_thread(
             commit_experiment_episode_handoff,
@@ -1794,15 +1798,39 @@ async def _apply_experiment_loop_turn(
         return
     if graph_conditions:
         execution.armed_graph_watchers = True
-    execution.store.record_agent_task_receipt(
-        root_id,
-        "watchers_armed",
-        {
-            "watcher_ids": [item.watcher_id for item in armed],
-            "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
-            "count": len(armed),
-            "correction_rounds": settled.watch_correction_rounds,
-        },
+    if not _handoff_receipt_recorded(execution, root_id, "watchers_armed", invocation):
+        execution.store.record_agent_task_receipt(
+            root_id,
+            "watchers_armed",
+            {
+                # The root collects one of these per invocation, so it names
+                # which one it is rather than only what it armed.
+                "invocation": invocation,
+                "watcher_ids": [item.watcher_id for item in armed],
+                "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
+                "count": len(armed),
+                "correction_rounds": settled.watch_correction_rounds,
+            },
+        )
+
+
+def _handoff_receipt_recorded(
+    execution: AgentTaskExecution,
+    operation_id: str,
+    category: str,
+    invocation: int | None,
+) -> bool:
+    """Whether this exact invocation already wrote this handoff receipt.
+
+    The root operation collects one of these per invocation, so the category
+    alone cannot tell a replay repeating one from a later turn adding its own.
+    Recovery replays the whole settlement, and operational history is a product
+    of this system rather than a log, so one invocation says this once.
+    """
+
+    return any(
+        receipt.category == category and receipt.payload.get("invocation") == invocation
+        for receipt in execution.store.agent_task_receipts(operation_id)
     )
 
 

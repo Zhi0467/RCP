@@ -159,6 +159,17 @@ async def test_recorded_loop_finalization_can_resume_without_arming_twice(
         if watcher.origin_operation_id == execution.operation_id
     ]
     assert len(armed) == 1
+    # Operational history is a product of this system, not a log. One
+    # invocation's handoff is reported once however often recovery replays it.
+    # A first invocation is its own root, so count each operation once.
+    owners = {execution.operation_id, loop_module.root_experiment_loop_operation_id(execution)}
+    categories = [
+        receipt.category
+        for owner in owners
+        for receipt in execution.store.agent_task_receipts(owner)
+    ]
+    assert categories.count("experiment_loop_handoff_prepared") == 1
+    assert categories.count("watchers_armed") == 1
 
 
 @pytest.mark.asyncio
