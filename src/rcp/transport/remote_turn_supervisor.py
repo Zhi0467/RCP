@@ -276,10 +276,11 @@ def run(args):
                 elif child.stdin.closed:
                     continue
                 else:
-                    # The prompt is about to reach the provider. Say so on the
-                    # host first, so nothing that survives this moment can claim
-                    # the turn never started.
-                    accept()
+                    # Once this batch contains the prompt, say so on the host
+                    # before any of it moves. Earlier protocol setup is not a
+                    # delivered turn and must not block a safe runtime fallback.
+                    if fence.prompt_started:
+                        accept()
                     buffer = input_pending
                 try:
                     written = os.write(descriptor, buffer)

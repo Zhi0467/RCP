@@ -1,15 +1,13 @@
 # Finalize disconnected remote turns on their original tasks
 
 Date: 2026-09-16
-Status: steps 1-2 complete; step 3 decided and tested, not yet driven; step 4
-complete for Work only. Nothing launches under the supervisor yet, so no real
-turn behaves differently today. Remaining work is listed under "What is not
-wired yet". PR #162 is draft and
+Status: implemented for ordinary Work turns in PR #165. The launcher now uses
+the host supervisor, live disconnect and startup both drive one reconciler, and
+recorded delivery enters Work through a retained launch-time finalization
+context rather than staging a second turn. Focused checks pass; the full suite,
+served real-SSH loss journey, and PR #162 closure remain. PR #162 is draft and
 must not be merged or extended. Its journal, process-safety work, failures, and
-tests are evidence for this replacement, not a branch to build upon. This
-handoff closes when the replacement PR is implemented, its focused and full CI
-checks pass, the served and real-SSH loss journeys pass, and PR #162 is closed
-as superseded.
+tests are evidence for this replacement, not a branch to build upon.
 
 ## Human journey
 
@@ -163,40 +161,40 @@ durable evidence fails that same task.
    `_remote_turn_supervisor_script`. `rcp/runs/recorded_turn.py` binds and
    verifies one journal, then replays it through the runtime object the live
    pipe drives, so the turn is judged once.
-3. **Decided and tested; not yet driven.** A supervised pass survives the
+3. **Done for ordinary Work.** A supervised pass survives the
    restart sweep and its task waits at `awaiting_remote_result`
    (`_supervised_remote_pass_operation_ids`). `rcp/runs/remote_reconciliation.py`
    holds the whole table -- unreachable and running wait, a stopped pass with a
    whole journal finalizes, a stopped pass without one fails, a settled pass is
-   left alone -- and every row is covered without a host.
-4. **Complete for Work.** `finalize_recorded_work_result` stages the turn with
-   `for_recorded_result=True` and calls the same finalizer live delivery calls.
+   left alone -- and every row is covered without a host. One timer drives the
+   table at startup, immediately after a live disconnect, and while any host is
+   still unavailable or running.
+4. **Done for ordinary Work.** Launch persists a typed
+   `WorkFinalizationContext`; `finalize_recorded_work_result` reloads it without
+   resolving a profile, staging inputs, opening a validator mailbox, composing a
+   prompt, or launching a provider, then calls the same finalizer live delivery
+   calls.
    `RECORDED_FINALIZERS` in `rcp/runs/remote_finalization.py` is the routing
    table; a kind absent from it keeps waiting rather than being settled by an
    owner that never agreed to settle it.
-5. Remove transitional duplication before review. The finished diff has one
-   live/recorded finalization path per owner and no child-collection remnants.
+5. **Done for the implemented owner.** Work has one live/recorded finalization
+   path and no child-collection task, continuation, identity remapping, or
+   automatic correction pass. Re-entry uses the original operation's existing
+   idempotency boundaries for Apply, transcript, session context, usage,
+   result views, artifacts, and watchers.
 
-## What is not wired yet
+## Remaining verification and scope
 
-Everything below is absent rather than half-built, and none of it changes a real
-turn today.
-
-- **The launcher does not start the supervisor.** No pass is reserved with
-  `supervised=True`, so nothing yet reaches the restart preservation or the
-  reconciliation table in production.
-- **Nothing drives the plan.** `plan_remote_reconciliation` says what each
-  waiting task is owed; no caller yet executes that, settles the task, or
-  re-arms the poll. Startup recovery is the natural first caller, beside
-  `_rearm_owed_transport_retries`.
-- **Live disconnect does not set the waiting phase.** Only the restart path
-  does. A link that drops while RCP stays up still takes the old route.
-- **Only Work has a recorded owner.** Auto-research, the Experiment loop,
-  seed/refresh, and result views are unrouted; their finalizers need the same
-  extraction Work got, and `auto_research_child_work.py` and
-  `experiment_loop.py` already assemble theirs from the same parts.
-- **Restartable finalization is unproven.** The idempotence contract above has
-  no crash-matrix coverage yet.
+- **Drive the real boundary.** Run a disposable served app through an actual SSH
+  disconnect, let the host-side stub finish, restart RCP, and inspect the task,
+  network, console, and server logs.
+- **Finish repository gates.** Run the full local suite and PR CI, then close
+  draft PR #162 as superseded.
+- **Only ordinary Work launches are supervised in this PR.** Auto-research,
+  Experiment-loop, Seed/Refresh, Discuss, paper-coach, and report owners remain
+  on their existing launch behavior. Adding one requires that owner's own typed,
+  idempotent post-provider finalizer first; the routing table remains the only
+  integration point.
 
 If step 1 cannot produce a clean shared finalizer without recreating PR #162's
 branch matrix, stop and report the concrete coupling before adding journal or UI

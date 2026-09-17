@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
@@ -34,6 +34,8 @@ from rcp.runs.auto_research_admission import (
 )
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.recorded_turn import RecordedProviderTurn
+from rcp.runs.remote_reconciliation import Reconciliation
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -2579,6 +2581,202 @@ def _transport_failed_task(
     settled = store.agent_task(task.operation_id)
     assert settled is not None
     return settled
+
+
+def _waiting_remote_work(store: AppStore, operation_id: str) -> AgentTaskRecord:
+    _admitted_launch_task(
+        store,
+        operation_id=operation_id,
+        record_updates={"stage_host": "remote", "stage_root": "/stage"},
+    )
+    assert store.mark_agent_task_running(operation_id)
+    store.begin_remote_provider_pass(
+        operation_id,
+        "remote",
+        "/stage",
+        f"/stage/{operation_id}.pid",
+        supervised=True,
+    )
+    store.interrupt_active_agent_tasks()
+    waiting = store.agent_task(operation_id)
+    assert waiting is not None and waiting.phase == "awaiting_remote_result"
+    return waiting
+
+
+def _recorded_turn(pid_file: str) -> RecordedProviderTurn:
+    return RecordedProviderTurn(
+        pid_file=pid_file,
+        provider="codex",
+        runtime_id="codex.exec-json.v1",
+        provider_version=None,
+        outcome={"terminal_event": True, "journal_complete": True},
+        events="",
+        stderr="",
+        patch=None,
+        accepted=True,
+    )
+
+
+def test_dropped_supervised_stream_keeps_the_original_task_waiting(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("remote", "/stage")
+        store.begin_remote_provider_pass(
+            execution.operation_id,
+            "remote",
+            "/stage",
+            "/stage/dropped.pid",
+            supervised=True,
+        )
+        yield _sse(
+            AgentEvent(
+                event="remote_result_pending",
+                text="Waiting for the remote result.",
+            )
+        )
+
+    tasks = BackgroundAgentTasks(store, stream)
+    admitted = _admitted_launch_task(store, operation_id="dropped-supervised")
+    tasks.launch_admitted(admitted.operation_id)
+    wait_until(lambda: tasks.runtime_is_idle())
+
+    waiting = store.agent_task(admitted.operation_id)
+    assert waiting is not None
+    assert waiting.status == "running"
+    assert waiting.phase == "awaiting_remote_result"
+    assert not store.agent_task_has_receipt(admitted.operation_id, "transport_auto_retry")
+    assert len(store.agent_tasks("project", include_hidden=True)) == 1
+
+
+def test_recorded_result_completes_the_same_task_and_pass_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "recorded-original")
+    pid_file = "/stage/recorded-original.pid"
+    seen: list[str] = []
+
+    async def unused_stream(*_args):
+        raise AssertionError("recorded finalization must not launch a provider")
+        yield  # pragma: no cover
+
+    async def recorded_stream(_project_id, _kind, _request, execution, _recorded):
+        seen.append(execution.operation_id)
+        yield _sse(AgentEvent(event="session", session_id="recorded-session"))
+        yield _sse(AgentEvent(event="answer", text="Recovered answer."))
+        yield _sse(AgentEvent(event="done"))
+
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize",
+            "The provider finished.",
+            pid_file,
+            _recorded_turn(pid_file),
+        ),
+    )
+    tasks = BackgroundAgentTasks(store, unused_stream, recorded_stream=recorded_stream)
+
+    assert tasks._reconcile_remote_results() is False
+
+    settled = store.agent_task(waiting.operation_id)
+    assert settled is not None and settled.status == "succeeded"
+    assert settled.native_session_id == "recorded-session"
+    assert settled.result == {"messages": ["Recovered answer."]}
+    assert seen == [waiting.operation_id]
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+    assert len(store.agent_tasks("project", include_hidden=True)) == 1
+
+
+def test_recorded_finalization_releases_its_claim_if_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "recorded-setup-failure")
+    pid_file = "/stage/recorded-setup-failure.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize",
+            "The provider finished.",
+            pid_file,
+            _recorded_turn(pid_file),
+        ),
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=_done_stream)
+
+    def fail_request(_record):
+        raise RuntimeError("bad retained request")
+
+    monkeypatch.setattr(tasks, "_request_from_record", fail_request)
+
+    with pytest.raises(RuntimeError, match="bad retained request"):
+        tasks._reconcile_remote_results()
+
+    released = store.agent_task(waiting.operation_id)
+    assert released is not None and released.phase == "awaiting_remote_result"
+
+
+def test_pause_of_detached_turn_requires_reachable_exact_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "pause-detached")
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "remote_process_state",
+        staticmethod(lambda *_args: (False, "boot:123")),
+    )
+    stopped: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "stop_remote_process",
+        classmethod(
+            lambda _cls, host, pid_file, *, expected_identity: (
+                stopped.append((host, pid_file, expected_identity)) or True
+            )
+        ),
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream)
+
+    paused = tasks.pause(waiting.operation_id)
+
+    assert paused.status == "paused"
+    assert stopped == [("remote", "/stage/pause-detached.pid", "boot:123")]
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+
+
+def test_pause_of_unreachable_detached_turn_is_a_no_op(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "unreachable-detached")
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "remote_process_state",
+        staticmethod(lambda *_args: (None, None)),
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream)
+
+    with pytest.raises(ValueError, match="left the remote turn running"):
+        tasks.pause(waiting.operation_id)
+
+    unchanged = store.agent_task(waiting.operation_id)
+    assert unchanged is not None
+    assert unchanged.status == "running"
+    assert unchanged.phase == "awaiting_remote_result"
+    assert store.unresolved_remote_provider_passes("remote", "/stage")
 
 
 def test_lost_connection_is_reattempted_without_a_human(tmp_path: Path, monkeypatch) -> None:

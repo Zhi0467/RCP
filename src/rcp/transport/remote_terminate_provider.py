@@ -6,10 +6,13 @@ belongs to its existing remote process wrapper; no process discovery is used.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import signal
 import stat
+import subprocess
 import sys
 import time
 
@@ -58,6 +61,54 @@ def _group_stopped(pid: int, timeout: float, poll_interval: float) -> bool:
         time.sleep(min(poll_interval, remaining))
 
 
+def _names_pid_file(pid: int, pid_file: str) -> bool:
+    """Whether the live process still names the pidfile that owns it."""
+
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return pid_file.encode("utf-8", "replace") in handle.read()
+    except OSError:
+        pass
+    try:
+        observed = subprocess.run(
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return observed.returncode == 0 and pid_file in observed.stdout
+
+
+def process_identity(pid: int, pid_file: str) -> str | None:
+    """Return a token that changes if this PID is recycled."""
+
+    if not _names_pid_file(pid, pid_file):
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            fields = handle.read().rpartition(b")")[2].split()
+        return "boot:" + fields[19].decode("ascii")
+    except (OSError, IndexError, UnicodeError):
+        pass
+    try:
+        observed = subprocess.run(
+            ["ps", "-ww", "-o", "lstart=,command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = " ".join(observed.stdout.split())
+    if observed.returncode != 0 or not value:
+        return None
+    return "clock:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:32]
+
+
 def provider_stopped(pid_file: str) -> bool | None:
     """Inspect the owned group without waiting or delivering a signal.
 
@@ -91,6 +142,7 @@ def terminate_provider(
     term_timeout: float,
     kill_timeout: float,
     poll_interval: float,
+    expect_identity: str | None = None,
 ) -> bool:
     """Return true only after the owned process group is confirmed absent."""
     durations = (pid_file_timeout, term_timeout, kill_timeout, poll_interval)
@@ -112,6 +164,8 @@ def terminate_provider(
         pass
     except OSError:
         return False
+    if expect_identity is not None and process_identity(pid, pid_file) != expect_identity:
+        return False
     for requested_signal, timeout in (
         (signal.SIGTERM, term_timeout),
         (signal.SIGKILL, kill_timeout),
@@ -130,8 +184,11 @@ def terminate_provider(
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] == "--probe":
         stopped = provider_stopped(argv[2])
+        if stopped is False:
+            pid = _read_pid(argv[2], timeout=0, poll_interval=1)
+            print(json.dumps({"identity": None if pid is None else process_identity(pid, argv[2])}))
         return 2 if stopped is None else (0 if stopped else 1)
-    if len(argv) != 6:
+    if len(argv) not in {6, 7}:
         return 2
     try:
         stopped = terminate_provider(
@@ -140,6 +197,7 @@ def main(argv: list[str]) -> int:
             term_timeout=float(argv[3]),
             kill_timeout=float(argv[4]),
             poll_interval=float(argv[5]),
+            expect_identity=argv[6] if len(argv) == 7 else None,
         )
     except ValueError:
         return 2

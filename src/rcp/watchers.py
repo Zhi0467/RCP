@@ -1304,6 +1304,57 @@ def arm_watchers(
         if len(watcher_ids) != len(set(watcher_ids)):
             raise ValueError("watcher_ids must be unique")
         resolved_watcher_ids = list(watcher_ids)
+    existing = [store.watcher(watcher_id) for watcher_id in resolved_watcher_ids]
+    if any(item is not None for item in existing):
+        if any(item is None for item in existing):
+            raise ValueError("the watcher handoff was only partly persisted")
+        stored = [item for item in existing if item is not None]
+        for index, record in enumerate(stored):
+            expected_common = {
+                "project": (record.project_id, binding.project_id),
+                "origin operation": (
+                    record.origin_operation_id,
+                    binding.origin_operation_id,
+                ),
+                "origin task kind": (record.origin_task_kind, binding.origin_task_kind),
+                "conversation": (record.chat_id, binding.chat_id),
+                "node": (record.node_id, binding.node_id),
+                "episode": (record.episode_id, binding.episode_id),
+                "worker": (record.worker_id, binding.worker_id),
+                "graph target": (record.graph_target, binding.graph_target),
+                "execution host": (record.execution_host, binding.execution_host),
+                "continuation": (record.continuation, binding.continuation),
+            }
+            mismatched = [
+                label for label, (saved, requested) in expected_common.items() if saved != requested
+            ]
+            if index < len(specs):
+                spec = specs[index]
+                if not isinstance(record, WatcherRecord):
+                    mismatched.append("watcher kind")
+                else:
+                    expected_spec = {
+                        "check command": (record.check_command, spec.check_command),
+                        "log path": (record.log_path, spec.log_path),
+                        "working directory": (record.cwd, spec.cwd),
+                        "cancel command": (record.cancel_command, spec.cancel_command),
+                    }
+                    mismatched.extend(
+                        label
+                        for label, (saved, requested) in expected_spec.items()
+                        if saved != requested
+                    )
+            else:
+                condition = conditions[index - len(specs)]
+                if not isinstance(record, GraphWatcherRecord):
+                    mismatched.append("watcher kind")
+                elif record.condition != condition:
+                    mismatched.append("graph condition")
+            if mismatched:
+                raise ValueError(
+                    "the retained watcher has a mismatched " + ", ".join(mismatched) + " binding"
+                )
+        return stored
     if conditions:
         if state is None:
             raise ValueError("graph watcher arming requires canonical graph state")

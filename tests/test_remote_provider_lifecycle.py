@@ -307,6 +307,46 @@ async def test_remote_process_reservation_precedes_spawn_and_spawn_failure_settl
 
 
 @pytest.mark.asyncio
+async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliation(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """A lost SSH process is not permission to kill or repeat accepted work."""
+
+    from rcp.providers import profile_for
+
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdin.read(); sys.exit(255)",
+        ],
+    )
+    pid_file = str(tmp_path / "agent.pid")
+    events = [
+        event
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="test-host",
+            remote_pid_file=pid_file,
+            runtime_id=profile_for("codex").legacy_runtime_id,
+            supervise_remote=True,
+        )
+    ]
+
+    assert [event.event for event in events][-2:] == ["provider_exit", "remote_result_pending"]
+    evidence = json.loads(events[-2].text)
+    assert evidence["delivery_lost"] is True
+    assert evidence["remote_process_stopped"] is None
+    assert not any(event.event in {"error", "remote_process_stop"} for event in events)
+    assert (Path(pid_file + ".turn") / "accepted.json").is_file()
+
+
+@pytest.mark.asyncio
 async def test_provider_turn_rides_the_master_of_its_own_run(
     tmp_path, monkeypatch, transported_launcher
 ):

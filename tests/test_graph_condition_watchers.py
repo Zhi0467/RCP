@@ -382,6 +382,22 @@ def test_supplied_watcher_ids_follow_external_then_graph_order(tmp_path) -> None
     assert isinstance(records[0], WatcherRecord)
     assert isinstance(records[1], GraphWatcherRecord)
 
+    def unexpected_check(*_args):
+        raise AssertionError("an already-persisted handoff must not run its check again")
+
+    replayed = arm_watchers(
+        store,
+        [spec],
+        _binding(),
+        graph_conditions=[condition],
+        state=_state(),
+        watcher_ids=["external-id", "graph-id"],
+        check_runner=unexpected_check,
+    )
+
+    assert replayed == records
+    assert len(store.watchers("project")) == 2
+
 
 @pytest.mark.parametrize(
     "watcher_ids",

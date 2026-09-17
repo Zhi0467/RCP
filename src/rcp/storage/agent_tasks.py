@@ -1830,66 +1830,76 @@ class AgentTaskStoreMixin:
         assert stored is not None
         return stored
 
-    def record_agent_usage(self, operation_id: str, usage: ProviderUsage) -> AgentUsageRecord:
+    def record_agent_usage(
+        self,
+        operation_id: str,
+        usage: ProviderUsage,
+        *,
+        idempotent: bool = False,
+    ) -> AgentUsageRecord:
         """Persist one provider usage report and mark duplicate reports excluded."""
 
         task = self.agent_task(operation_id)
         if task is None:
             raise ValueError(f"Cannot attribute provider usage to unknown task {operation_id!r}")
         usage_id = str(uuid.uuid4())
+        recorded_usage_id = usage_id
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             duplicate = connection.execute(
                 """
-                SELECT 1 FROM agent_usage
+                SELECT usage_id FROM agent_usage
                 WHERE operation_id = ? AND provider_profile = ? AND dedupe_key = ?
                     AND counted = 1
                 LIMIT 1
                 """,
                 (operation_id, usage.provider_profile, usage.dedupe_key),
             ).fetchone()
-            counted = duplicate is None
-            count_reason: AgentUsageCountReason = "counted" if counted else "duplicate"
-            connection.execute(
-                """
-                INSERT INTO agent_usage (
-                    usage_id, project_id, operation_id, provider, model,
-                    task_kind, provider_profile, provider_event_type, dedupe_key, counted,
-                    count_reason, created_at, processed_input_tokens,
-                    generated_tokens, cached_input_tokens,
-                    cache_creation_input_tokens, cache_write_input_tokens,
-                    reasoning_output_tokens, reported_input_tokens,
-                    reported_output_tokens, reported_total_tokens,
-                    provider_fields_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    usage_id,
-                    task.project_id,
-                    operation_id,
-                    task.request.get("provider") or "unknown",
-                    task.request.get("model"),
-                    task.kind,
-                    usage.provider_profile,
-                    usage.provider_event_type,
-                    usage.dedupe_key,
-                    int(counted),
-                    count_reason,
-                    now,
-                    usage.processed_input_tokens,
-                    usage.generated_tokens,
-                    usage.cached_input_tokens,
-                    usage.cache_creation_input_tokens,
-                    usage.cache_write_input_tokens,
-                    usage.reasoning_output_tokens,
-                    usage.reported_input_tokens,
-                    usage.reported_output_tokens,
-                    usage.reported_total_tokens,
-                    json.dumps(usage.provider_fields, separators=(",", ":")),
-                ),
-            )
-        record = self.agent_usage_record(usage_id)
+            if duplicate is not None and idempotent:
+                recorded_usage_id = str(duplicate["usage_id"])
+            else:
+                counted = duplicate is None
+                count_reason: AgentUsageCountReason = "counted" if counted else "duplicate"
+                connection.execute(
+                    """
+                    INSERT INTO agent_usage (
+                        usage_id, project_id, operation_id, provider, model,
+                        task_kind, provider_profile, provider_event_type, dedupe_key, counted,
+                        count_reason, created_at, processed_input_tokens,
+                        generated_tokens, cached_input_tokens,
+                        cache_creation_input_tokens, cache_write_input_tokens,
+                        reasoning_output_tokens, reported_input_tokens,
+                        reported_output_tokens, reported_total_tokens,
+                        provider_fields_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        usage_id,
+                        task.project_id,
+                        operation_id,
+                        task.request.get("provider") or "unknown",
+                        task.request.get("model"),
+                        task.kind,
+                        usage.provider_profile,
+                        usage.provider_event_type,
+                        usage.dedupe_key,
+                        int(counted),
+                        count_reason,
+                        now,
+                        usage.processed_input_tokens,
+                        usage.generated_tokens,
+                        usage.cached_input_tokens,
+                        usage.cache_creation_input_tokens,
+                        usage.cache_write_input_tokens,
+                        usage.reasoning_output_tokens,
+                        usage.reported_input_tokens,
+                        usage.reported_output_tokens,
+                        usage.reported_total_tokens,
+                        json.dumps(usage.provider_fields, separators=(",", ":")),
+                    ),
+                )
+        record = self.agent_usage_record(recorded_usage_id)
         assert record is not None
         return record
 
@@ -2511,36 +2521,44 @@ class AgentTaskStoreMixin:
         """Record confirmed absence for exactly one previously reserved process group."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            started = connection.execute(
+            self._finish_remote_provider_pass(connection, operation_id, pid_file)
+
+    def _finish_remote_provider_pass(
+        self,
+        connection: sqlite3.Connection,
+        operation_id: str,
+        pid_file: str,
+    ) -> None:
+        started = connection.execute(
+            """
+            SELECT payload_json FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'remote_provider_started'
+              AND json_extract(payload_json, '$.pid_file') = ?
+            """,
+            (operation_id, pid_file),
+        ).fetchone()
+        if started is None:
+            raise ValueError("The remote provider pass has no matching start receipt.")
+        if (
+            connection.execute(
                 """
-                SELECT payload_json FROM graph_run_receipts
-                WHERE operation_id = ? AND category = 'remote_provider_started'
-                  AND json_extract(payload_json, '$.pid_file') = ?
-                """,
-                (operation_id, pid_file),
-            ).fetchone()
-            if started is None:
-                raise ValueError("The remote provider pass has no matching start receipt.")
-            if (
-                connection.execute(
-                    """
                 SELECT 1 FROM graph_run_receipts
                 WHERE operation_id = ? AND category = 'remote_provider_stopped'
                   AND json_extract(payload_json, '$.pid_file') = ?
                 """,
-                    (operation_id, pid_file),
-                ).fetchone()
-                is not None
-            ):
-                return
-            self._insert_agent_task_receipt(
-                connection,
-                operation_id,
-                "remote_provider_stopped",
-                started["payload_json"],
-                tier="summary",
-                created_at=self.now(),
-            )
+                (operation_id, pid_file),
+            ).fetchone()
+            is not None
+        ):
+            return
+        self._insert_agent_task_receipt(
+            connection,
+            operation_id,
+            "remote_provider_stopped",
+            started["payload_json"],
+            tier="summary",
+            created_at=self.now(),
+        )
 
     def record_agent_task_receipt(
         self,
@@ -3808,6 +3826,7 @@ class AgentTaskStoreMixin:
         *,
         applied_revision: int | None,
         result: dict[str, object],
+        remote_pid_file: str | None = None,
     ) -> None:
         now = self.now()
         result_json = self._bounded_result_json(result)
@@ -3865,6 +3884,8 @@ class AgentTaskStoreMixin:
                     created_at=now,
                 )
             else:
+                if remote_pid_file is not None:
+                    self._finish_remote_provider_pass(connection, operation_id, remote_pid_file)
                 if not graph_rejected:
                     connection.execute(
                         "DELETE FROM graph_run_outputs WHERE operation_id = ?",
@@ -3900,6 +3921,7 @@ class AgentTaskStoreMixin:
         status: Literal["failed", "interrupted"] = "failed",
         result: dict[str, object] | None = None,
         failure_kind: AgentFailureKind | None = None,
+        remote_pid_file: str | None = None,
     ) -> None:
         """Record a failure, keeping any output the task produced before it.
 
@@ -3939,6 +3961,8 @@ class AgentTaskStoreMixin:
                     created_at=now,
                 )
             else:
+                if remote_pid_file is not None:
+                    self._finish_remote_provider_pass(connection, operation_id, remote_pid_file)
                 self._insert_agent_task_event(
                     connection,
                     operation_id,

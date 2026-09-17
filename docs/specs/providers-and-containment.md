@@ -708,6 +708,12 @@ Remote canonical-state locking and publication are specified in
 
 ### A remote turn outliving its connection
 
+Ordinary human Work is the currently registered owner for durable remote-turn
+finalization. Other provider task owners keep their existing launch behavior
+until they expose their own typed, idempotent post-provider finalizer; recovery
+must not route their results through Work merely because they share launch
+plumbing.
+
 Provider execution state and controller connection state are separate things.
 Losing SSH says nothing about the provider, which on a remote host keeps working
 and finishes into a stage RCP can read later. So a lost link is not a failure of

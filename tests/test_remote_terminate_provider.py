@@ -244,3 +244,29 @@ def test_probe_reused_nonleader_pid_is_unknown(tmp_path, monkeypatch):
 
     monkeypatch.setattr(remote_terminate_provider.os, "killpg", unexpected_signal)
     assert remote_terminate_provider.provider_stopped(str(pid_file)) is None
+
+
+def test_stop_refuses_a_recycled_process_identity_without_signalling(tmp_path, monkeypatch):
+    pid_file = tmp_path / "agent.pid"
+    pid = os.getpid() + 10000
+    pid_file.write_text(str(pid))
+    monkeypatch.setattr(remote_terminate_provider.os, "getpgid", lambda _pid: pid)
+    monkeypatch.setattr(
+        remote_terminate_provider,
+        "process_identity",
+        lambda _pid, _pid_file: "boot:new-process",
+    )
+
+    def unexpected_signal(*_args):
+        raise AssertionError("A recycled process group must not be signalled")
+
+    monkeypatch.setattr(remote_terminate_provider.os, "killpg", unexpected_signal)
+
+    assert not remote_terminate_provider.terminate_provider(
+        str(pid_file),
+        pid_file_timeout=0,
+        term_timeout=0,
+        kill_timeout=0,
+        poll_interval=0.01,
+        expect_identity="boot:original-process",
+    )

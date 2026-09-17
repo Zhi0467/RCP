@@ -11,7 +11,8 @@ import pytest
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman, Patch
-from rcp.runs.tasks.work import stream_work_run
+from rcp.runs.tasks.result_views import _finalize_result_view_turn
+from rcp.runs.tasks.work import _load_work_finalization_context, stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 
@@ -300,6 +301,17 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert datetime.fromisoformat(created.created_at).utcoffset() is not None
     assert datetime.fromisoformat(created.expires_at).utcoffset() is not None
     assert len(_receipts(store, "result-view-create", "result_view_created")) == 1
+    create_finalization = _load_work_finalization_context(service, create_request, create_execution)
+    _finalize_result_view_turn(
+        create_request,
+        create_execution,
+        create_finalization.prepared_result_view,
+        create_finalization.workspace,
+        create_finalization.remote_stage,
+        native_session_id=session_id,
+    )
+    assert len(_receipts(store, "result-view-create", "result_view_created")) == 1
+    assert _receipts(store, "result-view-create", "result_view_rejected") == []
     assert service.history.state().revision == initial_revision
     store.complete_agent_task("result-view-create", applied_revision=None, result={})
     expected_revision_workspace = create_launcher.workspaces[0]
@@ -373,6 +385,17 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
         == b"<html><body>loss curves v2</body></html>"
     )
     assert len(_receipts(store, "result-view-revise", "result_view_revised")) == 1
+    revise_finalization = _load_work_finalization_context(service, revise_request, revise_execution)
+    _finalize_result_view_turn(
+        revise_request,
+        revise_execution,
+        revise_finalization.prepared_result_view,
+        revise_finalization.workspace,
+        revise_finalization.remote_stage,
+        native_session_id=session_id,
+    )
+    assert len(_receipts(store, "result-view-revise", "result_view_revised")) == 1
+    assert _receipts(store, "result-view-revise", "result_view_rejected") == []
     assert service.history.state().revision == initial_revision
 
 

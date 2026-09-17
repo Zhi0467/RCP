@@ -847,6 +847,8 @@ async def _delivered_from_record(
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, root / "data", execution
     )
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
 
     frames = [
@@ -911,6 +913,100 @@ async def test_a_recorded_result_is_rejected_where_a_live_one_would_be_corrected
 
 
 @pytest.mark.asyncio
+async def test_recorded_finalization_never_reenters_launch_preparation(
+    tmp_path, monkeypatch
+) -> None:
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, _staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, _staged)
+    await primed.validator_lifecycle.close()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("recorded finalization reentered provider launch preparation")
+
+    monkeypatch.setattr(work_module, "_resolve_work_execution", forbidden)
+    monkeypatch.setattr(work_module, "_stage_work_turn", forbidden)
+    launcher = ScriptedLauncher([{}], message="")
+
+    frames = [
+        frame
+        async for frame in work_module.finalize_recorded_work_result(
+            service,
+            launcher,
+            request,
+            tmp_path / "not-used",
+            execution,
+            _recorded_pass(
+                agent_patch_json(seed_patch()),
+                "The recorded provider finished the Work turn.",
+            ),
+        )
+    ]
+
+    decided = _decided_output(frames)
+    assert '"status":"applied"' in str(decided[0]["text"])
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_recorded_finalization_can_resume_without_applying_the_turn_twice(tmp_path) -> None:
+    """A crash after an owner write must not duplicate that write on restart."""
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, _staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, _staged)
+    await primed.validator_lifecycle.close()
+    launcher = ScriptedLauncher([{}], message="")
+    recorded = _recorded_pass(
+        agent_patch_json(seed_patch()),
+        "The recorded provider finished the Work turn.",
+    )
+
+    for _attempt in range(2):
+        frames = [
+            frame
+            async for frame in work_module.finalize_recorded_work_result(
+                service,
+                launcher,
+                request,
+                tmp_path / "not-used",
+                execution,
+                recorded,
+            )
+        ]
+        assert [item["event"] for item in _decided_output(frames)] == ["message", "done"]
+
+    graph = json.loads(
+        (Path(service.history.workspace.root) / "graph.json").read_text(encoding="utf-8")
+    )
+    transcript = [
+        json.loads(line)
+        for line in service.chat_path(
+            request.chat_id,
+            chat_scope=request.chat_scope,
+            node_id=request.node_id,
+        )
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line
+    ]
+    assert graph["revision"] == 2
+    assert [(item["operationId"], item["role"]) for item in transcript] == [
+        (execution.operation_id, "user"),
+        (execution.operation_id, "assistant"),
+    ]
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) -> None:
     """A retry's own output must not become its own predecessor.
 
@@ -924,6 +1020,8 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, tmp_path / "data", execution
     )
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
     execution.store.record_agent_task_receipt(
         execution.operation_id,

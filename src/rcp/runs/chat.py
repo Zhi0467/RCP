@@ -303,6 +303,17 @@ def _commit_chat_prompt_state(
     )
     if request.provider is None or request.run_on is None:
         raise ValueError("The chat provider and execution machine are unavailable at commit.")
+    committed = execution.store.validate_chat_session_context_binding(
+        request.provider,
+        request.run_on,
+        native_session_id,
+        project_id=task.project_id,
+        kind=kind,
+        chat_id=request.chat_id,
+        node_id=request.node_id,
+    )
+    if committed is not None and committed.committed_operation_id == execution.operation_id:
+        return
     snapshot_json = candidate.snapshot.model_dump_json()
     execution.store.commit_chat_session_context(
         provider=request.provider,
@@ -868,22 +879,59 @@ def finalize_artifact_revision(
         raise ValueError("The artifact revision base could not be verified.")
     candidate_sha256 = hashlib.sha256(data).hexdigest()
     if candidate_sha256 == base_sha256:
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            "artifact_revision_unchanged",
-            {
-                "source_operation_id": origin.operation_id,
-                "source_artifact_id": source.artifact_id,
-            },
-            tier="summary",
-        )
+        if not execution.store.agent_task_has_receipt(
+            execution.operation_id, "artifact_revision_unchanged"
+        ):
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "artifact_revision_unchanged",
+                {
+                    "source_operation_id": origin.operation_id,
+                    "source_artifact_id": source.artifact_id,
+                },
+                tier="summary",
+            )
         return []
     current = execution.store.agent_task(execution.operation_id)
     if current is None or not current.stage_root:
         raise ValueError("The artifact revision candidate stage is unavailable.")
+    existing = execution.store.unresolved_artifact_revision_candidate(
+        origin.operation_id,
+        source.artifact_id,
+    )
+    if existing is not None and existing.revision_operation_id == current.operation_id:
+        same_candidate = (
+            existing.stage_host == (current.stage_host or "")
+            and existing.stage_root == current.stage_root
+            and existing.artifact_scope_id == artifact_scope_id
+            and existing.source_name == source.name
+            and existing.media_type == source.media_type
+            and existing.base_sha256 == base_sha256
+            and existing.candidate_sha256 == candidate_sha256
+            and existing.candidate_size_bytes == len(data)
+        )
+        if not same_candidate:
+            raise ValueError("The retained artifact revision changed during finalization.")
+        if not execution.store.agent_task_has_receipt(
+            execution.operation_id, "artifact_revision_staged"
+        ):
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "artifact_revision_staged",
+                {
+                    "candidate_id": existing.candidate_id,
+                    "source_operation_id": origin.operation_id,
+                    "source_artifact_id": source.artifact_id,
+                    "size_bytes": len(data),
+                },
+                tier="summary",
+            )
+        return []
     now = execution.store.now()
     candidate = ArtifactRevisionCandidateRecord(
-        candidate_id=uuid.uuid4().hex[:24],
+        candidate_id=hashlib.sha256(
+            f"{current.operation_id}\0{origin.operation_id}\0{source.artifact_id}".encode()
+        ).hexdigest()[:24],
         project_id=current.project_id,
         source_operation_id=origin.operation_id,
         source_artifact_id=source.artifact_id,
@@ -932,6 +980,11 @@ def _record_artifact_discovery_receipt(
     }
     if detail:
         payload["detail"] = " ".join(detail.split())[:400]
+    if any(
+        receipt.category == "artifact_discovery" and receipt.payload == payload
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+    ):
+        return
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "artifact_discovery",
@@ -1427,19 +1480,19 @@ def _append_chat_records(
         try:
             if reserve_prompt and path.exists():
                 # A live steer may already have recorded this attempt's original
-                # human prompt. Inspect only identity, never use transcript as input.
+                # human prompt, or finalization may be resuming after appending
+                # the answer. Inspect only identity, never use transcript as input.
                 existing = [json.loads(line) for line in path.read_text().splitlines() if line]
                 recorded = {
-                    item.get("operationId")
+                    (item.get("operationId"), item.get("role"))
                     for item in existing
-                    if item.get("role") == "user" and item.get("steering") is None
+                    if item.get("role") in {"user", "assistant"} and item.get("steering") is None
                 }
                 records = [
                     item
                     for item in records
-                    if item.get("role") != "user"
-                    or not item.get("operationId")
-                    or item.get("operationId") not in recorded
+                    if not item.get("operationId")
+                    or (item.get("operationId"), item.get("role")) not in recorded
                 ]
             with path.open("a", encoding="utf-8") as handle:
                 for record in records:

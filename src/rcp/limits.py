@@ -72,6 +72,7 @@ TURN_JOURNAL_MAX_STDERR_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_PATCH_BYTES = 16 * 1024 * 1024
 TURN_JOURNAL_MAX_UPLINK_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_CONTROL_MESSAGES = 1024
+REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS = 5.0
 
 # Staged agent command mailbox, and the Auto-research broker that fronts it.
 # The broker deliberately outwaits the client. Whichever side gives up first owns

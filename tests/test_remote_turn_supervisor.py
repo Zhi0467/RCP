@@ -169,6 +169,19 @@ def test_a_pass_handed_nothing_never_claims_acceptance(tmp_path) -> None:
     assert _journal(journal)["accepted"] is False
 
 
+def test_app_server_setup_alone_never_claims_the_turn_prompt(tmp_path) -> None:
+    """Opening the protocol is not starting the user's turn."""
+
+    _completed, journal = _supervise(
+        tmp_path,
+        json.dumps({"id": 1, "method": "initialize", "params": {}}) + "\n",
+        runtime_id="codex.app-server-stdio.v1",
+    )
+
+    assert not (journal / "accepted.json").exists()
+    assert _journal(journal)["accepted"] is False
+
+
 def test_the_journal_keeps_the_turn_when_nobody_is_listening(tmp_path) -> None:
     """The point of the whole thing: output survives a reader that went away."""
 

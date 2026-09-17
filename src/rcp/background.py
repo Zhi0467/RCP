@@ -28,6 +28,7 @@ from rcp.limits import (
     BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
     CHAT_ARTIFACT_MAX_COUNT,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
+    REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS,
 )
 from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
 from rcp.runs.auto_research import (
@@ -59,6 +60,7 @@ from rcp.runs.experiment_recovery import (
 )
 from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
     AgentTaskRequest,
@@ -289,6 +291,10 @@ class AgentTaskExecution:
 AgentTaskStream = Callable[
     [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], AsyncIterator[str]
 ]
+RecordedAgentTaskStream = Callable[
+    [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution, RecordedProviderTurn],
+    AsyncIterator[str],
+]
 AgentTaskStreamClosedHook = Callable[
     [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None
 ]
@@ -336,6 +342,10 @@ class TaskFailed(RuntimeError):
         self.artifacts = artifacts
 
 
+class TaskAwaitingRemoteResult(RuntimeError):
+    """The host owns this turn now; the original task remains unsettled."""
+
+
 def _require_recoverable_machine(
     previous: AgentTaskRecord,
     original: AgentTaskRequest,
@@ -365,6 +375,7 @@ class BackgroundAgentTasks:
         dispatch_authority_resolver: DispatchAuthorityResolver | None = None,
         startup_effect_fence: StartupEffectFence | None = None,
         runtime_admission_gate: RuntimeAdmissionGate | None = None,
+        recorded_stream: RecordedAgentTaskStream | None = None,
     ) -> None:
         self.store = store
         self.stream = stream
@@ -374,11 +385,13 @@ class BackgroundAgentTasks:
         self.dispatch_authority_resolver = dispatch_authority_resolver or resolve_dispatch_authority
         self.startup_effect_fence = startup_effect_fence
         self.runtime_admission_gate = runtime_admission_gate
+        self.recorded_stream = recorded_stream
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
         self._transport_retry_timers: list[threading.Timer] = []
+        self._remote_reconciliation_timer: threading.Timer | None = None
         self._watcher_delivery_lock = threading.Lock()
         self._accepting_watcher_deliveries = not (
             startup_effect_fence is not None and startup_effect_fence.active
@@ -473,6 +486,7 @@ class BackgroundAgentTasks:
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
         self._rearm_owed_transport_retries()
+        self._schedule_remote_reconciliation(delay=0)
 
     def start(
         self,
@@ -900,9 +914,52 @@ class BackgroundAgentTasks:
         current = self._require_operation(operation_id)
         if current.kind == "episode_report":
             raise ValueError("Episode report generation has no manual Pause control.")
+        if current.phase == "awaiting_remote_result":
+            return self._pause_waiting_remote_result(current)
+        if current.phase == "finalizing_recorded_result":
+            raise ValueError("This task's recorded result is already being finalized.")
         record = self.store.request_agent_task_pause(operation_id)
         self._signal_agent_task_pause(operation_id)
         return record
+
+    def _pause_waiting_remote_result(self, record: AgentTaskRecord) -> AgentTaskRecord:
+        """Stop a detached remote turn now, or leave it untouched if not provable."""
+
+        host = record.stage_host or ""
+        root = record.stage_root or ""
+        passes = [
+            pid_file
+            for operation_id, pid_file in self.store.unresolved_remote_provider_passes(host, root)
+            if operation_id == record.operation_id
+        ]
+        if not host or not root or not passes:
+            raise ValueError("This task has no outstanding remote provider pass to stop.")
+        pid_file = passes[-1]
+        stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+        if stopped is None:
+            raise ValueError(
+                "The execution host is unreachable, so RCP left the remote turn running."
+            )
+        if stopped is False:
+            if identity is None:
+                raise ValueError(
+                    "RCP could not prove the remote process identity, so it was not signalled."
+                )
+            if not AgentProcessControl.stop_remote_process(
+                host,
+                pid_file,
+                expected_identity=identity,
+            ):
+                raise ValueError(
+                    "RCP could not confirm that the remote provider stopped; no delayed stop was queued."
+                )
+        self.store.request_agent_task_pause(record.operation_id)
+        self.store.finish_remote_provider_pass(record.operation_id, pid_file)
+        self.store.pause_agent_task(
+            record.operation_id,
+            detail="Remote provider stopped at the human's request.",
+        )
+        return self._require_operation(record.operation_id)
 
     def request_member_removal_pause(self, operation_id: str) -> AgentTaskRecord:
         """Fence a task without terminating an already-running provider turn."""
@@ -952,8 +1009,12 @@ class BackgroundAgentTasks:
                 workers = [self._workers.get(operation_id) for operation_id, _ in active]
                 pending_retries = list(self._transport_retry_timers)
                 self._transport_retry_timers.clear()
+                reconciliation_timer = self._remote_reconciliation_timer
+                self._remote_reconciliation_timer = None
         for timer in pending_retries:
             timer.cancel()
+        if reconciliation_timer is not None:
+            reconciliation_timer.cancel()
         for operation_id, control in active:
             with suppress(ValueError):
                 self.store.request_agent_task_pause(operation_id, requested_by="shutdown")
@@ -1629,6 +1690,7 @@ class BackgroundAgentTasks:
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
         )
+        awaiting_remote_result = False
         try:
             try:
                 outcome = asyncio.run(
@@ -1647,6 +1709,15 @@ class BackgroundAgentTasks:
                 detail=str(exc) or None,
                 result=result,
             )
+        except TaskAwaitingRemoteResult as exc:
+            awaiting_remote_result = True
+            self.store.update_agent_task_message(
+                operation_id,
+                str(exc),
+                phase="awaiting_remote_result",
+                event=True,
+            )
+            self._schedule_remote_reconciliation(delay=0)
         except Exception as exc:  # The persisted task is the API error boundary.
             if (
                 isinstance(request, AutoResearchRunRequest)
@@ -1706,53 +1777,15 @@ class BackgroundAgentTasks:
                     failure_kind=self._failure_kind(operation_id, request, execution, str(exc)),
                 )
         else:
-            # Only ingest runs owe a graph revision. A chat turn answers a
-            # question; changing the graph is the exception, not the contract.
-            if record.kind in {"seed", "refresh"} and outcome.applied_revision is None:
-                if control.pause_requested.is_set():
-                    self.store.pause_agent_task(operation_id)
-                else:
-                    self.store.record_agent_task_receipt(
-                        operation_id,
-                        "missing_applied_revision",
-                        {"agent_stream_completed": True},
-                        tier="diagnostic",
-                    )
-                    self.store.fail_agent_task(
-                        operation_id,
-                        "The agent stopped without applying a graph revision.",
-                    )
-            else:
-                result: dict[str, object] = {"messages": outcome.messages}
-                if outcome.artifacts:
-                    result["artifacts"] = [
-                        item.model_dump(mode="json") for item in outcome.artifacts
-                    ]
-                if outcome.graph_update is not None:
-                    result["graph_update"] = outcome.graph_update.model_dump(mode="json")
-                if outcome.graph_updates:
-                    result["graph_updates"] = [
-                        item.model_dump(mode="json") for item in outcome.graph_updates
-                    ]
-                current = self.store.agent_task(operation_id)
-                report_already_finalized = (
-                    isinstance(request, EpisodeReportRunRequest)
-                    and current is not None
-                    and current.status in {"succeeded", "failed"}
-                )
-                if not report_already_finalized:
-                    self.store.complete_agent_task(
-                        operation_id,
-                        applied_revision=outcome.applied_revision,
-                        result=result,
-                    )
+            self._complete_task_outcome(record, request, execution, outcome)
         finally:
             try:
                 if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop":
                     self.store.settle_ready_experiment_loop_stops()
             finally:
                 try:
-                    self._task_settled(record, request, execution)
+                    if not awaiting_remote_result:
+                        self._task_settled(record, request, execution)
                 finally:
                     self._forget_control(operation_id)
 
@@ -1776,6 +1809,59 @@ class BackgroundAgentTasks:
                     {"exception_type": type(exc).__name__},
                     tier="diagnostic",
                 )
+
+    def _complete_task_outcome(
+        self,
+        record: AgentTaskRecord,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+        outcome: AgentTaskOutcome,
+        *,
+        remote_pid_file: str | None = None,
+    ) -> None:
+        """Commit one consumed stream, live or recorded, to its original task."""
+
+        operation_id = record.operation_id
+        # Only ingest runs owe a graph revision. A chat turn answers a
+        # question; changing the graph is the exception, not the contract.
+        if record.kind in {"seed", "refresh"} and outcome.applied_revision is None:
+            if execution.control.pause_requested.is_set():
+                self.store.pause_agent_task(operation_id)
+            else:
+                self.store.record_agent_task_receipt(
+                    operation_id,
+                    "missing_applied_revision",
+                    {"agent_stream_completed": True},
+                    tier="diagnostic",
+                )
+                self.store.fail_agent_task(
+                    operation_id,
+                    "The agent stopped without applying a graph revision.",
+                    remote_pid_file=remote_pid_file,
+                )
+            return
+        result: dict[str, object] = {"messages": outcome.messages}
+        if outcome.artifacts:
+            result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
+        if outcome.graph_update is not None:
+            result["graph_update"] = outcome.graph_update.model_dump(mode="json")
+        if outcome.graph_updates:
+            result["graph_updates"] = [
+                item.model_dump(mode="json") for item in outcome.graph_updates
+            ]
+        current = self.store.agent_task(operation_id)
+        report_already_finalized = (
+            isinstance(request, EpisodeReportRunRequest)
+            and current is not None
+            and current.status in {"succeeded", "failed"}
+        )
+        if not report_already_finalized:
+            self.store.complete_agent_task(
+                operation_id,
+                applied_revision=outcome.applied_revision,
+                result=result,
+                remote_pid_file=remote_pid_file,
+            )
 
     def _failure_kind(
         self,
@@ -1818,6 +1904,150 @@ class BackgroundAgentTasks:
                 # an ordinary provider error and recovery retries it.
                 kind = None
         return kind
+
+    def _schedule_remote_reconciliation(self, *, delay: float) -> None:
+        """Schedule one bounded pass over original tasks waiting on host journals."""
+
+        if self.recorded_stream is None:
+            return
+
+        def run() -> None:
+            with self._controls_lock:
+                if self._remote_reconciliation_timer is timer:
+                    self._remote_reconciliation_timer = None
+                if self._shutdown_requested:
+                    return
+            retry = False
+            try:
+                retry = self._reconcile_remote_results()
+            except Exception:
+                logger.exception("Remote result reconciliation failed")
+                retry = True
+            if retry:
+                self._schedule_remote_reconciliation(
+                    delay=REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS
+                )
+
+        timer = threading.Timer(delay, run)
+        timer.daemon = True
+        with self._controls_lock:
+            if self._shutdown_requested or self._remote_reconciliation_timer is not None:
+                return
+            self._remote_reconciliation_timer = timer
+        timer.start()
+
+    def _reconcile_remote_results(self) -> bool:
+        """Advance every host-journalled pass that has no live local consumer."""
+
+        # Import lazily: the owner table imports Work, whose runtime types import
+        # this module. Background owns scheduling, not owner registration.
+        from rcp.runs.remote_finalization import plan_remote_reconciliation
+
+        retry = False
+        for waiting in plan_remote_reconciliation(self.store):
+            decision = waiting.reconciliation
+            if decision.action == "wait":
+                retry = True
+                continue
+            if decision.action == "settled" or not waiting.actionable:
+                continue
+            if not self.store.claim_recorded_finalization(waiting.record.operation_id):
+                continue
+
+            try:
+                record = self._require_operation(waiting.record.operation_id)
+                request = self._request_from_record(record)
+                continuation = (
+                    self.store.agent_task_continuation_cause(record.operation_id) or "fresh"
+                )
+                if continuation not in _AGENT_TASK_CONTINUATIONS:
+                    continuation = "fresh"
+                execution = AgentTaskExecution(
+                    operation_id=record.operation_id,
+                    store=self.store,
+                    control=AgentProcessControl(),
+                    runtime_id=record.runtime_id,
+                    stage_host=record.stage_host,
+                    stage_root=record.stage_root,
+                    write_scope_fingerprint=record.write_scope_fingerprint,
+                    continuation=cast(AgentTaskContinuation, continuation),
+                )
+                pid_file = decision.pid_file
+                assert pid_file is not None
+                if decision.action == "fail":
+                    self.store.fail_agent_task(
+                        record.operation_id,
+                        decision.reason,
+                        remote_pid_file=pid_file,
+                    )
+            except Exception:
+                self.store.release_recorded_finalization(waiting.record.operation_id)
+                raise
+            if decision.action == "fail":
+                self._task_settled(record, request, execution)
+                continue
+
+            assert decision.recorded is not None
+            assert self.recorded_stream is not None
+            try:
+                source = self.recorded_stream(
+                    record.project_id,
+                    record.kind,
+                    request,
+                    execution,
+                    decision.recorded,
+                )
+                outcome = asyncio.run(
+                    self._consume(
+                        record.project_id,
+                        record.kind,
+                        request,
+                        execution,
+                        source=source,
+                        recorded=True,
+                    )
+                )
+                self._complete_task_outcome(
+                    record,
+                    request,
+                    execution,
+                    outcome,
+                    remote_pid_file=pid_file,
+                )
+            except TaskPaused:
+                self.store.release_recorded_finalization(record.operation_id)
+                retry = True
+                continue
+            except TaskFailed as exc:
+                result: dict[str, object] | None = None
+                if exc.messages or exc.artifacts:
+                    result = {"messages": exc.messages}
+                    if exc.artifacts:
+                        result["artifacts"] = [
+                            item.model_dump(mode="json") for item in exc.artifacts
+                        ]
+                self.store.fail_agent_task(
+                    record.operation_id,
+                    str(exc),
+                    result=result,
+                    remote_pid_file=pid_file,
+                )
+            except Exception as exc:
+                self.store.record_agent_task_receipt(
+                    record.operation_id,
+                    "recorded_finalization_exception",
+                    {"exception_type": type(exc).__name__},
+                    tier="diagnostic",
+                )
+                self.store.fail_agent_task(
+                    record.operation_id,
+                    str(exc),
+                    remote_pid_file=pid_file,
+                )
+            finally:
+                self._stream_closed(record, request, execution)
+            self._task_settled(record, request, execution)
+        return retry
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.
@@ -2011,36 +2241,54 @@ class BackgroundAgentTasks:
         kind: AgentTaskKind,
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
+        *,
+        source: AsyncIterator[str] | None = None,
+        recorded: bool = False,
     ) -> AgentTaskOutcome:
         applied_revision: int | None = None
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []
         graph_update: GraphUpdateResult | None = None
         graph_updates: list[GraphUpdateResult] = []
+        awaiting_remote_result: str | None = None
         # `aclosing` so an error or a pause closes the run generator here rather
         # than leaving it suspended for the garbage collector: its `finally` is
         # what releases the canonical run lock and retains the scratch folder.
-        async with aclosing(self.stream(project_id, kind, request, execution)) as stream:
+        frames = source if source is not None else self.stream(project_id, kind, request, execution)
+        async with aclosing(frames) as stream:
             async for frame in stream:
                 event = _event_from_sse(frame)
                 if event.usage is not None:
                     usage_record = self.store.record_agent_usage(
                         execution.operation_id,
                         event.usage,
+                        idempotent=recorded,
                     )
-                    self.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "provider_usage",
-                        {
-                            "usage_id": usage_record.usage_id,
-                            "counted": usage_record.counted,
-                            "count_reason": usage_record.count_reason,
-                            "provider_profile": usage_record.provider_profile,
-                            "processed_input_tokens": usage_record.processed_input_tokens,
-                            "generated_tokens": usage_record.generated_tokens,
-                        },
-                        tier="diagnostic",
+                    usage_receipt_exists = recorded and any(
+                        receipt.category == "provider_usage"
+                        and receipt.payload.get("usage_id") == usage_record.usage_id
+                        for receipt in self.store.agent_task_receipts(execution.operation_id)
                     )
+                    if not usage_receipt_exists:
+                        self.store.record_agent_task_receipt(
+                            execution.operation_id,
+                            "provider_usage",
+                            {
+                                "usage_id": usage_record.usage_id,
+                                "counted": usage_record.counted,
+                                "count_reason": usage_record.count_reason,
+                                "provider_profile": usage_record.provider_profile,
+                                "processed_input_tokens": usage_record.processed_input_tokens,
+                                "generated_tokens": usage_record.generated_tokens,
+                            },
+                            tier="diagnostic",
+                        )
+                if event.event == "remote_result_pending":
+                    awaiting_remote_result = (
+                        event.text
+                        or "Waiting for the remote result of a turn RCP stopped watching."
+                    )
+                    continue
                 if event.event == "error":
                     raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":
@@ -2078,19 +2326,25 @@ class BackgroundAgentTasks:
                         execution.operation_id,
                         native_session_id=event.session_id,
                     )
-                    self.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "native_agent_checkpoint",
-                        {
-                            "provider": request.provider,
-                            "runtime_id": execution.runtime_id,
-                            "run_on": request.run_on,
-                            "native_session_id": event.session_id,
-                            "continuation_cause": execution.continuation,
-                            "resumed": execution.reuses_native_checkpoint,
-                        },
-                        tier="diagnostic",
+                    checkpoint_exists = recorded and any(
+                        receipt.category == "native_agent_checkpoint"
+                        and receipt.payload.get("native_session_id") == event.session_id
+                        for receipt in self.store.agent_task_receipts(execution.operation_id)
                     )
+                    if not checkpoint_exists:
+                        self.store.record_agent_task_receipt(
+                            execution.operation_id,
+                            "native_agent_checkpoint",
+                            {
+                                "provider": request.provider,
+                                "runtime_id": execution.runtime_id,
+                                "run_on": request.run_on,
+                                "native_session_id": event.session_id,
+                                "continuation_cause": execution.continuation,
+                                "resumed": execution.reuses_native_checkpoint,
+                            },
+                            tier="diagnostic",
+                        )
                     self.store.update_agent_task_message(
                         execution.operation_id,
                         "Agent task is running.",
@@ -2162,6 +2416,8 @@ class BackgroundAgentTasks:
                         {"reason": "provider_event_exceeded_stream_limit"},
                         tier="trace",
                     )
+        if awaiting_remote_result is not None:
+            raise TaskAwaitingRemoteResult(awaiting_remote_result)
         return AgentTaskOutcome(
             applied_revision=(
                 applied_revision if applied_revision is not None else execution.applied_revision

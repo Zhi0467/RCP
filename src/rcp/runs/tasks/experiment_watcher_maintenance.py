@@ -84,6 +84,7 @@ async def _process_experiment_watcher_maintenance(
     execution_host: str,
     provider_binary: str | None,
     retry_output_digests: dict[str, str],
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
 ) -> tuple[list[str], str | None, bool]:
     """Admit, validate, and atomically persist each physical Experiment watcher file."""
 
@@ -259,11 +260,7 @@ async def _process_experiment_watcher_maintenance(
                         )
                         break
 
-            if (
-                not correctable
-                or correction_round >= PATCH_CORRECTION_MAX_ROUNDS
-                or not native_session_id
-            ):
+            if not correctable or correction_round >= maximum_corrections or not native_session_id:
                 reject_maintenance(problem, staged, correction_round)
                 break
 
