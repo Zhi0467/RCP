@@ -319,3 +319,54 @@ async def test_a_discarded_patch_is_the_one_the_host_proved(tmp_path) -> None:
     ]
     assert len(discarded) == 1
     assert discarded[0].payload["byte_length"] == len(recorded_patch.encode("utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_discard_never_reaches_the_host_a_second_time(tmp_path) -> None:
+    """A host that goes quiet must not turn this turn's evidence into nothing.
+
+    The read after the restore is a second fallible host access, and its own
+    failure handler writes a final `unreadable` receipt and lets the task
+    succeed -- so no retry ever happens and the Patch the host proved is lost.
+    """
+
+    service, request, execution = _discuss_app(tmp_path)
+    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    workspace = Path(execution.stage_root) / "workspace"
+    workspace.mkdir(parents=True)
+    discuss_module._record_discuss_finalization_context(
+        _retained_context(service, request, execution)
+    )
+    recorded_patch = '{"operations": [], "note": "what the host recorded"}'
+    recorded = _recorded_pass(recorded_patch, _ANSWER)
+
+    reads: list[str] = []
+    original = discuss_module._read_chat_patch
+
+    def count_the_reads(*args, **kwargs):
+        reads.append("read")
+        return original(*args, **kwargs)
+
+    discuss_module._read_chat_patch = count_the_reads  # type: ignore[assignment]
+    try:
+        async for _frame in discuss_module.finalize_recorded_discuss_result(
+            service,
+            ScriptedLauncher([{}], message="must not launch"),
+            request,
+            tmp_path / "not-used",
+            execution,
+            recorded,
+        ):
+            pass
+    finally:
+        discuss_module._read_chat_patch = original  # type: ignore[assignment]
+
+    assert reads == []
+    discarded = [
+        receipt
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+        if receipt.category == "discuss_patch_discarded"
+    ]
+    assert len(discarded) == 1
+    assert discarded[0].payload["reason"] == "no_graph_authority"
+    assert execution.store.agent_task_patch_output(execution.operation_id) == recorded_patch

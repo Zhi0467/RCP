@@ -281,7 +281,11 @@ def _warn_discuss_patch_discarded(execution: AgentTaskExecution, message: str) -
     )
 
 
-def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
+def _discard_discuss_patch(
+    context: DiscussFinalizationContext,
+    *,
+    recorded: RecordedProviderTurn | None = None,
+) -> None:
     """Keep a stray patch as evidence, never as a graph change.
 
     Authority to change the graph rides on the human's request. An agent cannot
@@ -289,12 +293,19 @@ def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
     twice, and can also die partway through it, so the receipt is written last
     and everything before it is safe to repeat: the patch text upserts and the
     warning knows whether it has already been told.
+
+    A recorded pass hands over the Patch the host proved, so that settlement
+    reads no stage at all here. Going back for a second look would let a host
+    that went quiet turn this turn's evidence into a permanent `unreadable`.
     """
 
     execution = context.execution
     if execution is None or execution.store.agent_task_has_receipt(
         execution.operation_id, "discuss_patch_discarded"
     ):
+        return
+    if recorded is not None:
+        _retain_discarded_discuss_patch(execution, recorded.patch)
         return
     try:
         patch_text = _read_chat_patch(context.workspace, context.remote_stage)
@@ -313,6 +324,15 @@ def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
             tier="diagnostic",
         )
         return
+    _retain_discarded_discuss_patch(execution, patch_text)
+
+
+def _retain_discarded_discuss_patch(
+    execution: AgentTaskExecution,
+    patch_text: str | None,
+) -> None:
+    """Write down the patch this turn produced and why it changes nothing."""
+
     if patch_text is None:
         return
     execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
@@ -329,7 +349,11 @@ def _discard_discuss_patch(context: DiscussFinalizationContext) -> None:
     )
 
 
-def _settle_discuss_outcome(context: DiscussFinalizationContext) -> Iterator[str]:
+def _settle_discuss_outcome(
+    context: DiscussFinalizationContext,
+    *,
+    recorded: RecordedProviderTurn | None = None,
+) -> Iterator[str]:
     """Turn one finished Discuss result into this task's durable output.
 
     The one door a Discuss result goes through, whether its provider streamed to
@@ -380,7 +404,7 @@ def _settle_discuss_outcome(context: DiscussFinalizationContext) -> Iterator[str
     for artifact in artifacts:
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
-    _discard_discuss_patch(context)
+    _discard_discuss_patch(context, recorded=recorded)
 
     try:
         _append_chat_exchange(
@@ -424,7 +448,7 @@ async def finalize_recorded_discuss_result(
     write_recorded_patch(context.workspace, context.remote_stage, recorded)
     for frame in absorb_recorded_events(context.outcome, verdict):
         yield frame
-    for frame in _settle_discuss_outcome(context):
+    for frame in _settle_discuss_outcome(context, recorded=recorded):
         yield frame
 
 

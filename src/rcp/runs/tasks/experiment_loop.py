@@ -1271,6 +1271,7 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -1566,6 +1567,7 @@ async def _apply_experiment_loop_turn(
                     outcome=correction_outcome,
                     validator_staged=loop_validator,
                     validator_lifecycle=loop_validator_lifecycle,
+                    supervise_remote=launch_turn.supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
