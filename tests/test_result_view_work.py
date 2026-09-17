@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman, Patch
@@ -241,7 +242,18 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     manifest,
     tmp_path: Path,
     legacy_layout: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original_stage = work_module._stage_work_turn
+
+    async def stage_for_replay(*args, **kwargs):
+        turn, staged = await original_stage(*args, **kwargs)
+        # Keep I/O local while explicitly retaining the remote launch snapshot
+        # this test reloads to prove result-view finalization is idempotent.
+        work_module._record_work_finalization_context(turn, staged)
+        return turn, staged
+
+    monkeypatch.setattr(work_module, "_stage_work_turn", stage_for_replay)
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
