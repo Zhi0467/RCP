@@ -19,14 +19,20 @@ def owned_group(tmp_path):
     processes: list[subprocess.Popen] = []
     reapers: list[threading.Thread] = []
 
-    def launch(*, ignore_term: bool):
+    def launch(*, ignore_term: bool, names_pid_file: bool = True):
         program = (
             "import os,signal,sys,time\n"
             + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
             + "print(os.getpid(), flush=True)\nwhile True: time.sleep(1)\n"
         )
+        pid_file = tmp_path / f"turn-{len(processes)}.pid"
+        # The real leader always carries this pidfile on its command line: the
+        # journal wrapper through `--pid-file`, and the shell that wrote the
+        # number through its own `-c` text. `names_pid_file=False` is the
+        # stranger that merely inherited the number.
+        arguments = ["--pid-file", str(pid_file)] if names_pid_file else []
         process = subprocess.Popen(
-            [sys.executable, "-c", program],
+            [sys.executable, "-c", program, *arguments],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -35,7 +41,6 @@ def owned_group(tmp_path):
         processes.append(process)
         assert process.stdout is not None
         assert process.stdout.readline().strip() == str(process.pid)
-        pid_file = tmp_path / f"{process.pid}.pid"
         pid_file.write_text(str(process.pid))
         # The remote wrapper's parent reaps its child. Reproduce that ownership
         # locally so killpg(..., 0) does not keep seeing an unreaped test zombie.
@@ -257,7 +262,7 @@ def test_delayed_stop_refuses_a_pid_that_now_names_another_process(owned_group):
     """
 
     process, pid_file = owned_group(ignore_term=False)
-    assert remote_terminate_provider.process_identity(process.pid) is not None
+    assert remote_terminate_provider.process_identity(process.pid, str(pid_file)) is not None
     source = Path(remote_terminate_provider.__file__).read_text()
 
     result = subprocess.run(
@@ -274,7 +279,7 @@ def test_delayed_stop_refuses_a_pid_that_now_names_another_process(owned_group):
 
 def test_delayed_stop_proceeds_on_the_identity_it_recorded(owned_group):
     process, pid_file = owned_group(ignore_term=False)
-    identity = remote_terminate_provider.process_identity(process.pid)
+    identity = remote_terminate_provider.process_identity(process.pid, str(pid_file))
     assert identity is not None
     source = Path(remote_terminate_provider.__file__).read_text()
 
@@ -302,8 +307,43 @@ def test_probe_reports_the_identity_a_later_stop_is_held_to(owned_group):
     )
     assert result.returncode == 1, result.stderr
     assert json.loads(result.stdout)["identity"] == remote_terminate_provider.process_identity(
-        process.pid
+        process.pid, str(pid_file)
     )
+
+
+def test_a_recycled_pid_is_never_given_the_identity_a_stop_aims_at(owned_group):
+    """A first sighting can land long after the link dropped, on a stranger.
+
+    By then the number may name another RCP run -- the setsid leaders this
+    account creates. Minting a token for that process would mint the very token
+    a later stop matches, and the stranger is what the stop would signal.
+    """
+
+    process, pid_file = owned_group(ignore_term=False, names_pid_file=False)
+    source = Path(remote_terminate_provider.__file__).read_text()
+
+    assert remote_terminate_provider.process_identity(process.pid, str(pid_file)) is None
+    probed = subprocess.run(
+        [sys.executable, "-c", source, "--probe", str(pid_file)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    # Alive, so the probe still reports the group; it just cannot name it, and
+    # a sighting with no identity leaves the stop nothing to aim at.
+    assert probed.returncode == 1, probed.stderr
+    assert json.loads(probed.stdout)["identity"] is None
+
+    stopped = subprocess.run(
+        [sys.executable, "-c", source, str(pid_file), "0.5", "2", "2", "0.01", "boot:12345"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert stopped.returncode == 1
+    assert process.poll() is None
 
 
 def test_the_clock_identity_separates_two_processes_dated_to_one_second(monkeypatch):

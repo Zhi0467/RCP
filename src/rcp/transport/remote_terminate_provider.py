@@ -61,7 +61,34 @@ def _group_stopped(pid: int, timeout: float, poll_interval: float) -> bool:
         time.sleep(min(poll_interval, remaining))
 
 
-def process_identity(pid: int) -> str | None:
+def _names_pid_file(pid: int, pid_file: str) -> bool:
+    """Whether this process's own command line names the pidfile that found it.
+
+    Every process this pidfile can legitimately name carries it there: the
+    journal wrapper through `--pid-file`, and the shell that wrote the number
+    through its own `-c` text before it execs. A stranger that merely inherited
+    the number does not.
+    """
+
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return pid_file.encode("utf-8", "replace") in handle.read()
+    except OSError:
+        pass
+    try:
+        observed = subprocess.run(
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return observed.returncode == 0 and pid_file in observed.stdout
+
+
+def process_identity(pid: int, pid_file: str) -> str | None:
     """A token that changes when this PID stops naming the same process.
 
     A pidfile names a number, and a host recycles numbers. Nothing else here
@@ -70,10 +97,19 @@ def process_identity(pid: int) -> str | None:
     this account creates. The process start time is the one property the kernel
     will not reissue with the number, so it is what a delayed stop is held to.
 
-    None means this host offers no such property, and a caller about to signal
-    must treat that as a refusal rather than as agreement.
+    The start time only holds a later stop to the process this sighting saw; it
+    cannot say that sighting saw the right one. A first sighting can happen long
+    after the link dropped, so the command line is checked first: a token minted
+    for a stranger would be a token a stop matches, and the stranger is what the
+    stop would then signal.
+
+    None means this host offers no such property, or the number no longer names
+    this turn, and a caller about to signal must treat either as a refusal
+    rather than as agreement.
     """
 
+    if not _names_pid_file(pid, pid_file):
+        return None
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             # comm is parenthesised and may itself contain spaces and parens.
@@ -207,7 +243,7 @@ def terminate_provider(
         pass
     except OSError:
         return False
-    if expect_identity is not None and process_identity(pid) != expect_identity:
+    if expect_identity is not None and process_identity(pid, pid_file) != expect_identity:
         # Either the pid now names a different process, or this host cannot say.
         # Both are refusals: the group meant to be stopped is not provably here.
         return False
@@ -237,7 +273,7 @@ def main(argv: list[str]) -> int:
                 json.dumps(
                     {
                         "idle_seconds": journal_idle_seconds(argv[2]),
-                        "identity": None if pid is None else process_identity(pid),
+                        "identity": None if pid is None else process_identity(pid, argv[2]),
                     }
                 )
             )

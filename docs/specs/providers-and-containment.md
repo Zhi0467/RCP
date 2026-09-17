@@ -393,33 +393,41 @@ the runtime is checkpointed before the prompt is written, so a stop inside
 either window leaves a pass no turn ever reached. The launcher names the pass
 again once the prompt's own write has left for it -- not when that write is
 merely queued, and not at all when the pipe refused it -- and that is the
-evidence: one turn can open several passes, so it names the pidfile. A pass caught before its prompt is skipped, and the turn
-is collected from the passes that did run, or retried when none did. Such a
-pass holds nothing afterwards either: it has no pidfile for a probe to find, so
-the workspace gate settles it on the unverifiable answer it will always get
-rather than staying shut on a group that never existed. It waits while the original provider is alive or
-its state is unknown; after confirmed process absence it reads that exact pass's completed
-journals. It never forces that absence, because a group stopped mid-write would
-lose the turn being recovered. A provider found alive reports how long it has
-written nothing, which is the only thing distinguishing a long tool call from a
-wedge, and RCP offers a human the one control that ends it: stopping a provider
-that outlived its turn, confirmed absent, so the turn becomes collectible. That
-control is offered only on a turn where a probe has already found the provider
-alive, and withdraws as soon as that pass is confirmed stopped. The operational pass supplies the answer; later correction passes
-supply their completed deliverables and usage without replacing that answer.
-A stopped pass without protocol completion is incomplete, not evidence
-that work should be rerun. Where the provider said why it stopped, the human
-gets those words rather than the general message: the runtime that wrote them
-is asked to read its own retained wire, so every runtime answers in one voice
-whether the failure came through the live pipe or the journal. Collection preserves the original authorizer,
-capability, host, stage, native session, graph target, and episode invocation,
-reading them from what the turn recorded rather than resolving the surface's
-profile again: a machine edited while the link was down must not move the host
-out from under a journal that one host already wrote. A logical turn that
-already committed its chat-session context is not asked to commit it again.
-Existing decoding and finalization own its answer, accounting, and Patch Apply;
-collection never runs an automatic provider correction. Rejected Work Patches
-enter existing graph repair, subject to that surface's repair contract.
+evidence: one turn can open several passes, so it names the pidfile. A pass
+caught before its prompt is skipped, and the turn is collected from the passes
+that did run, or retried when none did. Such a pass holds nothing afterwards
+either: it has no pidfile for a probe to find, so the workspace gate settles it
+on the unverifiable answer it will always get rather than staying shut on a
+group that never existed. It waits while the original provider is alive or its
+state is unknown; after confirmed process absence it reads that exact pass's
+completed journals. It never forces that absence, because a group stopped
+mid-write would lose the turn being recovered. A provider found alive reports
+how long it has written nothing, which is the only thing distinguishing a long
+tool call from a wedge, and RCP offers a human the one control that ends it:
+stopping a provider that outlived its turn, confirmed absent, so the turn
+becomes collectible. That control is offered only on a turn where a probe has
+already found the provider alive, and withdraws as soon as that pass is
+confirmed stopped. The stop is held to the process the probe saw, and the probe
+will only name a process whose own command line carries that pass's pidfile: a
+host reissues numbers, so a first sighting long after the link dropped could
+otherwise mint a token for whatever inherited the number and aim the stop at
+it. A sighting that cannot name the process offers no stop at all. The
+operational pass supplies the answer; later correction passes supply their
+completed deliverables and usage without replacing that answer. A stopped pass
+without protocol completion is incomplete, not evidence that work should be
+rerun. Where the provider said why it stopped, the human gets those words
+rather than the general message: the runtime that wrote them is asked to read
+its own retained wire, so every runtime answers in one voice whether the
+failure came through the live pipe or the journal. Collection preserves the
+original authorizer, capability, host, stage, native session, graph target, and
+episode invocation, reading them from what the turn recorded rather than
+resolving the surface's profile again: a machine edited while the link was down
+must not move the host out from under a journal that one host already wrote. A
+logical turn that already committed its chat-session context is not asked to
+commit it again. Existing decoding and finalization own its answer, accounting,
+and Patch Apply; collection never runs an automatic provider correction.
+Rejected Work Patches enter existing graph repair, subject to that surface's
+repair contract.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, stage, and external-effect
