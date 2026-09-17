@@ -27,6 +27,9 @@ class TurnFence:
         # The thread a resume asked for, known before the reply names it.
         self.requested_thread_id: str | None = None
         self.turn_id: str | None = None
+        # Which steer the server was asked to apply, and to which turn. Identity,
+        # not judgement: a reader still decides what a delivered steer was worth.
+        self.steer_requests: dict[object, object] = {}
         self.terminal = False
 
     @property
@@ -51,6 +54,11 @@ class TurnFence:
                 requested = params.get("threadId")
                 if isinstance(requested, str) and requested:
                     self.requested_thread_id = requested
+        elif method == "turn/steer":
+            params = value.get("params")
+            self.steer_requests[identifier] = (
+                params.get("expectedTurnId") if isinstance(params, dict) else None
+            )
 
     def output(self, value: object) -> None:
         if not isinstance(value, dict) or self.terminal:
