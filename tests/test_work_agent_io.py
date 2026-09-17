@@ -623,6 +623,64 @@ async def test_operational_continuation_renders_current_launch_client(
         await turn.validator_lifecycle.close()
 
 
+#: Written while a turn is being launched and streamed, and by nothing else.
+_LAUNCH_ONLY_RECEIPTS = frozenset(
+    {
+        "agent_launch",
+        "agent_prompt",
+        "chat_context",
+        "chat_context_assembled",
+        "chat_master_context",
+        "chat_stage_layout",
+        "operation_admitted",
+        "operation_created",
+        "provider_readiness",
+        "retry_deliverable_baseline",
+    }
+)
+
+
+def _durable_state(service, store, root: Path) -> dict[str, object]:
+    """What the turn left behind, in the terms someone reading it later sees.
+
+    Frames are what a watching client saw, and comparing only those is how a
+    recorded path that skipped session binding or result-view settlement stayed
+    green. This is the graph, the transcript, the session, the verdict, and the
+    receipt categories -- with the ids and paths two independent runs cannot
+    share left out.
+    """
+
+    task = store.agent_task("work-one-result")
+    graph = json.loads((Path(service.history.workspace.root) / "graph.json").read_text("utf-8"))
+    nodes = graph.get("nodes")
+    node_ids = (
+        sorted(nodes) if isinstance(nodes, dict) else sorted(item["id"] for item in (nodes or []))
+    )
+    return {
+        "graph_revision": graph.get("revision"),
+        "status": task.status,
+        "phase": task.phase,
+        "native_session_id_bound": task.native_session_id is not None,
+        "graph_nodes": node_ids,
+        # A recorded pass launches nothing, so it writes none of the receipts a
+        # launch writes. Everything after the provider stopped must match.
+        "settlement_receipts": sorted(
+            {
+                receipt.category
+                for receipt in store.agent_task_receipts("work-one-result")
+                if receipt.category not in _LAUNCH_ONLY_RECEIPTS
+            }
+        ),
+        "chat_exchanges": len(
+            [
+                item
+                for item in sorted((root / "data").rglob("*.json"))
+                if item.name.startswith("chat-")
+            ]
+        ),
+    }
+
+
 def _decided_output(frames: list[str]) -> list[dict[str, object]]:
     """What a finished Work turn decided, in the terms a reader of it sees.
 
@@ -733,30 +791,76 @@ async def _delivered_live(
             service, launcher, request, root / "data", execution=execution
         )
     ]
-    return _decided_output(frames), launcher
+    return _decided_output(frames), launcher, _durable_state(service, execution.store, root)
+
+
+def _recorded_pass(patch_text: str, answer: str):
+    """One completed Codex pass, as a host would have recorded it."""
+
+    from rcp.runs.recorded_turn import recorded_provider_turn
+
+    events = "".join(
+        json.dumps(item) + "\n"
+        for item in (
+            {"type": "thread.started", "thread_id": "recorded-thread"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": answer}},
+            {"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 4}},
+        )
+    )
+    outcome = {
+        "version": 1,
+        "pid_file": "/stage/one.pid",
+        "provider": "codex",
+        "runtime_id": "codex.exec-json.v1",
+        "provider_version": "0.153.4",
+        "accepted": True,
+        "terminal_event": True,
+        "journal_complete": True,
+        "error": None,
+        "stopped": False,
+        "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
+        "patch_present": True,
+        "patch_sha256": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
+        "root_thread_id": "recorded-thread",
+        "input_message_ids": [],
+        "steer_requests": {},
+    }
+    return recorded_provider_turn(
+        "/stage/one.pid",
+        {
+            "accepted": {"version": 1, "pid_file": "/stage/one.pid", "at": 1.0},
+            "outcome": outcome,
+            "events": events,
+            "stderr": "",
+            "patch": patch_text,
+        },
+    )
 
 
 async def _delivered_from_record(
     root: Path, patch_text: str, answer: str
-) -> tuple[list[dict[str, object]], ScriptedLauncher]:
+) -> tuple[list[dict[str, object]], ScriptedLauncher, object]:
     service, request, execution = _one_result_app(root)
     launcher = ScriptedLauncher([{}], message="")
-    # Open the stage this turn would have run in, then put into it what a
-    # provider that finished after the link dropped would have left behind.
+    # The launch happened; only the link did not survive it.
     resolved = work_module._resolve_work_execution(service, request, execution)
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, root / "data", execution
     )
     await primed.validator_lifecycle.close()
-    (primed.workspace / "patch.json").write_text(patch_text, encoding="utf-8")
 
     frames = [
         frame
         async for frame in work_module.finalize_recorded_work_result(
-            service, launcher, request, root / "data", execution, answer
+            service,
+            launcher,
+            request,
+            root / "data",
+            execution,
+            _recorded_pass(patch_text, answer),
         )
     ]
-    return _decided_output(frames), launcher
+    return _decided_output(frames), launcher, _durable_state(service, execution.store, root)
 
 
 @pytest.mark.asyncio
@@ -766,9 +870,18 @@ async def test_a_recorded_result_finalizes_the_way_its_live_delivery_would(tmp_p
     patch_text = agent_patch_json(seed_patch())
     answer = "The Work turn reflected one graph change."
 
-    live, _ = await _delivered_live(tmp_path / "live", [{"patch.json": patch_text}], answer)
-    recorded, _ = await _delivered_from_record(tmp_path / "recorded", patch_text, answer)
+    live, _, live_state = await _delivered_live(
+        tmp_path / "live", [{"patch.json": patch_text}], answer
+    )
+    recorded, _, recorded_state = await _delivered_from_record(
+        tmp_path / "recorded", patch_text, answer
+    )
 
+    assert recorded_state == live_state
+    # The comparison is only worth something if the turn actually did something.
+    assert live_state["graph_revision"] == 2
+    assert live_state["graph_nodes"]
+    assert "patch_applied" in live_state["settlement_receipts"]
     assert recorded == live
     assert [item["event"] for item in live] == ["message", "done"]
     assert '"status":"applied"' in str(live[0]["text"])
@@ -779,7 +892,7 @@ async def test_a_recorded_result_is_rejected_where_a_live_one_would_be_corrected
     """Correcting a bad deliverable needs a provider still listening; a record has none."""
 
     answer = "The Work turn reflected one graph change."
-    live, live_launcher = await _delivered_live(
+    live, live_launcher, _live_state = await _delivered_live(
         tmp_path / "live",
         [
             {"patch.json": agent_patch_json(shape_invalid_patch())},
@@ -787,7 +900,7 @@ async def test_a_recorded_result_is_rejected_where_a_live_one_would_be_corrected
         ],
         answer,
     )
-    recorded, recorded_launcher = await _delivered_from_record(
+    recorded, recorded_launcher, _ = await _delivered_from_record(
         tmp_path / "recorded", agent_patch_json(shape_invalid_patch()), answer
     )
 

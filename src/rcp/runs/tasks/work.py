@@ -39,6 +39,7 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.providers import ProviderTurnRequest
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -73,6 +74,11 @@ from rcp.runs.patch_validator import (
     PatchValidationResult,
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
+)
+from rcp.runs.recorded_turn import (
+    RecordedProviderTurn,
+    RecordedVerdict,
+    decode_recorded_turn,
 )
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -1687,40 +1693,57 @@ async def _launch_and_stream_work_turn(
             turn.outcome.failed = True
             raise
 
-        answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
-        if not turn.outcome.completed:
-            if turn.outcome.failed or turn.outcome.paused:
-                return
-            turn.outcome.failed = True
-            yield _sse(
-                AgentEvent(event="error", text=f"{turn.request.provider} produced no result.")
-            )
-            return
-        if not answer:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"{turn.request.provider} finished without answering.",
-                )
-            )
-            return
-        if turn.uses_master_protocol:
-            _commit_chat_prompt_state(turn.execution, turn.request, turn.outcome.session_id)
-
-        _finalize_result_view_turn(
-            turn.request,
-            turn.execution,
-            staged.prepared_result_view,
-            turn.workspace if turn.remote_stage is None else None,
-            turn.remote_stage,
-            native_session_id=turn.outcome.session_id,
-        )
+        for frame in _settle_work_outcome(turn, staged):
+            yield frame
     except BaseException as exc:
         if turn.execution is not None and staged.prepared_result_view is not None:
             _record_result_view_rejection(turn.execution, staged.prepared_result_view, str(exc))
         raise
+    if turn.answer is not None:
+        yield _sse(AgentEvent(event="answer", text=turn.answer))
+
+
+def _settle_work_outcome(turn: WorkTurn, staged: _StagedWorkInputs) -> list[str]:
+    """Read one finished provider outcome into the turn's own settled state.
+
+    The first thing past the provider, and the first thing a recorded result has
+    to reach too. Deciding whether the turn produced an answer, binding the
+    session that produced it, and publishing the result-view revision are all
+    facts about a turn that finished -- not about the link that carried it -- so
+    a recovered turn that skipped them would reach `done` unbound and unpublished.
+
+    `turn.answer` stays None when there is nothing to settle, which is how the
+    caller knows the rest of the finalization is not owed.
+    """
+
+    answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    if not turn.outcome.completed:
+        if turn.outcome.failed or turn.outcome.paused:
+            return []
+        turn.outcome.failed = True
+        return [
+            _sse(AgentEvent(event="error", text=f"{turn.request.provider} produced no result."))
+        ]
+    if not answer:
+        return [
+            _sse(
+                AgentEvent(
+                    event="error", text=f"{turn.request.provider} finished without answering."
+                )
+            )
+        ]
+    if turn.uses_master_protocol:
+        _commit_chat_prompt_state(turn.execution, turn.request, turn.outcome.session_id)
+    _finalize_result_view_turn(
+        turn.request,
+        turn.execution,
+        staged.prepared_result_view,
+        turn.workspace if turn.remote_stage is None else None,
+        turn.remote_stage,
+        native_session_id=turn.outcome.session_id,
+    )
     turn.answer = answer
-    yield _sse(AgentEvent(event="answer", text=answer))
+    return []
 
 
 def _finalize_work_artifacts(
@@ -2469,20 +2492,53 @@ def _recorded_retry_deliverable_baseline(
     return _RetryDeliverableBaseline(None, None, {})
 
 
+def _absorb_recorded_events(turn: WorkTurn, verdict: RecordedVerdict) -> list[str]:
+    """Read the decoded pass into this turn's outcome, as the live loop would.
+
+    The same five event kinds, meaning the same five things. A recorded turn is
+    not handed a conclusion; it reaches one by reading its own events, which is
+    why a failure recorded on a host stays a failure here.
+    """
+
+    frames = []
+    for event in verdict.events:
+        if event.session_id:
+            turn.outcome.session_id = event.session_id
+        if event.event == "answer":
+            turn.outcome.answers.append(event.text)
+            if event.usage is not None:
+                frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
+            continue
+        if event.event == "message":
+            if event.text.strip() and len(turn.outcome.trace_messages) < 16:
+                turn.outcome.trace_messages.append(event.text.strip()[:16_000])
+            continue
+        if event.event == "error":
+            turn.outcome.failed = True
+            frames.append(_sse(event))
+            continue
+        if event.usage is not None:
+            frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
+    turn.outcome.completed = verdict.complete and not turn.outcome.failed
+    return frames
+
+
 async def finalize_recorded_work_result(
     service: ProjectService,
     launcher: AgentLauncher,
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution,
-    answer: str,
+    recorded: RecordedProviderTurn,
 ) -> AsyncIterator[str]:
-    """Finalize a Work turn whose provider finished somewhere RCP could not watch.
+    """Settle a Work turn from the pass its host recorded.
 
-    The same door `stream_work_run` walks through once its provider stops, opened
-    from the other side. No provider is launched, no prompt is composed, and no
-    correction is asked for; the turn's own operation id owns everything this
-    writes, because it is the same turn.
+    The recorded value is the input, not a hint about where to look: its Patch is
+    the digest-verified one, written into the stage before anything reads the
+    stage, so what settles is what the host proved rather than whatever the
+    directory happens to hold now. No provider is launched, no prompt composed,
+    and no correction asked for -- and every write lands under this turn's own
+    operation id, because it is the same turn.
     """
 
     resolved = _resolve_work_execution(service, request, execution)
@@ -2490,11 +2546,17 @@ async def finalize_recorded_work_result(
         service, resolved, data_dir, execution, for_recorded_result=True
     )
     try:
-        turn.outcome.completed = True
-        turn.outcome.session_id = execution.store.agent_task(
-            execution.operation_id
-        ).native_session_id
-        turn.outcome.answers.append(answer)
+        verdict = decode_recorded_turn(recorded, provider_turn_request(turn, recorded))
+        # The verified Patch replaces whatever the stage holds. A stage is mutable
+        # and this value is not, so settling from the record means settling from
+        # the record.
+        _write_recorded_patch(turn, recorded)
+        for frame in _absorb_recorded_events(turn, verdict):
+            yield frame
+        for frame in _settle_work_outcome(turn, staged):
+            yield frame
+        if turn.answer is None:
+            return
         async with aclosing(
             finalize_work_result(
                 turn,
@@ -2502,7 +2564,7 @@ async def finalize_recorded_work_result(
                 staged,
                 _ComposedWorkPrompt(contract_path="", prompt="", base_contract_path=""),
                 _recorded_retry_deliverable_baseline(execution),
-                answer,
+                turn.answer,
                 maximum_corrections=0,
             )
         ) as stream:
@@ -2512,3 +2574,38 @@ async def finalize_recorded_work_result(
         # The provider stream closes this mailbox on the live path. There is no
         # stream here, so whoever skipped one owns the close.
         await turn.validator_lifecycle.close()
+
+
+def _write_recorded_patch(turn: WorkTurn, recorded: RecordedProviderTurn) -> None:
+    target = "patch.json"
+    if recorded.patch is None:
+        if turn.remote_stage is not None:
+            turn.remote_stage.remove_workspace_file(target)
+        else:
+            (turn.workspace / target).unlink(missing_ok=True)
+        return
+    if turn.remote_stage is not None:
+        turn.remote_stage.write_workspace_text(target, recorded.patch)
+    else:
+        (turn.workspace / target).write_text(recorded.patch, encoding="utf-8")
+
+
+def provider_turn_request(turn: WorkTurn, recorded: RecordedProviderTurn) -> ProviderTurnRequest:
+    """The request shape the decoder needs, from what this turn already knows."""
+
+    return ProviderTurnRequest(
+        prompt="",
+        binary=recorded.provider,
+        cwd=turn.workspace,
+        model=None,
+        reasoning=None,
+        session_id=recorded.session_id,
+        read_dirs=[],
+        write_dirs=[],
+        write_scope=None,
+        # Nothing launches from this request; it exists so the decoder can build
+        # the runtime that reads the wire. Naming the turn's real capability here
+        # would ask for a write scope no reader needs and no recovery has.
+        capability="paper_readonly",
+        provider_version=recorded.provider_version,
+    )

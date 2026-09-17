@@ -7,26 +7,53 @@ under the operation id that opened the pass.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from rcp.runs.remote_reconciliation import Reconciliation, reconcile_remote_pass
 from rcp.runs.tasks.work import finalize_recorded_work_result
 
 if TYPE_CHECKING:
-    from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
+    from rcp.agents.launcher import AgentLauncher
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.recorded_turn import RecordedProviderTurn
+    from rcp.service import ProjectService
+    from rcp.storage import AgentTaskKind, AgentTaskRecord, AgentTaskRequest, AppStore
 
-#: Task kind -> the owner's recorded-result finalizer. A kind absent from this
-#: table has no recorded path yet, and its pass keeps waiting rather than being
-#: settled by an owner that never agreed to settle it.
-RECORDED_FINALIZERS: dict[str, Callable[..., object]] = {
+
+class RecordedFinalizer(Protocol):
+    """What every owner must accept to settle a turn it did not watch.
+
+    The recorded pass itself, not an answer extracted from it. An owner handed a
+    string would have to go back to the stage for the rest, and the stage is
+    mutable -- which is the whole reason the record was verified once on the way
+    in. Anything an owner needs about this turn is in that value or in the task
+    it already owns.
+    """
+
+    def __call__(
+        self,
+        service: ProjectService,
+        launcher: AgentLauncher,
+        request: AgentTaskRequest,
+        data_dir: Path,
+        execution: AgentTaskExecution,
+        recorded: RecordedProviderTurn,
+    ) -> AsyncIterator[str]: ...
+
+
+#: Task kind -> the owner that settles a recorded pass of that kind. A kind
+#: absent from this table has no recorded path yet, and its pass keeps waiting
+#: rather than being settled by an owner that never agreed to settle it.
+RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     "node_chat": finalize_recorded_work_result,
     "project_chat": finalize_recorded_work_result,
 }
 
 
-def recorded_finalizer(kind: AgentTaskKind) -> Callable[..., object] | None:
+def recorded_finalizer(kind: AgentTaskKind) -> RecordedFinalizer | None:
     return RECORDED_FINALIZERS.get(kind)
 
 
@@ -36,7 +63,7 @@ class WaitingTask:
 
     record: AgentTaskRecord
     reconciliation: Reconciliation
-    finalizer: Callable[..., object] | None
+    finalizer: RecordedFinalizer | None
 
     @property
     def actionable(self) -> bool:
