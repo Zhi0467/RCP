@@ -844,6 +844,47 @@ def _recorded_pass(patch_text: str, answer: str, watch_text: str | None = None):
     )
 
 
+def _recorded_failed_correction(message: str):
+    """One correction pass the host recorded as failed, carrying no answer."""
+
+    from rcp.runs.recorded_turn import recorded_provider_turn
+
+    events = "".join(
+        json.dumps(item) + "\n"
+        for item in (
+            {"type": "thread.started", "thread_id": "recorded-thread"},
+            {"type": "turn.failed", "error": {"message": message}},
+        )
+    )
+    return recorded_provider_turn(
+        "/stage/one.pid",
+        {
+            "accepted": {"version": 1, "pid_file": "/stage/one.pid", "at": 1.0},
+            "outcome": {
+                "version": 1,
+                "pid_file": "/stage/one.pid",
+                "provider": "codex",
+                "runtime_id": "codex.exec-json.v1",
+                "provider_version": "0.153.4",
+                "accepted": True,
+                "terminal_event": True,
+                "journal_complete": True,
+                "error": None,
+                "stopped": False,
+                "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
+                "patch_present": False,
+                "patch_sha256": None,
+                "root_thread_id": "recorded-thread",
+                "input_message_ids": [],
+                "steer_requests": {},
+            },
+            "events": events,
+            "stderr": "",
+            "patch": None,
+        },
+    )
+
+
 async def _delivered_from_record(
     root: Path, patch_text: str, answer: str
 ) -> tuple[list[dict[str, object]], ScriptedLauncher, object]:
@@ -1240,42 +1281,7 @@ async def test_a_recorded_correction_that_failed_keeps_the_reply_it_already_gave
         == original_answer
     )
 
-    from rcp.runs.recorded_turn import recorded_provider_turn
-
-    events = "".join(
-        json.dumps(item) + "\n"
-        for item in (
-            {"type": "thread.started", "thread_id": "recorded-thread"},
-            {"type": "turn.failed", "error": {"message": "the correction died"}},
-        )
-    )
-    failed_correction = recorded_provider_turn(
-        "/stage/one.pid",
-        {
-            "accepted": {"version": 1, "pid_file": "/stage/one.pid", "at": 1.0},
-            "outcome": {
-                "version": 1,
-                "pid_file": "/stage/one.pid",
-                "provider": "codex",
-                "runtime_id": "codex.exec-json.v1",
-                "provider_version": "0.153.4",
-                "accepted": True,
-                "terminal_event": True,
-                "journal_complete": True,
-                "error": None,
-                "stopped": False,
-                "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
-                "patch_present": False,
-                "patch_sha256": None,
-                "root_thread_id": "recorded-thread",
-                "input_message_ids": [],
-                "steer_requests": {},
-            },
-            "events": events,
-            "stderr": "",
-            "patch": None,
-        },
-    )
+    failed_correction = _recorded_failed_correction("the correction died")
 
     frames = [
         frame

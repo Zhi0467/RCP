@@ -114,6 +114,7 @@ from rcp.runs.tasks.work import (
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
+    _lead_with_retained_answer,
     _load_work_finalization_context,
     _record_work_finalization_context,
     _record_work_graph_rejection,
@@ -2261,6 +2262,7 @@ async def finalize_recorded_experiment_loop_result(
     frames.extend(
         _settle_experiment_loop_outcome(turn, wake_native_session_id=episode.wake_native_session_id)
     )
+    _lead_with_retained_answer(turn, frames)
     for frame in frames:
         yield frame
     if turn.answer is None:

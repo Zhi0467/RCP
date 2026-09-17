@@ -23,7 +23,7 @@ from .test_experiment_loop_agent_io import (
     _experiment_patch,
     _loop_request,
 )
-from .test_work_agent_io import _recorded_pass
+from .test_work_agent_io import _recorded_failed_correction, _recorded_pass
 
 _ANSWER = "Inspected the bounded work."
 _EPISODE_ID = "00000000-0000-4000-8000-0000000000a1"
@@ -557,6 +557,40 @@ async def test_a_recovered_loop_correction_does_not_replace_the_reply(
     )
 
     assert [item["text"] for item in events if item["event"] == "answer"] == [_ANSWER]
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_loop_correction_that_failed_keeps_the_reply_it_gave(
+    manifest, tmp_path: Path
+) -> None:
+    """A correction's failure is not the loss of the Experiment's answer.
+
+    Settling a failed journal produces no answer of its own, so without the
+    retained reply leading the frames a reader stops at the error and the task
+    completes with nothing for the human.
+    """
+
+    import rcp.runs.tasks.work as work_module
+
+    service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
+    await _finalize(
+        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    )
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module._WORK_PRIMARY_ANSWER_ROLE
+        )
+        == _ANSWER
+    )
+
+    events = await _finalize(
+        service, request, execution, _recorded_failed_correction("the observer rewrite died")
+    )
+
+    kinds = [item["event"] for item in events]
+    assert "answer" in kinds and "error" in kinds
+    assert kinds.index("answer") < kinds.index("error")
+    assert next(item["text"] for item in events if item["event"] == "answer") == _ANSWER
 
 
 @pytest.mark.asyncio

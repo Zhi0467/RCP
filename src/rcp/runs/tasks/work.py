@@ -2011,6 +2011,22 @@ def _retained_primary_answer(turn: WorkFinalizationContext) -> str | None:
     )
 
 
+def _lead_with_retained_answer(turn: WorkFinalizationContext, frames: list[str]) -> None:
+    """Put an already-produced reply ahead of a failed correction's error.
+
+    A settled turn emits its own answer. A turn that settled to nothing was
+    recovered from a correction's journal, and the live path had already
+    delivered the reply before that correction started. A reader stops at the
+    first error frame and keeps only what preceded it, so the reply leads.
+    """
+
+    if turn.answer is not None:
+        return
+    retained = _retained_primary_answer(turn)
+    if retained is not None:
+        frames.insert(0, _sse(AgentEvent(event="answer", text=retained)))
+
+
 def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     """Read one finished provider outcome into the turn's own settled state.
 
@@ -2863,13 +2879,7 @@ def open_recorded_work_turn(
         # task's own durable result is read off this frame, so a recovered turn
         # that never emits one completes with no answer of its own.
         frames.append(_sse(AgentEvent(event="answer", text=turn.answer)))
-    else:
-        retained = _retained_primary_answer(turn)
-        if retained is not None:
-            # This journal is a correction that failed. The live path had
-            # already delivered the reply before starting it, and a reader stops
-            # at the first error, so the reply goes ahead of it.
-            frames.insert(0, _sse(AgentEvent(event="answer", text=retained)))
+    _lead_with_retained_answer(turn, frames)
     return turn, frames
 
 
