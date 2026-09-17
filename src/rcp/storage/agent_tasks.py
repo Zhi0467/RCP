@@ -2446,9 +2446,20 @@ class AgentTaskStoreMixin:
             return self._unresolved_remote_provider_passes(connection, stage_host, stage_root)
 
     def begin_remote_provider_pass(
-        self, operation_id: str, stage_host: str, stage_root: str, pid_file: str
+        self,
+        operation_id: str,
+        stage_host: str,
+        stage_root: str,
+        pid_file: str,
+        *,
+        supervised: bool = False,
     ) -> None:
-        """Atomically reserve an exact remote stage before launching one provider pass."""
+        """Atomically reserve an exact remote stage before launching one provider pass.
+
+        `supervised` says a turn supervisor is writing a journal under this
+        pidfile. It is what lets a restart tell a pass whose result is still
+        recoverable from a pass whose only record died with the process.
+        """
         root = PurePosixPath(stage_root)
         pid = PurePosixPath(pid_file)
         if (
@@ -2460,7 +2471,12 @@ class AgentTaskStoreMixin:
         ):
             raise ValueError("A remote provider pass requires its exact host, stage and pidfile.")
         payload = self._bounded_receipt_payload(
-            {"stage_host": stage_host, "stage_root": stage_root, "pid_file": pid_file}
+            {
+                "stage_host": stage_host,
+                "stage_root": stage_root,
+                "pid_file": pid_file,
+                "supervised": supervised,
+            }
         )
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -4035,6 +4051,36 @@ class AgentTaskStoreMixin:
             return None
         return dispatch_attempt_id
 
+    def _supervised_remote_pass_operation_ids(self) -> set[str]:
+        """Tasks whose provider may still be working under a journal on its host.
+
+        The two preserved sets mean opposite things and both have to survive a
+        restart. One is work proven never to have started. This is work that may
+        well have finished: the process watching it is the one that died, and its
+        result is sitting on a host waiting to be read. Interrupting these would
+        throw away exactly what this design exists to keep.
+        """
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT started.operation_id
+                FROM graph_run_receipts AS started
+                JOIN graph_runs AS run ON run.operation_id = started.operation_id
+                WHERE started.category = 'remote_provider_started'
+                  AND json_extract(started.payload_json, '$.supervised') = 1
+                  AND run.status IN ('queued', 'running', 'pausing')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS stopped
+                      WHERE stopped.category = 'remote_provider_stopped'
+                        AND stopped.operation_id = started.operation_id
+                        AND json_extract(stopped.payload_json, '$.pid_file') =
+                            json_extract(started.payload_json, '$.pid_file')
+                  )
+                """
+            ).fetchall()
+        return {str(row["operation_id"]) for row in rows}
+
     def interrupt_active_agent_tasks(
         self,
         *,
@@ -4046,9 +4092,14 @@ class AgentTaskStoreMixin:
             "when available, or retry from the beginning."
         )
         preserved = sorted(
-            operation_id
-            for operation_id in (preserve_operation_ids or set())
-            if self.agent_task_dispatch_was_proven_not_started(operation_id)
+            {
+                *(
+                    operation_id
+                    for operation_id in (preserve_operation_ids or set())
+                    if self.agent_task_dispatch_was_proven_not_started(operation_id)
+                ),
+                *self._supervised_remote_pass_operation_ids(),
+            }
         )
         preserve_clause = ""
         preserve_arguments: tuple[str, ...] = ()
@@ -4056,12 +4107,30 @@ class AgentTaskStoreMixin:
             placeholders = ",".join("?" for _ in preserved)
             preserve_clause = f" AND operation_id NOT IN ({placeholders})"
             preserve_arguments = tuple(preserved)
+        waiting = sorted(self._supervised_remote_pass_operation_ids())
         active_statuses = tuple(sorted(AGENT_TASK_TRANSITIONS["interrupted"]))
         active_placeholders = ",".join("?" for _ in active_statuses)
         active_clause = f"status IN ({active_placeholders}){preserve_clause}"
         interrupted: list[str] = []
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if waiting:
+                # These kept their status because their provider may still be
+                # working. Say so, so nothing reads the spinner as a worker this
+                # process is running: there is no local worker, only a host with
+                # the answer on it.
+                connection.execute(
+                    f"""
+                    UPDATE graph_runs
+                    SET phase = 'awaiting_remote_result', status_message = ?, updated_at = ?
+                    WHERE operation_id IN ({",".join("?" for _ in waiting)})
+                    """,
+                    (
+                        "Waiting for the remote result of a turn RCP stopped watching.",
+                        now,
+                        *waiting,
+                    ),
+                )
             interrupted = [
                 str(row["operation_id"])
                 for row in connection.execute(
