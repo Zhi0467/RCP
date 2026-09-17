@@ -1160,6 +1160,7 @@ async def _settle_patch_deliverable(
     predecessor_digest: str | None,
     settled: _SettledWorkDeliverables,
     required_session_id: str | None = None,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     initial = _read_initial_patch_deliverable(
         turn,
@@ -1192,7 +1193,7 @@ async def _settle_patch_deliverable(
         assert failure is not None
         if (
             not failure.correctable
-            or correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
+            or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
             step = _reject_patch_deliverable(turn, settled, failure, correction_rounds)
@@ -1344,6 +1345,8 @@ async def _settle_watch_deliverable(
     composed: _ComposedWorkPrompt,
     predecessor_digest: str | None,
     settled: _SettledWorkDeliverables,
+    *,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     text = initial.text
@@ -1357,7 +1360,6 @@ async def _settle_watch_deliverable(
         if failure is None:
             return
 
-    maximum_corrections = PATCH_CORRECTION_MAX_ROUNDS
     correction_rounds = 0
     while True:
         if text is not None:
@@ -1738,6 +1740,84 @@ def _finalize_work_artifacts(
     )
 
 
+async def finalize_work_result(
+    turn: WorkTurn,
+    launcher: AgentLauncher,
+    staged: _StagedWorkInputs,
+    composed: _ComposedWorkPrompt,
+    retry_baseline: _RetryDeliverableBaseline,
+    answer: str,
+    *,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+) -> AsyncIterator[str]:
+    """Turn one finished provider result into this task's durable output.
+
+    Everything past this door reads what the turn already produced; nothing past
+    it decides what to ask a provider for. A result delivered over a live link
+    and the same result read back off a journal come through here, so what the
+    task durably records cannot depend on which link carried it.
+
+    `maximum_corrections` is zero for a recorded result. Correcting a bad
+    deliverable means asking the provider again, and the turn whose link dropped
+    has nobody left to ask; the owner's existing rejection is the answer instead.
+    """
+
+    settled = _SettledWorkDeliverables(native_session_id=turn.outcome.session_id)
+    async with aclosing(
+        _settle_patch_deliverable(
+            turn,
+            launcher,
+            staged,
+            composed,
+            retry_baseline.patch_digest,
+            settled,
+            maximum_corrections=maximum_corrections,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if settled.stop:
+        return
+    async with aclosing(
+        _settle_watch_deliverable(
+            turn,
+            launcher,
+            staged,
+            composed,
+            retry_baseline.watch_digest,
+            settled,
+            maximum_corrections=maximum_corrections,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if settled.stop:
+        return
+    applied = _AppliedWorkTurn(
+        graph_update=settled.graph_update,
+        native_session_id=settled.native_session_id,
+    )
+    apply_stream = _apply_work_turn(
+        turn,
+        launcher,
+        staged,
+        composed,
+        retry_baseline,
+        applied,
+    )
+    async with aclosing(apply_stream) as stream:
+        async for frame in stream:
+            yield frame
+    if applied.stop:
+        return
+
+    for artifact in _finalize_work_artifacts(turn, staged):
+        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
+    for frame in _finalize_work_turn(turn, answer, applied.graph_update):
+        yield frame
+
+
 async def stream_work_run(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -1783,7 +1863,6 @@ async def stream_work_run(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
-        outcome = turn.outcome
         resuming = turn.resuming
         await _prepare_work_prompt_context(turn, staged)
         if resuming:
@@ -1804,8 +1883,6 @@ async def stream_work_run(
         contract_path = composed_prompt.contract_path
         prompt = composed_prompt.prompt
         retry_baseline = _capture_retry_deliverable_baseline(turn)
-        retry_patch_digest = retry_baseline.patch_digest
-        retry_watch_digest = retry_baseline.watch_digest
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -1837,61 +1914,19 @@ async def stream_work_run(
             yield frame
     if turn.answer is None:
         return
-    answer = turn.answer
 
-    settled = _SettledWorkDeliverables(native_session_id=outcome.session_id)
     async with aclosing(
-        _settle_patch_deliverable(
+        finalize_work_result(
             turn,
             launcher,
             staged,
             composed_prompt,
-            retry_patch_digest,
-            settled,
+            retry_baseline,
+            turn.answer,
         )
     ) as stream:
         async for frame in stream:
             yield frame
-    if settled.stop:
-        return
-    async with aclosing(
-        _settle_watch_deliverable(
-            turn,
-            launcher,
-            staged,
-            composed_prompt,
-            retry_watch_digest,
-            settled,
-        )
-    ) as stream:
-        async for frame in stream:
-            yield frame
-    if settled.stop:
-        return
-    applied = _AppliedWorkTurn(
-        graph_update=settled.graph_update,
-        native_session_id=settled.native_session_id,
-    )
-    apply_stream = _apply_work_turn(
-        turn,
-        launcher,
-        staged,
-        composed_prompt,
-        retry_baseline,
-        applied,
-    )
-    async with aclosing(apply_stream) as stream:
-        async for frame in stream:
-            yield frame
-    if applied.stop:
-        return
-    graph_update = applied.graph_update
-
-    for artifact in _finalize_work_artifacts(turn, staged):
-        yield _sse(AgentEvent(event="artifact", artifact=artifact))
-
-    for frame in _finalize_work_turn(turn, answer, graph_update):
-        yield frame
 
 
 def _rejected_graph_update_for_repair(execution: AgentTaskExecution) -> GraphUpdateResult:
