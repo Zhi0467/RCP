@@ -2,6 +2,14 @@
 
 Active:
 
+- [Finalize disconnected remote turns on their original tasks](handoff-2026-09-16-same-task-remote-finalization.md)
+  — design confirmed 2026-09-16 and ready to implement: transport loss leaves
+  the original task waiting, reconnect automatically finalizes the same remote
+  pass through its owner's idempotent finalizer, unreachable hosts wait without
+  timeout, Stop is never delayed, and invalid evidence requires human Retry.
+  Draft PR #162 is evidence only and must be closed as superseded after this
+  replacement is verified.
+
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
   slices implemented and driven against a copy of the production data;
