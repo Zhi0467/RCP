@@ -1410,3 +1410,60 @@ async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
             _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_live_supervised_turn_whose_host_vanishes_waits_for_its_journal(
+    tmp_path, monkeypatch
+) -> None:
+    """A journalled pass is not lost when the link dies while it settles.
+
+    The provider already finished and the host already recorded it. Failing the
+    task would bury that result, and classifying it as a lost link could run the
+    operational turn again. Leaving it pending hands the same pass to
+    reconciliation, which is where an unreachable host is already waited on.
+    """
+
+    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
+    from rcp.transport import StateUnavailable
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
+    await primed.validator_lifecycle.close()
+    primed.supervise_remote = True
+    primed.outcome.completed = True
+    primed.outcome.session_id = "recorded-thread"
+    primed.outcome.answers = ["The research work is complete."]
+    finalization = work_module._work_finalization_context(primed, staged)
+    assert work_module._settle_work_outcome(finalization) == []
+    (primed.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
+
+    def host_went_away(*_args, **_kwargs):
+        raise StateUnavailable("could not inspect chat watcher outputs: ssh exited 255")
+
+    monkeypatch.setattr(maintenance_module, "read_experiment_watcher_outputs", host_went_away)
+
+    frames = [
+        frame
+        async for frame in work_module.finalize_work_result(
+            finalization,
+            ScriptedLauncher([{}], message="must not launch"),
+            work_module._RetryDeliverableBaseline(None, None, {}),
+            "The research work is complete.",
+            launch_turn=primed,
+            staged=staged,
+            composed=composed,
+        )
+    ]
+
+    events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    # The frame Background reads to leave this task awaiting a remote result.
+    assert "remote_result_pending" in [item["event"] for item in events]
+    assert [item for item in events if item["event"] == "error"] == []

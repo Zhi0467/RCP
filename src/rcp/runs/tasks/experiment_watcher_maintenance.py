@@ -22,12 +22,13 @@ from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
+    _sse,
     _stage_json_task_input,
     _stage_task_contract,
     _stream_agent_events,
 )
 from rcp.service import ProjectService, RunRequest
-from rcp.transport import RemoteRunStage
+from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -66,6 +67,49 @@ def _experiment_maintenance_binding(
 
 
 async def _process_experiment_watcher_maintenance(
+    *,
+    supervise_remote: bool = False,
+    native_session_id: str | None,
+    **rest: object,
+) -> tuple[list[str], str | None, bool]:
+    """Maintain the watchers, and never turn a lost host into a verdict.
+
+    A supervised pass is already journalled where it ran, so an outage during
+    settlement says nothing about it. Failing the task here would bury a result
+    the host still holds; leaving it pending hands the same pass to
+    reconciliation, which settles it when the stage is visible again.
+
+    An unsupervised remote turn has no journal to go back to, and a recorded
+    pass is already inside reconciliation, so for both the outage travels on.
+    """
+
+    try:
+        return await _maintain_experiment_watchers(
+            supervise_remote=supervise_remote,
+            native_session_id=native_session_id,
+            **rest,  # type: ignore[arg-type]
+        )
+    except StateUnavailable as exc:
+        if not supervise_remote:
+            raise
+        return (
+            [
+                _sse(
+                    AgentEvent(
+                        event="remote_result_pending",
+                        text=(
+                            "The execution host became unreachable while this turn's Experiment "
+                            f"watcher maintenance was settling: {exc}"
+                        ),
+                    )
+                )
+            ],
+            native_session_id,
+            True,
+        )
+
+
+async def _maintain_experiment_watchers(
     *,
     service: ProjectService,
     launcher: AgentLauncher,
