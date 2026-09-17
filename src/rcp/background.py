@@ -88,7 +88,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
-from rcp.transport import RemoteRunStage
+from rcp.transport import RemoteRunStage, StateUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -2054,6 +2054,14 @@ class BackgroundAgentTasks:
                     remote_pid_file=pid_file,
                 )
             except TaskPaused:
+                self.store.release_recorded_finalization(record.operation_id)
+                retry = True
+                continue
+            except StateUnavailable:
+                # The host answered a moment ago and cannot be reached now.
+                # That says nothing about the pass, which is journalled and
+                # intact, so this waits like any other unreachable host rather
+                # than settling an untouched result as failed.
                 self.store.release_recorded_finalization(record.operation_id)
                 retry = True
                 continue

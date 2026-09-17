@@ -283,3 +283,39 @@ async def test_a_discard_interrupted_before_its_receipt_still_warns_once(tmp_pat
         if receipt.category == "discuss_patch_discarded"
     ]
     assert len(discarded) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_discarded_patch_is_the_one_the_host_proved(tmp_path) -> None:
+    """Discuss keeps a stray patch as evidence, so the evidence must be exact.
+
+    A stage rewritten between host completion and reconnect would otherwise
+    attribute unrelated text to this turn, or lose the evidence entirely.
+    """
+
+    service, request, execution = _discuss_app(tmp_path)
+    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    workspace = Path(execution.stage_root) / "workspace"
+    workspace.mkdir(parents=True)
+    discuss_module._record_discuss_finalization_context(
+        _retained_context(service, request, execution)
+    )
+    recorded_patch = '{"operations": [], "note": "what the host recorded"}'
+    recorded = _recorded_pass(recorded_patch, _ANSWER)
+    workspace.joinpath("patch.json").write_text("something else entirely", encoding="utf-8")
+    launcher = ScriptedLauncher([{}], message="must not launch")
+
+    async for _frame in discuss_module.finalize_recorded_discuss_result(
+        service, launcher, request, tmp_path / "not-used", execution, recorded
+    ):
+        pass
+
+    retained = execution.store.agent_task_patch_output(execution.operation_id)
+    assert retained == recorded_patch
+    discarded = [
+        receipt
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+        if receipt.category == "discuss_patch_discarded"
+    ]
+    assert len(discarded) == 1
+    assert discarded[0].payload["byte_length"] == len(recorded_patch.encode("utf-8"))

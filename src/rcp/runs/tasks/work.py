@@ -83,6 +83,7 @@ from rcp.runs.recorded_settlement import (
     attach_retained_stage,
     provider_turn_request,
     retained_artifact_directory,
+    write_recorded_patch,
 )
 from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
@@ -368,6 +369,8 @@ def _prepared_result_view(
 def _work_finalization_context(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
 ) -> WorkFinalizationContext:
     return WorkFinalizationContext(
         service=turn.service,
@@ -386,6 +389,7 @@ def _work_finalization_context(
         experiment_resources=list(staged.experiment_resources),
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands,
+        finalization_role=role,
         answer=turn.answer,
     )
 
@@ -515,6 +519,7 @@ def _load_work_finalization_context(
         experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
+        finalization_role=role,
     )
 
 
@@ -2046,7 +2051,8 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
         store = turn.execution.store
         operation_id = turn.execution.operation_id
         if (
-            store.agent_task_contract(operation_id, WORK_FINALIZATION_CONTEXT_ROLE) is not None
+            turn.finalization_role is not None
+            and store.agent_task_contract(operation_id, turn.finalization_role) is not None
             and retained_answer is None
         ):
             # Corrections have their own journals, but their prose is not the
@@ -2900,14 +2906,4 @@ def _write_recorded_patch(
     turn: WorkFinalizationContext,
     recorded: RecordedProviderTurn,
 ) -> None:
-    target = "patch.json"
-    if recorded.patch is None:
-        if turn.remote_stage is not None:
-            turn.remote_stage.remove_workspace_file(target)
-        else:
-            (turn.workspace / target).unlink(missing_ok=True)
-        return
-    if turn.remote_stage is not None:
-        turn.remote_stage.write_workspace_text(target, recorded.patch)
-    else:
-        (turn.workspace / target).write_text(recorded.patch, encoding="utf-8")
+    write_recorded_patch(turn.workspace, turn.remote_stage, recorded)

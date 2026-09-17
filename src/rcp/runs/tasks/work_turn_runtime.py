@@ -194,6 +194,10 @@ class WorkFinalizationContext:
     experiment_resources: list[StagedExperimentWatcherResource]
     skill_selection: SkillSelection
     compute_commands: WorkComputeCommands | None
+    #: The contract role this owner retained its launch under, when it retained
+    #: one. Owners share this type and never a role, so anything asking whether
+    #: this turn is recoverable must ask about its own owner's role.
+    finalization_role: str | None = None
     answer: str | None = None
 
     @property

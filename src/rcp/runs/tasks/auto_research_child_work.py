@@ -1144,7 +1144,9 @@ async def stream_auto_research_child_work_run(
 
     assert turn is not None
     required_session_id = turn.request.session_id if execution.reuses_native_checkpoint else None
-    finalization = _work_finalization_context(turn, staged)
+    finalization = _work_finalization_context(
+        turn, staged, role=AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE
+    )
     if turn.execution_host:
         # Only a remote turn can outlive this connection, and only under this
         # owner's own role: a child settles differently from ordinary Work.

@@ -132,6 +132,7 @@ from rcp.runs.tasks.work import (
     _work_graph_repairable,
     _work_patch_proposal_ids,
     _WorkValidatorMailboxLifecycle,
+    _write_recorded_patch,
 )
 from rcp.runs.tasks.work_turn_runtime import (
     WorkFinalizationContext,
@@ -1376,6 +1377,7 @@ async def _apply_experiment_loop_turn(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+    maximum_watch_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     try:
         final_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
@@ -1608,7 +1610,7 @@ async def _apply_experiment_loop_turn(
                     launch_turn=launch_turn,
                     staged=staged,
                     composed=composed,
-                    maximum_corrections=maximum_corrections,
+                    maximum_corrections=maximum_watch_corrections,
                 )
             ) as stream:
                 async for frame in stream:
@@ -1640,7 +1642,7 @@ async def _apply_experiment_loop_turn(
             launch_turn=launch_turn,
             staged=staged,
             composed=composed,
-            maximum_corrections=maximum_corrections,
+            maximum_corrections=maximum_watch_corrections,
         )
     ) as stream:
         async for frame in stream:
@@ -2031,6 +2033,7 @@ async def settle_experiment_loop_deliverables(
         staged=staged,
         composed=composed,
         maximum_corrections=maximum_corrections,
+        maximum_watch_corrections=maximum_watch_corrections,
     )
     async with aclosing(apply_stream) as stream:
         async for frame in stream:
@@ -2129,7 +2132,9 @@ async def stream_experiment_loop_task(
         raise
 
     assert turn is not None
-    finalization = _work_finalization_context(turn, staged)
+    finalization = _work_finalization_context(
+        turn, staged, role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
+    )
     if turn.execution_host:
         # Only a remote turn can outlive this connection, and only a turn whose
         # settling facts are already written down can be recovered.
@@ -2193,6 +2198,10 @@ async def finalize_recorded_experiment_loop_result(
     )
     episode = _load_experiment_loop_episode_context(execution)
     verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    # The verified Patch replaces whatever the stage holds, before anything reads
+    # the stage. Half of this turn's admission is that Patch, and a stage that
+    # changed after the host finished would admit a different one.
+    _write_recorded_patch(turn, recorded)
     frames = absorb_recorded_events(turn.outcome, verdict)
     frames.extend(
         _settle_experiment_loop_outcome(turn, wake_native_session_id=episode.wake_native_session_id)

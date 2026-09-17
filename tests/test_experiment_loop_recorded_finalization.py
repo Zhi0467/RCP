@@ -336,3 +336,104 @@ async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
     ]
     assert len(rejected) == 1
     assert execution.store.experiment_episode(_EPISODE_ID).last_turn_operation_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_changed_after_the_host_finished_admits_the_recorded_patch(
+    manifest, tmp_path: Path
+) -> None:
+    """Half this turn's admission is its Patch, and the stage is mutable.
+
+    Between the supervisor finishing and RCP reconnecting, nothing stops the
+    stage file from being rewritten or swept. What the host proved is what may
+    be admitted.
+    """
+
+    from .helpers import agent_patch_json
+
+    service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
+    (workspace / "watch.json").write_text(_watch_handoff(tmp_path), encoding="utf-8")
+    recorded_patch = agent_patch_json(_experiment_patch(invocation_ceiling=4))
+    recorded = _recorded_pass(recorded_patch, _ANSWER)
+    # Something rewrote the stage after the host was done with it.
+    (workspace / "patch.json").write_text('{"ops": []}', encoding="utf-8")
+
+    events = await _finalize(service, request, execution, recorded)
+
+    assert [item["event"] for item in events if item["event"] == "error"] == []
+    assert (workspace / "patch.json").read_text(encoding="utf-8") == recorded_patch
+    retained = execution.store.agent_task_patch_output(execution.operation_id)
+    assert retained is not None
+    assert '{"ops": []}' not in retained
+
+
+@pytest.mark.asyncio
+async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    """Two deliverables, two policies, and the Patch's is the looser one.
+
+    A loop Patch correction can rewrite watch.json, which resettles the watcher
+    handoff. That resettlement is still watcher work and keeps the watcher
+    limit; handing it the Patch limit would buy a second full provider call the
+    watcher policy does not allow.
+    """
+
+    from rcp.limits import (
+        EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
+        PATCH_CORRECTION_MAX_ROUNDS,
+    )
+
+    from .test_experiment_loop_agent_io import _LoopLauncher
+
+    assert EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS != PATCH_CORRECTION_MAX_ROUNDS
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    request = _loop_request(
+        _EPISODE_ID,
+        "chat-loop-resettle",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    execution = _execution(store, project_id, "loop-resettle", request)
+
+    offered: list[int] = []
+    settle = loop_module._settle_watch_deliverable
+
+    def record_the_limit(*args, **kwargs):
+        offered.append(kwargs["maximum_corrections"])
+        return settle(*args, **kwargs)
+
+    # Make the handoff look rewritten after it first settled, which is the only
+    # way the post-Patch resettlement runs at all.
+    read = loop_module._read_watch_request
+    reads: list[int] = []
+
+    def changed_on_the_second_look(*args, **kwargs):
+        reads.append(1)
+        text = read(*args, **kwargs)
+        if len(reads) > 1 and text is not None:
+            return text.replace("detached.log", "detached-two.log")
+        return text
+
+    monkeypatch.setattr(loop_module, "_settle_watch_deliverable", record_the_limit)
+    monkeypatch.setattr(loop_module, "_read_watch_request", changed_on_the_second_look)
+
+    async for _frame in loop_module.stream_experiment_loop_task(
+        service,
+        _LoopLauncher("provider-session-loop-resettle", tmp_path, write_handoff=True),
+        request,
+        data_dir,
+        execution=execution,
+    ):
+        pass
+
+    # The initial settlement and the resettlement both count as watcher work.
+    assert len(offered) >= 2
+    assert set(offered) == {EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS}

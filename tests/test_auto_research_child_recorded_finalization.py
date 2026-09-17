@@ -132,3 +132,30 @@ async def test_ordinary_work_cannot_load_a_child_launch_snapshot(tmp_path) -> No
 
     with pytest.raises(ValueError, match="no retained finalization context"):
         work_module._load_work_finalization_context(service, request, execution)
+
+
+@pytest.mark.asyncio
+async def test_a_child_retains_its_primary_answer_before_any_correction(tmp_path) -> None:
+    """A correction's prose is not the child's reply.
+
+    The supervision that lets a child's turn be recovered also covers its
+    correction rounds, so a link lost during a correction hands reconciliation
+    that journal. Without the completed answer already retained, the
+    correction's final-assistant text would take its place in the durable
+    result and in the parent's transcript.
+    """
+
+    service, request, execution = await _retained_child_turn(tmp_path)
+    launcher = ScriptedLauncher([{}], message="must not launch")
+
+    async for _frame in child_module.finalize_recorded_auto_research_child_work_result(
+        service, launcher, request, tmp_path / "not-used", execution, _recorded_child_pass()
+    ):
+        pass
+
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module._WORK_PRIMARY_ANSWER_ROLE
+        )
+        == _ANSWER
+    )

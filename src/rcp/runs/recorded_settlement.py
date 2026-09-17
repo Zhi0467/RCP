@@ -50,6 +50,32 @@ def provider_turn_request(
     )
 
 
+def write_recorded_patch(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+    recorded: RecordedProviderTurn,
+) -> None:
+    """Put the digest-verified Patch back in the stage, before anything reads it.
+
+    A stage is mutable and a recorded pass is not. Settling from whatever the
+    directory holds now would let a Patch that changed after the host finished
+    be admitted as this turn's, or let a deleted one silently become no Patch at
+    all -- while the answer and the rest of the turn are still accepted.
+    """
+
+    target = "patch.json"
+    if recorded.patch is None:
+        if remote_stage is not None:
+            remote_stage.remove_workspace_file(target)
+        else:
+            (workspace / target).unlink(missing_ok=True)
+        return
+    if remote_stage is not None:
+        remote_stage.write_workspace_text(target, recorded.patch)
+    else:
+        (workspace / target).write_text(recorded.patch, encoding="utf-8")
+
+
 def absorb_recorded_events(
     outcome: _ProviderOutcome,
     verdict: RecordedVerdict,
@@ -149,4 +175,5 @@ __all__ = [
     "attach_retained_stage",
     "provider_turn_request",
     "retained_artifact_directory",
+    "write_recorded_patch",
 ]

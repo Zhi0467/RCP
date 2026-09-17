@@ -3475,3 +3475,47 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
             run_on="cluster",
             authorized_by=episode_turn.authorized_by,
         )
+
+
+def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reaching the journal proves nothing about reaching it again.
+
+    Every recorded owner reopens its retained stage over SSH, and that second
+    reach can fail transiently while the pass itself sits finished and intact on
+    the host. Settling that as a failure would discard a completed provider turn
+    over a dropped packet.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import StateUnavailable
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "host-went-quiet")
+    pid_file = "/stage/host-went-quiet.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def unreachable_stage(*_args):
+        raise StateUnavailable(
+            "The saved remote staging directory is unavailable; retry this operation instead."
+        )
+        yield  # pragma: no cover - the raise above ends this generator
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreachable_stage)
+
+    assert tasks._reconcile_remote_results() is True
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.phase == "awaiting_remote_result"
+    # The claim is released, so the next sweep can try the host again.
+    assert store.claim_recorded_finalization(waiting.operation_id)
+    assert store.unresolved_remote_provider_passes("remote", "/stage")

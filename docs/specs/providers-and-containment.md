@@ -757,7 +757,10 @@ host's answer.
 The supervisor publishes no verdict. It decides only where the turn ends, which a
 persistent server makes unavoidable, and hands over its bytes. What the turn was
 worth is read from those bytes by the same decoder that reads a live one, so the
-two cannot drift apart.
+two cannot drift apart. A stage is mutable and a recorded pass is not, so every
+owner restores the digest-verified Patch into the stage before reading any
+deliverable from it: what settles is what the host proved, not whatever the
+directory happens to hold when RCP reconnects.
 
 A restart preserves a task holding such a pass instead of interrupting it, and
 leaves it waiting for a remote result. Reconciliation then asks the host one
@@ -766,7 +769,10 @@ limit; a stopped pass whose journal reached the turn's end finalizes that task; 
 stopped pass whose journal did not, or that never took the prompt, fails it
 visibly for a human to retry; an already settled pass is left alone. Waiting is
 never cut short by a timeout, and nothing replaces a provider that may still be
-working.
+working. Reaching the host once proves nothing about reaching it again: an owner
+reopens its retained stage over the same link, and a host that goes quiet between
+those two reads leaves the task waiting rather than settling an intact result as
+failed.
 
 Pause of a waiting task is immediate and requires a reachable host and verified
 process identity. If the provider already stopped, or finishes before the Stop

@@ -47,6 +47,7 @@ from rcp.runs.recorded_settlement import (
     attach_retained_stage,
     provider_turn_request,
     retained_artifact_directory,
+    write_recorded_patch,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
@@ -418,6 +419,9 @@ async def finalize_recorded_discuss_result(
     del launcher, data_dir  # Recovery launches nothing and stages nothing.
     context = _load_discuss_finalization_context(service, request, execution)
     verdict = decode_recorded_turn(recorded, provider_turn_request(context.workspace, recorded))
+    # A discarded Patch is still this turn's evidence. The stage is mutable and
+    # the record is not, so restore what the host proved before reading it.
+    write_recorded_patch(context.workspace, context.remote_stage, recorded)
     for frame in absorb_recorded_events(context.outcome, verdict):
         yield frame
     for frame in _settle_discuss_outcome(context):
