@@ -1,7 +1,7 @@
 # Finalize disconnected remote turns on their original tasks
 
 Date: 2026-09-16
-Status: design confirmed; implementation has not started. PR #162 is draft and
+Status: implementation step 1 complete; steps 2-5 remain. PR #162 is draft and
 must not be merged or extended. Its journal, process-safety work, failures, and
 tests are evidence for this replacement, not a branch to build upon. This
 handoff closes when the replacement PR is implemented, its focused and full CI
@@ -112,6 +112,24 @@ Every receipt, transcript record, usage row, and idempotency key names the
 original operation. There is no equivalent of `collection_source()` or
 `collected_task_operation_id()`.
 
+### What step 1 found for step 3
+
+The finalizer itself took the extraction cleanly: Patch validation and Apply
+never needed a provider, only correction did. Three couplings sit in staging
+rather than in finalization, and step 3 owns them:
+
+- **The validator mailbox outlives its opener.** `_stage_work_turn` starts it
+  and `stream_work_agent_events` closes it, so a caller that skips the stream
+  owns the close or leaks a live broker credential.
+- **Staging would delete the evidence.** `_stage_work_turn` clears stale turn
+  handoffs for the continuations that begin new logical work. Run against a
+  stage a finished provider wrote, that removes the very deliverables being
+  collected. Recorded finalization must never clear.
+- **The prompt/finalize split is not clean.** `skill_selection` feeds the
+  watcher continuation and `experiment_resources` feeds watcher maintenance, so
+  both must be computed for a recorded finalization even though their staging
+  writes must not run. Splitting by "prompt inputs" alone would drop them.
+
 ### Restartable finalization
 
 RCP may stop after any finalization side effect. Re-entry detects what the
@@ -125,10 +143,13 @@ durable evidence fails that same task.
 
 ## Implementation order
 
-1. Extract one representative post-provider finalizer and prove that live and
-   recorded forms of the same result create identical durable output on the
-   same operation id. Start with Work because it covers answer, Patch,
-   transcript, usage, and artifacts.
+1. **Done.** `finalize_work_result` in `src/rcp/runs/tasks/work.py` is the Work
+   owner's post-provider finalizer, taking the staged turn rather than the act
+   of having launched something. `maximum_corrections` is its only new input:
+   zero means take the owner's existing rejection instead of asking a provider
+   nobody is listening to. `tests/test_work_agent_io.py` delivers one result to
+   two apps that share no graph -- streamed, and read out of a stage a departed
+   provider left -- and pins their durable output equal.
 2. Add the host-owned acceptance and journal contract. Evaluate and simplify
    the journal and process helpers from draft PR #162; do not copy them
    wholesale. Reuse canonical provider decoders and share terminal observation
