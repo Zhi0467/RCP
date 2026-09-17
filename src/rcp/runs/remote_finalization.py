@@ -18,6 +18,10 @@ from rcp.runs.remote_reconciliation import (
     read_remote_journal,
     reconcile_remote_pass,
 )
+from rcp.runs.tasks.discuss import (
+    DISCUSS_FINALIZATION_CONTEXT_ROLE,
+    finalize_recorded_discuss_result,
+)
 from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE, finalize_recorded_work_result
 
 if TYPE_CHECKING:
@@ -52,6 +56,7 @@ class RecordedFinalizer(Protocol):
 #: Retained finalization contract -> the owner that wrote and can consume it.
 RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     WORK_FINALIZATION_CONTEXT_ROLE: finalize_recorded_work_result,
+    DISCUSS_FINALIZATION_CONTEXT_ROLE: finalize_recorded_discuss_result,
 }
 
 
