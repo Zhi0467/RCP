@@ -1195,3 +1195,95 @@ async def test_finalization_cannot_enable_corrections_without_launch_context(tmp
             pass
     assert service.history.state().revision == 1
     assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_correction_that_failed_keeps_the_reply_it_already_gave(
+    tmp_path,
+) -> None:
+    """A correction's failure is not the loss of the answer the turn produced.
+
+    The supervision that lets a turn be recovered also covers its corrections,
+    so a link lost during one hands recovery the correction's journal. The live
+    path had already delivered the reply before that correction started, and a
+    reader stops at the first error, so the reply has to arrive ahead of it.
+    """
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    await primed.validator_lifecycle.close()
+    original_answer = "The research work is complete."
+    primed.outcome.completed = True
+    primed.outcome.session_id = "recorded-thread"
+    primed.outcome.answers = [original_answer]
+    assert (
+        work_module._settle_work_outcome(work_module._work_finalization_context(primed, staged))
+        == []
+    )
+    assert (
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module._WORK_PRIMARY_ANSWER_ROLE
+        )
+        == original_answer
+    )
+
+    from rcp.runs.recorded_turn import recorded_provider_turn
+
+    events = "".join(
+        json.dumps(item) + "\n"
+        for item in (
+            {"type": "thread.started", "thread_id": "recorded-thread"},
+            {"type": "turn.failed", "error": {"message": "the correction died"}},
+        )
+    )
+    failed_correction = recorded_provider_turn(
+        "/stage/one.pid",
+        {
+            "accepted": {"version": 1, "pid_file": "/stage/one.pid", "at": 1.0},
+            "outcome": {
+                "version": 1,
+                "pid_file": "/stage/one.pid",
+                "provider": "codex",
+                "runtime_id": "codex.exec-json.v1",
+                "provider_version": "0.153.4",
+                "accepted": True,
+                "terminal_event": True,
+                "journal_complete": True,
+                "error": None,
+                "stopped": False,
+                "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
+                "patch_present": False,
+                "patch_sha256": None,
+                "root_thread_id": "recorded-thread",
+                "input_message_ids": [],
+                "steer_requests": {},
+            },
+            "events": events,
+            "stderr": "",
+            "patch": None,
+        },
+    )
+
+    frames = [
+        frame
+        async for frame in work_module.finalize_recorded_work_result(
+            service,
+            ScriptedLauncher([{}], message="must not launch"),
+            request,
+            tmp_path / "not-used",
+            execution,
+            failed_correction,
+        )
+    ]
+    events_out = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    kinds = [item["event"] for item in events_out]
+
+    assert "answer" in kinds and "error" in kinds
+    assert kinds.index("answer") < kinds.index("error")
+    assert next(item["text"] for item in events_out if item["event"] == "answer") == original_answer

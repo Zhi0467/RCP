@@ -1997,6 +1997,20 @@ async def _launch_and_stream_work_turn(
         yield _sse(AgentEvent(event="answer", text=finalization.answer))
 
 
+def _retained_primary_answer(turn: WorkFinalizationContext) -> str | None:
+    """The completed reply this turn already produced, if it has one.
+
+    Retained before any correction starts, so a correction's own prose can never
+    take its place as the human reply.
+    """
+
+    if turn.execution is None:
+        return None
+    return turn.execution.store.agent_task_contract(
+        turn.execution.operation_id, _WORK_PRIMARY_ANSWER_ROLE
+    )
+
+
 def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     """Read one finished provider outcome into the turn's own settled state.
 
@@ -2010,13 +2024,7 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     caller knows the rest of the finalization is not owed.
     """
 
-    retained_answer = (
-        turn.execution.store.agent_task_contract(
-            turn.execution.operation_id, _WORK_PRIMARY_ANSWER_ROLE
-        )
-        if turn.execution is not None
-        else None
-    )
+    retained_answer = _retained_primary_answer(turn)
     answer = (
         retained_answer
         or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
@@ -2855,6 +2863,13 @@ def open_recorded_work_turn(
         # task's own durable result is read off this frame, so a recovered turn
         # that never emits one completes with no answer of its own.
         frames.append(_sse(AgentEvent(event="answer", text=turn.answer)))
+    else:
+        retained = _retained_primary_answer(turn)
+        if retained is not None:
+            # This journal is a correction that failed. The live path had
+            # already delivered the reply before starting it, and a reader stops
+            # at the first error, so the reply goes ahead of it.
+            frames.insert(0, _sse(AgentEvent(event="answer", text=retained)))
     return turn, frames
 
 

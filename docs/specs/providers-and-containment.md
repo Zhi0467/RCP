@@ -734,7 +734,10 @@ Automatic graph, watcher, and Experiment watcher-maintenance corrections within
 ordinary Work use the same supervision. Before any correction, Work retains the
 primary answer in an immutable database checkpoint. Replaying a correction
 applies its deliverables while preserving that original reply and starting no
-further correction calls. No recorded finalization may correct a deliverable:
+further correction calls. A recorded pass that is itself a failed correction
+still carries that retained reply ahead of its own error, because the live path
+had already delivered it before the correction began. No recorded finalization
+may correct a deliverable:
 the provider that could answer a correction stopped when its connection did, so
 a deliverable a live turn would have sent back is rejected instead, and a
 recorded pass offered a correction round fails rather than launching one. Manual
@@ -770,9 +773,13 @@ stopped pass whose journal did not, or that never took the prompt, fails it
 visibly for a human to retry; an already settled pass is left alone. Waiting is
 never cut short by a timeout, and nothing replaces a provider that may still be
 working. Reaching the host once proves nothing about reaching it again: an owner
-reopens its retained stage over the same link, and a host that goes quiet between
-those two reads leaves the task waiting rather than settling an intact result as
-failed.
+reopens its retained stage over the same link and reads its deliverables from it,
+and those reads report a vanished host exactly as they report a deliverable the
+agent botched. No verdict is drawn about a turn whose stage cannot be seen, so a
+host that goes quiet anywhere between reading the journal and finishing
+settlement leaves the task waiting rather than settling an intact result as
+failed. A stage that was genuinely removed is an answer, and the failure it
+causes stands.
 
 Pause of a waiting task is immediate and requires a reachable host and verified
 process identity. If the provider already stopped, or finishes before the Stop

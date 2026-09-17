@@ -3519,3 +3519,76 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     # The claim is released, so the next sweep can try the host again.
     assert store.claim_recorded_finalization(waiting.operation_id)
     assert store.unresolved_remote_provider_passes("remote", "/stage")
+
+
+def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settlement reads the stage again, long after the journal was read.
+
+    Those reads report an unreachable host as an unreadable deliverable, which
+    reads exactly like an agent that wrote nonsense. No verdict about the turn
+    can be drawn while its stage cannot be seen.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-vanished-mid-settlement")
+    pid_file = "/stage/stage-vanished-mid-settlement.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+    # "could not ask", which is what an SSH outage looks like from here.
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
+
+    async def unreadable_deliverable(*_args):
+        yield _sse(
+            AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
+        )
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreadable_deliverable)
+
+    assert tasks._reconcile_remote_results() is True
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.phase == "awaiting_remote_result"
+    assert store.claim_recorded_finalization(waiting.operation_id)
+
+
+def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stage that is genuinely gone is an answer, not a silence."""
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-removed")
+    pid_file = "/stage/stage-removed.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: False)
+
+    async def unreadable_deliverable(*_args):
+        yield _sse(
+            AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
+        )
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreadable_deliverable)
+    tasks._reconcile_remote_results()
+
+    assert store.agent_task(waiting.operation_id).status == "failed"

@@ -2066,6 +2066,14 @@ class BackgroundAgentTasks:
                 retry = True
                 continue
             except TaskFailed as exc:
+                if self._recorded_stage_unreachable(record):
+                    # Settlement reads the stage again after reconciliation read
+                    # the journal, and those reads report a host that vanished
+                    # mid-read as an unreadable deliverable. A verdict about the
+                    # turn cannot be drawn while its stage cannot be seen.
+                    self.store.release_recorded_finalization(record.operation_id)
+                    retry = True
+                    continue
                 result: dict[str, object] | None = None
                 if exc.messages or exc.artifacts:
                     result = {"messages": exc.messages}
@@ -2095,6 +2103,20 @@ class BackgroundAgentTasks:
                 self._stream_closed(record, request, execution)
             self._task_settled(record, request, execution)
         return retry
+
+    def _recorded_stage_unreachable(self, record: AgentTaskRecord) -> bool:
+        """Whether the stage a recorded verdict was read from cannot be seen now.
+
+        Only a transport outage counts. A stage that was genuinely removed is a
+        real answer, and the failure it caused stands.
+        """
+
+        if not record.stage_host or not record.stage_root:
+            return False
+        try:
+            return RemoteRunStage(record.stage_host).directory_exists(record.stage_root) is None
+        except Exception:
+            return False
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.
