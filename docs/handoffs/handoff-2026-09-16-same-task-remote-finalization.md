@@ -4,10 +4,13 @@ Date: 2026-09-16
 Status: implemented for ordinary Work turns in PR #165. The launcher now uses
 the host supervisor, live disconnect and startup both drive one reconciler, and
 recorded delivery enters Work through a retained launch-time finalization
-context rather than staging a second turn. Focused checks pass; the full suite,
-served real-SSH loss journey, and PR #162 closure remain. PR #162 is draft and
-must not be merged or extended. Its journal, process-safety work, failures, and
-tests are evidence for this replacement, not a branch to build upon.
+context rather than staging a second turn. The full local suite passes (5,452
+passed, 13 skipped), and a disposable real-SSH run proved host acceptance,
+forced link loss, same-task waiting, host-side completion, and fresh-process
+finalization into one transcript. The served browser journey, final-head PR CI,
+and PR #162 closure remain. PR #162 is draft and must not be merged or extended.
+Its journal, process-safety work, failures, and tests are evidence for this
+replacement, not a branch to build upon.
 
 ## Human journey
 
@@ -185,11 +188,17 @@ durable evidence fails that same task.
 
 ## Remaining verification and scope
 
-- **Drive the real boundary.** Run a disposable served app through an actual SSH
-  disconnect, let the host-side stub finish, restart RCP, and inspect the task,
-  network, console, and server logs.
-- **Finish repository gates.** Run the full local suite and PR CI, then close
-  draft PR #162 as superseded.
+- **Done: drive the host boundary.** A disposable app sent an ordinary Work
+  turn over real SSH, waited for the host acceptance marker, killed only that
+  stage's partitioned SSH master, observed the original task remain running at
+  `awaiting_remote_result`, let the host-side provider finish, and reopened the
+  same data in a fresh process. The original operation succeeded with one task,
+  one assistant transcript entry, its native session, usage, and no unresolved
+  remote pass.
+- **Finish the served journey and repository gates.** Drive the same loss from
+  the served browser while inspecting network, console, and server logs. The
+  full local suite is green; run PR CI on the final head, then close draft PR
+  #162 as superseded.
 - **Only ordinary Work launches are supervised in this PR.** Auto-research,
   Experiment-loop, Seed/Refresh, Discuss, paper-coach, and report owners remain
   on their existing launch behavior. Adding one requires that owner's own typed,

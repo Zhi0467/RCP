@@ -3,12 +3,13 @@
 Active:
 
 - [Finalize disconnected remote turns on their original tasks](handoff-2026-09-16-same-task-remote-finalization.md)
-  — implemented for ordinary Work in PR #165 and awaiting the full suite plus a
-  served real-SSH loss journey: transport loss leaves the original task waiting,
-  reconnect automatically finalizes the same remote pass through Work's
-  idempotent finalizer, unreachable hosts wait without timeout, Stop is never
-  delayed, and invalid evidence requires human Retry. Draft PR #162 is evidence
-  only and must be closed as superseded after this replacement is verified.
+  — implemented for ordinary Work in PR #165; the full local suite and a
+  fresh-process real-SSH loss journey pass. Transport loss leaves the original
+  task waiting, reconnect automatically finalizes the same remote pass through
+  Work's idempotent finalizer, unreachable hosts wait without timeout, Stop is
+  never delayed, and invalid evidence requires human Retry. The served-browser
+  journey and final-head PR CI remain. Draft PR #162 is evidence only and must
+  be closed as superseded after this replacement is verified.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
