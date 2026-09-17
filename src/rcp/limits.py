@@ -65,6 +65,14 @@ REMOTE_PROVIDER_KILL_WAIT_SECONDS = 2.0
 REMOTE_PROVIDER_STOP_POLL_SECONDS = 0.05
 REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS = 12.0
 
+# Per-pass execution-host durability; overflow is an explicit incomplete turn.
+TURN_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
+TURN_JOURNAL_MAX_EVENT_BYTES = 16 * 1024 * 1024
+TURN_JOURNAL_MAX_STDERR_BYTES = 1024 * 1024
+TURN_JOURNAL_MAX_PATCH_BYTES = 16 * 1024 * 1024
+TURN_JOURNAL_MAX_UPLINK_BYTES = 1024 * 1024
+TURN_JOURNAL_MAX_CONTROL_MESSAGES = 1024
+
 # Staged agent command mailbox, and the Auto-research broker that fronts it.
 # The broker deliberately outwaits the client. Whichever side gives up first owns
 # the diagnostic the agent reads, and the client's is the one that correctly says
