@@ -90,3 +90,49 @@ def test_quiescence_settles_only_verified_pass_and_preserves_stage_until_then(
     assert store.unresolved_remote_provider_passes("remote", "/stage") == []
     assert "/stage" not in store.protected_run_stage_roots("remote")
     store.begin_remote_provider_pass("second", "remote", "/stage", "/stage/two.pid")
+
+
+@pytest.mark.parametrize("journaled", [True, False])
+def test_a_reservation_whose_prompt_never_left_stops_holding_the_workspace(
+    tmp_path, monkeypatch, journaled
+):
+    """A pass with no pidfile to find is settled, not waited on forever."""
+
+    store = _store(tmp_path)
+    store.begin_remote_provider_pass(
+        "first", "remote", "/stage", "/stage/one.pid", journaled=journaled
+    )
+    store.fail_agent_task("first", "RCP stopped between the reservation and the launch")
+    # Nothing was ever written down under that pidfile, so the host cannot say
+    # what ran there -- the answer every later probe will give.
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: None)
+
+    if not journaled:
+        # An unjournaled pass records no delivery either way, so its silence
+        # proves nothing and the workspace stays shut.
+        with pytest.raises(ValueError, match="confirmed stopped"):
+            require_remote_provider_quiescence(store, "remote", "/stage")
+        assert store.unresolved_remote_provider_passes("remote", "/stage") == [
+            ("first", "/stage/one.pid")
+        ]
+        return
+
+    require_remote_provider_quiescence(store, "remote", "/stage")
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+    assert "/stage" not in store.protected_run_stage_roots("remote")
+
+
+def test_a_delivered_pass_still_waits_for_a_state_the_host_can_confirm(tmp_path, monkeypatch):
+    """Once the prompt left, an unverifiable pass may be a live turn."""
+
+    store = _store(tmp_path)
+    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", journaled=True)
+    store.deliver_remote_provider_pass("first", "/stage/one.pid")
+    store.fail_agent_task("first", "SSH disconnected")
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: None)
+
+    with pytest.raises(ValueError, match="confirmed stopped"):
+        require_remote_provider_quiescence(store, "remote", "/stage")
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == [
+        ("first", "/stage/one.pid")
+    ]

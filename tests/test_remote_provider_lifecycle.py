@@ -590,3 +590,51 @@ async def test_a_consumer_that_stops_reading_does_not_leave_the_provider_running
                 break
 
     assert terminated == [("fixture", pid_file)]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_is_not_called_delivered_before_its_prompt_is_written(
+    tmp_path, monkeypatch, transported_launcher
+):
+    """Scheduling the write is not the write, and a stop can land between them.
+
+    The delivery event is what a consumer persists as "there is a turn on the
+    host to come back for". Creating the feeder task only queues the write, so
+    announcing delivery there would let a stop in that window record a pass
+    whose wrapper was handed nothing, and send recovery to collect it.
+    """
+
+    from rcp.agents import AgentProcessControl
+    from rcp.agents import launcher as launcher_module
+
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [sys.executable, "-c", "import sys; sys.stdin.read()"],
+    )
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", lambda *_args: True)
+    order: list[str] = []
+    write_stdin = launcher_module._write_stdin
+
+    async def recorded(stream, data, **kwargs):
+        order.append("write")
+        await write_stdin(stream, data, **kwargs)
+
+    monkeypatch.setattr(launcher_module, "_write_stdin", recorded)
+    pid_file = str(tmp_path / "provider.pid")
+
+    stream = transported_launcher.stream(
+        "codex",
+        "prompt",
+        cwd=tmp_path,
+        capability="scratch_patch",
+        host="fixture",
+        remote_pid_file=pid_file,
+    )
+    async with aclosing(stream):
+        async for event in stream:
+            if event.event == "remote_prompt_delivered":
+                order.append("delivered")
+                break
+
+    assert order == ["write", "delivered"]

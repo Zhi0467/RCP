@@ -38,6 +38,14 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
         raise ValueError("Collect the prior provider turn before reusing this workspace.")
     for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
         stopped = AgentProcessControl.remote_stopped(host, pid_file)
+        if stopped is None and store.remote_provider_prompt_never_left(operation_id, pid_file):
+            # A journaled reservation whose prompt never left RCP has no pidfile
+            # to find: either its SSH command never ran, or the wrapper it
+            # started read EOF and ended without a turn. Unverifiable is the
+            # expected answer for that pass, not a reason to hold the workspace
+            # shut forever.
+            store.finish_remote_provider_pass(operation_id, pid_file)
+            continue
         if stopped is not True:
             reason = (
                 "A previous provider call is still running"

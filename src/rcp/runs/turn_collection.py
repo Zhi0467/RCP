@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
+from rcp.agents.codex_app_server import app_server_declared_failure
 from rcp.agents.launcher import AgentProcessControl, _meaningful_stderr
 from rcp.limits import TURN_JOURNAL_MAX_EVENT_BYTES
 from rcp.providers import ProviderTurnRequest, profile_for, require_runtime_id
@@ -492,12 +493,16 @@ def _declared_failure_reason(collected: CollectedTurn) -> str | None:
     stderr and not in the wrapper's error field, and the live pipe showed that
     event. Ask the decoder that owns the runtime's wording rather than matching
     event shapes here. The app-server runtime states this through a turn object
-    that needs the live request this settlement does not have, so it keeps the
-    general message.
+    rather than an event, and reading one back off the wire belongs to that
+    runtime too, so it answers from there instead.
     """
 
     outcome = collected.outcome
     if str(outcome.get("runtime_id") or "") == "codex.app-server-stdio.v1":
+        for line in reversed(collected.observed_events):
+            declared = app_server_declared_failure(line)
+            if declared:
+                return declared
         return None
     try:
         profile = profile_for(str(outcome.get("provider") or ""))

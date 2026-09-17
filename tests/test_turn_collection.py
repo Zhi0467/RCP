@@ -574,6 +574,45 @@ def test_collected_failure_reports_the_reason_the_provider_declared(tmp_path, mo
     assert "the model refused" in incomplete_collection_text(collected)
 
 
+def test_an_app_server_turn_that_failed_says_so_after_the_link_went(tmp_path, monkeypatch):
+    """The turn object the server wrote is the only record left, and it is read."""
+
+    store, record, pid = _failed_turn(tmp_path)
+    root, outcome, events, _patch = _journal(pid, complete=False)
+    raw = (
+        events
+        + json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {"message": "the sandbox denied the write"},
+                    }
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+    (root / "events.jsonl").write_bytes(raw)
+    (root / "outcome.json").write_text(
+        json.dumps(
+            {
+                **outcome,
+                "runtime_id": "codex.app-server-stdio.v1",
+                "events_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+    )
+    _local_transport(monkeypatch)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_: True)
+
+    collected = read_collected_turn(store, record)
+
+    assert "the sandbox denied the write" in incomplete_collection_text(collected)
+
+
 def test_collected_failure_reports_the_provider_stderr(tmp_path, monkeypatch):
     """A collected failure says what the live pipe would have said."""
 

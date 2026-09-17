@@ -2631,6 +2631,35 @@ class AgentTaskStoreMixin:
                 created_at=self.now(),
             )
 
+    def remote_provider_prompt_never_left(self, operation_id: str, pid_file: str) -> bool:
+        """Whether this pass was reserved, is journaled, and was never handed its prompt.
+
+        Only a journaled pass records delivery, so a pass without that receipt
+        answers this at all only when its own reservation says it is one. Every
+        other pass answers no: absence there is silence, not proof.
+        """
+
+        with self.connection() as connection:
+            return (
+                connection.execute(
+                    """
+                SELECT 1 FROM graph_run_receipts AS started
+                WHERE started.operation_id = ?
+                  AND started.category = 'remote_provider_started'
+                  AND json_extract(started.payload_json, '$.pid_file') = ?
+                  AND json_extract(started.payload_json, '$.journal_version') = 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM graph_run_receipts AS delivered
+                      WHERE delivered.operation_id = started.operation_id
+                        AND delivered.category = 'remote_provider_delivered'
+                        AND json_extract(delivered.payload_json, '$.pid_file') = ?
+                  )
+                """,
+                    (operation_id, pid_file, pid_file),
+                ).fetchone()
+                is not None
+            )
+
     def finish_remote_provider_pass(self, operation_id: str, pid_file: str) -> None:
         """Record confirmed absence for exactly one previously reserved process group."""
         with self.connection() as connection:

@@ -389,10 +389,8 @@ class _CodexAppServerTurn(ProviderTurn):
         turn_id = turn.get("id")
         if self._turn_id is not None and turn_id != self._turn_id:
             return self._protocol_error("Codex app-server completed a different turn.")
-        status = turn.get("status")
-        if status != "completed":
-            detail = _error_text(turn.get("error")) or f"Codex turn ended with status {status!r}."
-            return self._protocol_error(detail)
+        if turn.get("status") != "completed":
+            return self._protocol_error(app_server_turn_failure(turn))
         events = (
             (ProviderStreamEvent(event="raw", usage=self._usage),)
             if self._usage is not None
@@ -564,6 +562,34 @@ def _usage_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return max(0, int(value))
+
+
+def app_server_turn_failure(turn: dict[str, object]) -> str:
+    """This runtime's words for a turn its server ended without completing."""
+
+    return _error_text(turn.get("error")) or f"Codex turn ended with status {turn.get('status')!r}."
+
+
+def app_server_declared_failure(line: str) -> str | None:
+    """The same words read back off one retained wire line, or None if it is not one.
+
+    Collection settles a turn whose live pipe is gone, so it has no server to
+    ask and no turn object in hand. The wire line the server already wrote is
+    the whole record, and reading it belongs here, beside the decoder whose
+    wording it has to match.
+    """
+
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(value, dict) or value.get("method") != "turn/completed":
+        return None
+    params = value.get("params")
+    turn = params.get("turn") if isinstance(params, dict) else None
+    if not isinstance(turn, dict) or turn.get("status") == "completed":
+        return None
+    return app_server_turn_failure(turn)
 
 
 def _error_text(value: object) -> str:

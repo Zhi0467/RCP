@@ -1203,17 +1203,23 @@ class AgentLauncher:
                 # From this point a write may be partial even if drain raises;
                 # retrying through another runtime could duplicate the turn.
                 prompt_delivered = True
+            prompt_issued = asyncio.Event() if journaled_remote and prompt_delivered else None
             stdin_task = asyncio.create_task(
                 _feed_stdin(
                     process.stdin,
                     prompt_bytes,
                     close=turn.close_input_after_initial,
+                    issued=prompt_issued,
                 )
             )
-            if journaled_remote and prompt_delivered:
+            if prompt_issued is not None:
                 # Announced once the prompt is on its way to this exact pass, so
                 # what recovery reads as a delivered pass is never one a stop
-                # caught while the turn was still on this machine.
+                # caught while the turn was still on this machine. Creating the
+                # task above only schedules the write, so wait for the write
+                # itself: a consumer that stops right here would otherwise
+                # record a delivered pass whose prompt never left.
+                await prompt_issued.wait()
                 yield AgentEvent(event="remote_prompt_delivered", text=remote_pid_file or "")
             stderr_task = (
                 asyncio.create_task(
@@ -1730,16 +1736,26 @@ def _exit_reason(provider: str, return_code: int, host: str) -> str:
     return f"{provider} exited {return_code}{where}."
 
 
-async def _write_stdin(stream, data: bytes) -> None:
+async def _write_stdin(stream, data: bytes, *, issued: asyncio.Event | None = None) -> None:
     try:
-        stream.write(data)
+        try:
+            stream.write(data)
+        finally:
+            # Set the moment the bytes are handed to the pipe, never after the
+            # drain: a waiter here is asking whether the write left, and waiting
+            # for the far end to read it would stall the reads that surface why
+            # it has not.
+            if issued is not None:
+                issued.set()
         await stream.drain()
     except (BrokenPipeError, ConnectionResetError):
         pass
 
 
-async def _feed_stdin(stream, data: bytes, *, close: bool = True) -> None:
-    await _write_stdin(stream, data)
+async def _feed_stdin(
+    stream, data: bytes, *, close: bool = True, issued: asyncio.Event | None = None
+) -> None:
+    await _write_stdin(stream, data, issued=issued)
     if close:
         stream.close()
         with suppress(BrokenPipeError, ConnectionResetError):

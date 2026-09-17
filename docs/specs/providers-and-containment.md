@@ -391,10 +391,13 @@ launching a provider. Eligibility requires durable evidence that a turn was
 handed to that exact pass. A pass is recorded before its SSH command runs, and
 the runtime is checkpointed before the prompt is written, so a stop inside
 either window leaves a pass no turn ever reached. The launcher names the pass
-again once its prompt is on the way, and that is the evidence: one turn can open
-several passes, so it names the pidfile. A pass caught before its prompt is
-skipped, and the turn is collected from the passes that did run, or retried when
-none did. It waits while the original provider is alive or
+again once the prompt's own write has left for it -- not when that write is
+merely queued -- and that is the evidence: one turn can open several passes, so
+it names the pidfile. A pass caught before its prompt is skipped, and the turn
+is collected from the passes that did run, or retried when none did. Such a
+pass holds nothing afterwards either: it has no pidfile for a probe to find, so
+the workspace gate settles it on the unverifiable answer it will always get
+rather than staying shut on a group that never existed. It waits while the original provider is alive or
 its state is unknown; after confirmed process absence it reads that exact pass's completed
 journals. It never forces that absence, because a group stopped mid-write would
 lose the turn being recovered. A provider found alive reports how long it has
@@ -405,7 +408,10 @@ control is offered only on a turn where a probe has already found the provider
 alive, and withdraws as soon as that pass is confirmed stopped. The operational pass supplies the answer; later correction passes
 supply their completed deliverables and usage without replacing that answer.
 A stopped pass without protocol completion is incomplete, not evidence
-that work should be rerun. Collection preserves the original authorizer,
+that work should be rerun. Where the provider said why it stopped, the human
+gets those words rather than the general message: the runtime that wrote them
+is asked to read its own retained wire, so every runtime answers in one voice
+whether the failure came through the live pipe or the journal. Collection preserves the original authorizer,
 capability, host, stage, native session, graph target, and episode invocation,
 reading them from what the turn recorded rather than resolving the surface's
 profile again: a machine edited while the link was down must not move the host
