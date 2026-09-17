@@ -388,6 +388,37 @@ def test_a_foreign_thread_request_before_the_resume_reply_is_not_a_fence(tmp_pat
     assert observer.terminal
 
 
+def test_an_error_for_another_turn_on_this_thread_is_not_this_turn_ending(tmp_path):
+    """A multiplexed server speaks for its other turns on the thread it shares.
+
+    The canonical decoder drops any notification naming a turn that is not its
+    own. The wrapper read the error branch before that check, so a failure
+    belonging to someone else's turn fenced this one -- closing stdin on a live
+    root turn, terminating it, and recording it incomplete for collection.
+    """
+
+    turn, observer = _canonical_app_server_turn(tmp_path, handshake=True)
+    started = {"id": 4, "result": {"turn": {"id": "turn-root"}}}
+    turn.receive_line(json.dumps(started))
+    observer.input({"id": 4, "method": "turn/start"})
+    observer.output(started)
+    assert observer.turn_id == "turn-root"
+
+    foreign = {
+        "method": "error",
+        "params": {"turnId": "turn-other", "error": {"message": "that turn failed"}},
+    }
+    assert not turn.receive_line(json.dumps(foreign)).complete
+    observer.output(foreign)
+    assert not observer.terminal
+
+    # An error this turn owns still ends it, and one that names no turn at all
+    # is still the whole session speaking.
+    own = {"method": "error", "params": {"turnId": "turn-root", "error": {"message": "stop"}}}
+    observer.output(own)
+    assert observer.terminal and not observer.complete
+
+
 @pytest.mark.parametrize("link_directory", [False, True])
 def test_patch_snapshot_refuses_symlink_boundary(tmp_path, link_directory):
     from rcp.agents.staged_turn_journal import _patch_snapshot

@@ -267,6 +267,11 @@ real directory, RCP reuses it and preserves every existing file. A file or
 symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
 collision-free filename and never overwrites an existing entry.
 
+Keep is refused while a revision of that result view is unsettled -- running,
+resumable, or finished on a host and waiting to be collected. The revision is
+admitted against the view it was launched for, so keeping first would leave its
+completed answer with nowhere to land.
+
 Keep records the artifact's stable repository filename. It does not freeze the
 file: humans and tools may still edit it normally. A later Work revision is
 published only after explicit human Accept and only if the current bytes still

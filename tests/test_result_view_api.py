@@ -436,6 +436,69 @@ def test_keep_waits_for_a_resumable_revision_then_allows_recovery(
     assert kept.json()["state"] == "kept"
 
 
+def test_keep_waits_for_a_revision_still_waiting_to_be_collected(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    """Keep freezes the view the collected revision is admitted against."""
+
+    fixture = _fixture(manifest, tmp_path)
+    request = RunRequest(
+        provider=fixture.record.provider,
+        model=fixture.record.model,
+        reasoning=fixture.record.reasoning,
+        run_on=fixture.record.run_on,
+        chat_scope="node",
+        node_id=fixture.record.experiment_id,
+        message="Use a log scale.",
+        chat_id=fixture.record.chat_id,
+        session_id=fixture.record.native_session_id,
+        mode="work",
+        result_view={"action": "revise", "view_id": fixture.record.view_id},
+    )
+    now = fixture.store.now()
+    revision = fixture.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="collectible-result-view-revision",
+            project_id=fixture.project_id,
+            kind="node_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Running.",
+            native_session_id=fixture.record.native_session_id,
+            stage_root=fixture.record.stage_root,
+        )
+    )
+    pid_file = f"{fixture.record.stage_root}/turn.pid"
+    fixture.store.checkpoint_agent_task(
+        revision.operation_id, stage_host="test-host", stage_root=fixture.record.stage_root
+    )
+    fixture.store.begin_remote_provider_pass(
+        revision.operation_id,
+        "test-host",
+        fixture.record.stage_root,
+        pid_file,
+        journaled=True,
+    )
+    fixture.store.deliver_remote_provider_pass(revision.operation_id, pid_file)
+    fixture.store.fail_agent_task(
+        revision.operation_id,
+        "The link dropped after the revision finished",
+        failure_kind="transport_lost",
+    )
+    base = f"/api/projects/{fixture.project_id}"
+
+    # Failed, so the active-revision query no longer sees it; the finished
+    # revision on the host is what Keep would strand.
+    assert not fixture.store.has_active_result_view_revision(fixture.record)
+    blocked = fixture.client.post(f"{base}/result-views/{fixture.record.view_id}/keep")
+
+    assert blocked.status_code == 409
+    assert "Collect this view's finished revision" in blocked.text
+
+
 def test_result_view_resume_holds_project_admission_before_view_lock(
     manifest,
     tmp_path: Path,

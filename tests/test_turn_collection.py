@@ -247,7 +247,10 @@ def test_incomplete_or_stopped_journal_cannot_produce_success(tmp_path, override
     _store, _record, pid = _failed_turn(tmp_path)
     _root, outcome, events, patch = _journal(pid)
     collected = CollectedTurn("original", str(pid), {**outcome, **override}, events, patch)
-    assert [event.event for event in replay_collected_events(collected, _request())] == ["error"]
+    replayed = replay_collected_events(collected, _request())
+    # What this turn spent is still reported; what it produced is not.
+    assert [event.event for event in replayed] == ["raw", "error"]
+    assert replayed[0].usage is not None and not replayed[0].text
 
 
 def test_remote_journal_reader_refuses_symlinks_and_size_overflow(tmp_path):
@@ -624,8 +627,8 @@ def test_collected_failure_reports_the_provider_stderr(tmp_path, monkeypatch):
 
     events = replay_collected_events(read_collected_turn(store, record), _request())
 
-    assert [item.event for item in events] == ["error"]
-    assert "the model refused the request" in events[0].text
+    assert [item.event for item in events] == ["raw", "error"]
+    assert "the model refused the request" in events[-1].text
 
 
 def test_unbindable_journal_withdraws_the_offer_without_failing_the_projection(tmp_path):

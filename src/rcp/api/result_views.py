@@ -19,6 +19,7 @@ from rcp.api.dependencies import (
 from rcp.artifacts import ResultViewDescriptor, html_preview_document
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
+from rcp.runs.turn_collection import can_collect
 from rcp.storage import AppStore, ResultViewConflict, ResultViewRecord
 from rcp.transport import StateUnavailable
 
@@ -84,6 +85,31 @@ async def preview_result_view(
     )
 
 
+def _revision_awaits_collection(store: AppStore, record: ResultViewRecord) -> bool:
+    """Whether a finished revision of this view is still waiting to be collected.
+
+    Keep makes the view immutable, and a collected revision is admitted against
+    the view it was launched for. Keeping first leaves that revision's preflight
+    rejecting a view it can no longer write, with the admitted child blocking a
+    second attempt and the finished answer stranded. The revision's own task is
+    failed by then, so the active-revision query cannot see it.
+    """
+
+    for operation_id in store.uncollected_remote_task_ids():
+        revision = store.agent_task(operation_id)
+        if revision is None or revision.project_id != record.project_id:
+            continue
+        view = revision.request.get("result_view")
+        if (
+            isinstance(view, dict)
+            and view.get("action") == "revise"
+            and view.get("view_id") == record.view_id
+            and can_collect(store, revision)
+        ):
+            return True
+    return False
+
+
 @router.post(
     "/api/projects/{project_id}/result-views/{view_id}/keep",
     response_model=ResultViewDescriptor,
@@ -106,6 +132,11 @@ def keep_result_view(
             raise HTTPException(
                 status_code=409,
                 detail="Wait for the active result view revision before keeping it.",
+            )
+        if _revision_awaits_collection(store, record):
+            raise HTTPException(
+                status_code=409,
+                detail="Collect this view's finished revision before keeping it.",
             )
         data = _read_result_view_bytes_for_http(store, record)
         service = get_project_service(catalog, project_id)

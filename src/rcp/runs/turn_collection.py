@@ -543,7 +543,19 @@ def replay_collected_events(
     collected: CollectedTurn, request: ProviderTurnRequest
 ) -> list[AgentEvent]:
     if not collected.complete:
-        return [AgentEvent(event="error", text=incomplete_collection_text(collected))]
+        # The tokens this turn spent were spent whether or not its answer
+        # survived the link, and live delivery records usage before it handles
+        # the error. Decoding can itself fail on a pass this incomplete; the
+        # error is what the human is owed, so it is never lost to that.
+        events = []
+        with suppress(Exception):
+            events = [
+                AgentEvent(event="raw", usage=event.usage)
+                for event in _decode_pass(collected, request)
+                if event.usage is not None
+            ]
+        events.append(AgentEvent(event="error", text=incomplete_collection_text(collected)))
+        return events
     events = _decode_pass(collected, request)
     for item in collected.passes:
         if item.pid_file == collected.outcome.get("pid_file"):

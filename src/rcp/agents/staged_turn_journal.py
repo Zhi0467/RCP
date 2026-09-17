@@ -99,6 +99,13 @@ class WireCompletion:
                 return
             if not isinstance(params, dict) or self.thread_id is None:
                 return
+            # A multiplexed server speaks for its other turns on this thread,
+            # and the canonical decoder drops any notification naming one. The
+            # wrapper has to drop it too, or a failure belonging to someone
+            # else's turn would fence this one and terminate a live root turn.
+            turn_id = params.get("turnId")
+            if self.turn_id is not None and isinstance(turn_id, str) and turn_id != self.turn_id:
+                return
             if value.get("method") == "error" and params.get("willRetry") is not True:
                 self.terminal = True
                 return
