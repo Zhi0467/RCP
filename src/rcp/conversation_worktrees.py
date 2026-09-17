@@ -26,6 +26,7 @@ from rcp.agents.write_scope import (
 from rcp.core.models import ConversationWorktreeBinding
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import WORKTREE_GIT_TIMEOUT_SECONDS
+from rcp.runs.turn_collection import can_collect
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
 from rcp.transport import conversation_worktree
@@ -104,6 +105,27 @@ def _chat_busy(store: AppStore, project_id: str, chat_id: str) -> bool:
         or store.has_resumable_paused_chat_task(project_id, kind, chat_id)
         for kind in ("node_chat", "project_chat")
     )
+
+
+def _chat_awaits_collection(store: AppStore, project_id: str, chat_id: str) -> bool:
+    """Whether a finished turn of this chat is still waiting to be collected.
+
+    A preserved provider may still be running in this worktree, and even after
+    it exits its answer and Patch are read out of the stage that worktree
+    holds. Removing the directory under either strands the turn, so removal
+    waits for the one act that clears this: collecting it.
+    """
+
+    for operation_id in store.uncollected_remote_task_ids():
+        record = store.agent_task(operation_id)
+        if (
+            record is not None
+            and record.project_id == project_id
+            and record.request.get("chat_id") == chat_id
+            and can_collect(store, record)
+        ):
+            return True
+    return False
 
 
 def _repository(service: ProjectService, request: RunRequest):
@@ -482,6 +504,8 @@ def project_conversation_worktree(
         common_reason = (
             "Wait for this conversation's active or paused turn to finish."
             if busy
+            else "Collect this conversation's finished turn first."
+            if _chat_awaits_collection(store, project_id, request.chat_id)
             else "Worktree has uncommitted changes:\n" + "\n".join(facts["dirty_worktree"])
             if facts["dirty_worktree"]
             else None
@@ -515,6 +539,7 @@ def project_conversation_worktree(
             binding is not None
             and binding.status == "removing"
             and not _chat_busy(store, project_id, request.chat_id)
+            and not _chat_awaits_collection(store, project_id, request.chat_id)
         ):
             response.can_remove = True
     return response
@@ -528,6 +553,8 @@ def remove_conversation_worktree(
         raise ValueError("This conversation has no worktree.")
     if _chat_busy(store, project_id, chat_id):
         raise ValueError("Finish the active or paused turn before removing its worktree.")
+    if _chat_awaits_collection(store, project_id, chat_id):
+        raise ValueError("Collect this conversation's finished turn before removing its worktree.")
     if binding.status == "removed":
         return binding
     if binding.status == "ready":

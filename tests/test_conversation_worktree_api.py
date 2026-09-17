@@ -292,6 +292,46 @@ def test_remove_refuses_active_or_resumable_paused_chat(harness, status):
     assert not harness.controls(chat).json()["can_remove"]
 
 
+def test_remove_refuses_a_turn_still_waiting_to_be_collected(harness):
+    """The worktree is where that turn's answer and Patch are read from."""
+
+    chat = str(uuid.uuid4())
+    harness.turn(chat, worktree=True)
+    binding = harness.store.conversation_worktree(harness.project_id, chat)
+    operation_id = str(uuid.uuid4())
+    now = harness.store.now()
+    harness.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=harness.project_id,
+            kind="project_chat",
+            status="running",
+            request={"chat_id": chat, "mode": "work"},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    # The stage this turn is bound to is the worktree itself, which is what
+    # removal would delete out from under the collection that reads it.
+    stage_root = binding.worktree_path
+    pid_file = f"{stage_root}/turn.pid"
+    harness.store.checkpoint_agent_task(operation_id, stage_host="test-host", stage_root=stage_root)
+    harness.store.begin_remote_provider_pass(
+        operation_id, "test-host", stage_root, pid_file, journaled=True
+    )
+    harness.store.deliver_remote_provider_pass(operation_id, pid_file)
+    harness.store.fail_agent_task(
+        operation_id, "The link dropped after the turn finished", failure_kind="transport_lost"
+    )
+
+    response = harness.remove(chat)
+    assert response.status_code == 422 and "Collect" in response.text
+    controls = harness.controls(chat).json()
+    assert not controls["can_remove"]
+    assert "Collect" in controls["remove_reason"]
+
+
 def test_missing_worktree_refuses_before_launch(harness):
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True)

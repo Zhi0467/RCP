@@ -154,9 +154,12 @@ preflight before admission and provider launch. Ordinary turns still require the
 bound branch. RCP never merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
 not an integration receipt.
 
-**Remove worktree** is explicit, refuses an active/paused turn or dirty worktree,
-and serializes with fresh, Resume, Retry, and graph-repair task admission for that
-chat. It shows commits ahead of the current starting branch and an explicit `origin`
+**Remove worktree** is explicit, refuses an active/paused turn, a turn still
+waiting to be collected, or a dirty worktree, and serializes with fresh, Resume,
+Retry, and graph-repair task admission for that chat. A turn waiting to be
+collected still has a provider that may be running in that checkout, and its
+answer and Patch are read out of it afterwards, so removal waits for the
+collection that clears both. It shows commits ahead of the current starting branch and an explicit `origin`
 branch lookup (unknown with a reason if unavailable),
 and removes only the checkout. The branch and unmerged commits remain. Binding
 removal has a durable intent and terminal tombstone; later turns in that chat
