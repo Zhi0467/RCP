@@ -2618,6 +2618,7 @@ def _recorded_turn(pid_file: str) -> RecordedProviderTurn:
         events="",
         stderr="",
         patch=None,
+        watch=None,
         accepted=True,
     )
 

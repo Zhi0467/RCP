@@ -62,6 +62,7 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             "events": read("events.jsonl", max_bytes),
             "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
+            "watch": read("watch.json", max_bytes) if outcome.get("watch_present") else None,
         }
     finally:
         for fd in reversed(descriptors):

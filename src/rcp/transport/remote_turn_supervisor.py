@@ -93,8 +93,12 @@ def _atomic_write(path, data):
         os.close(parent)
 
 
-def _patch_snapshot(source, destination, limit):
-    """Copy the turn's Patch beside its journal, or report that there was none."""
+def _deliverable_snapshot(source, destination, limit):
+    """Copy one deliverable beside the journal, or report there was none.
+
+    A deliverable read back off the stage later is whatever the stage holds by
+    then. This is what the pass itself produced.
+    """
 
     try:
         descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -103,12 +107,12 @@ def _patch_snapshot(source, destination, limit):
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
-            raise ValueError("The provider's patch file is not a regular file.")
+            raise ValueError("The provider's deliverable is not a regular file.")
         if info.st_size > limit:
-            raise ValueError("The provider's patch file exceeds its storage limit.")
+            raise ValueError("The provider's deliverable exceeds its storage limit.")
         content = stream.read(limit + 1)
     if len(content) > limit:
-        raise ValueError("The provider's patch file exceeds its storage limit.")
+        raise ValueError("The provider's deliverable exceeds its storage limit.")
     _atomic_write(destination, content)
     return True, hashlib.sha256(content).hexdigest()
 
@@ -324,12 +328,18 @@ def run(args):
     return_code = child.wait()
     patch_present = False
     patch_sha256 = None
+    watch_present = False
+    watch_sha256 = None
     if fence.terminal and journal_complete and not error and not external_stop:
         try:
-            patch_snapshot = _patch_snapshot(
+            patch_present, patch_sha256 = _deliverable_snapshot(
                 args.patch_path, directory / "patch.json", args.max_patch_bytes
             )
-            patch_present, patch_sha256 = patch_snapshot
+            # The watcher handoff is the other half of what a turn hands back.
+            # A turn that writes no watch.json snapshots nothing and says so.
+            watch_present, watch_sha256 = _deliverable_snapshot(
+                args.watch_path, directory / "watch.json", args.max_patch_bytes
+            )
         except (OSError, ValueError) as exc:
             error = str(exc)
     if error and not detached:
@@ -371,6 +381,8 @@ def run(args):
                 "events_sha256": events_hash.hexdigest(),
                 "patch_present": patch_present,
                 "patch_sha256": patch_sha256,
+                "watch_present": watch_present,
+                "watch_sha256": watch_sha256,
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,
@@ -409,7 +421,7 @@ def _exit_status(return_code):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    for name in ("pid-file", "provider", "runtime-id", "patch-path"):
+    for name in ("pid-file", "provider", "runtime-id", "patch-path", "watch-path"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")
     for name in (

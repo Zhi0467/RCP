@@ -211,6 +211,7 @@ def _supervised_remote_turn_command(
     runtime_id: str,
     provider_version: str | None,
     patch_path: str,
+    watch_path: str,
     close_input_after_initial: bool,
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
@@ -227,6 +228,8 @@ def _supervised_remote_turn_command(
         runtime_id,
         "--patch-path",
         patch_path,
+        "--watch-path",
+        watch_path,
         "--max-journal-bytes",
         str(TURN_JOURNAL_MAX_BYTES),
         "--max-event-bytes",
@@ -1148,6 +1151,7 @@ class AgentLauncher:
                 runtime_id=runtime.id,
                 provider_version=getattr(readiness, "version", None),
                 patch_path=str(cwd / "patch.json"),
+                watch_path=str(cwd / "watch.json"),
                 close_input_after_initial=turn.close_input_after_initial,
             )
         if control is not None and control.pause_requested.is_set():

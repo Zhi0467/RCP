@@ -55,25 +55,39 @@ def write_recorded_patch(
     remote_stage: RemoteRunStage | None,
     recorded: RecordedProviderTurn,
 ) -> None:
-    """Put the digest-verified Patch back in the stage, before anything reads it.
+    """Put the digest-verified deliverables back, before anything reads them.
 
     A stage is mutable and a recorded pass is not. Settling from whatever the
     directory holds now would let a Patch that changed after the host finished
     be admitted as this turn's, or let a deleted one silently become no Patch at
-    all -- while the answer and the rest of the turn are still accepted.
+    all -- while the answer and the rest of the turn are still accepted. The
+    watcher handoff is the other half of the same admission and gets the same
+    treatment, except where the host never snapshotted it: a journal written
+    before supervisors did so is silent about watch.json rather than saying
+    there was none, and restoring "none" over a real handoff would destroy it.
     """
 
-    target = "patch.json"
-    if recorded.patch is None:
+    _restore(workspace, remote_stage, "patch.json", recorded.patch)
+    if recorded.watch_snapshotted:
+        _restore(workspace, remote_stage, "watch.json", recorded.watch)
+
+
+def _restore(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+    target: str,
+    content: str | None,
+) -> None:
+    if content is None:
         if remote_stage is not None:
             remote_stage.remove_workspace_file(target)
         else:
             (workspace / target).unlink(missing_ok=True)
         return
     if remote_stage is not None:
-        remote_stage.write_workspace_text(target, recorded.patch)
+        remote_stage.write_workspace_text(target, content)
     else:
-        (workspace / target).write_text(recorded.patch, encoding="utf-8")
+        (workspace / target).write_text(content, encoding="utf-8")
 
 
 def absorb_recorded_events(

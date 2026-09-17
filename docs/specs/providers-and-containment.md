@@ -760,10 +760,13 @@ host's answer.
 The supervisor publishes no verdict. It decides only where the turn ends, which a
 persistent server makes unavoidable, and hands over its bytes. What the turn was
 worth is read from those bytes by the same decoder that reads a live one, so the
-two cannot drift apart. A stage is mutable and a recorded pass is not, so every
-owner restores the digest-verified Patch into the stage before reading any
-deliverable from it: what settles is what the host proved, not whatever the
-directory happens to hold when RCP reconnects.
+two cannot drift apart. The supervisor also snapshots the turn's deliverables
+beside its journal, Patch and watcher handoff alike, each under its own digest.
+A stage is mutable and a recorded pass is not, so every owner restores those
+snapshots before reading any deliverable: what settles is what the host proved,
+not whatever the directory happens to hold when RCP reconnects. A journal that
+predates deliverable snapshots is silent about a handoff rather than claiming
+there was none, and recovery leaves that file alone rather than deleting it.
 
 A restart preserves a task holding such a pass instead of interrupting it, and
 leaves it waiting for a remote result. Reconciliation then asks the host one

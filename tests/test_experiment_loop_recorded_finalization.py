@@ -115,9 +115,14 @@ async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
     manifest, tmp_path: Path
 ) -> None:
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    (workspace / "watch.json").write_text(_watch_handoff(tmp_path), encoding="utf-8")
+    # A stage rewritten after the host finished must not decide what is armed.
+    (workspace / "watch.json").write_text(
+        json.dumps({"external": [], "graph": []}), encoding="utf-8"
+    )
 
-    events = await _finalize(service, request, execution, _recorded_pass("", _ANSWER))
+    events = await _finalize(
+        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    )
 
     assert [item["event"] for item in events if item["event"] == "error"] == []
     assert next(item["text"] for item in events if item["event"] == "answer") == _ANSWER
@@ -138,9 +143,8 @@ async def test_recorded_loop_finalization_can_resume_without_arming_twice(
 ) -> None:
     """A crash after the episode handoff must not arm a second watcher."""
 
-    service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    (workspace / "watch.json").write_text(_watch_handoff(tmp_path), encoding="utf-8")
-    recorded = _recorded_pass("", _ANSWER)
+    service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
+    recorded = _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
 
     first = await _finalize(service, request, execution, recorded)
     second = await _finalize(service, request, execution, recorded)
@@ -202,10 +206,11 @@ async def test_a_loop_turn_without_its_episode_context_refuses_to_finalize(
     service, request, execution, workspace = await _retained_loop_turn(
         manifest, tmp_path, episode_context="{}"
     )
-    (workspace / "watch.json").write_text(_watch_handoff(tmp_path), encoding="utf-8")
 
     with pytest.raises(ValueError, match="retained Experiment-loop episode context is invalid"):
-        await _finalize(service, request, execution, _recorded_pass("", _ANSWER))
+        await _finalize(
+            service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        )
 
 
 @pytest.mark.asyncio
@@ -332,11 +337,12 @@ async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
     # An observer the loop cannot validate is exactly what a live turn would
     # hand back for one correction round.
-    (workspace / "watch.json").write_text(
-        json.dumps({"external": [{"check_command": ""}], "graph": []}), encoding="utf-8"
+    events = await _finalize(
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, json.dumps({"external": [{"check_command": ""}], "graph": []})),
     )
-
-    events = await _finalize(service, request, execution, _recorded_pass("", _ANSWER))
 
     errors = [item["text"] for item in events if item["event"] == "error"]
     assert errors and "watcher handoff failed" in errors[-1]
@@ -363,9 +369,8 @@ async def test_a_stage_that_changed_after_the_host_finished_admits_the_recorded_
     from .helpers import agent_patch_json
 
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    (workspace / "watch.json").write_text(_watch_handoff(tmp_path), encoding="utf-8")
     recorded_patch = agent_patch_json(_experiment_patch(invocation_ceiling=4))
-    recorded = _recorded_pass(recorded_patch, _ANSWER)
+    recorded = _recorded_pass(recorded_patch, _ANSWER, _watch_handoff(tmp_path))
     # Something rewrote the stage after the host was done with it.
     (workspace / "patch.json").write_text('{"ops": []}', encoding="utf-8")
 

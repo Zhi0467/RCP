@@ -46,10 +46,17 @@ class RecordedProviderTurn:
     events: str
     stderr: str
     patch: str | None
+    watch: str | None
 
     #: Derived only from the host's own `accepted.json`, never from the copy the
     #: end-of-pass outcome carries. One linearization point, one fact.
     accepted: bool
+
+    #: Whether the host snapshotted the watcher handoff at all. A journal written
+    #: before supervisors did so says nothing about watch.json, which is not the
+    #: same as saying the turn wrote none -- and restoring "none" over a stage
+    #: that holds the real handoff would destroy it.
+    watch_snapshotted: bool = False
 
     @property
     def intact(self) -> bool:
@@ -111,6 +118,27 @@ class RecordedVerdict:
     events: tuple[AgentEvent, ...]
 
 
+def _verified_deliverable(
+    journal: dict[str, object],
+    outcome: dict[str, object],
+    name: str,
+) -> str | None:
+    """One deliverable the host snapshotted, checked against its own digest."""
+
+    value = journal.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"The provider journal's {name} is not text.")
+    digest = outcome.get(f"{name}_sha256")
+    if (
+        not isinstance(digest, str)
+        or hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest() != digest
+    ):
+        raise ValueError(f"The provider journal's {name} does not match the digest it recorded.")
+    return value
+
+
 def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> RecordedProviderTurn:
     """Verify one host journal and bind it to a value nothing re-checks."""
 
@@ -130,16 +158,8 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         raise ValueError("The provider journal states no digest for its events.")
     if hashlib.sha256(events.encode("utf-8", "surrogateescape")).hexdigest() != digest:
         raise ValueError("The provider journal's events do not match the digest it recorded.")
-    patch = journal.get("patch")
-    if patch is not None and not isinstance(patch, str):
-        raise ValueError("The provider journal's patch is not text.")
-    if isinstance(patch, str):
-        patch_digest = outcome.get("patch_sha256")
-        if (
-            not isinstance(patch_digest, str)
-            or hashlib.sha256(patch.encode("utf-8", "surrogateescape")).hexdigest() != patch_digest
-        ):
-            raise ValueError("The provider journal's patch does not match the digest it recorded.")
+    patch = _verified_deliverable(journal, outcome, "patch")
+    watch = _verified_deliverable(journal, outcome, "watch")
     marker = journal.get("accepted")
     if marker is not None and (
         not isinstance(marker, dict)
@@ -163,6 +183,8 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         events=events,
         stderr=str(journal.get("stderr") or ""),
         patch=patch,
+        watch=watch,
+        watch_snapshotted="watch_present" in outcome,
         accepted=accepted,
     )
 

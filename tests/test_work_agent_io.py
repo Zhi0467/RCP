@@ -794,7 +794,7 @@ async def _delivered_live(
     return _decided_output(frames), launcher, _durable_state(service, execution.store, root)
 
 
-def _recorded_pass(patch_text: str, answer: str):
+def _recorded_pass(patch_text: str, answer: str, watch_text: str | None = None):
     """One completed Codex pass, as a host would have recorded it."""
 
     from rcp.runs.recorded_turn import recorded_provider_turn
@@ -821,6 +821,12 @@ def _recorded_pass(patch_text: str, answer: str):
         "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
         "patch_present": True,
         "patch_sha256": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
+        "watch_present": watch_text is not None,
+        "watch_sha256": (
+            hashlib.sha256(watch_text.encode("utf-8")).hexdigest()
+            if watch_text is not None
+            else None
+        ),
         "root_thread_id": "recorded-thread",
         "input_message_ids": [],
         "steer_requests": {},
@@ -833,6 +839,7 @@ def _recorded_pass(patch_text: str, answer: str):
             "events": events,
             "stderr": "",
             "patch": patch_text,
+            "watch": watch_text,
         },
     )
 
