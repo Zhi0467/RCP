@@ -18,6 +18,10 @@ from rcp.runs.remote_reconciliation import (
     read_remote_journal,
     reconcile_remote_pass,
 )
+from rcp.runs.tasks.auto_research_child_work import (
+    AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
+    finalize_recorded_auto_research_child_work_result,
+)
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
@@ -57,6 +61,9 @@ class RecordedFinalizer(Protocol):
 RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     WORK_FINALIZATION_CONTEXT_ROLE: finalize_recorded_work_result,
     DISCUSS_FINALIZATION_CONTEXT_ROLE: finalize_recorded_discuss_result,
+    AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: (
+        finalize_recorded_auto_research_child_work_result
+    ),
 }
 
 

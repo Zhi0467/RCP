@@ -65,6 +65,7 @@ from rcp.runs.chat import (
     _validated_remote_chat_resume_stage,
 )
 from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
+from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _protected_run_stage_roots,
@@ -80,6 +81,8 @@ from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
 from rcp.runs.tasks.result_views import _prepare_result_view_turn, _roll_result_view_retention
 from rcp.runs.tasks.work import (
+    PATCH_CORRECTION_MAX_ROUNDS,
+    WorkFinalizationContext,
     WorkTurn,
     _capture_retry_deliverable_baseline,
     _close_work_validator_mailbox,
@@ -87,8 +90,11 @@ from rcp.runs.tasks.work import (
     _finalize_work_turn,
     _launch_and_stream_work_turn,
     _prepare_work_chat_prompt,
+    _record_work_finalization_context,
+    _recorded_retry_deliverable_baseline,
     _resolve_work_execution,
     _ResolvedWorkExecution,
+    _RetryDeliverableBaseline,
     _settle_patch_deliverable,
     _settle_watch_deliverable,
     _SettledWorkDeliverables,
@@ -100,6 +106,7 @@ from rcp.runs.tasks.work import (
     _work_execution_instructions,
     _work_finalization_context,
     _WorkValidatorMailboxLifecycle,
+    open_recorded_work_turn,
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -946,6 +953,150 @@ def _start_auto_research_child_validator_mailbox(
     )
 
 
+AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE = "auto_research_child_finalization_context"
+
+
+async def finalize_recorded_auto_research_child_work_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncIterator[str]:
+    """Settle one child Work turn from the pass its host recorded.
+
+    A lost connection is not a lost child. The result lands on the operation
+    that opened the pass, under the parent episode's authority it already had,
+    and no second child is admitted to go and fetch it.
+    """
+
+    del data_dir  # Recovery uses only launch-time facts retained by this task.
+    finalization, opened = open_recorded_work_turn(
+        service,
+        request,
+        execution,
+        recorded,
+        role=AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
+        owner="Auto-research child Work",
+    )
+    for frame in opened:
+        yield frame
+    if finalization.answer is None:
+        return
+    async with aclosing(
+        settle_child_work_deliverables(
+            finalization,
+            launcher,
+            _recorded_retry_deliverable_baseline(execution),
+            maximum_corrections=0,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+
+
+async def settle_child_work_deliverables(
+    finalization: WorkFinalizationContext,
+    launcher: AgentLauncher,
+    retry_baseline: _RetryDeliverableBaseline,
+    *,
+    launch_turn: WorkTurn | None = None,
+    staged: _StagedWorkInputs | None = None,
+    composed: _ComposedWorkPrompt | None = None,
+    required_session_id: str | None = None,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+) -> AsyncIterator[str]:
+    """Turn one finished child result into this task's durable output.
+
+    The one door a child Work result goes through, whether its provider
+    streamed to this process or finished on a host that outlived the link.
+    A child answers its parent episode, so it publishes no result view and
+    discovers no artifacts; what it owes is a graph update and its watchers.
+    """
+
+    settled = _SettledWorkDeliverables(native_session_id=finalization.outcome.session_id)
+    async with aclosing(
+        _settle_patch_deliverable(
+            finalization,
+            launcher,
+            retry_baseline.patch_digest,
+            settled,
+            launch_turn=launch_turn,
+            staged=staged,
+            composed=composed,
+            required_session_id=required_session_id,
+            maximum_corrections=maximum_corrections,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if settled.stop:
+        return
+
+    (
+        maintenance_frames,
+        native_session_id,
+        maintenance_paused,
+    ) = await _process_experiment_watcher_maintenance(
+        service=finalization.service,
+        launcher=launcher,
+        request=finalization.request,
+        execution=finalization.execution,
+        staged_resources=[],
+        workspace=finalization.workspace,
+        remote_stage=finalization.remote_stage,
+        local_stage=finalization.local_stage,
+        base_contract_path=composed.base_contract_path if composed is not None else "",
+        token=_task_token(finalization.execution),
+        native_session_id=settled.native_session_id,
+        read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
+        write_dirs=launch_turn.write_dirs if launch_turn is not None else [],
+        write_scope=finalization.write_scope,
+        execution_host=finalization.execution_host,
+        provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
+        retry_output_digests=retry_baseline.experiment_watch_digests,
+        maximum_corrections=maximum_corrections,
+        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
+    )
+    settled.native_session_id = native_session_id
+    for frame in maintenance_frames:
+        yield frame
+    if maintenance_paused:
+        return
+    async with aclosing(
+        _settle_watch_deliverable(
+            finalization,
+            launcher,
+            retry_baseline.watch_digest,
+            settled,
+            launch_turn=launch_turn,
+            staged=staged,
+            composed=composed,
+            maximum_corrections=maximum_corrections,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if settled.stop:
+        return
+    final_turn = finalization
+    if finalization.continuation == "message_wake" and finalization.request.message is None:
+        final_turn = replace(
+            finalization,
+            request=finalization.request.model_copy(
+                update={
+                    "message": (
+                        "RCP delivered a claimed Auto-research mail batch in the separate "
+                        "messages.json handoff."
+                    )
+                }
+            ),
+        )
+    for frame in _finalize_work_turn(final_turn, finalization.answer, settled.graph_update):
+        yield frame
+
+
 async def stream_auto_research_child_work_run(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -994,6 +1145,12 @@ async def stream_auto_research_child_work_run(
     assert turn is not None
     required_session_id = turn.request.session_id if execution.reuses_native_checkpoint else None
     finalization = _work_finalization_context(turn, staged)
+    if turn.execution_host:
+        # Only a remote turn can outlive this connection, and only under this
+        # owner's own role: a child settles differently from ordinary Work.
+        _record_work_finalization_context(
+            turn, staged, role=AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE
+        )
     async with aclosing(
         _launch_and_stream_work_turn(
             turn,
@@ -1004,6 +1161,7 @@ async def stream_auto_research_child_work_run(
             staged,
             None,
             required_session_id=required_session_id,
+            supervise_remote=bool(turn.execution_host),
         )
     ) as stream:
         async for frame in stream:
@@ -1011,13 +1169,11 @@ async def stream_auto_research_child_work_run(
     if finalization.answer is None:
         return
 
-    settled = _SettledWorkDeliverables(native_session_id=turn.outcome.session_id)
     async with aclosing(
-        _settle_patch_deliverable(
+        settle_child_work_deliverables(
             finalization,
             launcher,
-            retry_baseline.patch_digest,
-            settled,
+            retry_baseline,
             launch_turn=turn,
             staged=staged,
             composed=composed,
@@ -1026,67 +1182,6 @@ async def stream_auto_research_child_work_run(
     ) as stream:
         async for frame in stream:
             yield frame
-    if settled.stop:
-        return
-
-    (
-        maintenance_frames,
-        native_session_id,
-        maintenance_paused,
-    ) = await _process_experiment_watcher_maintenance(
-        service=turn.service,
-        launcher=launcher,
-        request=turn.request,
-        execution=turn.execution,
-        staged_resources=[],
-        workspace=turn.workspace,
-        remote_stage=turn.remote_stage,
-        local_stage=turn.local_stage,
-        base_contract_path=composed.base_contract_path,
-        token=staged.token,
-        native_session_id=settled.native_session_id,
-        read_dirs=turn.read_dirs,
-        write_dirs=turn.write_dirs,
-        write_scope=turn.write_scope,
-        execution_host=turn.execution_host,
-        provider_binary=turn.provider_binary,
-        retry_output_digests=retry_baseline.experiment_watch_digests,
-    )
-    settled.native_session_id = native_session_id
-    for frame in maintenance_frames:
-        yield frame
-    if maintenance_paused:
-        return
-    async with aclosing(
-        _settle_watch_deliverable(
-            finalization,
-            launcher,
-            retry_baseline.watch_digest,
-            settled,
-            launch_turn=turn,
-            staged=staged,
-            composed=composed,
-        )
-    ) as stream:
-        async for frame in stream:
-            yield frame
-    if settled.stop:
-        return
-    final_turn = finalization
-    if turn.continuation == "message_wake" and turn.request.message is None:
-        final_turn = replace(
-            finalization,
-            request=turn.request.model_copy(
-                update={
-                    "message": (
-                        "RCP delivered a claimed Auto-research mail batch in the separate "
-                        "messages.json handoff."
-                    )
-                }
-            ),
-        )
-    for frame in _finalize_work_turn(final_turn, finalization.answer, settled.graph_update):
-        yield frame
 
 
 def _child_reply_message_id(episode_id: str, idempotency_key: str) -> str:

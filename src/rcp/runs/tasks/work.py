@@ -393,7 +393,17 @@ def _work_finalization_context(
 def _record_work_finalization_context(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
 ) -> None:
+    """Retain this launch under the role of the owner that will settle it.
+
+    Work-shaped owners stage identically and finalize differently, so they share
+    the snapshot and never the role: the role is what hands a recorded pass back
+    to the owner that wrote it, and two owners answering to one role would let
+    either settle the other's turn.
+    """
+
     execution = turn.execution
     if execution is None:
         return
@@ -423,7 +433,7 @@ def _record_work_finalization_context(
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
         execution.operation_id,
-        WORK_FINALIZATION_CONTEXT_ROLE,
+        role,
         content,
         hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
@@ -433,27 +443,27 @@ def _load_work_finalization_context(
     service: ProjectService,
     request: RunRequest,
     execution: AgentTaskExecution,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
+    owner: str = "Work",
 ) -> WorkFinalizationContext:
     """Reopen finalization without rerunning any launch preparation."""
 
-    content = execution.store.agent_task_contract(
-        execution.operation_id,
-        WORK_FINALIZATION_CONTEXT_ROLE,
-    )
+    content = execution.store.agent_task_contract(execution.operation_id, role)
     if content is None:
-        raise ValueError("The Work turn has no retained finalization context.")
+        raise ValueError(f"The {owner} turn has no retained finalization context.")
     try:
         stored = _StoredWorkFinalizationContext.model_validate_json(content)
     except ValueError as exc:
-        raise ValueError("The retained Work finalization context is invalid.") from exc
+        raise ValueError(f"The retained {owner} finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
     if task is None or task.request != request.model_dump(mode="json"):
-        raise ValueError("The Work finalization request does not match its durable task.")
+        raise ValueError(f"The {owner} finalization request does not match its durable task.")
     if execution.write_scope_fingerprint != stored.write_scope.fingerprint:
-        raise ValueError("The retained Work finalization write scope changed after launch.")
+        raise ValueError(f"The retained {owner} finalization write scope changed after launch.")
     local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
-        owner="Work",
+        owner=owner,
         stage_host=stored.stage_host,
         stage_root=stored.stage_root,
         workspace=stored.workspace,
@@ -461,12 +471,12 @@ def _load_work_finalization_context(
     # Work alone binds a write scope, so only Work can check that the scope it
     # enforced names the workspace this turn actually ran in.
     if stored.write_scope.workspace_root != stored.workspace:
-        raise ValueError("The retained Work workspace changed after launch.")
+        raise ValueError(f"The retained {owner} workspace changed after launch.")
     artifact_directory = retained_artifact_directory(
         workspace,
         stored.artifact_scope_id,
         stored.artifact_directory,
-        owner="Work",
+        owner=owner,
     )
 
     experiment_resources = [
@@ -2808,6 +2818,35 @@ def _recorded_retry_deliverable_baseline(
     return _RetryDeliverableBaseline(None, None, {})
 
 
+def open_recorded_work_turn(
+    service: ProjectService,
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+    *,
+    role: str,
+    owner: str,
+) -> tuple[WorkFinalizationContext, list[str]]:
+    """Reopen one Work-shaped turn from its record, read into its own outcome.
+
+    Every Work-shaped owner begins recovery identically: reload the launch
+    snapshot, decode the pass with the runtime that reads the live ones, put the
+    verified Patch in the stage before anything reads the stage, and settle the
+    outcome. What an owner does with the deliverables after that is its own, and
+    stays in the owner.
+    """
+
+    turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
+    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    # The verified Patch replaces whatever the stage holds. A stage is mutable
+    # and this value is not, so settling from the record means settling from
+    # the record.
+    _write_recorded_patch(turn, recorded)
+    frames = absorb_recorded_events(turn.outcome, verdict)
+    frames.extend(_settle_work_outcome(turn))
+    return turn, frames
+
+
 async def finalize_recorded_work_result(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -2827,15 +2866,15 @@ async def finalize_recorded_work_result(
     """
 
     del data_dir  # Recovery uses only launch-time facts retained by this task.
-    turn = _load_work_finalization_context(service, request, execution)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
-    # The verified Patch replaces whatever the stage holds. A stage is mutable
-    # and this value is not, so settling from the record means settling from
-    # the record.
-    _write_recorded_patch(turn, recorded)
-    for frame in absorb_recorded_events(turn.outcome, verdict):
-        yield frame
-    for frame in _settle_work_outcome(turn):
+    turn, opened = open_recorded_work_turn(
+        service,
+        request,
+        execution,
+        recorded,
+        role=WORK_FINALIZATION_CONTEXT_ROLE,
+        owner="Work",
+    )
+    for frame in opened:
         yield frame
     if turn.answer is None:
         return
