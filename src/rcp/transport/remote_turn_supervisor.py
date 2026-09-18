@@ -349,20 +349,33 @@ def run(args):
             # exactly why the bytes have to be pinned here.
             experiment_watch_directory = directory / "experiment-watch"
             sources = sorted(glob.glob(args.experiment_watch_glob))
+            # The provider chose how many of these to write, so the set is
+            # bounded as a whole. Overflowing is an incomplete turn, the same
+            # answer any other journal overflow gives, rather than a partial
+            # snapshot that would read as the set the pass produced.
+            if len(sources) > args.max_experiment_watch_files:
+                raise ValueError("The provider's Experiment watcher outputs exceed their count.")
             if sources:
                 experiment_watch_directory.mkdir(mode=0o700)
+            remaining = args.max_experiment_watch_bytes
             for source in sources:
                 name = os.path.basename(source)
                 present, digest = _deliverable_snapshot(
                     source,
                     experiment_watch_directory / name,
-                    args.max_patch_bytes,
+                    min(args.max_patch_bytes, remaining),
                 )
                 if present:
                     experiment_watch[name] = digest
+                    remaining -= os.path.getsize(experiment_watch_directory / name)
             experiment_watch_snapshotted = True
         except (OSError, ValueError) as exc:
             error = str(exc)
+            # Half a set is not a smaller set. Whatever was copied before the
+            # overflow stays on disk as evidence, but the outcome names none of
+            # it, so nothing downstream can read a partial handoff as the pass's.
+            experiment_watch = {}
+            experiment_watch_snapshotted = False
     if error and not detached:
         # A failure of this supervisor's own is otherwise recorded only in
         # `outcome.json`, which nothing reads while the link is up. Stderr is the
@@ -463,6 +476,8 @@ def main(argv=None):
         "max-patch-bytes",
         "max-uplink-bytes",
         "max-control-messages",
+        "max-experiment-watch-files",
+        "max-experiment-watch-bytes",
     ):
         parser.add_argument("--" + name, type=int, required=True)
     for name in ("stop-hold-seconds", "stop-grace-seconds", "poll-seconds"):

@@ -42,6 +42,8 @@ def _supervise(
     patch_path: str | None = None,
     watch_path: str | None = None,
     experiment_watch_glob: str | None = None,
+    experiment_watch_files: int = 64,
+    experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
@@ -77,6 +79,10 @@ def _supervise(
         "1000000",
         "--max-control-messages",
         "500",
+        "--max-experiment-watch-files",
+        str(experiment_watch_files),
+        "--max-experiment-watch-bytes",
+        str(experiment_watch_bytes),
         "--stop-hold-seconds",
         "0",
         "--stop-grace-seconds",
@@ -366,3 +372,42 @@ def test_a_turn_that_maintained_no_experiment_watcher_says_so(tmp_path) -> None:
     assert outcome["experiment_watch_snapshotted"] is True
     assert outcome["experiment_watch_sha256"] == {}
     assert not (journal / "experiment-watch").exists()
+
+
+@pytest.mark.parametrize("bound", ["files", "bytes"])
+def test_a_flood_of_watcher_outputs_is_an_incomplete_turn(tmp_path, bound) -> None:
+    """The provider chose this set's size, so the set is bounded as a whole.
+
+    Copying every match would let one pass fill the host's disk, and a digest
+    map large enough to exceed the journal reader's own bound would make an
+    otherwise complete turn unreadable. Overflow is the same answer any other
+    journal overflow gives.
+    """
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+    for index in range(4):
+        workspace.joinpath(f"experiment-watch-{index}.json").write_text("x" * 64, encoding="utf-8")
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+        experiment_watch_files=3 if bound == "files" else 64,
+        experiment_watch_bytes=100000 if bound == "files" else 100,
+    )
+
+    assert completed.returncode != 0
+    outcome = _journal(journal)
+    assert outcome["error"]
+    # No partial set is left claiming to be what the pass produced.
+    assert outcome["experiment_watch_snapshotted"] is False
+    assert outcome["experiment_watch_sha256"] == {}

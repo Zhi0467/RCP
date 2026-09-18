@@ -767,7 +767,10 @@ snapshots before reading any deliverable: what settles is what the host proved,
 not whatever the directory happens to hold when RCP reconnects. Experiment watcher
 maintenance writes one file per resource, so that set is discovered rather than
 named: the host snapshots all of it, and recovery makes the stage hold exactly
-the set the pass wrote, removing one that appeared afterwards. A journal that
+the set the pass wrote, removing one that appeared afterwards. The provider
+chose that set's size, so it is bounded as a whole and not only file by file,
+and a pass that overflows either bound is an incomplete turn whose outcome
+claims none of the set rather than a smaller one. A journal that
 predates deliverable snapshots is silent about a handoff rather than claiming
 there was none, and recovery leaves those files alone rather than deleting them.
 
@@ -789,8 +792,11 @@ leaves the task waiting; one that does not is the turn's real verdict and
 stands, whether or not the host is still answering by the time it is recorded.
 
 A continuation pinned to an exact native provider session is held to it when it
-is recovered exactly as it is live. The launch retains the session it pinned
-beside the rest of its snapshot, and a journal that answered on a different one
+is recovered exactly as it is live. Every supervised launch writes down the
+session it pinned before it reaches the host, including a correction, whose
+session belongs to the pass it corrects and so cannot be named by the launch
+snapshot written before that pass existed. The launch retains the session it
+pinned beside the rest of its snapshot, a correction retains its own, and a journal that answered on a different one
 is refused before its Patch reaches the stage, before that session is adopted
 and before any watcher is armed -- the same refusal, and the same operational
 receipt, that stops such a turn live before any result is accepted. A launch
