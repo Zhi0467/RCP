@@ -22,13 +22,13 @@ from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
-    _sse,
     _stage_json_task_input,
     _stage_task_contract,
     _stream_agent_events,
 )
+from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -67,49 +67,6 @@ def _experiment_maintenance_binding(
 
 
 async def _process_experiment_watcher_maintenance(
-    *,
-    supervise_remote: bool = False,
-    native_session_id: str | None,
-    **rest: object,
-) -> tuple[list[str], str | None, bool]:
-    """Maintain the watchers, and never turn a lost host into a verdict.
-
-    A supervised pass is already journalled where it ran, so an outage during
-    settlement says nothing about it. Failing the task here would bury a result
-    the host still holds; leaving it pending hands the same pass to
-    reconciliation, which settles it when the stage is visible again.
-
-    An unsupervised remote turn has no journal to go back to, and a recorded
-    pass is already inside reconciliation, so for both the outage travels on.
-    """
-
-    try:
-        return await _maintain_experiment_watchers(
-            supervise_remote=supervise_remote,
-            native_session_id=native_session_id,
-            **rest,  # type: ignore[arg-type]
-        )
-    except StateUnavailable as exc:
-        if not supervise_remote:
-            raise
-        return (
-            [
-                _sse(
-                    AgentEvent(
-                        event="remote_result_pending",
-                        text=(
-                            "The execution host became unreachable while this turn's Experiment "
-                            f"watcher maintenance was settling: {exc}"
-                        ),
-                    )
-                )
-            ],
-            native_session_id,
-            True,
-        )
-
-
-async def _maintain_experiment_watchers(
     *,
     service: ProjectService,
     launcher: AgentLauncher,
@@ -359,6 +316,11 @@ async def _maintain_experiment_watchers(
             )
             correction_outcome = _ProviderOutcome(session_id=native_session_id)
             correction_error: str | None = None
+            if supervise_remote:
+                # This correction continues the pass it corrects. It reaches its
+                # host through the raw stream rather than the shared Work one,
+                # so it writes down its own pin the way that one does.
+                checkpoint_required_session(execution, native_session_id)
             async with aclosing(
                 _stream_agent_events(
                     launcher,
@@ -375,6 +337,7 @@ async def _maintain_experiment_watchers(
                     capability="work_auto",
                     outcome=correction_outcome,
                     binary=provider_binary,
+                    required_session_id=native_session_id,
                     supervise_remote=supervise_remote,
                 )
             ) as stream:

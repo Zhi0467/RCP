@@ -1190,6 +1190,16 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         )
     ]
     assert len(correction_calls) == 1
+    if deliverable == "experiment-watch":
+        # This correction continues the pass it corrects, and a recovered
+        # journal is held to that session, so the pin has to outlive the stream.
+        assert correction_calls[0]["required_session_id"] == "recorded-thread"
+        assert (
+            execution.store.agent_task_contract(
+                execution.operation_id, runtime_module.WORK_CORRECTION_SESSION_ROLE
+            )
+            == "recorded-thread"
+        )
     assert [json.loads(frame.removeprefix("data: "))["event"] for frame in frames] == [
         "remote_result_pending"
     ]
@@ -1413,15 +1423,17 @@ async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
 
 
 @pytest.mark.asyncio
-async def test_a_live_supervised_turn_whose_host_vanishes_waits_for_its_journal(
+async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
     tmp_path, monkeypatch
 ) -> None:
-    """A journalled pass is not lost when the link dies while it settles.
+    """After the provider stopped there is no unread pass, so nothing can wait for one.
 
-    The provider already finished and the host already recorded it. Failing the
-    task would bury that result, and classifying it as a lost link could run the
-    operational turn again. Leaving it pending hands the same pass to
-    reconciliation, which is where an unreachable host is already waited on.
+    Reconciliation only ever revisits a pass with no recorded stop: both the
+    scheduler's query and `reconcile_remote_pass` are built on that. Once the
+    live stream has consumed the turn and written the stop down, parking the
+    task on a remote result it already has would leave it there forever, so the
+    outage is reported instead. A completed provider spoke for itself, so this
+    failure is not classified as a lost link and no retry repeats the turn.
     """
 
     import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
@@ -1450,9 +1462,8 @@ async def test_a_live_supervised_turn_whose_host_vanishes_waits_for_its_journal(
 
     monkeypatch.setattr(maintenance_module, "read_experiment_watcher_outputs", host_went_away)
 
-    frames = [
-        frame
-        async for frame in work_module.finalize_work_result(
+    with pytest.raises(StateUnavailable):
+        async for _frame in work_module.finalize_work_result(
             finalization,
             ScriptedLauncher([{}], message="must not launch"),
             work_module._RetryDeliverableBaseline(None, None, {}),
@@ -1460,10 +1471,5 @@ async def test_a_live_supervised_turn_whose_host_vanishes_waits_for_its_journal(
             launch_turn=primed,
             staged=staged,
             composed=composed,
-        )
-    ]
-
-    events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
-    # The frame Background reads to leave this task awaiting a remote result.
-    assert "remote_result_pending" in [item["event"] for item in events]
-    assert [item for item in events if item["event"] == "error"] == []
+        ):
+            pass

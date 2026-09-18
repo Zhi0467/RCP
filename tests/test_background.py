@@ -3631,3 +3631,38 @@ def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
     task = store.agent_task(waiting.operation_id)
     assert task is not None and task.status == "failed"
     assert "refused" in (task.error or "")
+
+
+def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
+    tmp_path: Path,
+) -> None:
+    """Parking a task on a remote result it already has would park it forever.
+
+    Reconciliation exists for a pass nobody read. Both the scheduler's query and
+    `reconcile_remote_pass` find one the same way: a supervised start with no
+    recorded stop. Once the live stream consumed the turn and wrote that stop
+    down, no reconciler will ever revisit the task, so settlement that fails
+    after that point has to say so rather than wait.
+    """
+
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "already-consumed")
+    pid_file = f"/stage/{waiting.operation_id}.pid"
+    assert store.operation_ids_awaiting_remote_result() == [waiting.operation_id]
+
+    store.finish_remote_provider_pass(waiting.operation_id, pid_file)
+
+    assert store.operation_ids_awaiting_remote_result() == []
+    assert not store.unresolved_remote_provider_passes("remote", "/stage")
+    record = store.agent_task(waiting.operation_id)
+    assert record is not None and record.phase == "awaiting_remote_result"
+    # Even reached directly, reconciliation has nothing outstanding to act on.
+    decision = remote_finalization.reconcile_remote_pass(
+        store,
+        record,
+        stopped=lambda *_args: True,
+        read_journal=lambda *_args: None,
+    )
+    assert decision.action == "settled"

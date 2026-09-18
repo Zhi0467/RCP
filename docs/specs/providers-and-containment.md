@@ -777,10 +777,15 @@ there was none, and recovery leaves those files alone rather than deleting them.
 A host that cannot be reached is never a verdict about watcher maintenance. An
 outage while reading, validating or persisting those outputs leaves the task
 waiting for its stage, rather than completing it with the maintenance silently
-undone or recording a permanent refusal the turn never earned. A live pass that
-was supervised is already journalled where it ran, so such an outage leaves that
-turn waiting for its own recorded result instead of failing it; an unsupervised
-remote turn has no journal to return to, and fails as it always did.
+undone or recording a permanent refusal the turn never earned.
+
+Reconciliation is owed only a pass nobody read. A supervised start with no
+recorded stop is what both the waiting-task query and the reconciler itself look
+for, so once a live stream has consumed a turn and written that stop down, no
+reconciler will revisit it. Settlement that fails after that point therefore
+reports the outage rather than parking the task on a remote result it already
+holds, which nothing would ever come back for. A completed provider spoke for
+itself, so such a failure is not a lost link and no retry repeats the turn.
 
 Settlement reports an unreachable stage the same way it reports a deliverable
 the agent botched, so the read that failed is what says which happened. Every
@@ -795,8 +800,11 @@ A continuation pinned to an exact native provider session is held to it when it
 is recovered exactly as it is live. Every supervised launch writes down the
 session it pinned before it reaches the host, including a correction, whose
 session belongs to the pass it corrects and so cannot be named by the launch
-snapshot written before that pass existed. The launch retains the session it
-pinned beside the rest of its snapshot, a correction retains its own, and a journal that answered on a different one
+snapshot written before that pass existed. This holds for every supervised
+correction, including the Experiment watcher-maintenance one that reaches its
+host through the raw provider stream rather than the shared Work one. The launch
+retains the session it pinned beside the rest of its snapshot, a correction
+retains its own, and a journal that answered on a different one
 is refused before its Patch reaches the stage, before that session is adopted
 and before any watcher is armed -- the same refusal, and the same operational
 receipt, that stops such a turn live before any result is accepted. A launch
