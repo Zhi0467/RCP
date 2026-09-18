@@ -746,3 +746,37 @@ async def test_a_loop_stage_that_drops_mid_settlement_is_not_a_verdict(
     assert [item["event"] for item in events if item["event"] == "error"]
     # Without this, Background records the failure above as this turn's verdict.
     assert execution.stage_unreachable is True
+
+
+@pytest.mark.asyncio
+async def test_a_supervised_loop_correction_pins_the_session_it_must_continue(
+    manifest, tmp_path: Path
+) -> None:
+    """A correction's pin outlives the stream that enforced it.
+
+    The launch snapshot was written before the pass existed, so it could not
+    name the session a correction of that pass must resume. Without the
+    correction recording its own pin, a recovered correction journal from a
+    fresh provider session would be accepted and its handoff armed under this
+    episode.
+    """
+
+    import rcp.runs.tasks.work_turn_runtime as runtime_module
+
+    service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
+    # What a supervised correction launch does before it reaches the host.
+    runtime_module.checkpoint_required_session(execution, "the-pass-session")
+
+    reloaded = loop_module._load_work_finalization_context(
+        service, request, execution, role=_ROLE, owner="Experiment loop"
+    )
+    assert reloaded.required_session_id == "the-pass-session"
+
+    # A journal from any other session is refused before anything is admitted.
+    events = await _finalize(
+        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    )
+    assert [item["event"] for item in events] == ["error"]
+    assert "exact saved native session" in str(events[0]["text"])
+    episode = execution.store.experiment_episode(_EPISODE_ID)
+    assert episode is None or episode.native_session_id != "recorded-thread"

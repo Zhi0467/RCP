@@ -122,6 +122,7 @@ from rcp.runs.tasks.result_views import (
     _roll_result_view_retention,
 )
 from rcp.runs.tasks.work_turn_runtime import (
+    WORK_CORRECTION_SESSION_ROLE,
     WorkFinalizationContext,
     WorkTurn,
     _AppliedWorkTurn,
@@ -530,7 +531,15 @@ def _load_work_finalization_context(
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
         finalization_role=role,
-        required_session_id=stored.required_session_id,
+        # A correction pins the session the pass it corrects created, which the
+        # launch snapshot could not have known. Its own checkpoint is therefore
+        # the later and stricter of the two.
+        required_session_id=(
+            execution.store.agent_task_contract(
+                execution.operation_id, WORK_CORRECTION_SESSION_ROLE
+            )
+            or stored.required_session_id
+        ),
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -298,6 +299,33 @@ def clears_stale_turn_handoffs(continuation: AgentTaskContinuation) -> bool:
     raise ValueError(f"Unsupported Work continuation: {continuation}")
 
 
+#: The native session a supervised continuation of this turn must resume. The
+#: launch snapshot is immutable and a correction's session is only known after
+#: the pass it corrects, so the correction records its own pin here instead.
+WORK_CORRECTION_SESSION_ROLE = "work_correction_session"
+
+
+def checkpoint_required_session(
+    execution: AgentTaskExecution | None,
+    required_session_id: str | None,
+) -> None:
+    """Write down the session a recovered continuation must be held to.
+
+    The live stream refuses a provider that answers on another session. A
+    supervised pass can be read back long after that stream is gone, so what it
+    was pinned to has to outlive the stream that enforced it.
+    """
+
+    if execution is None or required_session_id is None:
+        return
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        WORK_CORRECTION_SESSION_ROLE,
+        required_session_id,
+        hashlib.sha256(required_session_id.encode("utf-8")).hexdigest(),
+    )
+
+
 async def stream_turn_agent_events(
     turn: WorkTurn,
     launcher: AgentLauncher,
@@ -312,6 +340,10 @@ async def stream_turn_agent_events(
 ) -> AsyncIterator[str]:
     """Stream one provider continuation from a staged Work execution context."""
 
+    if supervise_remote:
+        # Every owner's supervised launch comes through here, so a pinned
+        # continuation cannot reach a host without its pin being recoverable.
+        checkpoint_required_session(turn.execution, required_session_id)
     async with aclosing(
         stream_work_agent_events(
             launcher,
