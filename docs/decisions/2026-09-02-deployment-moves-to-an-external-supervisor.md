@@ -42,7 +42,7 @@ version bump is an ordinary pull request that precedes the promotion. The
 health endpoint and `rcp --version` report the base version, the build number,
 and the commit.
 
-**Retention.** A scheduled workflow prunes builds older than thirty days.
+**Retention.** A scheduled workflow prunes builds older than fourteen days.
 Promoted releases are never pruned.
 
 ### The supervisor

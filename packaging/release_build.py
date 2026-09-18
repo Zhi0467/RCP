@@ -15,7 +15,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = PROJECT_ROOT / "src" / "rcp" / "__init__.py"
 # Retention chosen in docs/decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md.
-STALE_BUILD_DAYS = 30
+STALE_BUILD_DAYS = 14
 
 _VERSION_ASSIGNMENT = re.compile(
     r'^(?P<prefix>__version__\s*=\s*["\'])(?P<version>[^"\']+)(?P<suffix>["\']\s*)$',
