@@ -39,8 +39,7 @@ jobs:
           NOW="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           uv run --no-project python packaging/release_build.py select-stale-builds \
             --releases releases.json \
-            --now "$NOW" \
-            --days 30 > stale-builds.txt
+            --now "$NOW" > stale-builds.txt
           echo "stale build releases:"
           if [[ -s stale-builds.txt ]]; then
             cat stale-builds.txt

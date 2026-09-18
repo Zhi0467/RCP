@@ -18,7 +18,7 @@ so that merging often costs nothing and releasing stays deliberate.
 | Name | `build/<N>`, `<N>` is the CI run number | `vX.Y.Z` |
 | GitHub | prerelease | release; the newest one is `stable` |
 | Contents | RCP and supervisor wheels, their hashed lock exports, SHA-256 manifest | the same files, re-attached, never rebuilt |
-| Kept | thirty days | forever |
+| Kept | fourteen days | forever |
 | Who acts | nobody | a human, never an agent |
 
 ## What happens on a merge
@@ -99,10 +99,10 @@ main, a prerelease, or an intermediate source build.
 
 ## Retention
 
-A scheduled workflow deletes `build/<N>` prereleases older than thirty days
+A scheduled workflow deletes `build/<N>` prereleases older than fourteen days
 and cleans up their tags. A build that was promoted lives on as its release;
 the prerelease entry may still be pruned. If you need to reproduce a build
-older than thirty days, promote it before it ages out, or rebuild the commit
+older than fourteen days, promote it before it ages out, or rebuild the commit
 locally and accept that the bytes will not be the tested ones.
 
 ## Supervisor versions
