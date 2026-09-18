@@ -780,10 +780,13 @@ turn waiting for its own recorded result instead of failing it; an unsupervised
 remote turn has no journal to return to, and fails as it always did.
 
 Settlement reports an unreachable stage the same way it reports a deliverable
-the agent botched, so the read that failed is what says which happened. A
-failure carrying that mark leaves the task waiting; one that does not is the
-turn's real verdict and stands, whether or not the host is still answering by
-the time it is recorded.
+the agent botched, so the read that failed is what says which happened. Every
+owner reads its own deliverables through its own code and marks its own
+outages, including on paths a recorded pass may never take: the mark is read
+only when a recorded finalization fails, so marking too widely costs nothing
+while marking too narrowly loses a finished turn. A failure carrying that mark
+leaves the task waiting; one that does not is the turn's real verdict and
+stands, whether or not the host is still answering by the time it is recorded.
 
 A continuation pinned to an exact native provider session is held to it when it
 is recovered exactly as it is live. The launch retains the session it pinned

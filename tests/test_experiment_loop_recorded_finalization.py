@@ -713,3 +713,36 @@ async def test_a_recorded_loop_continuation_refuses_another_native_session(
         and receipt.payload.get("reason") == "native_session_mismatch"
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
     )
+
+
+@pytest.mark.asyncio
+async def test_a_loop_stage_that_drops_mid_settlement_is_not_a_verdict(
+    manifest, tmp_path: Path
+) -> None:
+    """The loop reads its deliverables through its own code, and marks its own outages.
+
+    Reconciliation tells a decided turn from a lost host by whether the read
+    that failed said so. The loop reports an unreachable stage exactly as it
+    reports a deliverable the agent botched, so an unmarked outage here would
+    permanently fail a pass whose journal is intact.
+    """
+
+    from rcp.transport import StateUnavailable
+
+    service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
+    original = loop_module._read_chat_patch
+
+    def host_went_away(*_args, **_kwargs):
+        raise StateUnavailable("could not read the retained stage: ssh exited 255")
+
+    loop_module._read_chat_patch = host_went_away
+    try:
+        events = await _finalize(
+            service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        )
+    finally:
+        loop_module._read_chat_patch = original
+
+    assert [item["event"] for item in events if item["event"] == "error"]
+    # Without this, Background records the failure above as this turn's verdict.
+    assert execution.stage_unreachable is True

@@ -86,6 +86,9 @@ from rcp.runs.recorded_settlement import (
     retained_artifact_directory,
     write_recorded_patch,
 )
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
 from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
@@ -2006,22 +2009,6 @@ async def _launch_and_stream_work_turn(
     turn.answer = finalization.answer
     if finalization.answer is not None:
         yield _sse(AgentEvent(event="answer", text=finalization.answer))
-
-
-def _note_stage_unreachable(
-    execution: AgentTaskExecution | None,
-    exc: BaseException,
-) -> None:
-    """Mark a deliverable failure that was really the host going away.
-
-    Settlement reports an unreachable stage the same way it reports a
-    deliverable the agent botched, because at that point both are just a read
-    that did not return. Only here is the difference still visible, and
-    reconciliation needs it to tell a real verdict from an outage.
-    """
-
-    if isinstance(exc, StateUnavailable) and execution is not None:
-        execution.stage_unreachable = True
 
 
 def _retained_primary_answer(turn: WorkFinalizationContext) -> str | None:

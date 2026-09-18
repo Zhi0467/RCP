@@ -20,7 +20,7 @@ from rcp.agents import AgentEvent
 from rcp.providers import ProviderTurnRequest
 from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
-from rcp.transport import RemoteRunStage
+from rcp.transport import RemoteRunStage, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -98,6 +98,26 @@ def _restore(
         remote_stage.write_workspace_text(target, content)
     else:
         (workspace / target).write_text(content, encoding="utf-8")
+
+
+def note_stage_unreachable(
+    execution: AgentTaskExecution | None,
+    exc: BaseException,
+) -> None:
+    """Mark a settlement failure that was really the host going away.
+
+    Settlement reports an unreachable stage the same way it reports a
+    deliverable the agent botched, because by then both are just a read that did
+    not return. Only the read that failed can still tell them apart, and
+    reconciliation needs that to know whether it holds a verdict or an outage.
+
+    Every owner's catch calls this, including catches a recorded pass may never
+    reach. Marking is only ever read when a recorded finalization fails, so
+    marking too widely costs nothing and marking too narrowly loses a result.
+    """
+
+    if isinstance(exc, StateUnavailable) and execution is not None:
+        execution.stage_unreachable = True
 
 
 def refuse_recorded_session_mismatch(

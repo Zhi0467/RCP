@@ -88,6 +88,9 @@ from rcp.runs.recorded_settlement import (
     provider_turn_request,
     refuse_recorded_session_mismatch,
 )
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -877,6 +880,7 @@ def _read_initial_patch_deliverable(
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The agent wrote a patch file that could not be read: {exc}",
@@ -920,6 +924,7 @@ def _read_initial_watch_deliverable(
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The watcher request could not be read: {exc}",
@@ -949,6 +954,7 @@ def _read_corrected_watch_deliverable(turn: WorkFinalizationContext) -> _Deliver
     try:
         corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableRead(
             text=None,
             failure=_DeliverableFailure(
@@ -1068,6 +1074,7 @@ async def _validate_watch_deliverable(
     except ValueError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except (OSError, ReplayHalted, StateUnavailable) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=False))
 
     settled.loop_watch_empty = (
@@ -1340,7 +1347,8 @@ async def _resettle_changed_watch_handoff(
         changed_watch = (
             _read_watch_request(turn.workspace, turn.remote_stage) != settled.loop_watch_text
         )
-    except (OSError, StateUnavailable, ValueError):
+    except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         changed_watch = True
     if not changed_watch and turn.compute_commands is not None:
         observers = settled.pending_loop_handoff[0] if settled.pending_loop_handoff else []
@@ -1390,6 +1398,7 @@ async def _apply_experiment_loop_turn(
     try:
         final_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",
@@ -1631,6 +1640,7 @@ async def _apply_experiment_loop_turn(
             try:
                 rewritten = _read_chat_patch(turn.workspace, turn.remote_stage)
             except (OSError, StateUnavailable, ValueError) as exc:
+                _note_stage_unreachable(turn.execution, exc)
                 rewritten = None
                 detail = str(exc)
             else:
@@ -1713,6 +1723,7 @@ async def _apply_experiment_loop_turn(
         prepared_watcher_ids = [item.watcher_id for item in prepared]
         prepared_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
     except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",
@@ -1797,6 +1808,7 @@ async def _apply_experiment_loop_turn(
             ending_signal=ending_signal,
         )
     except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",

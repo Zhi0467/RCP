@@ -49,6 +49,9 @@ from rcp.runs.recorded_settlement import (
     retained_artifact_directory,
     write_recorded_patch,
 )
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -310,6 +313,7 @@ def _discard_discuss_patch(
     try:
         patch_text = _read_chat_patch(context.workspace, context.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(execution, exc)
         _warn_discuss_patch_discarded(
             execution,
             "Discuss wrote an unreadable patch.json; RCP discarded it without changing the graph.",
@@ -416,6 +420,7 @@ def _settle_discuss_outcome(
             execution=execution,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(execution, exc)
         if execution is not None:
             execution.store.record_agent_task_event(
                 execution.operation_id,
