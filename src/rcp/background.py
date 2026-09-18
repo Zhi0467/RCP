@@ -88,7 +88,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
-from rcp.transport import RemoteRunStage
+from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,12 @@ class AgentTaskExecution:
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
+    #: Set when a stage read during this run failed because the host could not
+    #: be reached, rather than because a deliverable was bad. Only the read that
+    #: failed knows which of the two happened, and by the time settlement has
+    #: turned it into a failure the difference is gone. In memory because it
+    #: describes this attempt, not the task.
+    stage_unreachable: bool = False
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -2057,7 +2063,31 @@ class BackgroundAgentTasks:
                 self.store.release_recorded_finalization(record.operation_id)
                 retry = True
                 continue
+            except StateMissing as exc:
+                # The host answered: this stage is gone, replaced, or not ours.
+                # Waiting for it to answer differently is waiting forever, so
+                # the turn it belonged to fails for a human to see.
+                self.store.fail_agent_task(record.operation_id, str(exc), remote_pid_file=pid_file)
+                self._task_settled(record, request, execution)
+                continue
+            except StateUnavailable:
+                # The host answered a moment ago and cannot be reached now.
+                # That says nothing about the pass, which is journalled and
+                # intact, so this waits like any other unreachable host rather
+                # than settling an untouched result as failed.
+                self.store.release_recorded_finalization(record.operation_id)
+                retry = True
+                continue
             except TaskFailed as exc:
+                if execution.stage_unreachable:
+                    # This failure is the outage, not a verdict: a stage read
+                    # during settlement could not reach the host and settlement
+                    # reported it the way it reports a deliverable the agent
+                    # botched. A journalled provider error stays a real failure,
+                    # even if the host goes away immediately afterwards.
+                    self.store.release_recorded_finalization(record.operation_id)
+                    retry = True
+                    continue
                 result: dict[str, object] | None = None
                 if exc.messages or exc.artifacts:
                     result = {"messages": exc.messages}

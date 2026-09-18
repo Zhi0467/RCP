@@ -32,6 +32,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.storage import EpisodeNotRunning, GraphWatcherRecord, WatcherContinuation
 
 from .helpers import (
+    TASK_SETTLE_TIMEOUT,
     append_fixture_patch,
     create_named_app,
     wait_for_task,
@@ -47,8 +48,12 @@ def _wait_for_episode(
     status: str,
     ending: str,
     report_ready: bool | None = None,
-    timeout: float = 20,
+    timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> dict[str, object]:
+    # One acceptance episode runs several invocations and then wraps up, and
+    # needs about fourteen seconds of this on an unloaded machine. CI runs the
+    # suite with `-n auto` on two cores, where a budget sized from local timing
+    # is no budget at all, so this waits as long as any other settling task.
     last_episode: dict[str, object] | None = None
 
     def matching_episode() -> dict[str, object] | None:

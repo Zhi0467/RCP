@@ -6,6 +6,7 @@ Nothing here needs a reachable machine, so the guards can be driven directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -39,6 +40,10 @@ def _supervise(
     runtime_id: str = "codex.exec-json.v1",
     provider: str = _PROVIDER,
     patch_path: str | None = None,
+    watch_path: str | None = None,
+    experiment_watch_glob: str | None = None,
+    experiment_watch_files: int = 64,
+    experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
@@ -56,6 +61,10 @@ def _supervise(
         runtime_id,
         "--patch-path",
         patch_path or str(stage / "workspace" / "patch.json"),
+        "--watch-path",
+        watch_path or str(stage / "workspace" / "watch.json"),
+        "--experiment-watch-glob",
+        experiment_watch_glob or str(stage / "workspace" / "experiment-watch-*.json"),
         "--provider-version",
         "0.153.4",
         "--max-journal-bytes",
@@ -70,6 +79,10 @@ def _supervise(
         "1000000",
         "--max-control-messages",
         "500",
+        "--max-experiment-watch-files",
+        str(experiment_watch_files),
+        "--max-experiment-watch-bytes",
+        str(experiment_watch_bytes),
         "--stop-hold-seconds",
         "0",
         "--stop-grace-seconds",
@@ -225,3 +238,176 @@ def test_a_provider_that_says_nothing_records_no_terminal_event(tmp_path, state)
 
     assert outcome["terminal_event"] is False
     assert outcome["return_code"] == 3
+
+
+def test_a_finished_turn_snapshots_both_of_its_deliverables(tmp_path) -> None:
+    """A Patch and a watcher handoff are one admission, so both are evidence.
+
+    Reading either back off the stage later reads whatever the stage holds by
+    then, which is not necessarily what the pass produced.
+    """
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+    patch_text = '{"ops": []}'
+    watch_text = '{"external": [], "graph": []}'
+    workspace.joinpath("patch.json").write_text(patch_text, encoding="utf-8")
+    workspace.joinpath("watch.json").write_text(watch_text, encoding="utf-8")
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    outcome = _journal(journal)
+    assert outcome["patch_present"] is True
+    assert outcome["watch_present"] is True
+    assert (journal / "patch.json").read_text(encoding="utf-8") == patch_text
+    assert (journal / "watch.json").read_text(encoding="utf-8") == watch_text
+    assert outcome["watch_sha256"] == hashlib.sha256(watch_text.encode("utf-8")).hexdigest()
+
+
+def test_a_turn_that_wrote_no_watcher_handoff_says_so(tmp_path) -> None:
+    """Saying "there was none" is different from saying nothing at all."""
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    outcome = _journal(journal)
+    assert outcome["watch_present"] is False
+    assert outcome["watch_sha256"] is None
+    assert not (journal / "watch.json").exists()
+
+
+def test_a_finished_turn_snapshots_every_experiment_watcher_output(tmp_path) -> None:
+    """Watcher maintenance writes one file per resource, and all of them are evidence.
+
+    The settling turn discovers this set off the stage rather than naming it, so
+    a file replaced, deleted or added after the pass would change which
+    observers get armed. Pinning the bytes is what makes that impossible.
+    """
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+    first = '{"observers": [{"check_command": "true"}], "stops": []}'
+    second = '{"observers": [], "stops": ["obs-1"]}'
+    workspace.joinpath("experiment-watch-aaaa.json").write_text(first, encoding="utf-8")
+    workspace.joinpath("experiment-watch-bbbb.json").write_text(second, encoding="utf-8")
+    # Neither a differently named file nor a directory is part of the set.
+    workspace.joinpath("notes.json").write_text("{}", encoding="utf-8")
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    outcome = _journal(journal)
+    assert outcome["experiment_watch_snapshotted"] is True
+    assert sorted(outcome["experiment_watch_sha256"]) == [
+        "experiment-watch-aaaa.json",
+        "experiment-watch-bbbb.json",
+    ]
+    snapshots = journal / "experiment-watch"
+    assert snapshots.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == first
+    assert snapshots.joinpath("experiment-watch-bbbb.json").read_text(encoding="utf-8") == second
+
+
+def test_a_turn_that_maintained_no_experiment_watcher_says_so(tmp_path) -> None:
+    """Snapshotting nothing is an answer; saying nothing at all is not."""
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    outcome = _journal(journal)
+    assert outcome["experiment_watch_snapshotted"] is True
+    assert outcome["experiment_watch_sha256"] == {}
+    assert not (journal / "experiment-watch").exists()
+
+
+@pytest.mark.parametrize("bound", ["files", "bytes"])
+def test_a_flood_of_watcher_outputs_is_an_incomplete_turn(tmp_path, bound) -> None:
+    """The provider chose this set's size, so the set is bounded as a whole.
+
+    Copying every match would let one pass fill the host's disk, and a digest
+    map large enough to exceed the journal reader's own bound would make an
+    otherwise complete turn unreadable. Overflow is the same answer any other
+    journal overflow gives.
+    """
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(mode=0o700, parents=True)
+    for index in range(4):
+        workspace.joinpath(f"experiment-watch-{index}.json").write_text("x" * 64, encoding="utf-8")
+
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+        experiment_watch_files=3 if bound == "files" else 64,
+        experiment_watch_bytes=100000 if bound == "files" else 100,
+    )
+
+    assert completed.returncode != 0
+    outcome = _journal(journal)
+    assert outcome["error"]
+    # No partial set is left claiming to be what the pass produced.
+    assert outcome["experiment_watch_snapshotted"] is False
+    assert outcome["experiment_watch_sha256"] == {}

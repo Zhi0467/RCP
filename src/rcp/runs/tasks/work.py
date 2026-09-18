@@ -42,7 +42,6 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
-from rcp.providers import ProviderTurnRequest
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -79,9 +78,19 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    attach_retained_stage,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
+    retained_artifact_directory,
+    write_recorded_patch,
+)
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
 from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
-    RecordedVerdict,
     decode_recorded_turn,
 )
 from rcp.runs.shared import (
@@ -113,6 +122,7 @@ from rcp.runs.tasks.result_views import (
     _roll_result_view_retention,
 )
 from rcp.runs.tasks.work_turn_runtime import (
+    WORK_CORRECTION_SESSION_ROLE,
     WorkFinalizationContext,
     WorkTurn,
     _AppliedWorkTurn,
@@ -200,6 +210,10 @@ class _StoredWorkFinalizationContext(BaseModel):
     experiment_resources: list[_StoredExperimentFinalizationResource]
     skill_selection: SkillSelection
     compute_commands: bool
+    # The native session this launch pinned its provider to, so recovery can
+    # refuse a journal that continued a different one. Absent in snapshots
+    # written before continuations were recoverable, which pinned nothing.
+    required_session_id: str | None = None
 
 
 def _read_correction_patch(
@@ -364,6 +378,8 @@ def _prepared_result_view(
 def _work_finalization_context(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
 ) -> WorkFinalizationContext:
     return WorkFinalizationContext(
         service=turn.service,
@@ -382,6 +398,7 @@ def _work_finalization_context(
         experiment_resources=list(staged.experiment_resources),
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands,
+        finalization_role=role,
         answer=turn.answer,
     )
 
@@ -389,7 +406,18 @@ def _work_finalization_context(
 def _record_work_finalization_context(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
+    required_session_id: str | None = None,
 ) -> None:
+    """Retain this launch under the role of the owner that will settle it.
+
+    Work-shaped owners stage identically and finalize differently, so they share
+    the snapshot and never the role: the role is what hands a recorded pass back
+    to the owner that wrote it, and two owners answering to one role would let
+    either settle the other's turn.
+    """
+
     execution = turn.execution
     if execution is None:
         return
@@ -415,11 +443,12 @@ def _record_work_finalization_context(
         ],
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands is not None,
+        required_session_id=required_session_id,
     )
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
         execution.operation_id,
-        WORK_FINALIZATION_CONTEXT_ROLE,
+        role,
         content,
         hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
@@ -429,57 +458,41 @@ def _load_work_finalization_context(
     service: ProjectService,
     request: RunRequest,
     execution: AgentTaskExecution,
+    *,
+    role: str = WORK_FINALIZATION_CONTEXT_ROLE,
+    owner: str = "Work",
 ) -> WorkFinalizationContext:
     """Reopen finalization without rerunning any launch preparation."""
 
-    content = execution.store.agent_task_contract(
-        execution.operation_id,
-        WORK_FINALIZATION_CONTEXT_ROLE,
-    )
+    content = execution.store.agent_task_contract(execution.operation_id, role)
     if content is None:
-        raise ValueError("The Work turn has no retained finalization context.")
+        raise ValueError(f"The {owner} turn has no retained finalization context.")
     try:
         stored = _StoredWorkFinalizationContext.model_validate_json(content)
     except ValueError as exc:
-        raise ValueError("The retained Work finalization context is invalid.") from exc
+        raise ValueError(f"The retained {owner} finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
     if task is None or task.request != request.model_dump(mode="json"):
-        raise ValueError("The Work finalization request does not match its durable task.")
-    if (execution.stage_host or "", execution.stage_root) != (
-        stored.stage_host,
-        stored.stage_root,
-    ):
-        raise ValueError("The retained Work finalization context belongs to another task stage.")
+        raise ValueError(f"The {owner} finalization request does not match its durable task.")
     if execution.write_scope_fingerprint != stored.write_scope.fingerprint:
-        raise ValueError("The retained Work finalization write scope changed after launch.")
-
-    if stored.stage_host:
-        remote_stage = RemoteRunStage(stored.stage_host).attach(stored.stage_root)
-        local_stage = None
-        allowed_workspaces = {str(remote_stage.workspace)}
-    else:
-        local_stage = Path(stored.stage_root)
-        if not local_stage.is_absolute() or local_stage.is_symlink() or not local_stage.is_dir():
-            raise ValueError("The retained local Work stage is unavailable or unsafe.")
-        remote_stage = None
-        # Older reusable conversations used the stage itself as the provider
-        # cwd. The launch snapshot names which layout this exact turn used.
-        allowed_workspaces = {str(local_stage), str(local_stage / "workspace")}
-    if (
-        stored.workspace not in allowed_workspaces
-        or stored.write_scope.workspace_root != stored.workspace
-    ):
-        raise ValueError("The retained Work workspace changed after launch.")
-    workspace = Path(stored.workspace)
-    if (
-        local_stage is not None
-        and workspace != local_stage
-        and (not workspace.is_dir() or workspace.is_symlink())
-    ):
-        raise ValueError("The retained Work workspace is unavailable or unsafe.")
-    expected_artifact_directory = str(workspace / "turns" / stored.artifact_scope_id / "artifacts")
-    if stored.artifact_directory != expected_artifact_directory:
-        raise ValueError("The retained Work artifact boundary is invalid.")
+        raise ValueError(f"The retained {owner} finalization write scope changed after launch.")
+    local_stage, remote_stage, workspace = attach_retained_stage(
+        execution,
+        owner=owner,
+        stage_host=stored.stage_host,
+        stage_root=stored.stage_root,
+        workspace=stored.workspace,
+    )
+    # Work alone binds a write scope, so only Work can check that the scope it
+    # enforced names the workspace this turn actually ran in.
+    if stored.write_scope.workspace_root != stored.workspace:
+        raise ValueError(f"The retained {owner} workspace changed after launch.")
+    artifact_directory = retained_artifact_directory(
+        workspace,
+        stored.artifact_scope_id,
+        stored.artifact_directory,
+        owner=owner,
+    )
 
     experiment_resources = [
         StagedExperimentWatcherResource(
@@ -512,11 +525,21 @@ def _load_work_finalization_context(
         write_scope=stored.write_scope,
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
-        artifact_directory=Path(stored.artifact_directory),
+        artifact_directory=artifact_directory,
         prepared_result_view=_prepared_result_view(stored.result_view),
         experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
+        finalization_role=role,
+        # A correction pins the session the pass it corrects created, which the
+        # launch snapshot could not have known. Its own checkpoint is therefore
+        # the later and stricter of the two.
+        required_session_id=(
+            execution.store.agent_task_contract(
+                execution.operation_id, WORK_CORRECTION_SESSION_ROLE
+            )
+            or stored.required_session_id
+        ),
     )
 
 
@@ -1112,6 +1135,7 @@ def _read_initial_patch_deliverable(
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The agent wrote a patch file that could not be read: {exc}",
@@ -1138,6 +1162,7 @@ def _read_initial_watch_deliverable(
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The watcher request could not be read: {exc}",
@@ -1367,6 +1392,7 @@ async def _validate_watch_deliverable(
     except ValueError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except (OSError, ReplayHalted, StateUnavailable) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=False))
 
     if not turn.execution.store.agent_task_has_receipt(
@@ -1994,6 +2020,36 @@ async def _launch_and_stream_work_turn(
         yield _sse(AgentEvent(event="answer", text=finalization.answer))
 
 
+def _retained_primary_answer(turn: WorkFinalizationContext) -> str | None:
+    """The completed reply this turn already produced, if it has one.
+
+    Retained before any correction starts, so a correction's own prose can never
+    take its place as the human reply.
+    """
+
+    if turn.execution is None:
+        return None
+    return turn.execution.store.agent_task_contract(
+        turn.execution.operation_id, _WORK_PRIMARY_ANSWER_ROLE
+    )
+
+
+def _lead_with_retained_answer(turn: WorkFinalizationContext, frames: list[str]) -> None:
+    """Put an already-produced reply ahead of a failed correction's error.
+
+    A settled turn emits its own answer. A turn that settled to nothing was
+    recovered from a correction's journal, and the live path had already
+    delivered the reply before that correction started. A reader stops at the
+    first error frame and keeps only what preceded it, so the reply leads.
+    """
+
+    if turn.answer is not None:
+        return
+    retained = _retained_primary_answer(turn)
+    if retained is not None:
+        frames.insert(0, _sse(AgentEvent(event="answer", text=retained)))
+
+
 def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     """Read one finished provider outcome into the turn's own settled state.
 
@@ -2007,13 +2063,7 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     caller knows the rest of the finalization is not owed.
     """
 
-    retained_answer = (
-        turn.execution.store.agent_task_contract(
-            turn.execution.operation_id, _WORK_PRIMARY_ANSWER_ROLE
-        )
-        if turn.execution is not None
-        else None
-    )
+    retained_answer = _retained_primary_answer(turn)
     answer = (
         retained_answer
         or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
@@ -2048,7 +2098,8 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
         store = turn.execution.store
         operation_id = turn.execution.operation_id
         if (
-            store.agent_task_contract(operation_id, WORK_FINALIZATION_CONTEXT_ROLE) is not None
+            turn.finalization_role is not None
+            and store.agent_task_contract(operation_id, turn.finalization_role) is not None
             and retained_answer is None
         ):
             # Corrections have their own journals, but their prose is not the
@@ -2820,41 +2871,46 @@ def _recorded_retry_deliverable_baseline(
     return _RetryDeliverableBaseline(None, None, {})
 
 
-def _absorb_recorded_events(
-    turn: WorkFinalizationContext,
-    verdict: RecordedVerdict,
-) -> list[str]:
-    """Read the decoded pass into this turn's outcome, as the live loop would.
+def open_recorded_work_turn(
+    service: ProjectService,
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+    *,
+    role: str,
+    owner: str,
+) -> tuple[WorkFinalizationContext, list[str]]:
+    """Reopen one Work-shaped turn from its record, read into its own outcome.
 
-    The same five event kinds, meaning the same five things. A recorded turn is
-    not handed a conclusion; it reaches one by reading its own events, which is
-    why a failure recorded on a host stays a failure here.
+    Every Work-shaped owner begins recovery identically: reload the launch
+    snapshot, decode the pass with the runtime that reads the live ones, put the
+    verified Patch in the stage before anything reads the stage, and settle the
+    outcome. What an owner does with the deliverables after that is its own, and
+    stays in the owner.
     """
 
-    frames = []
-    for event in verdict.events:
-        if event.session_id:
-            turn.outcome.session_id = event.session_id
-        if event.event == "session":
-            frames.append(_sse(event))
-            continue
-        if event.event == "answer":
-            turn.outcome.answers.append(event.text)
-            if event.usage is not None:
-                frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
-            continue
-        if event.event == "message":
-            if event.text.strip() and len(turn.outcome.trace_messages) < 16:
-                turn.outcome.trace_messages.append(event.text.strip()[:16_000])
-            continue
-        if event.event == "error":
-            turn.outcome.failed = True
-            frames.append(_sse(event))
-            continue
-        if event.usage is not None:
-            frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
-    turn.outcome.completed = verdict.complete and not turn.outcome.failed
-    return frames
+    turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
+    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    refusal = refuse_recorded_session_mismatch(
+        execution, turn.outcome, verdict, turn.required_session_id
+    )
+    if refusal:
+        # Nothing about this pass is accepted, so its Patch does not reach the
+        # stage either.
+        return turn, refusal
+    # The verified Patch replaces whatever the stage holds. A stage is mutable
+    # and this value is not, so settling from the record means settling from
+    # the record.
+    _write_recorded_patch(turn, recorded)
+    frames = absorb_recorded_events(turn.outcome, verdict)
+    frames.extend(_settle_work_outcome(turn))
+    if turn.answer is not None:
+        # The live path emits this from its launch stream after settling. The
+        # task's own durable result is read off this frame, so a recovered turn
+        # that never emits one completes with no answer of its own.
+        frames.append(_sse(AgentEvent(event="answer", text=turn.answer)))
+    _lead_with_retained_answer(turn, frames)
+    return turn, frames
 
 
 async def finalize_recorded_work_result(
@@ -2876,15 +2932,15 @@ async def finalize_recorded_work_result(
     """
 
     del data_dir  # Recovery uses only launch-time facts retained by this task.
-    turn = _load_work_finalization_context(service, request, execution)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn, recorded))
-    # The verified Patch replaces whatever the stage holds. A stage is mutable
-    # and this value is not, so settling from the record means settling from
-    # the record.
-    _write_recorded_patch(turn, recorded)
-    for frame in _absorb_recorded_events(turn, verdict):
-        yield frame
-    for frame in _settle_work_outcome(turn):
+    turn, opened = open_recorded_work_turn(
+        service,
+        request,
+        execution,
+        recorded,
+        role=WORK_FINALIZATION_CONTEXT_ROLE,
+        owner="Work",
+    )
+    for frame in opened:
         yield frame
     if turn.answer is None:
         return
@@ -2905,38 +2961,4 @@ def _write_recorded_patch(
     turn: WorkFinalizationContext,
     recorded: RecordedProviderTurn,
 ) -> None:
-    target = "patch.json"
-    if recorded.patch is None:
-        if turn.remote_stage is not None:
-            turn.remote_stage.remove_workspace_file(target)
-        else:
-            (turn.workspace / target).unlink(missing_ok=True)
-        return
-    if turn.remote_stage is not None:
-        turn.remote_stage.write_workspace_text(target, recorded.patch)
-    else:
-        (turn.workspace / target).write_text(recorded.patch, encoding="utf-8")
-
-
-def provider_turn_request(
-    turn: WorkFinalizationContext,
-    recorded: RecordedProviderTurn,
-) -> ProviderTurnRequest:
-    """The request shape the decoder needs, from what this turn already knows."""
-
-    return ProviderTurnRequest(
-        prompt="",
-        binary=recorded.provider,
-        cwd=turn.workspace,
-        model=None,
-        reasoning=None,
-        session_id=recorded.session_id,
-        read_dirs=[],
-        write_dirs=[],
-        write_scope=None,
-        # Nothing launches from this request; it exists so the decoder can build
-        # the runtime that reads the wire. Naming the turn's real capability here
-        # would ask for a write scope no reader needs and no recovery has.
-        capability="paper_readonly",
-        provider_version=recorded.provider_version,
-    )
+    write_recorded_patch(turn.workspace, turn.remote_stage, recorded)

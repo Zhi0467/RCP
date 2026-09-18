@@ -27,6 +27,7 @@ from rcp.agents.failure_kinds import transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
+from rcp.agents.schema import EXPERIMENT_WATCH_OUTPUT_GLOB
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -41,6 +42,8 @@ from rcp.limits import (
     TURN_JOURNAL_MAX_BYTES,
     TURN_JOURNAL_MAX_CONTROL_MESSAGES,
     TURN_JOURNAL_MAX_EVENT_BYTES,
+    TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES,
+    TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES,
     TURN_JOURNAL_MAX_PATCH_BYTES,
     TURN_JOURNAL_MAX_STDERR_BYTES,
     TURN_JOURNAL_MAX_UPLINK_BYTES,
@@ -211,6 +214,8 @@ def _supervised_remote_turn_command(
     runtime_id: str,
     provider_version: str | None,
     patch_path: str,
+    watch_path: str,
+    experiment_watch_glob: str,
     close_input_after_initial: bool,
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
@@ -227,6 +232,10 @@ def _supervised_remote_turn_command(
         runtime_id,
         "--patch-path",
         patch_path,
+        "--watch-path",
+        watch_path,
+        "--experiment-watch-glob",
+        experiment_watch_glob,
         "--max-journal-bytes",
         str(TURN_JOURNAL_MAX_BYTES),
         "--max-event-bytes",
@@ -239,6 +248,10 @@ def _supervised_remote_turn_command(
         str(TURN_JOURNAL_MAX_UPLINK_BYTES),
         "--max-control-messages",
         str(TURN_JOURNAL_MAX_CONTROL_MESSAGES),
+        "--max-experiment-watch-files",
+        str(TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES),
+        "--max-experiment-watch-bytes",
+        str(TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES),
         "--stop-hold-seconds",
         str(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
         "--stop-grace-seconds",
@@ -1148,6 +1161,8 @@ class AgentLauncher:
                 runtime_id=runtime.id,
                 provider_version=getattr(readiness, "version", None),
                 patch_path=str(cwd / "patch.json"),
+                watch_path=str(cwd / "watch.json"),
+                experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
                 close_input_after_initial=turn.close_input_after_initial,
             )
         if control is not None and control.pause_requested.is_set():

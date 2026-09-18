@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -105,6 +106,10 @@ class WorkTurn:
     supervise_remote: bool = False
 
     @property
+    def run_truth_scope(self) -> list[str]:
+        return self.context.run_truth_scope
+
+    @property
     def continuation(self) -> AgentTaskContinuation:
         return self.execution.continuation if self.execution is not None else "fresh"
 
@@ -190,11 +195,24 @@ class WorkFinalizationContext:
     experiment_resources: list[StagedExperimentWatcherResource]
     skill_selection: SkillSelection
     compute_commands: WorkComputeCommands | None
+    #: The contract role this owner retained its launch under, when it retained
+    #: one. Owners share this type and never a role, so anything asking whether
+    #: this turn is recoverable must ask about its own owner's role.
+    finalization_role: str | None = None
+    #: The native provider session this launch pinned, when it pinned one. A
+    #: recovered continuation is held to it exactly as the live stream was.
+    required_session_id: str | None = None
     answer: str | None = None
 
     @property
     def surface(self) -> AgentSurface:
         return "project_chat" if self.request.chat_scope == "project" else "node_chat"
+
+    @property
+    def write_dirs(self) -> list[Path]:
+        # Every launch builds these from the same scope, so recovery derives
+        # them rather than retaining a second copy that could disagree.
+        return [Path(item) for item in self.write_scope.repository_roots]
 
     @property
     def continuation(self) -> AgentTaskContinuation:
@@ -281,6 +299,33 @@ def clears_stale_turn_handoffs(continuation: AgentTaskContinuation) -> bool:
     raise ValueError(f"Unsupported Work continuation: {continuation}")
 
 
+#: The native session a supervised continuation of this turn must resume. The
+#: launch snapshot is immutable and a correction's session is only known after
+#: the pass it corrects, so the correction records its own pin here instead.
+WORK_CORRECTION_SESSION_ROLE = "work_correction_session"
+
+
+def checkpoint_required_session(
+    execution: AgentTaskExecution | None,
+    required_session_id: str | None,
+) -> None:
+    """Write down the session a recovered continuation must be held to.
+
+    The live stream refuses a provider that answers on another session. A
+    supervised pass can be read back long after that stream is gone, so what it
+    was pinned to has to outlive the stream that enforced it.
+    """
+
+    if execution is None or required_session_id is None:
+        return
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        WORK_CORRECTION_SESSION_ROLE,
+        required_session_id,
+        hashlib.sha256(required_session_id.encode("utf-8")).hexdigest(),
+    )
+
+
 async def stream_turn_agent_events(
     turn: WorkTurn,
     launcher: AgentLauncher,
@@ -295,6 +340,10 @@ async def stream_turn_agent_events(
 ) -> AsyncIterator[str]:
     """Stream one provider continuation from a staged Work execution context."""
 
+    if supervise_remote:
+        # Every owner's supervised launch comes through here, so a pinned
+        # continuation cannot reach a host without its pin being recoverable.
+        checkpoint_required_session(turn.execution, required_session_id)
     async with aclosing(
         stream_work_agent_events(
             launcher,

@@ -25,7 +25,12 @@ from rcp.limits import (
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
-from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
+from rcp.transport.state import (
+    StateMissing,
+    StateUnavailable,
+    _remote_lock_holder_script,
+    _remote_script,
+)
 
 _REMOTE_TREE_HELPERS = """\
 import os,shutil
@@ -178,7 +183,11 @@ for target in glob.glob('/tmp/rcp-run.*'):
             raise ValueError("remote run stage is outside the RCP staging boundary")
         result = self._directory_probe(root)
         if result.returncode:
-            raise StateUnavailable(
+            # 255 is ssh saying it could not ask. Anything else is the host
+            # answering that this stage is gone, replaced, or not ours, and a
+            # caller that waits on an answer waits forever.
+            unavailable = StateUnavailable if result.returncode == 255 else StateMissing
+            raise unavailable(
                 "The saved remote staging directory is unavailable; retry this operation instead."
             )
         self.root = PurePosixPath(root)

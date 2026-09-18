@@ -72,6 +72,12 @@ TURN_JOURNAL_MAX_STDERR_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_PATCH_BYTES = 16 * 1024 * 1024
 TURN_JOURNAL_MAX_UPLINK_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_CONTROL_MESSAGES = 1024
+# Experiment watcher maintenance snapshots a set the provider chose the size of,
+# so the set is bounded as a whole and not only file by file. The count also
+# bounds the digest map `outcome.json` carries, which the journal reader has to
+# read back within its own limit.
+TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES = 64
+TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES = 16 * 1024 * 1024
 REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS = 5.0
 
 # Staged agent command mailbox, and the Auto-research broker that fronts it.
@@ -164,6 +170,11 @@ PATCH_SELF_CHECK_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # most this many times before the run is rejected. One number, one policy: raising it
 # here raises it everywhere, which is the point.
 PATCH_CORRECTION_MAX_ROUNDS = 2
+
+# The Experiment loop corrects a watcher handoff once. Its deliverable is a joint
+# Patch/watch admission, so a second round costs a full loop turn to re-decide
+# what the first round already had every fact to fix.
+EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS = 1
 
 # Durable external-work watchers.
 WATCHER_CHECK_TIMEOUT_SECONDS = 15

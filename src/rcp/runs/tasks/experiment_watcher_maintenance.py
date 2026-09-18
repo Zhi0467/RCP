@@ -26,8 +26,9 @@ from rcp.runs.shared import (
     _stage_task_contract,
     _stream_agent_events,
 )
+from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -100,8 +101,11 @@ async def _process_experiment_watcher_maintenance(
         for item in staged_resources
     }
     try:
+        # A host that cannot be reached is not an answer about this turn, so it
+        # is never caught here: it leaves the task waiting for its stage to come
+        # back rather than completing with the maintenance silently undone.
         outputs = read_experiment_watcher_outputs(workspace, remote_stage)
-    except (OSError, StateUnavailable, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         execution.store.record_agent_task_event(
             execution.operation_id,
             f"Experiment watcher maintenance output could not be inspected: {exc}",
@@ -212,7 +216,7 @@ async def _process_experiment_watcher_maintenance(
                 except (WatcherInitialCheckError, ValueError) as exc:
                     problem = str(exc)
                     correctable = True
-                except (OSError, ReplayHalted, StateUnavailable) as exc:
+                except (OSError, ReplayHalted) as exc:
                     problem = str(exc)
                     correctable = False
                 else:
@@ -242,7 +246,7 @@ async def _process_experiment_watcher_maintenance(
                                 staged.resource.watcher_snapshot_token
                             ),
                         )
-                    except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+                    except (OSError, ReplayHalted, ValueError) as exc:
                         problem = str(exc)
                         correctable = False
                     else:
@@ -312,6 +316,11 @@ async def _process_experiment_watcher_maintenance(
             )
             correction_outcome = _ProviderOutcome(session_id=native_session_id)
             correction_error: str | None = None
+            if supervise_remote:
+                # This correction continues the pass it corrects. It reaches its
+                # host through the raw stream rather than the shared Work one,
+                # so it writes down its own pin the way that one does.
+                checkpoint_required_session(execution, native_session_id)
             async with aclosing(
                 _stream_agent_events(
                     launcher,
@@ -328,6 +337,7 @@ async def _process_experiment_watcher_maintenance(
                     capability="work_auto",
                     outcome=correction_outcome,
                     binary=provider_binary,
+                    required_session_id=native_session_id,
                     supervise_remote=supervise_remote,
                 )
             ) as stream:
@@ -348,7 +358,7 @@ async def _process_experiment_watcher_maintenance(
                 break
             try:
                 corrected_outputs = read_experiment_watcher_outputs(workspace, remote_stage)
-            except (OSError, StateUnavailable, ValueError) as exc:
+            except (OSError, ValueError) as exc:
                 problem = f"The corrected watcher maintenance output could not be read: {exc}"
                 reject_maintenance(problem, staged, correction_round)
                 break

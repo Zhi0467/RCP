@@ -708,21 +708,40 @@ Remote canonical-state locking and publication are specified in
 
 ### A remote turn outliving its connection
 
-Ordinary human Work is the currently registered owner for durable remote-turn
-finalization. Other provider task owners keep their existing launch behavior
-until they expose their own typed, idempotent post-provider finalizer; recovery
-must not route their results through Work merely because they share launch
-plumbing. The routing table selects the owner from the finalization contract
-retained by that owner at launch, never from the task's chat kind. Shared staging
-and local-only Work do not register a remote finalization context.
+Four owners register durable remote-turn finalization: ordinary human Work,
+Discuss, the Experiment loop, and the Auto-research child Work turn. Each retains
+its own launch snapshot under its own contract role, and the routing table
+selects the owner from that retained contract, never from the task's chat kind --
+one chat kind names all four. A task with no retained contract, or with more than
+one, is visibly left waiting rather than settled by a neighbour that shares its
+launch plumbing. Remaining provider task owners keep their existing launch
+behavior until they expose their own typed, idempotent post-provider finalizer.
+Shared staging and local-only turns register no remote finalization context: a
+local provider dies with the process that launched it, so there is no finished
+pass left to fetch.
+
+What an owner settles is its own. Work applies its Patch, arms its watchers and
+answers its chat. Discuss answers its chat and republishes the session binding
+that lets the next message continue the same provider conversation. The
+Auto-research child settles under the parent episode's authority, admitting no
+second child to go and fetch its result. The Experiment loop reaches its joint
+Patch/watch admission and binds the episode to the session a later wake resumes;
+it settles against the episode its launch read, whose baseline, control snapshot
+and committed wake session are written down before the provider starts, so a
+reconnect cannot commit a pass belonging to a different invocation.
 
 Automatic graph, watcher, and Experiment watcher-maintenance corrections within
 ordinary Work use the same supervision. Before any correction, Work retains the
 primary answer in an immutable database checkpoint. Replaying a correction
 applies its deliverables while preserving that original reply and starting no
-further correction calls. Recorded finalization cannot enable corrections
-without a complete live launch context. Manual graph-repair tasks retain their
-separate existing launch behavior.
+further correction calls. A recorded pass that is itself a failed correction
+still carries that retained reply ahead of its own error, because the live path
+had already delivered it before the correction began. No recorded finalization
+may correct a deliverable:
+the provider that could answer a correction stopped when its connection did, so
+a deliverable a live turn would have sent back is rejected instead, and a
+recorded pass offered a correction round fails rather than launching one. Manual
+graph-repair tasks retain their separate existing launch behavior.
 
 Provider execution state and controller connection state are separate things.
 Losing SSH says nothing about the provider, which on a remote host keeps working
@@ -741,7 +760,55 @@ host's answer.
 The supervisor publishes no verdict. It decides only where the turn ends, which a
 persistent server makes unavoidable, and hands over its bytes. What the turn was
 worth is read from those bytes by the same decoder that reads a live one, so the
-two cannot drift apart.
+two cannot drift apart. The supervisor also snapshots the turn's deliverables
+beside its journal, Patch and watcher handoff alike, each under its own digest.
+A stage is mutable and a recorded pass is not, so every owner restores those
+snapshots before reading any deliverable: what settles is what the host proved,
+not whatever the directory happens to hold when RCP reconnects. Experiment watcher
+maintenance writes one file per resource, so that set is discovered rather than
+named: the host snapshots all of it, and recovery makes the stage hold exactly
+the set the pass wrote, removing one that appeared afterwards. The provider
+chose that set's size, so it is bounded as a whole and not only file by file,
+and a pass that overflows either bound is an incomplete turn whose outcome
+claims none of the set rather than a smaller one. A journal that
+predates deliverable snapshots is silent about a handoff rather than claiming
+there was none, and recovery leaves those files alone rather than deleting them.
+
+A host that cannot be reached is never a verdict about watcher maintenance. An
+outage while reading, validating or persisting those outputs leaves the task
+waiting for its stage, rather than completing it with the maintenance silently
+undone or recording a permanent refusal the turn never earned.
+
+Reconciliation is owed only a pass nobody read. A supervised start with no
+recorded stop is what both the waiting-task query and the reconciler itself look
+for, so once a live stream has consumed a turn and written that stop down, no
+reconciler will revisit it. Settlement that fails after that point therefore
+reports the outage rather than parking the task on a remote result it already
+holds, which nothing would ever come back for. A completed provider spoke for
+itself, so such a failure is not a lost link and no retry repeats the turn.
+
+Settlement reports an unreachable stage the same way it reports a deliverable
+the agent botched, so the read that failed is what says which happened. Every
+owner reads its own deliverables through its own code and marks its own
+outages, including on paths a recorded pass may never take: the mark is read
+only when a recorded finalization fails, so marking too widely costs nothing
+while marking too narrowly loses a finished turn. A failure carrying that mark
+leaves the task waiting; one that does not is the turn's real verdict and
+stands, whether or not the host is still answering by the time it is recorded.
+
+A continuation pinned to an exact native provider session is held to it when it
+is recovered exactly as it is live. Every supervised launch writes down the
+session it pinned before it reaches the host, including a correction, whose
+session belongs to the pass it corrects and so cannot be named by the launch
+snapshot written before that pass existed. This holds for every supervised
+correction, including the Experiment watcher-maintenance one that reaches its
+host through the raw provider stream rather than the shared Work one. The launch
+retains the session it pinned beside the rest of its snapshot, a correction
+retains its own, and a journal that answered on a different one
+is refused before its Patch reaches the stage, before that session is adopted
+and before any watcher is armed -- the same refusal, and the same operational
+receipt, that stops such a turn live before any result is accepted. A launch
+that pinned no session pins none on recovery.
 
 A restart preserves a task holding such a pass instead of interrupting it, and
 leaves it waiting for a remote result. Reconciliation then asks the host one
@@ -750,7 +817,16 @@ limit; a stopped pass whose journal reached the turn's end finalizes that task; 
 stopped pass whose journal did not, or that never took the prompt, fails it
 visibly for a human to retry; an already settled pass is left alone. Waiting is
 never cut short by a timeout, and nothing replaces a provider that may still be
-working.
+working. Reaching the host once proves nothing about reaching it again: an owner
+reopens its retained stage over the same link and reads its deliverables from it,
+and those reads report a vanished host exactly as they report a deliverable the
+agent botched. No verdict is drawn about a turn whose stage cannot be seen, so a
+host that goes quiet anywhere between reading the journal and finishing
+settlement leaves the task waiting rather than settling an intact result as
+failed. A stage that was genuinely removed is an answer, and the failure it
+causes stands. Reopening a retained stage cannot report both the same way:
+silence from the host is retried, while the host answering that the stage is
+gone, replaced or no longer ours fails that turn for a human.
 
 Pause of a waiting task is immediate and requires a reachable host and verified
 process identity. If the provider already stopped, or finishes before the Stop

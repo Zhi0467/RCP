@@ -752,6 +752,16 @@ class StateUnavailable(RuntimeError):
     pass
 
 
+class StateMissing(StateUnavailable):
+    """The host answered, and what was asked for is not there.
+
+    A subclass, because to almost everything this is just state it cannot use.
+    Only a caller deciding whether to wait for the host needs the difference:
+    silence is worth retrying and an answer is not, and the probe that got the
+    answer is the only place that still knows which it had.
+    """
+
+
 def _restore_file_matches(
     path: Path,
     *,

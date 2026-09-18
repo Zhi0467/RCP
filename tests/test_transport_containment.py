@@ -332,3 +332,34 @@ def test_each_advisory_lock_holder_keeps_a_master_of_its_own() -> None:
         for argv in (run_lock, refresh_lock, ordinary)
     ]
     assert len(set(paths)) == 3
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected"),
+    [(255, False), (1, True), (2, True)],
+)
+def test_attaching_tells_a_host_that_cannot_answer_from_one_that_did(
+    monkeypatch, returncode, expected
+) -> None:
+    """Both are unusable state; only one is worth asking again about.
+
+    255 is ssh reporting it could not reach the host, which says nothing about
+    the stage. Any other status is the host answering that this stage is gone,
+    replaced, or not ours -- a verdict, not silence, and callers that retry
+    silence must not retry it.
+    """
+
+    from rcp.transport import StateMissing
+
+    stage = RemoteRunStage("research.example")
+    monkeypatch.setattr(
+        stage,
+        "_directory_probe",
+        lambda _root: subprocess.CompletedProcess([], returncode, stdout="", stderr=""),
+    )
+
+    with pytest.raises(StateUnavailable) as caught:
+        stage.attach("/tmp/rcp-run.op-one")
+
+    assert isinstance(caught.value, StateMissing) is expected
+    assert stage.root is None

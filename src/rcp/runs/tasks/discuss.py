@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, invoked_package_pointers
@@ -37,6 +42,17 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    attach_retained_stage,
+    provider_turn_request,
+    retained_artifact_directory,
+    write_recorded_patch,
+)
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
+from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -140,6 +156,305 @@ def _prepare_discuss_chat_prompt(
         attachments=attachment_pointers,
     )
     return prompt, retained_master_path
+
+
+DISCUSS_FINALIZATION_CONTEXT_ROLE = "discuss_finalization_context"
+
+
+class _StoredDiscussFinalizationContext(BaseModel):
+    """Immutable launch snapshot consumed only after the provider has stopped."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1] = 1
+    request: RunRequest
+    stage_host: str
+    stage_root: str
+    workspace: str
+    artifact_scope_id: str
+    artifact_directory: str
+
+
+@dataclass
+class DiscussFinalizationContext:
+    """The launch-time facts Discuss needs once its provider has stopped.
+
+    Discuss holds no graph authority, no write scope and no watchers, so this is
+    the whole of it: where the turn ran, and where its outputs were bounded. A
+    recovered turn settles from these rather than from whatever the stage happens
+    to hold when recovery arrives.
+    """
+
+    service: ProjectService
+    request: RunRequest
+    execution: AgentTaskExecution | None
+    workspace: Path
+    remote_stage: RemoteRunStage | None
+    artifact_scope_id: str
+    artifact_directory: Path | PurePosixPath
+    outcome: _ProviderOutcome
+
+
+def _record_discuss_finalization_context(context: DiscussFinalizationContext) -> None:
+    """Write down what settling this turn needs, before the link can take it."""
+
+    execution = context.execution
+    if execution is None:
+        return
+    if execution.stage_root is None:
+        raise ValueError("A durable Discuss finalization context requires its exact task stage.")
+    stored = _StoredDiscussFinalizationContext(
+        request=context.request,
+        stage_host=execution.stage_host or "",
+        stage_root=execution.stage_root,
+        workspace=str(context.workspace),
+        artifact_scope_id=context.artifact_scope_id,
+        artifact_directory=str(context.artifact_directory),
+    )
+    content = stored.model_dump_json()
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        DISCUSS_FINALIZATION_CONTEXT_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+
+def _load_discuss_finalization_context(
+    service: ProjectService,
+    request: RunRequest,
+    execution: AgentTaskExecution,
+) -> DiscussFinalizationContext:
+    """Reopen finalization without rerunning any launch preparation."""
+
+    content = execution.store.agent_task_contract(
+        execution.operation_id,
+        DISCUSS_FINALIZATION_CONTEXT_ROLE,
+    )
+    if content is None:
+        raise ValueError("The Discuss turn has no retained finalization context.")
+    try:
+        stored = _StoredDiscussFinalizationContext.model_validate_json(content)
+    except ValueError as exc:
+        raise ValueError("The retained Discuss finalization context is invalid.") from exc
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None or task.request != request.model_dump(mode="json"):
+        raise ValueError("The Discuss finalization request does not match its durable task.")
+    _local_stage, remote_stage, workspace = attach_retained_stage(
+        execution,
+        owner="Discuss",
+        stage_host=stored.stage_host,
+        stage_root=stored.stage_root,
+        workspace=stored.workspace,
+    )
+    return DiscussFinalizationContext(
+        service=service,
+        request=stored.request,
+        execution=execution,
+        workspace=workspace,
+        remote_stage=remote_stage,
+        artifact_scope_id=stored.artifact_scope_id,
+        artifact_directory=retained_artifact_directory(
+            workspace,
+            stored.artifact_scope_id,
+            stored.artifact_directory,
+            owner="Discuss",
+        ),
+        outcome=_ProviderOutcome(session_id=stored.request.session_id),
+    )
+
+
+def _warn_discuss_patch_discarded(execution: AgentTaskExecution, message: str) -> None:
+    """Say this once for this task, however many times recovery reaches it.
+
+    The receipt that guards the discard is written last, so a crash before it
+    replays the whole discard. Its own message is what keeps this warning from
+    being told twice; nothing else about a warning is unique.
+    """
+
+    if any(
+        item.message == message
+        for item in execution.store.agent_task_events(execution.operation_id)
+    ):
+        return
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        message,
+        level="warning",
+    )
+
+
+def _discard_discuss_patch(
+    context: DiscussFinalizationContext,
+    *,
+    recorded: RecordedProviderTurn | None = None,
+) -> None:
+    """Keep a stray patch as evidence, never as a graph change.
+
+    Authority to change the graph rides on the human's request. An agent cannot
+    grant it to itself by writing the file. Recorded settlement can reach this
+    twice, and can also die partway through it, so the receipt is written last
+    and everything before it is safe to repeat: the patch text upserts and the
+    warning knows whether it has already been told.
+
+    A recorded pass hands over the Patch the host proved, so that settlement
+    reads no stage at all here. Going back for a second look would let a host
+    that went quiet turn this turn's evidence into a permanent `unreadable`.
+    """
+
+    execution = context.execution
+    if execution is None or execution.store.agent_task_has_receipt(
+        execution.operation_id, "discuss_patch_discarded"
+    ):
+        return
+    if recorded is not None:
+        _retain_discarded_discuss_patch(execution, recorded.patch)
+        return
+    try:
+        patch_text = _read_chat_patch(context.workspace, context.remote_stage)
+    except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(execution, exc)
+        _warn_discuss_patch_discarded(
+            execution,
+            "Discuss wrote an unreadable patch.json; RCP discarded it without changing the graph.",
+        )
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "discuss_patch_discarded",
+            {
+                "reason": "unreadable",
+                "detail": f"The agent wrote a patch file that could not be read: {exc}"[:400],
+            },
+            tier="diagnostic",
+        )
+        return
+    _retain_discarded_discuss_patch(execution, patch_text)
+
+
+def _retain_discarded_discuss_patch(
+    execution: AgentTaskExecution,
+    patch_text: str | None,
+) -> None:
+    """Write down the patch this turn produced and why it changes nothing."""
+
+    if patch_text is None:
+        return
+    execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
+    _warn_discuss_patch_discarded(
+        execution,
+        "Discuss has no graph authority, so the patch the agent wrote was "
+        "discarded. Switch to Work for a deliberate graph update.",
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "discuss_patch_discarded",
+        {"reason": "no_graph_authority", "byte_length": len(patch_text.encode("utf-8"))},
+        tier="diagnostic",
+    )
+
+
+def _settle_discuss_outcome(
+    context: DiscussFinalizationContext,
+    *,
+    recorded: RecordedProviderTurn | None = None,
+) -> Iterator[str]:
+    """Turn one finished Discuss result into this task's durable output.
+
+    The one door a Discuss result goes through, whether its provider streamed to
+    this process or finished on a host that outlived the connection.
+    """
+
+    request = context.request
+    execution = context.execution
+    outcome = context.outcome
+    # Only a labelled final assistant message is the reply. A provider that
+    # emitted none has not answered, and promoting its last trace would show
+    # reasoning or tool output to the human as if it were the answer.
+    answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
+    if not outcome.completed:
+        if outcome.failed or outcome.paused:
+            return
+        outcome.failed = True
+        yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
+        return
+    if not answer:
+        yield _sse(
+            AgentEvent(event="error", text=f"{request.provider} finished without answering.")
+        )
+        return
+
+    _commit_chat_prompt_state(execution, request, outcome.session_id)
+
+    try:
+        artifacts = _discover_chat_artifacts(
+            execution,
+            context.artifact_scope_id,
+            Path(str(context.artifact_directory)),
+            context.remote_stage,
+        )
+    except Exception as exc:
+        # Preview attachments are optional. Even a programming or storage
+        # error in this branch must not take down a labelled chat answer.
+        with suppress(Exception):
+            _record_artifact_discovery_receipt(
+                execution,
+                attached=0,
+                candidates=0,
+                ignored={"unexpected_error": 1},
+                detail=str(exc),
+            )
+        artifacts = []
+    yield _sse(AgentEvent(event="answer", text=answer))
+    for artifact in artifacts:
+        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
+    _discard_discuss_patch(context, recorded=recorded)
+
+    try:
+        _append_chat_exchange(
+            context.service,
+            request,
+            answer,
+            outcome.session_id,
+            None,
+            execution=execution,
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(execution, exc)
+        if execution is not None:
+            execution.store.record_agent_task_event(
+                execution.operation_id,
+                f"The reply was delivered but could not be written to the chat transcript: {exc}",
+                level="warning",
+            )
+    yield _sse(AgentEvent(event="done"))
+
+
+async def finalize_recorded_discuss_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncIterator[str]:
+    """Settle a Discuss turn from the pass its host recorded.
+
+    No launcher and no data directory: Discuss recovery reads a record and the
+    facts its own launch retained, and starts nothing. It writes under the
+    operation id that opened the pass, because it is the same turn.
+    """
+
+    del launcher, data_dir  # Recovery launches nothing and stages nothing.
+    context = _load_discuss_finalization_context(service, request, execution)
+    verdict = decode_recorded_turn(recorded, provider_turn_request(context.workspace, recorded))
+    # A discarded Patch is still this turn's evidence. The stage is mutable and
+    # the record is not, so restore what the host proved before reading it.
+    write_recorded_patch(context.workspace, context.remote_stage, recorded)
+    for frame in absorb_recorded_events(context.outcome, verdict):
+        yield frame
+    for frame in _settle_discuss_outcome(context, recorded=recorded):
+        yield frame
 
 
 async def stream_discuss_run(
@@ -509,6 +824,22 @@ async def stream_discuss_run(
                 "write_directory_count": 0,
             },
         )
+        assert artifact_scope_id is not None
+        assert artifact_directory is not None
+        settlement = DiscussFinalizationContext(
+            service=service,
+            request=request,
+            execution=execution,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            artifact_scope_id=artifact_scope_id,
+            artifact_directory=artifact_directory,
+            outcome=outcome,
+        )
+        if execution_host:
+            # Only a remote turn can outlive this connection, and only a turn
+            # whose settling facts are already written down can be recovered.
+            _record_discuss_finalization_context(settlement)
         try:
             async with aclosing(
                 _stream_agent_events(
@@ -526,6 +857,7 @@ async def stream_discuss_run(
                     capability="discuss",
                     outcome=outcome,
                     binary=provider_binary,
+                    supervise_remote=bool(execution_host),
                 )
             ) as stream:
                 async for frame in stream:
@@ -537,115 +869,12 @@ async def stream_discuss_run(
             outcome.failed = True
             raise
 
-        # Only a labelled final assistant message is the reply. A provider that
-        # emitted none has not answered, and promoting its last trace would show
-        # reasoning or tool output to the human as if it were the answer.
-        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
-        if not outcome.completed:
-            if outcome.failed or outcome.paused:
-                return
-            outcome.failed = True
-            yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
+        if outcome.remote_result_pending:
+            # The host has this turn now. Its original task waits, and the
+            # reconciler settles it through the same door below.
             return
-        if not answer:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"{request.provider} finished without answering.",
-                )
-            )
-            return
-
-        _commit_chat_prompt_state(execution, request, outcome.session_id)
-
-        assert artifact_scope_id is not None
-        assert artifact_directory is not None
-        try:
-            artifacts = _discover_chat_artifacts(
-                execution,
-                artifact_scope_id,
-                Path(str(artifact_directory)),
-                remote_stage,
-            )
-        except Exception as exc:
-            # Preview attachments are optional. Even a programming or storage
-            # error in this branch must not take down a labelled chat answer.
-            with suppress(Exception):
-                _record_artifact_discovery_receipt(
-                    execution,
-                    attached=0,
-                    candidates=0,
-                    ignored={"unexpected_error": 1},
-                    detail=str(exc),
-                )
-            artifacts = []
-        yield _sse(AgentEvent(event="answer", text=answer))
-        for artifact in artifacts:
-            yield _sse(AgentEvent(event="artifact", artifact=artifact))
-
-        # Authority to change the graph rides on the human's request. An agent
-        # cannot grant it to itself by writing the file, so a stray patch is kept
-        # as a receipt and discarded.
-        if execution is not None:
-            try:
-                patch_text = _read_chat_patch(workspace, remote_stage)
-            except (OSError, StateUnavailable, ValueError) as exc:
-                execution.store.record_agent_task_receipt(
-                    execution.operation_id,
-                    "discuss_patch_discarded",
-                    {
-                        "reason": "unreadable",
-                        "detail": f"The agent wrote a patch file that could not be read: {exc}"[
-                            :400
-                        ],
-                    },
-                    tier="diagnostic",
-                )
-                execution.store.record_agent_task_event(
-                    execution.operation_id,
-                    "Discuss wrote an unreadable patch.json; RCP discarded it without "
-                    "changing the graph.",
-                    level="warning",
-                )
-            else:
-                if patch_text is not None:
-                    execution.store.record_agent_task_patch_output(
-                        execution.operation_id, patch_text
-                    )
-                    execution.store.record_agent_task_event(
-                        execution.operation_id,
-                        "Discuss has no graph authority, so the patch the agent wrote was "
-                        "discarded. Switch to Work for a deliberate graph update.",
-                        level="warning",
-                    )
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "discuss_patch_discarded",
-                        {
-                            "reason": "no_graph_authority",
-                            "byte_length": len(patch_text.encode("utf-8")),
-                        },
-                        tier="diagnostic",
-                    )
-
-        try:
-            _append_chat_exchange(
-                service,
-                request,
-                answer,
-                outcome.session_id,
-                None,
-                execution=execution,
-            )
-        except (OSError, StateUnavailable, ValueError) as exc:
-            if execution is not None:
-                execution.store.record_agent_task_event(
-                    execution.operation_id,
-                    f"The reply was delivered but could not be written to the chat "
-                    f"transcript: {exc}",
-                    level="warning",
-                )
-        yield _sse(AgentEvent(event="done"))
+        for frame in _settle_discuss_outcome(settlement):
+            yield frame
     finally:
         # There is no per-turn source cleanup; the reusable native-session stage
         # remains available to the normal stage sweeper.

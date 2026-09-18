@@ -25,8 +25,12 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
         journal_fd = os.open(name + ".turn", flags | os.O_DIRECTORY, dir_fd=root_fd)
         descriptors.append(journal_fd)
 
-        def read(name: str, limit: int) -> str:
-            fd = os.open(name, flags | os.O_NONBLOCK, dir_fd=journal_fd)
+        def read(name: str, limit: int, directory_fd: int | None = None) -> str:
+            fd = os.open(
+                name,
+                flags | os.O_NONBLOCK,
+                dir_fd=journal_fd if directory_fd is None else directory_fd,
+            )
             with os.fdopen(fd, "rb") as stream:
                 entry = os.fstat(stream.fileno())
                 if not stat.S_ISREG(entry.st_mode) or entry.st_size > limit:
@@ -56,12 +60,23 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             errors = read("stderr.txt", max_bytes)
         except (OSError, ValueError):
             errors = ""
+        experiment_watch: dict[str, str] = {}
+        recorded_names = outcome.get("experiment_watch_sha256")
+        if isinstance(recorded_names, dict) and recorded_names:
+            # One directory of per-resource outputs. The outcome names them, so
+            # nothing here lists a directory the agent could have added to.
+            resource_fd = os.open("experiment-watch", flags | os.O_DIRECTORY, dir_fd=journal_fd)
+            descriptors.append(resource_fd)
+            for name in sorted(recorded_names):
+                experiment_watch[name] = read(name, max_bytes, resource_fd)
         return {
             "accepted": accepted,
             "outcome": outcome,
             "events": read("events.jsonl", max_bytes),
             "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
+            "watch": read("watch.json", max_bytes) if outcome.get("watch_present") else None,
+            "experiment_watch": experiment_watch,
         }
     finally:
         for fd in reversed(descriptors):

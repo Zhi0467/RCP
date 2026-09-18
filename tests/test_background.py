@@ -2618,6 +2618,7 @@ def _recorded_turn(pid_file: str) -> RecordedProviderTurn:
         events="",
         stderr="",
         patch=None,
+        watch=None,
         accepted=True,
     )
 
@@ -3475,3 +3476,229 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
             run_on="cluster",
             authorized_by=episode_turn.authorized_by,
         )
+
+
+def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reaching the journal proves nothing about reaching it again.
+
+    Every recorded owner reopens its retained stage over SSH, and that second
+    reach can fail transiently while the pass itself sits finished and intact on
+    the host. Settling that as a failure would discard a completed provider turn
+    over a dropped packet.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import StateUnavailable
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "host-went-quiet")
+    pid_file = "/stage/host-went-quiet.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def unreachable_stage(*_args):
+        raise StateUnavailable(
+            "The saved remote staging directory is unavailable; retry this operation instead."
+        )
+        yield  # pragma: no cover - the raise above ends this generator
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreachable_stage)
+
+    assert tasks._reconcile_remote_results() is True
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.phase == "awaiting_remote_result"
+    # The claim is released, so the next sweep can try the host again.
+    assert store.claim_recorded_finalization(waiting.operation_id)
+    assert store.unresolved_remote_provider_passes("remote", "/stage")
+
+
+def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settlement reads the stage again, long after the journal was read.
+
+    Those reads report an unreachable host as an unreadable deliverable, which
+    reads exactly like an agent that wrote nonsense. Only the read that failed
+    can still tell the two apart, so it says which happened and no verdict is
+    drawn about a turn whose stage could not be seen.
+    """
+
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-vanished-mid-settlement")
+    pid_file = "/stage/stage-vanished-mid-settlement.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def unreadable_deliverable(_project_id, _kind, _request, execution, _pass):
+        # What settlement does when its stage read could not reach the host.
+        execution.stage_unreachable = True
+        yield _sse(
+            AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
+        )
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreadable_deliverable)
+
+    assert tasks._reconcile_remote_results() is True
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.phase == "awaiting_remote_result"
+    assert store.claim_recorded_finalization(waiting.operation_id)
+
+
+def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stage that is genuinely gone is an answer, not a silence."""
+
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-removed")
+    pid_file = "/stage/stage-removed.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def unreadable_deliverable(*_args):
+        yield _sse(
+            AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
+        )
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=unreadable_deliverable)
+    tasks._reconcile_remote_results()
+
+    assert store.agent_task(waiting.operation_id).status == "failed"
+
+
+def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A journalled provider error is a verdict; the host's later silence is not.
+
+    Asking the host whether it is still there after the fact cannot tell these
+    apart, and answering "wait" to both leaves a decided turn waiting forever
+    once that host is decommissioned. Only the read that failed knows, so only
+    the read that failed says.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import RemoteRunStage
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "verdict-then-silence")
+    pid_file = "/stage/verdict-then-silence.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+    # The host is unreachable by the time anyone could ask, which is exactly the
+    # state that used to suppress the verdict below.
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
+
+    async def provider_said_it_failed(_project_id, _kind, _request, _execution, _pass):
+        # No stage read failed: the journal itself carries the provider's error.
+        yield _sse(AgentEvent(event="error", text="The provider refused the task."))
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=provider_said_it_failed)
+    tasks._reconcile_remote_results()
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None and task.status == "failed"
+    assert "refused" in (task.error or "")
+
+
+def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
+    tmp_path: Path,
+) -> None:
+    """Parking a task on a remote result it already has would park it forever.
+
+    Reconciliation exists for a pass nobody read. Both the scheduler's query and
+    `reconcile_remote_pass` find one the same way: a supervised start with no
+    recorded stop. Once the live stream consumed the turn and wrote that stop
+    down, no reconciler will ever revisit the task, so settlement that fails
+    after that point has to say so rather than wait.
+    """
+
+    from rcp.runs import remote_finalization
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "already-consumed")
+    pid_file = f"/stage/{waiting.operation_id}.pid"
+    assert store.operation_ids_awaiting_remote_result() == [waiting.operation_id]
+
+    store.finish_remote_provider_pass(waiting.operation_id, pid_file)
+
+    assert store.operation_ids_awaiting_remote_result() == []
+    assert not store.unresolved_remote_provider_passes("remote", "/stage")
+    record = store.agent_task(waiting.operation_id)
+    assert record is not None and record.phase == "awaiting_remote_result"
+    # Even reached directly, reconciliation has nothing outstanding to act on.
+    decision = remote_finalization.reconcile_remote_pass(
+        store,
+        record,
+        stopped=lambda *_args: True,
+        read_journal=lambda *_args: None,
+    )
+    assert decision.action == "settled"
+
+
+def test_a_stage_the_host_says_is_gone_fails_instead_of_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attaching collapses two answers; only one of them is worth waiting on.
+
+    A host that cannot be asked is silence and retries. A host that answers
+    "that stage is not there" has given the turn its verdict, and retrying it
+    forever would hide a deleted stage behind a permanent wait.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import StateMissing
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-answered-gone")
+    pid_file = "/stage/stage-answered-gone.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def stage_is_gone(*_args):
+        raise StateMissing("The saved remote staging directory is unavailable.")
+        yield  # pragma: no cover - the raise above ends this generator
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=stage_is_gone)
+    tasks._reconcile_remote_results()
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None and task.status == "failed"
+    assert "staging directory is unavailable" in (task.error or "")

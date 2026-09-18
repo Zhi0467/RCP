@@ -8,6 +8,9 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import (
     AgentEvent,
@@ -35,6 +38,7 @@ from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin
 from rcp.history import ReplayHalted
 from rcp.limits import (
+    EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
@@ -79,6 +83,15 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
+)
+from rcp.runs.recorded_settlement import (
+    note_stage_unreachable as _note_stage_unreachable,
+)
+from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -97,6 +110,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work import (
+    _WORK_PRIMARY_ANSWER_ROLE,
     WorkTurn,
     _AppliedWorkTurn,
     _bounded_graph_messages,
@@ -107,21 +121,31 @@ from rcp.runs.tasks.work import (
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
+    _lead_with_retained_answer,
+    _load_work_finalization_context,
+    _record_work_finalization_context,
     _record_work_graph_rejection,
     _record_work_lock_lost,
     _record_work_lock_wait,
+    _recorded_retry_deliverable_baseline,
     _rejected_graph_update_for_repair,
     _resolve_work_execution,
     _ResolvedWorkExecution,
+    _retained_primary_answer,
+    _RetryDeliverableBaseline,
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
+    _watcher_continuation,
     _work_execution_instructions,
+    _work_finalization_context,
     _work_graph_repairable,
     _work_patch_proposal_ids,
     _WorkValidatorMailboxLifecycle,
+    _write_recorded_patch,
 )
 from rcp.runs.tasks.work_turn_runtime import (
+    WorkFinalizationContext,
     _PreparedWorkPatch,
     apply_work_patch,
     read_correction_patch,
@@ -137,7 +161,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import EpisodeRecord, WatcherContinuation
+from rcp.storage import EpisodeRecord
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -146,6 +170,64 @@ from rcp.watchers import (
     validate_graph_conditions,
     validate_watch_specs,
 )
+
+EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE = "experiment_loop_finalization_context"
+EXPERIMENT_LOOP_EPISODE_CONTEXT_ROLE = "experiment_loop_episode_context"
+
+
+class _StoredExperimentLoopEpisodeContext(BaseModel):
+    """The episode facts this loop turn will commit, written before it launches.
+
+    A loop turn settles against the episode its launch read, not the episode a
+    later reconnect finds. Re-reading these after a disconnect would let a turn
+    commit a baseline, or continue a session, belonging to a different pass.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1] = 1
+    episode_context_baseline: dict[str, object] | None
+    experiment_control_snapshot: dict[str, object] | None
+    wake_native_session_id: str | None
+
+
+def _record_experiment_loop_episode_context(
+    turn: WorkTurn,
+    prompt_context: _WorkPromptContext,
+) -> None:
+    execution = turn.execution
+    if execution is None:
+        return
+    stored = _StoredExperimentLoopEpisodeContext(
+        episode_context_baseline=prompt_context.episode_context_baseline,
+        experiment_control_snapshot=prompt_context.experiment_control_snapshot,
+        wake_native_session_id=(
+            prompt_context.wake_episode.native_session_id
+            if prompt_context.wake_episode is not None
+            else None
+        ),
+    )
+    content = stored.model_dump_json()
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        EXPERIMENT_LOOP_EPISODE_CONTEXT_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+
+def _load_experiment_loop_episode_context(
+    execution: AgentTaskExecution,
+) -> _StoredExperimentLoopEpisodeContext:
+    content = execution.store.agent_task_contract(
+        execution.operation_id, EXPERIMENT_LOOP_EPISODE_CONTEXT_ROLE
+    )
+    if content is None:
+        raise ValueError("The Experiment-loop turn has no retained episode context.")
+    try:
+        return _StoredExperimentLoopEpisodeContext.model_validate_json(content)
+    except ValueError as exc:
+        raise ValueError("The retained Experiment-loop episode context is invalid.") from exc
 
 
 @dataclass(frozen=True)
@@ -177,7 +259,7 @@ def _work_patch_source_operation_id(
 
 
 def _experiment_loop_retry_handoff_authorized(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     watch_text: str | None,
 ) -> bool:
     """Authorize one exact retained loop watcher handoff from an ancestor receipt."""
@@ -791,13 +873,14 @@ def _compose_retry_prompt(
 
 
 def _read_initial_patch_deliverable(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     predecessor_digest: str | None,
     settled: _SettledExperimentDeliverables,
 ) -> _DeliverableRead:
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The agent wrote a patch file that could not be read: {exc}",
@@ -835,12 +918,13 @@ def _read_initial_patch_deliverable(
 
 
 def _read_initial_watch_deliverable(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     predecessor_digest: str | None,
 ) -> _DeliverableRead:
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
             f"The watcher request could not be read: {exc}",
@@ -866,31 +950,11 @@ def _read_initial_watch_deliverable(
     return _DeliverableRead(text=text, failure=failure)
 
 
-def _watcher_continuation(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
-) -> WatcherContinuation:
-    request_values = turn.request.model_dump(mode="json")
-    values = {
-        name: request_values[name]
-        for name in WatcherContinuation.model_fields
-        if name in request_values
-    }
-    values.update(
-        provider=turn.request.provider or "",
-        run_on=turn.request.run_on or "",
-        run_truth_scope=turn.context.run_truth_scope,
-        workflow_ids=staged.skill_selection.workflow_ids,
-        skill_ids=staged.skill_selection.skill_ids,
-        resolved_skill_packages=staged.skill_selection.resolved_skill_packages,
-    )
-    return WatcherContinuation.model_validate(values)
-
-
-def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
+def _read_corrected_watch_deliverable(turn: WorkFinalizationContext) -> _DeliverableRead:
     try:
         corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableRead(
             text=None,
             failure=_DeliverableFailure(
@@ -912,8 +976,7 @@ def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
 
 
 async def _validate_watch_deliverable(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
+    turn: WorkFinalizationContext,
     watch_text: str,
     correction_rounds: int,
     settled: _SettledExperimentDeliverables,
@@ -964,7 +1027,7 @@ async def _validate_watch_deliverable(
             episode_id=turn.request.control_episode_id,
             graph_target=origin_task.graph_target,
             execution_host=turn.execution_host,
-            continuation=_watcher_continuation(turn, staged),
+            continuation=_watcher_continuation(turn),
         )
         if handoff.stops:
             turn.execution.store.validate_experiment_agent_watcher_stops(
@@ -1011,6 +1074,7 @@ async def _validate_watch_deliverable(
     except ValueError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except (OSError, ReplayHalted, StateUnavailable) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=False))
 
     settled.loop_watch_empty = (
@@ -1029,7 +1093,7 @@ async def _validate_watch_deliverable(
 
 
 def _watch_correction_contract(
-    turn: WorkTurn,
+    launch_turn: WorkTurn,
     composed: _ComposedWorkPrompt,
     diagnostics_path: str,
     validator_command: str,
@@ -1037,15 +1101,15 @@ def _watch_correction_contract(
     return experiment_loop_watcher_correction_contract(
         original_contract_path=composed.base_contract_path,
         diagnostics_path=diagnostics_path,
-        watch_path=turn.patch_inputs.watch_path,
-        patch_path=turn.patch_inputs.patch_path,
-        output_schema_path=turn.patch_inputs.schema_path,
+        watch_path=launch_turn.patch_inputs.watch_path,
+        patch_path=launch_turn.patch_inputs.patch_path,
+        output_schema_path=launch_turn.patch_inputs.schema_path,
         validator_command=validator_command,
     )
 
 
 def _reject_watch_deliverable(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     settled: _SettledExperimentDeliverables,
     failure: _DeliverableFailure,
     correction_rounds: int,
@@ -1080,12 +1144,15 @@ def _reject_watch_deliverable(
 
 
 async def _settle_watch_deliverable(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     launcher: AgentLauncher,
-    staged: _StagedWorkInputs,
-    composed: _ComposedWorkPrompt,
     predecessor_digest: str | None,
     settled: _SettledExperimentDeliverables,
+    *,
+    launch_turn: WorkTurn | None = None,
+    staged: _StagedWorkInputs | None = None,
+    composed: _ComposedWorkPrompt | None = None,
+    maximum_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     text = initial.text
@@ -1094,13 +1161,11 @@ async def _settle_watch_deliverable(
     if text is None and failure is None:
         return
 
-    maximum_corrections = 1
     correction_rounds = 0
     while True:
         if text is not None:
             step = await _validate_watch_deliverable(
                 turn,
-                staged,
                 text,
                 correction_rounds,
                 settled,
@@ -1127,6 +1192,8 @@ async def _settle_watch_deliverable(
             return
 
         correction_rounds += 1
+        if launch_turn is None or staged is None or composed is None:
+            raise RuntimeError("A watcher correction requires its live launch context.")
         assert turn.execution is not None
         turn.execution.store.record_agent_task_receipt(
             turn.execution.operation_id,
@@ -1149,7 +1216,7 @@ async def _settle_watch_deliverable(
         correction_validator: StagedCommandMailbox | None = None
         correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
         try:
-            validator_command = turn.patch_inputs.validator_command
+            validator_command = launch_turn.patch_inputs.validator_command
             correction_validator = stage_patch_validation_mailbox(
                 authority="broker",
                 episode_id=turn.request.control_episode_id,
@@ -1163,18 +1230,18 @@ async def _settle_watch_deliverable(
                 turn.service,
                 correction_validator,
                 execution=turn.execution,
-                budget=turn.validator_budget,
+                budget=launch_turn.validator_budget,
                 compute_commands=turn.compute_commands,
-                run_truth_scope=turn.context.run_truth_scope,
+                run_truth_scope=turn.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
             validator_command = correction_validator.client_command(
                 "validate",
-                turn.patch_inputs.patch_path,
+                launch_turn.patch_inputs.patch_path,
             )
             correction_contract = _watch_correction_contract(
-                turn,
+                launch_turn,
                 composed,
                 diagnostics_path,
                 validator_command,
@@ -1210,7 +1277,7 @@ async def _settle_watch_deliverable(
             correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
             correction_error: str | None = None
             correction_stream = _stream_turn_agent_events(
-                turn,
+                launch_turn,
                 launcher,
                 correction_prompt,
                 session_id=settled.native_session_id,
@@ -1218,6 +1285,7 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -1240,7 +1308,7 @@ async def _settle_watch_deliverable(
                 if event.event not in {"answer", "done"}:
                     yield frame
         settled.native_session_id = correction_outcome.session_id or settled.native_session_id
-        if correction_outcome.paused:
+        if correction_outcome.paused or correction_outcome.remote_result_pending:
             settled.stop = True
             return
         if correction_error or not correction_outcome.completed:
@@ -1263,12 +1331,15 @@ async def _settle_watch_deliverable(
 
 
 async def _resettle_changed_watch_handoff(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     launcher: AgentLauncher,
-    staged: _StagedWorkInputs,
-    composed: _ComposedWorkPrompt,
     settled: _SettledExperimentDeliverables,
     applied: _AppliedWorkTurn,
+    *,
+    launch_turn: WorkTurn | None = None,
+    staged: _StagedWorkInputs | None = None,
+    composed: _ComposedWorkPrompt | None = None,
+    maximum_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     # A correction can change the observer declaration or launch more compute.
     # Preserve Patch-read diagnostics before checking that operational handoff.
@@ -1276,7 +1347,8 @@ async def _resettle_changed_watch_handoff(
         changed_watch = (
             _read_watch_request(turn.workspace, turn.remote_stage) != settled.loop_watch_text
         )
-    except (OSError, StateUnavailable, ValueError):
+    except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         changed_watch = True
     if not changed_watch and turn.compute_commands is not None:
         observers = settled.pending_loop_handoff[0] if settled.pending_loop_handoff else []
@@ -1290,7 +1362,16 @@ async def _resettle_changed_watch_handoff(
     if changed_watch:
         settled.native_session_id = applied.native_session_id
         async with aclosing(
-            _settle_watch_deliverable(turn, launcher, staged, composed, None, settled)
+            _settle_watch_deliverable(
+                turn,
+                launcher,
+                None,
+                settled,
+                launch_turn=launch_turn,
+                staged=staged,
+                composed=composed,
+                maximum_corrections=maximum_corrections,
+            )
         ) as stream:
             async for frame in stream:
                 yield frame
@@ -1301,17 +1382,23 @@ async def _resettle_changed_watch_handoff(
 
 
 async def _apply_experiment_loop_turn(
-    turn: WorkTurn,
+    turn: WorkFinalizationContext,
     launcher: AgentLauncher,
-    staged: _StagedWorkInputs,
-    composed: _ComposedWorkPrompt,
-    prompt_context: _WorkPromptContext,
     settled: _SettledExperimentDeliverables,
     applied: _AppliedWorkTurn,
+    *,
+    episode_context_baseline: dict[str, object] | None,
+    experiment_control_snapshot: dict[str, object] | None,
+    launch_turn: WorkTurn | None = None,
+    staged: _StagedWorkInputs | None = None,
+    composed: _ComposedWorkPrompt | None = None,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+    maximum_watch_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     try:
         final_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",
@@ -1348,7 +1435,7 @@ async def _apply_experiment_loop_turn(
                             turn.service,
                             turn.execution,
                             final_patch_text,
-                            run_truth_scope=turn.context.run_truth_scope,
+                            run_truth_scope=turn.run_truth_scope,
                             control_node_id=turn.request.control_node_id,
                             control_decision_bundle=(turn.request.control_decision_bundle),
                         )
@@ -1372,7 +1459,7 @@ async def _apply_experiment_loop_turn(
             assert final_failure is not None
             if (
                 not final_failure.correctable
-                or loop_patch_correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
+                or loop_patch_correction_rounds >= maximum_corrections
                 or not applied.native_session_id
             ):
                 if settled.loop_watch_empty:
@@ -1404,6 +1491,8 @@ async def _apply_experiment_loop_turn(
                 break
 
             loop_patch_correction_rounds += 1
+            if launch_turn is None or staged is None or composed is None:
+                raise RuntimeError("A loop Patch correction requires its live launch context.")
             assert turn.execution is not None
             turn.execution.store.record_agent_task_receipt(
                 turn.execution.operation_id,
@@ -1433,24 +1522,24 @@ async def _apply_experiment_loop_turn(
                 turn.service,
                 loop_validator,
                 execution=turn.execution,
-                budget=turn.validator_budget,
+                budget=launch_turn.validator_budget,
                 compute_commands=turn.compute_commands,
-                run_truth_scope=turn.context.run_truth_scope,
+                run_truth_scope=turn.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
             try:
                 loop_validator_command = loop_validator.client_command(
                     "validate",
-                    turn.patch_inputs.patch_path,
+                    launch_turn.patch_inputs.patch_path,
                 )
                 correction_contract = experiment_loop_patch_correction_contract(
                     original_contract_path=composed.base_contract_path,
                     diagnostics_path=diagnostics_path,
-                    patch_path=turn.patch_inputs.patch_path,
-                    watch_path=turn.patch_inputs.watch_path,
+                    patch_path=launch_turn.patch_inputs.patch_path,
+                    watch_path=launch_turn.patch_inputs.watch_path,
                     validator_command=loop_validator_command,
-                    output_schema_path=turn.patch_inputs.schema_path,
+                    output_schema_path=launch_turn.patch_inputs.schema_path,
                 )
                 correction_path, correction_prompt = _stage_task_contract(
                     turn.local_stage,
@@ -1486,7 +1575,7 @@ async def _apply_experiment_loop_turn(
                 raise
             async with aclosing(
                 _stream_turn_agent_events(
-                    turn,
+                    launch_turn,
                     launcher,
                     correction_prompt,
                     session_id=applied.native_session_id,
@@ -1494,12 +1583,13 @@ async def _apply_experiment_loop_turn(
                     outcome=correction_outcome,
                     validator_staged=loop_validator,
                     validator_lifecycle=loop_validator_lifecycle,
+                    supervise_remote=launch_turn.supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
                     yield frame
             applied.native_session_id = correction_outcome.session_id or applied.native_session_id
-            if correction_outcome.paused:
+            if correction_outcome.paused or correction_outcome.remote_result_pending:
                 applied.stop = True
                 return
             if not correction_outcome.completed:
@@ -1508,7 +1598,7 @@ async def _apply_experiment_loop_turn(
                     correctable=True,
                 )
                 final_patch_text = None
-                loop_patch_correction_rounds = PATCH_CORRECTION_MAX_ROUNDS
+                loop_patch_correction_rounds = maximum_corrections
                 continue
             corrected = read_correction_patch(
                 lambda: _read_chat_patch(turn.workspace, turn.remote_stage),
@@ -1530,7 +1620,16 @@ async def _apply_experiment_loop_turn(
             assert corrected.text is not None
             final_patch_text = corrected.text
             async with aclosing(
-                _resettle_changed_watch_handoff(turn, launcher, staged, composed, settled, applied)
+                _resettle_changed_watch_handoff(
+                    turn,
+                    launcher,
+                    settled,
+                    applied,
+                    launch_turn=launch_turn,
+                    staged=staged,
+                    composed=composed,
+                    maximum_corrections=maximum_watch_corrections,
+                )
             ) as stream:
                 async for frame in stream:
                     yield frame
@@ -1541,6 +1640,7 @@ async def _apply_experiment_loop_turn(
             try:
                 rewritten = _read_chat_patch(turn.workspace, turn.remote_stage)
             except (OSError, StateUnavailable, ValueError) as exc:
+                _note_stage_unreachable(turn.execution, exc)
                 rewritten = None
                 detail = str(exc)
             else:
@@ -1553,7 +1653,16 @@ async def _apply_experiment_loop_turn(
 
     # Even rejected graph reflection must retain a complete operational handoff.
     async with aclosing(
-        _resettle_changed_watch_handoff(turn, launcher, staged, composed, settled, applied)
+        _resettle_changed_watch_handoff(
+            turn,
+            launcher,
+            settled,
+            applied,
+            launch_turn=launch_turn,
+            staged=staged,
+            composed=composed,
+            maximum_corrections=maximum_watch_corrections,
+        )
     ) as stream:
         async for frame in stream:
             yield frame
@@ -1562,8 +1671,8 @@ async def _apply_experiment_loop_turn(
 
     if (
         turn.execution is None
-        or prompt_context.episode_context_baseline is None
-        or prompt_context.experiment_control_snapshot is None
+        or episode_context_baseline is None
+        or experiment_control_snapshot is None
     ):
         raise ValueError("Experiment-loop handoff lost its durable episode context.")
     execution = turn.execution
@@ -1594,7 +1703,7 @@ async def _apply_experiment_loop_turn(
             episode_id=turn.request.control_episode_id,
             graph_target=origin_task.graph_target,
             execution_host=turn.execution_host,
-            continuation=_watcher_continuation(turn, staged),
+            continuation=_watcher_continuation(turn),
         )
 
     try:
@@ -1614,6 +1723,7 @@ async def _apply_experiment_loop_turn(
         prepared_watcher_ids = [item.watcher_id for item in prepared]
         prepared_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
     except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",
@@ -1645,7 +1755,7 @@ async def _apply_experiment_loop_turn(
                 control_node_id=turn.request.control_node_id,
                 invocation=turn.request.control_invocation,
                 invocation_ceiling=turn.request.control_invocation_ceiling,
-                control_snapshot=prompt_context.experiment_control_snapshot,
+                control_snapshot=experiment_control_snapshot,
                 patch_text=final_patch_text,
                 graph_update=applied.graph_update,
                 watcher_ids=accepted_loop_watcher_ids,
@@ -1662,21 +1772,25 @@ async def _apply_experiment_loop_turn(
         hashlib.sha256(watch_text.encode("utf-8")).hexdigest() if watch_text is not None else None
     )
     root_id = root_experiment_loop_operation_id(execution)
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "experiment_loop_handoff_prepared",
-        {
-            "episode_id": turn.request.control_episode_id,
-            "invocation": turn.request.control_invocation,
-            "root_operation_id": root_id,
-            "patch_sha256": patch_digest,
-            "watch_sha256": watch_digest,
-            "graph_status": applied.graph_update.status,
-            "applied_revision": applied.graph_update.applied_revision,
-            "watcher_ids": prepared_watcher_ids,
-            "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
-        },
-    )
+    invocation = turn.request.control_invocation
+    if not _handoff_receipt_recorded(
+        execution, execution.operation_id, "experiment_loop_handoff_prepared", invocation
+    ):
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "experiment_loop_handoff_prepared",
+            {
+                "episode_id": turn.request.control_episode_id,
+                "invocation": invocation,
+                "root_operation_id": root_id,
+                "patch_sha256": patch_digest,
+                "watch_sha256": watch_digest,
+                "graph_status": applied.graph_update.status,
+                "applied_revision": applied.graph_update.applied_revision,
+                "watcher_ids": prepared_watcher_ids,
+                "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
+            },
+        )
     try:
         armed = await asyncio.to_thread(
             commit_experiment_episode_handoff,
@@ -1689,11 +1803,12 @@ async def _apply_experiment_loop_turn(
             stage_host=execution.stage_host,
             stage_root=execution.stage_root,
             graph_result=experiment_graph_result_summary(applied.graph_update),
-            context_baseline=prompt_context.episode_context_baseline,
+            context_baseline=episode_context_baseline,
             stops=stop_requests,
             ending_signal=ending_signal,
         )
     except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
+        _note_stage_unreachable(turn.execution, exc)
         yield _sse(
             AgentEvent(
                 event="error",
@@ -1704,27 +1819,148 @@ async def _apply_experiment_loop_turn(
         return
     if graph_conditions:
         execution.armed_graph_watchers = True
-    execution.store.record_agent_task_receipt(
-        root_id,
-        "watchers_armed",
-        {
-            "watcher_ids": [item.watcher_id for item in armed],
-            "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
-            "count": len(armed),
-            "correction_rounds": settled.watch_correction_rounds,
-        },
+    if not _handoff_receipt_recorded(execution, root_id, "watchers_armed", invocation):
+        execution.store.record_agent_task_receipt(
+            root_id,
+            "watchers_armed",
+            {
+                # The root collects one of these per invocation, so it names
+                # which one it is rather than only what it armed.
+                "invocation": invocation,
+                "watcher_ids": [item.watcher_id for item in armed],
+                "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
+                "count": len(armed),
+                "correction_rounds": settled.watch_correction_rounds,
+            },
+        )
+
+
+def _handoff_receipt_recorded(
+    execution: AgentTaskExecution,
+    operation_id: str,
+    category: str,
+    invocation: int | None,
+) -> bool:
+    """Whether this exact invocation already wrote this handoff receipt.
+
+    The root operation collects one of these per invocation, so the category
+    alone cannot tell a replay repeating one from a later turn adding its own.
+    Recovery replays the whole settlement, and operational history is a product
+    of this system rather than a log, so one invocation says this once.
+    """
+
+    return any(
+        receipt.category == category and receipt.payload.get("invocation") == invocation
+        for receipt in execution.store.agent_task_receipts(operation_id)
     )
+
+
+def _settle_experiment_loop_outcome(
+    turn: WorkFinalizationContext,
+    *,
+    wake_native_session_id: str | None,
+) -> list[str]:
+    """Read one finished loop pass into its answer, or say why there is none.
+
+    Live and recorded delivery reach this verdict the same way, from the same
+    events. An automatic wake is still held to the session its launch committed
+    to, which a recorded pass carries forward rather than re-reading.
+    """
+
+    frames: list[str] = []
+    # A correction of this turn is supervised too, so a recovered journal may be
+    # the correction rather than the pass. Its prose is not the human reply.
+    retained_answer = _retained_primary_answer(turn)
+    answer = (
+        retained_answer
+        or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
+    )
+    if not turn.outcome.completed:
+        if turn.outcome.failed or turn.outcome.paused:
+            return frames
+        turn.outcome.failed = True
+        frames.append(
+            _sse(AgentEvent(event="error", text=f"{turn.request.provider} produced no result."))
+        )
+        return frames
+    if not answer:
+        frames.append(
+            _sse(
+                AgentEvent(
+                    event="error",
+                    text=f"{turn.request.provider} finished without answering.",
+                )
+            )
+        )
+        return frames
+    if turn.continuation == "watcher_wake" and (
+        wake_native_session_id is None or turn.outcome.session_id != wake_native_session_id
+    ):
+        frames.append(
+            _sse(
+                AgentEvent(
+                    event="error",
+                    text=(
+                        "The automatic Experiment wake did not continue its committed native "
+                        "provider session. The watcher handoff was not accepted."
+                    ),
+                )
+            )
+        )
+        return frames
+
+    try:
+        artifacts = _discover_chat_artifacts(
+            turn.execution,
+            turn.artifact_scope_id,
+            Path(str(turn.artifact_directory)),
+            turn.remote_stage,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            _record_artifact_discovery_receipt(
+                turn.execution,
+                attached=0,
+                candidates=0,
+                ignored={"unexpected_error": 1},
+                detail=str(exc),
+            )
+        artifacts = []
+    turn.answer = answer
+    if (
+        retained_answer is None
+        and turn.execution is not None
+        and turn.finalization_role is not None
+        and turn.execution.store.agent_task_contract(
+            turn.execution.operation_id, turn.finalization_role
+        )
+        is not None
+    ):
+        # Corrections have their own journals, but their prose is not the human
+        # reply. Retain the completed primary answer before any starts.
+        turn.execution.store.record_agent_task_contract(
+            turn.execution.operation_id,
+            _WORK_PRIMARY_ANSWER_ROLE,
+            answer,
+            hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+        )
+    frames.append(_sse(AgentEvent(event="answer", text=answer)))
+    frames.extend(_sse(AgentEvent(event="artifact", artifact=item)) for item in artifacts)
+    return frames
 
 
 async def _launch_and_stream_work_turn(
     turn: WorkTurn,
+    finalization: WorkFinalizationContext,
     launcher: AgentLauncher,
     prompt: str,
     contract_path: str,
-    staged: _StagedWorkInputs,
     wake_episode: EpisodeRecord | None,
     required_session_id: str | None = None,
+    *,
+    supervise_remote: bool = False,
 ) -> AsyncIterator[str]:
+    turn.supervise_remote = supervise_remote
     try:
         _record_agent_launch_receipt(
             turn.execution,
@@ -1776,6 +2012,7 @@ async def _launch_and_stream_work_turn(
                         )
                     ),
                     outcome=turn.outcome,
+                    supervise_remote=supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -1784,60 +2021,100 @@ async def _launch_and_stream_work_turn(
             turn.outcome.failed = True
             raise
 
-        answer = "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
-        if not turn.outcome.completed:
-            if turn.outcome.failed or turn.outcome.paused:
-                return
-            turn.outcome.failed = True
-            yield _sse(
-                AgentEvent(event="error", text=f"{turn.request.provider} produced no result.")
-            )
+        if turn.outcome.remote_result_pending:
+            # The host has this turn now. Its original task waits, and the
+            # reconciler settles it through the recorded door.
             return
-        if not answer:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"{turn.request.provider} finished without answering.",
-                )
-            )
-            return
-        if turn.waking and (
-            wake_episode is None or turn.outcome.session_id != wake_episode.native_session_id
+        for frame in _settle_experiment_loop_outcome(
+            finalization,
+            wake_native_session_id=(
+                wake_episode.native_session_id if wake_episode is not None else None
+            ),
         ):
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=(
-                        "The automatic Experiment wake did not continue its committed native "
-                        "provider session. The watcher handoff was not accepted."
-                    ),
-                )
-            )
-            return
-
-        try:
-            artifacts = _discover_chat_artifacts(
-                turn.execution,
-                staged.artifact_scope_id,
-                Path(str(staged.artifact_directory)),
-                turn.remote_stage,
-            )
-        except Exception as exc:
-            with suppress(Exception):
-                _record_artifact_discovery_receipt(
-                    turn.execution,
-                    attached=0,
-                    candidates=0,
-                    ignored={"unexpected_error": 1},
-                    detail=str(exc),
-                )
-            artifacts = []
+            yield frame
     except BaseException:
         raise
-    turn.answer = answer
-    yield _sse(AgentEvent(event="answer", text=answer))
-    for artifact in artifacts:
-        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+    turn.answer = finalization.answer
+
+
+async def settle_experiment_loop_deliverables(
+    turn: WorkFinalizationContext,
+    launcher: AgentLauncher,
+    retry_baseline: _RetryDeliverableBaseline,
+    *,
+    episode_context_baseline: dict[str, object] | None,
+    experiment_control_snapshot: dict[str, object] | None,
+    launch_turn: WorkTurn | None = None,
+    staged: _StagedWorkInputs | None = None,
+    composed: _ComposedWorkPrompt | None = None,
+    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+    maximum_watch_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
+) -> AsyncIterator[str]:
+    """Settle one finished loop turn, live or recorded, against its own task.
+
+    Both deliveries reach the same joint Patch/watch admission and the same
+    episode handoff. A recorded pass allows no correction round, because the
+    provider that could answer one stopped when its connection did.
+    """
+
+    if turn.answer is None:
+        return
+    answer = turn.answer
+    settled = _SettledExperimentDeliverables(native_session_id=turn.outcome.session_id)
+    initial_patch = _read_initial_patch_deliverable(turn, retry_baseline.patch_digest, settled)
+    if initial_patch.failure is not None:
+        if turn.execution is not None:
+            turn.execution.store.record_agent_task_receipt(
+                turn.execution.operation_id,
+                "experiment_unrecoverable_deliverable",
+                {"diagnostic": initial_patch.failure.message},
+                tier="summary",
+            )
+        yield _sse(AgentEvent(event="error", text=initial_patch.failure.message))
+        return
+    if settled.stop:
+        return
+    async with aclosing(
+        _settle_watch_deliverable(
+            turn,
+            launcher,
+            retry_baseline.watch_digest,
+            settled,
+            launch_turn=launch_turn,
+            staged=staged,
+            composed=composed,
+            maximum_corrections=maximum_watch_corrections,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
+    if settled.stop:
+        return
+    applied = _AppliedWorkTurn(
+        graph_update=settled.graph_update,
+        native_session_id=settled.native_session_id,
+    )
+    apply_stream = _apply_experiment_loop_turn(
+        turn,
+        launcher,
+        settled,
+        applied,
+        episode_context_baseline=episode_context_baseline,
+        experiment_control_snapshot=experiment_control_snapshot,
+        launch_turn=launch_turn,
+        staged=staged,
+        composed=composed,
+        maximum_corrections=maximum_corrections,
+        maximum_watch_corrections=maximum_watch_corrections,
+    )
+    async with aclosing(apply_stream) as stream:
+        async for frame in stream:
+            yield frame
+    if applied.stop:
+        return
+
+    for frame in _finalize_work_turn(turn, answer, applied.graph_update):
+        yield frame
 
 
 async def stream_experiment_loop_task(
@@ -1885,7 +2162,6 @@ async def stream_experiment_loop_task(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
-        outcome = turn.outcome
         resuming = turn.resuming
         # An Experiment-loop watcher wake resumes the episode's native session, but it
         # is a new turn at the next invocation -- never task Resume, never a retry, and
@@ -1911,8 +2187,6 @@ async def stream_experiment_loop_task(
         contract_path = composed_prompt.contract_path
         prompt = composed_prompt.prompt
         retry_baseline = _capture_retry_deliverable_baseline(turn)
-        retry_patch_digest = retry_baseline.patch_digest
-        retry_watch_digest = retry_baseline.watch_digest
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)
@@ -1930,72 +2204,116 @@ async def stream_experiment_loop_task(
         raise
 
     assert turn is not None
+    finalization = _work_finalization_context(
+        turn, staged, role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
+    )
+    # One value, enforced by the live stream and retained for recovery, so the
+    # two cannot come to disagree about which session this turn may continue.
+    required_session_id = _required_work_continuation_session_id(
+        turn.request, turn.execution, session_id=turn.request.session_id
+    )
+    if turn.execution_host:
+        # Only a remote turn can outlive this connection, and only a turn whose
+        # settling facts are already written down can be recovered.
+        _record_work_finalization_context(
+            turn,
+            staged,
+            role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
+            required_session_id=required_session_id,
+        )
+        _record_experiment_loop_episode_context(turn, prompt_context)
     async with aclosing(
         _launch_and_stream_work_turn(
             turn,
+            finalization,
             launcher,
             prompt,
             contract_path,
-            staged,
             wake_episode,
+            required_session_id=required_session_id,
+            supervise_remote=bool(turn.execution_host),
         )
     ) as stream:
         async for frame in stream:
             yield frame
-    if turn.answer is None:
-        return
-    answer = turn.answer
-
-    settled = _SettledExperimentDeliverables(native_session_id=outcome.session_id)
-    initial_patch = _read_initial_patch_deliverable(turn, retry_patch_digest, settled)
-    if initial_patch.failure is not None:
-        if execution is not None:
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "experiment_unrecoverable_deliverable",
-                {"diagnostic": initial_patch.failure.message},
-                tier="summary",
-            )
-        yield _sse(AgentEvent(event="error", text=initial_patch.failure.message))
-        return
-    if settled.stop:
+    if turn.outcome.remote_result_pending:
         return
     async with aclosing(
-        _settle_watch_deliverable(
-            turn,
+        settle_experiment_loop_deliverables(
+            finalization,
             launcher,
-            staged,
-            composed_prompt,
-            retry_watch_digest,
-            settled,
+            retry_baseline,
+            episode_context_baseline=prompt_context.episode_context_baseline,
+            experiment_control_snapshot=prompt_context.experiment_control_snapshot,
+            launch_turn=turn,
+            staged=staged,
+            composed=composed_prompt,
         )
     ) as stream:
         async for frame in stream:
             yield frame
-    if settled.stop:
+
+
+async def finalize_recorded_experiment_loop_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncIterator[str]:
+    """Settle one Experiment-loop turn from the pass its host recorded.
+
+    The episode this settles is the one the launch read, not the one a reconnect
+    finds: its baseline, control snapshot and committed wake session were all
+    written down before the provider started.
+    """
+
+    del data_dir  # Recovery uses only launch-time facts retained by this task.
+    turn = _load_work_finalization_context(
+        service,
+        request,
+        execution,
+        role=EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
+        owner="Experiment loop",
+    )
+    episode = _load_experiment_loop_episode_context(execution)
+    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    refusal = refuse_recorded_session_mismatch(
+        execution, turn.outcome, verdict, turn.required_session_id
+    )
+    if refusal:
+        # A wake or continuation that answered on another session arms nothing
+        # and admits no Patch, so neither reaches the stage.
+        for frame in refusal:
+            yield frame
         return
-    applied = _AppliedWorkTurn(
-        graph_update=settled.graph_update,
-        native_session_id=settled.native_session_id,
+    # The verified Patch replaces whatever the stage holds, before anything reads
+    # the stage. Half of this turn's admission is that Patch, and a stage that
+    # changed after the host finished would admit a different one.
+    _write_recorded_patch(turn, recorded)
+    frames = absorb_recorded_events(turn.outcome, verdict)
+    frames.extend(
+        _settle_experiment_loop_outcome(turn, wake_native_session_id=episode.wake_native_session_id)
     )
-    apply_stream = _apply_experiment_loop_turn(
-        turn,
-        launcher,
-        staged,
-        composed_prompt,
-        prompt_context,
-        settled,
-        applied,
-    )
-    async with aclosing(apply_stream) as stream:
+    _lead_with_retained_answer(turn, frames)
+    for frame in frames:
+        yield frame
+    if turn.answer is None:
+        return
+    async with aclosing(
+        settle_experiment_loop_deliverables(
+            turn,
+            launcher,
+            _recorded_retry_deliverable_baseline(execution),
+            episode_context_baseline=episode.episode_context_baseline,
+            experiment_control_snapshot=episode.experiment_control_snapshot,
+            maximum_corrections=0,
+            maximum_watch_corrections=0,
+        )
+    ) as stream:
         async for frame in stream:
             yield frame
-    if applied.stop:
-        return
-    graph_update = applied.graph_update
-
-    for frame in _finalize_work_turn(turn, answer, graph_update):
-        yield frame
 
 
 async def _stream_work_graph_repair(
