@@ -1206,3 +1206,34 @@ test("an Auto-research switch onto the children's own provider names no divergen
   assert.match(html, /Switch Auto-research provider/);
   assert.doesNotMatch(html, /Children this orchestrator spawns/);
 });
+
+test("an Auto-research model-only switch still names the model the children keep", () => {
+  const modelSplit = {
+    ...project,
+    agent_profiles: {
+      ...project.agent_profiles,
+      node_chat: { ...project.agent_profiles.node_chat, effective_model: "gpt-5.1-codex" },
+      orchestrator: { ...project.agent_profiles.orchestrator, effective_model: "gpt-5.1-pro" },
+    },
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "orchestrator",
+      mode: "retry",
+      project: modelSplit,
+      initialScope: ["repo"],
+      initialConfig: {
+        provider: "codex",
+        model: "gpt-5.1-pro",
+        reasoning: "medium",
+        run_on: "local",
+      },
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
+
+  assert.match(html, /Children this orchestrator spawns stay on codex · gpt-5\.1-codex/);
+});

@@ -79,14 +79,21 @@ export function RunDialog({
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   // Switching the orchestrator rebinds one turn. Children it spawns resolve
   // their own binding from the project's node_chat profile, so a human moving
-  // off an exhausted provider has to move that profile too, in Settings, and
-  // has to do it before the orchestrator spawns again.
+  // off an exhausted provider or model has to move that profile too, in
+  // Settings, and has to do it before the orchestrator spawns again. Reasoning
+  // is not a capacity axis, so a reasoning-only switch strands nothing and says
+  // nothing.
   const childProfile = project.agent_profiles.node_chat;
+  const selectedModel =
+    config.model ||
+    (config.provider === project.agent_profiles[kind].provider
+      ? project.agent_profiles[kind].effective_model
+      : "");
   const childBindingStays = Boolean(
     switching &&
     kind === "orchestrator" &&
     childProfile &&
-    childProfile.provider !== config.provider,
+    (childProfile.provider !== config.provider || childProfile.effective_model !== selectedModel),
   );
   const crossMachineRepositories = project.repositories.filter(
     (repository) => scope.includes(repository.alias) && repository.machine !== config.run_on,

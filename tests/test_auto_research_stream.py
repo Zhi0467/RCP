@@ -1605,8 +1605,17 @@ def test_a_rebound_orchestrator_retry_launches_on_a_clean_session(manifest, tmp_
     assert receipt.payload["classification"] == "binding_changed"
 
 
-def test_a_rebound_orchestrator_wake_retry_launches_on_a_clean_session(manifest, tmp_path) -> None:
-    """A wake names the delivery attached to the turn, never the session running it."""
+@pytest.mark.parametrize("recovery", ["rebind", "session_limit"])
+def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
+    manifest,
+    tmp_path,
+    recovery,
+) -> None:
+    """A wake names the delivery attached to the turn, never the session running it.
+
+    Both reasons a human meets in practice start clean: changing the binding,
+    and a provider that reported its limit on the turn that failed.
+    """
 
     service = _service(manifest, tmp_path)
     store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
@@ -1680,7 +1689,12 @@ def test_a_rebound_orchestrator_wake_retry_launches_on_a_clean_session(manifest,
         {"contract_path": str(contract_path)},
         tier="diagnostic",
     )
-    store.fail_agent_task(wake.operation_id, "The provider exited before finishing its turn.")
+    store.fail_agent_task(
+        wake.operation_id,
+        "The provider exited before finishing its turn."
+        if recovery == "rebind"
+        else "The provider reported a usage limit on this account.",
+    )
 
     staged_notice_ids: list[list[str]] = []
 
@@ -1716,11 +1730,15 @@ def test_a_rebound_orchestrator_wake_retry_launches_on_a_clean_session(manifest,
 
     tasks = BackgroundAgentTasks(store, stream)
     tasks.recover_at_startup()
-    retry = tasks.retry(wake.operation_id, reasoning="high")
+    # A limit recovery changes nothing about the binding; only the retired
+    # session makes it start clean.
+    retry = tasks.retry(
+        wake.operation_id, **({"reasoning": "high"} if recovery == "rebind" else {})
+    )
     retry = wait_for_task(store, retry.operation_id, expect="succeeded")
 
     retried = AutoResearchRunRequest.model_validate(retry.request)
-    assert retried.reasoning == "high"
+    assert retried.reasoning == ("high" if recovery == "rebind" else "medium")
     assert retried.wake_cause == "lifecycle"
     assert retried.session_id is None
     assert launcher.requested_session_ids == [None]
