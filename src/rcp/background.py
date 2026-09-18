@@ -88,7 +88,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -2062,6 +2062,13 @@ class BackgroundAgentTasks:
             except TaskPaused:
                 self.store.release_recorded_finalization(record.operation_id)
                 retry = True
+                continue
+            except StateMissing as exc:
+                # The host answered: this stage is gone, replaced, or not ours.
+                # Waiting for it to answer differently is waiting forever, so
+                # the turn it belonged to fails for a human to see.
+                self.store.fail_agent_task(record.operation_id, str(exc), remote_pid_file=pid_file)
+                self._task_settled(record, request, execution)
                 continue
             except StateUnavailable:
                 # The host answered a moment ago and cannot be reached now.

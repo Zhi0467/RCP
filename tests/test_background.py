@@ -3666,3 +3666,39 @@ def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
         read_journal=lambda *_args: None,
     )
     assert decision.action == "settled"
+
+
+def test_a_stage_the_host_says_is_gone_fails_instead_of_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attaching collapses two answers; only one of them is worth waiting on.
+
+    A host that cannot be asked is silence and retries. A host that answers
+    "that stage is not there" has given the turn its verdict, and retrying it
+    forever would hide a deleted stage behind a permanent wait.
+    """
+
+    from rcp.runs import remote_finalization
+    from rcp.transport import StateMissing
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "stage-answered-gone")
+    pid_file = "/stage/stage-answered-gone.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
+    )
+
+    async def stage_is_gone(*_args):
+        raise StateMissing("The saved remote staging directory is unavailable.")
+        yield  # pragma: no cover - the raise above ends this generator
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=stage_is_gone)
+    tasks._reconcile_remote_results()
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None and task.status == "failed"
+    assert "staging directory is unavailable" in (task.error or "")

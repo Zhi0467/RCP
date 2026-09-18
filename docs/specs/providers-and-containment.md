@@ -824,7 +824,9 @@ agent botched. No verdict is drawn about a turn whose stage cannot be seen, so a
 host that goes quiet anywhere between reading the journal and finishing
 settlement leaves the task waiting rather than settling an intact result as
 failed. A stage that was genuinely removed is an answer, and the failure it
-causes stands.
+causes stands. Reopening a retained stage cannot report both the same way:
+silence from the host is retried, while the host answering that the stage is
+gone, replaced or no longer ours fails that turn for a human.
 
 Pause of a waiting task is immediate and requires a reachable host and verified
 process identity. If the provider already stopped, or finishes before the Stop
