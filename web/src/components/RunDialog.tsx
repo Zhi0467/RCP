@@ -77,6 +77,17 @@ export function RunDialog({
       : readiness?.default_runtime;
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  // Switching the orchestrator rebinds one turn. Children it spawns resolve
+  // their own binding from the project's node_chat profile, so a human moving
+  // off an exhausted provider has to move that profile too, in Settings, and
+  // has to do it before the orchestrator spawns again.
+  const childProfile = project.agent_profiles.node_chat;
+  const childBindingStays = Boolean(
+    switching &&
+    kind === "orchestrator" &&
+    childProfile &&
+    childProfile.provider !== config.provider,
+  );
   const crossMachineRepositories = project.repositories.filter(
     (repository) => scope.includes(repository.alias) && repository.machine !== config.run_on,
   );
@@ -157,6 +168,19 @@ export function RunDialog({
           runOnLocked={runOnLocked}
           collapsible
         />
+        {childBindingStays && (
+          <div className="run-staging-warning">
+            <AlertTriangle size={15} />
+            <span>
+              <strong>
+                Children this orchestrator spawns stay on {childProfile.provider}
+                {childProfile.effective_model ? ` · ${childProfile.effective_model}` : ""}.
+              </strong>
+              {" They take the project's Node chat profile, which this switch does not change." +
+                " Change it in Settings first if that provider is also unavailable."}
+            </span>
+          </div>
+        )}
         {hostlessRepositories.length > 0 && (
           <div className="run-staging-warning">
             <AlertTriangle size={15} />

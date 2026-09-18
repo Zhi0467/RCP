@@ -1605,6 +1605,131 @@ def test_a_rebound_orchestrator_retry_launches_on_a_clean_session(manifest, tmp_
     assert receipt.payload["classification"] == "binding_changed"
 
 
+def test_a_rebound_orchestrator_wake_retry_launches_on_a_clean_session(manifest, tmp_path) -> None:
+    """A wake names the delivery attached to the turn, never the session running it."""
+
+    service = _service(manifest, tmp_path)
+    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    data_dir = tmp_path / "data"
+    stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
+    stage.mkdir(parents=True)
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="live-session",
+        stage_host=None,
+        stage_root=str(stage),
+    )
+    root = store.agent_task(root.operation_id)
+    assert root is not None
+    notice = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="worker-settled",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="succeeded",
+            payload={"kind": "work", "status": "succeeded"},
+            created_at=store.now(),
+        )
+    )
+    wake_request = AutoResearchRunRequest.model_validate(root.request).model_copy(
+        update={
+            "actor_operation_id": root.operation_id,
+            "session_id": root.native_session_id,
+            "instruction": None,
+            "wake_cause": "lifecycle",
+        }
+    )
+    now = store.now()
+    wake = store.create_auto_research_lifecycle_wake_task(
+        AgentTaskRecord(
+            operation_id="lifecycle-wake",
+            project_id=root.project_id,
+            episode_id=auto_research.episode_id,
+            graph_target=auto_research.graph_target,
+            kind="auto_research",
+            status="running",
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="lifecycle wake running",
+            parent_operation_id=root.operation_id,
+            native_session_id=root.native_session_id,
+            stage_host=root.stage_host,
+            stage_root=root.stage_root,
+            authorized_by=auto_research.authorized_by,
+            dispatch_authority=root.dispatch_authority,
+        ),
+        lifecycle_notice_ids=[notice.notice_id],
+        message_ids=[],
+    )
+    assert wake is not None
+    contract = "# original auto_research orchestrator contract\n"
+    contract_path = stage / "inputs" / "original-orchestrator-contract.md"
+    contract_path.parent.mkdir(parents=True)
+    contract_path.write_text(contract, encoding="utf-8")
+    store.record_agent_task_contract(
+        wake.operation_id,
+        "auto_research_orchestrator",
+        contract,
+        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+    )
+    store.record_agent_task_receipt(
+        wake.operation_id,
+        "agent_prompt",
+        {"contract_path": str(contract_path)},
+        tier="diagnostic",
+    )
+    store.fail_agent_task(wake.operation_id, "The provider exited before finishing its turn.")
+
+    staged_notice_ids: list[list[str]] = []
+
+    def writer(_contract_text: str, workspace: Path) -> None:
+        delivery = parse_auto_research_lifecycle_delivery(
+            (workspace / "lifecycle.json").read_text(encoding="utf-8")
+        )
+        staged_notice_ids.append([item.notice_id for item in delivery.notices])
+        workspace.joinpath("patch.json").write_text(
+            json.dumps(
+                {
+                    "summary": "No graph change was required after recovery.",
+                    "ops": [],
+                    "repositories_read": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    launcher = _WorkerLauncher(session_id="replacement-session", writer=writer)
+
+    async def stream(_project_id, kind, request, execution):
+        assert kind == "auto_research"
+        async for frame in stream_auto_research_orchestrator_run(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution,
+            command_dispatcher=_dispatcher(store),
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    tasks.recover_at_startup()
+    retry = tasks.retry(wake.operation_id, reasoning="high")
+    retry = wait_for_task(store, retry.operation_id, expect="succeeded")
+
+    retried = AutoResearchRunRequest.model_validate(retry.request)
+    assert retried.reasoning == "high"
+    assert retried.wake_cause == "lifecycle"
+    assert retried.session_id is None
+    assert launcher.requested_session_ids == [None]
+    assert retry.native_session_id == "replacement-session"
+    # The delivery follows the paid allocation, not the session, so the clean
+    # turn still receives the fact that woke it.
+    assert staged_notice_ids == [[notice.notice_id]]
+
+
 @pytest.mark.parametrize(
     "failure_point",
     ["session-limit", "saved-stage", "pre-stage"],

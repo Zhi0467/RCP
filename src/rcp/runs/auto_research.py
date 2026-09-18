@@ -105,6 +105,11 @@ class AutoResearchRunRequest(BaseModel):
     ``role`` is actor attribution, not a wake category. Watcher, graph-condition,
     message, and lifecycle delivery resume the same actor while spending another
     unit from the auto_research pot. Lifecycle delivery is root-orchestrator only.
+
+    ``wake_cause`` names the delivery attached to the turn, not the session that
+    runs it. Whether a turn continues its saved session belongs to admission and
+    launch, which read the actor binding; the request shape must not also decide
+    it, or an orchestrator recovery that legitimately starts clean is refused.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -144,8 +149,6 @@ class AutoResearchRunRequest(BaseModel):
             raise ValueError(
                 "an Auto-research worker must name the Experiment or Blocker seating it"
             )
-        if self.wake_cause is not None and self.session_id is None:
-            raise ValueError("an Auto-research wake must resume its saved native session")
         if self.wake_cause == "lifecycle" and self.role != "orchestrator":
             raise ValueError("only the Auto-research orchestrator may receive lifecycle facts")
         if len(self.watcher_ids) != len(set(self.watcher_ids)):

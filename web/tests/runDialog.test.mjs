@@ -1134,3 +1134,75 @@ test("provider path state distinguishes a stale recorded executable", () => {
     { label: "Recorded path unusable", kind: "error" },
   );
 });
+
+// SSR renders the dialog's initial state, which comes from the profile rather
+// than from initialConfig, so the divergence has to live in the profiles.
+const orchestratorOnClaude = {
+  ...project,
+  agent_profiles: {
+    ...project.agent_profiles,
+    orchestrator: { ...project.agent_profiles.orchestrator, provider: "claude" },
+  },
+  provider_readiness: {
+    local: {
+      ...project.provider_readiness.local,
+      claude: {
+        provider: "claude",
+        label: "Claude",
+        installed: true,
+        authenticated: true,
+        models: [],
+      },
+    },
+  },
+};
+
+test("an Auto-research provider switch names the children it does not move", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "orchestrator",
+      mode: "retry",
+      project: orchestratorOnClaude,
+      initialScope: ["repo"],
+      initialConfig: {
+        provider: "claude",
+        model: "",
+        reasoning: "medium",
+        run_on: "local",
+      },
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
+
+  assert.match(html, /Switch Auto-research provider/);
+  assert.match(html, /Children this orchestrator spawns stay on codex/);
+  assert.match(html, /Node chat profile, which this switch does not change/);
+  assert.match(html, /Change it in Settings first/);
+});
+
+test("an Auto-research switch onto the children's own provider names no divergence", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(RunDialog, {
+      open: true,
+      kind: "orchestrator",
+      mode: "retry",
+      project,
+      initialScope: ["repo"],
+      initialConfig: {
+        provider: "codex",
+        model: "",
+        reasoning: "medium",
+        run_on: "local",
+      },
+      busy: false,
+      onClose() {},
+      onRun() {},
+    }),
+  );
+
+  assert.match(html, /Switch Auto-research provider/);
+  assert.doesNotMatch(html, /Children this orchestrator spawns/);
+});

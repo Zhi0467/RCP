@@ -215,7 +215,13 @@ active only after a mechanically successful handoff; automatic work never
 silently switches or starts fresh. The switch is offered only where the actor
 can accept a new binding: a rebinding starts a clean native session, which an
 Auto-research worker never gets and which a stopping episode refuses from
-anyone, so neither shows one beside the exact Retry they do permit. Because the switch exists to change the binding, it holds its
+anyone, so neither shows one beside the exact Retry they do permit. An
+orchestrator wake is offered the switch like any other orchestrator turn: the
+wake names the delivery attached to the turn, and that delivery is staged from
+the paid allocation, so a clean session still receives it. The switch rebinds
+that one turn, so an Auto-research switch names the children it leaves behind:
+they resolve their own binding from the project's node_chat profile, which only
+Settings moves. Because the switch exists to change the binding, it holds its
 submission until the selection actually differs from the one that failed, and
 the execution machine is part of that selection wherever the recovery is free to
 move it. A run that can retry unchanged keeps its own plain Retry and never
