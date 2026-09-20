@@ -239,3 +239,40 @@ async def test_closed_cache_does_not_start_another_probe(machine):
     await cache.close()
     with pytest.raises(RuntimeError, match="closed"):
         cache.get(machine)
+
+
+@pytest.mark.parametrize(
+    ("registered", "answered", "offered"),
+    [
+        ("rcp", "rcp", True),
+        # An unregistered account has nothing to compare, so nothing is refused.
+        ("", "someone-else", True),
+        ("rcp", "", True),
+        ("rcp", "someone-else", False),
+    ],
+)
+def test_a_machine_answering_as_another_account_is_not_offered(registered, answered, offered):
+    """A destination carrying no user takes its account from the client's SSH
+    configuration, which can drift away from the registered one. A shell there
+    would have the wrong home, credentials and write authority.
+    """
+    from rcp.terminals.backends import machine_capability
+
+    machine = MachineConfig(alias="remote", host="terminal.example", os_account=registered)
+    probe = TerminalProbe("Linux", "reachable", "Ready.", 254, answered)
+    capability = machine_capability(machine, probe)
+    assert (capability.backend is not None) is offered
+    if not offered:
+        assert "different account" in capability.reason
+
+
+def test_the_shipped_probe_reports_the_account_it_answers_as():
+    """The server cannot see which account SSH landed on; only the far side can."""
+    import os
+    import pwd
+
+    def ready(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, "systemd 254 (254)\n", "")
+
+    payload = remote_terminal_probe.probe_machine(command_timeout=1, runner=ready)
+    assert payload["os_account"] == pwd.getpwuid(os.geteuid()).pw_name

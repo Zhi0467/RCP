@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import pwd
 import re
 import shutil
 import subprocess
@@ -14,8 +15,21 @@ import sys
 def probe_machine(*, command_timeout: float, runner=subprocess.run) -> dict[str, str]:
     os_name = platform.system()
 
+    # The destination may carry no user, in which case the account comes from
+    # the client's SSH configuration and can drift away from the registered
+    # one. Report what this actually is so the server can refuse a mismatch.
+    try:
+        os_account = pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        os_account = ""
+
     def result(state: str, diagnostic: str) -> dict[str, str]:
-        return {"os_name": os_name, "state": state, "diagnostic": diagnostic}
+        return {
+            "os_name": os_name,
+            "state": state,
+            "diagnostic": diagnostic,
+            "os_account": os_account,
+        }
 
     if not os_name:
         return result("incapable", "The execution machine did not identify its operating system.")

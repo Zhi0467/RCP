@@ -59,6 +59,21 @@ class TerminalManager:
             "rcp-terminal-" + hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()[:12]
         )
 
+    async def _record_launch_failure(self, session: TerminalSession) -> None:
+        """Finish or retain a failed launch's record; never leave it untracked.
+
+        The intent is persisted before the launch, and an unfinished record is
+        both what startup reconciles and what blocks a reopen. A mirrored
+        launch may have created its unit before failing, so the record is
+        finished only once that unit is known to be gone.
+        """
+        session.termination_reason = "launch_failed"
+        if await self.unit_confirmed_gone(session):
+            session.ended_at = timestamp()
+        else:
+            self.mark_unresolved(session)
+        save_metadata(self.directory, session)
+
     def mark_unresolved(self, session: TerminalSession) -> None:
         """Remember that this repository may still have a shell on it."""
         self._unresolved[(session.project_id, session.repository_id)] = session
@@ -297,26 +312,26 @@ class TerminalManager:
         pending = asyncio.create_task(start)
         try:
             process, master_fd = await asyncio.shield(pending)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
             # A disconnected request cannot abandon a launch still running
             # in its worker thread. Finish admission, then stop its unit.
-            process, master_fd = await pending
+            try:
+                process, master_fd = await pending
+            except Exception:
+                # It failed after all. This raises inside the cancellation
+                # handler and so cannot reach the launch-failure branch below,
+                # which would leave its record untracked while `_opening` is
+                # cleared — enough for the next attempt to start a second
+                # shell. Clean up here and let the cancellation stand.
+                await self._record_launch_failure(session)
+                raise cancelled from None
             runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
             async with self._lock:
                 self.sessions[session_id] = runtime
                 await end_runtime(self, runtime, "opening_cancelled")
             raise
         except Exception:
-            # The intent was persisted before the launch, and an unfinished
-            # record is what startup reconciles. A failed mirrored launch may
-            # still have created its unit, so finish the record only once that
-            # unit is known to be gone.
-            session.termination_reason = "launch_failed"
-            if await self.unit_confirmed_gone(session):
-                session.ended_at = timestamp()
-            else:
-                self.mark_unresolved(session)
-            save_metadata(self.directory, session)
+            await self._record_launch_failure(session)
             raise
         runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
         if machine.host:

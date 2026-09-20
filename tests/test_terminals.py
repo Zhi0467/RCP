@@ -634,6 +634,50 @@ async def test_open_cancellation_stops_the_inflight_launch(
         await manager.close()
 
 
+@pytest.mark.asyncio
+async def test_a_cancelled_open_whose_launch_then_fails_still_tracks_its_unit(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """The failure is raised while the cancellation is being handled, so it
+    cannot reach the ordinary launch-failure branch. Without cleanup of its own
+    the record is left untracked while `_opening` is cleared, which is enough
+    for the next attempt to put a second shell on the checkout.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed(command, unit):
+        started.set()
+        assert release.wait(5)
+        raise TerminalUnavailable("systemd-run did not confirm the required terminal profile.")
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl is unavailable.")
+
+    monkeypatch.setattr(launch, "launch", delayed)
+    monkeypatch.setattr(launch, "stop_unit", unstoppable)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        opening = asyncio.create_task(manager.open(**arguments(manifest)))
+        assert await asyncio.to_thread(started.wait, 5)
+        opening.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["ended_at"] is None
+        assert receipt["termination_reason"] == "launch_failed"
+        assert manager.list("project") == []
+        # Its unit is unaccounted for, so the next open is refused rather than
+        # quietly starting a second shell on the same checkout.
+        with pytest.raises(TerminalUnavailable, match="until that one is gone"):
+            await manager.open(**arguments(manifest))
+    finally:
+        release.set()
+        await manager.close()
+
+
 def test_failed_required_profile_never_launches_a_fallback(tmp_path, monkeypatch):
     commands = []
     stopped = []

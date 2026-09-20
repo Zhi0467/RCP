@@ -95,6 +95,18 @@ def machine_capability(
             return TerminalCapability(None, "Checking remote terminal capability…", "pending")
         if not probe.ready or not probe.os_name:
             return TerminalCapability(None, probe.diagnostic, probe.state, probe.os_name)
+        if machine.os_account and probe.os_account and probe.os_account != machine.os_account:
+            # A destination without a user takes its account from the client's
+            # SSH configuration. Opening there would give the member a shell
+            # under another account's home, credentials and write authority,
+            # and the mount profile was computed for the registered one.
+            return TerminalCapability(
+                None,
+                "This machine answers as a different account than the registered one, "
+                "so a terminal would run with the wrong home and credentials.",
+                probe.state,
+                probe.os_name,
+            )
         backend = resolve_backend(probe.os_name, True)
         return TerminalCapability(
             backend,

@@ -33,6 +33,8 @@ class TerminalProbe:
     diagnostic: str
     # `--expand-environment=no` arrived in systemd 254; 0 means unknown.
     systemd_version: int = 0
+    # The account the machine actually answered as; "" when it could not say.
+    os_account: str = ""
 
     @property
     def expand_environment_option(self) -> bool:
@@ -91,11 +93,13 @@ def probe_remote_terminal(machine: MachineConfig, *, runner=subprocess.run) -> T
             None, "incapable", "The execution machine returned an invalid terminal probe."
         )
     version = payload.get("systemd_version")
+    account = payload.get("os_account")
     return TerminalProbe(
         payload["os_name"],
         payload["state"],
         safe_compute_diagnostic(payload["diagnostic"]),
         version if isinstance(version, int) and version >= 0 else 0,
+        account if isinstance(account, str) else "",
     )
 
 

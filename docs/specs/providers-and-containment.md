@@ -71,7 +71,13 @@ backend pattern. Selection is per machine and independent of space kind:
   unavailable on that machine: there is no canonical-state fence.
 - A machine with a non-empty `host` uses its probed remote OS, never the OS of
   the RCP process. A source-shipped Python probe checks the execution account's
-  tools and user manager. The shared SSH failure vocabulary distinguishes
+  tools and user manager, and reports the account it actually answered as. An
+  SSH destination that carries no user takes its account from the client's SSH
+  configuration, so a machine answering as an account other than its registered
+  `os_account` is refused rather than offered: the shell would hold the wrong
+  home, credentials and write authority, and the mount profile was computed for
+  the registered account. A machine with no registered account has nothing to
+  compare and is not refused on this ground. The shared SSH failure vocabulary distinguishes
   unreachable, authentication failed, host key failed, and reachable but
   incapable machines, with the actual diagnostic.
 
