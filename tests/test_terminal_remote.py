@@ -312,3 +312,32 @@ def test_remote_source_shipping_does_not_require_inspectable_module_files(tmp_pa
     payload = json.loads(shipped[4])
     assert "def launch_command" in payload["profile_source"]
     assert "def terminal_git_access" in payload["git_access_source"]
+
+
+def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
+    """The key path must survive the whole route-to-launcher chain.
+
+    A signature that accepts it while the call site drops it looks plumbed and
+    authenticates nothing, which is how this first shipped.
+    """
+    import pathlib
+
+    from rcp.terminals import remote
+
+    captured = {}
+
+    def fake_launch(command, unit, **kwargs):
+        captured["command"] = command
+        return (None, 0)
+
+    monkeypatch.setattr(remote.launch, "launch", fake_launch)
+    remote.start_remote(
+        "example.invalid",
+        unit="u1",
+        repository=pathlib.Path("/srv/code"),
+        protected_paths=[],
+        containment="mirrored",
+        git_key_relative=".local/share/rcp/credentials/projects/p1/code/id_ed25519",
+    )
+    blob = " ".join(captured["command"])
+    assert "projects/p1/code/id_ed25519" in blob

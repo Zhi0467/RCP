@@ -182,8 +182,9 @@ that machine.
 Eligibility belongs to the repository's machine, never its space kind. Linux
 selects the mirrored backend only with usable systemd tools, `findmnt`, and a
 reachable user manager; other operating systems select cooperative. A remote
-machine's source-shipped capability probe supplies its OS and prerequisites,
-including lingering for its execution account.
+machine's source-shipped capability probe supplies its OS, its prerequisites,
+and its systemd version. It does not require lingering for the execution
+account, because a terminal's manager need only outlive its own session.
 `TerminalManager` caches one probe per machine for its lifetime, including failed
 results. A cache miss schedules background work and projects pending without
 blocking the route. Changed machine metadata invalidates the matching result;

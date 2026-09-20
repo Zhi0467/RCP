@@ -152,6 +152,7 @@ class TerminalManager:
                     protected_paths=protected,
                     containment=session.containment,
                     expand_environment_option=(probe.expand_environment_option if probe else True),
+                    git_key_relative=remote_git_key_relative,
                 )
             else:
                 start = asyncio.to_thread(

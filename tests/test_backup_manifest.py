@@ -79,6 +79,7 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
         "session-slices",
         "source-cache",
         "state-cache",
+        "terminals",
         "transfer-exports",
         "transfer-inbox",
     } == BACKUP_APP_DATA_EXCLUSIONS

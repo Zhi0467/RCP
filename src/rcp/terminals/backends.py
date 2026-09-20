@@ -50,7 +50,10 @@ class TerminalBackend:
             git_read_paths=git_read_paths,
             git_environment=git_environment,
             empty_directory=empty_directory,
-            expand_environment_option=expand_environment_option,
+            # A local host has no probe to carry its version, so read it here.
+            expand_environment_option=(
+                expand_environment_option and launch.local_systemd_version() >= 254
+            ),
         )
         return launch.launch(command, unit)
 

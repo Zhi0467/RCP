@@ -49,7 +49,14 @@ A small terminal backend registry owns an id, display name, and
 backend pattern. Selection is per machine and independent of space kind:
 
 - Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
-  user manager reports `mirrored`. Remote accounts also require lingering.
+  user manager reports `mirrored`. Lingering is deliberately not required: the
+  PTY lives inside the session that owns a session-scoped manager, which runs
+  transient units and tears down with the link. A manager reporting `degraded`
+  still answers and still launches.
+- `--expand-environment=no` exists only from systemd 254. A probe reports the
+  manager's version and a launch passes the option only where it exists; below
+  it, the launch refuses any path or value containing `$` rather than running
+  under an expansion it cannot disable.
 - Other operating systems, including macOS, report `cooperative` and use a
   plain PTY in the registered repository. Canonical-state protection is
   unavailable on that machine: there is no canonical-state fence.

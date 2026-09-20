@@ -823,3 +823,27 @@ async def test_remote_255_retires_session_with_completion_evidence(
         assert receipt["termination_reason"] == session.termination_reason
     finally:
         await manager.close()
+
+
+def test_local_systemd_older_than_254_omits_the_expansion_option(monkeypatch):
+    """A local host hits the same systemd 254 boundary as a remote one.
+
+    Assuming the newer manager killed every launch on the real execution host,
+    which runs 249; nothing locally would have caught it.
+    """
+    import subprocess as sp
+
+    def fake(command, **kwargs):
+        return sp.CompletedProcess(command, 0, "systemd 249 (249.11-0ubuntu3.22)\n", "")
+
+    assert launch.local_systemd_version(runner=fake) == 249
+
+    def newer(command, **kwargs):
+        return sp.CompletedProcess(command, 0, "systemd 257 (257.1-1)\n", "")
+
+    assert launch.local_systemd_version(runner=newer) == 257
+
+    def broken(command, **kwargs):
+        raise OSError("no systemd-run")
+
+    assert launch.local_systemd_version(runner=broken) == 0

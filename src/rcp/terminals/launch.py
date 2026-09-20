@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pty
+import re
 import shutil
 import signal
 import subprocess
@@ -53,6 +54,30 @@ def availability_diagnostic() -> str | None:
             detail = result.stderr.strip() or f"exit {result.returncode}"
             return f"Terminal prerequisite {command[0]} is unusable: {detail}"
     return None
+
+
+def local_systemd_version(*, runner=subprocess.run) -> int:
+    """This manager's major version, or 0 when it cannot be read.
+
+    A local host is subject to the same systemd 254 boundary as a remote one:
+    `--expand-environment=no` does not exist before it, and passing it kills
+    every launch. The remote side learns this from its probe; locally there is
+    no probe, so read it here rather than assuming the newer manager.
+    """
+    try:
+        result = runner(
+            ["systemd-run", "--version"],
+            capture_output=True,
+            text=True,
+            env=_manager_environment(),
+            timeout=TERMINAL_LAUNCH_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if result.returncode:
+        return 0
+    match = re.search(r"systemd\s+(\d+)", result.stdout or "")
+    return int(match.group(1)) if match else 0
 
 
 def launch_command(
