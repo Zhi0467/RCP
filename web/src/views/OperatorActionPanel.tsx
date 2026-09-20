@@ -16,6 +16,10 @@ function executionLabel(context: ServerExecutionContext | null | undefined): str
  * The OS account a saved operator route signs into, or null for the operator's
  * own login. A direct route is validated to be `rcp@host`, so it lands in the
  * service account itself rather than in a login that can elevate into it.
+ *
+ * A sudo route may also name any account, including the service account, and a
+ * route is stored before its probe runs. Landing is therefore only half the
+ * question; `proved` answers the other half.
  */
 function routeLandsAs(route: ServerOperatorRoute | null): string | null {
   if (!route || route.mode !== "direct_rcp") return null;
@@ -51,18 +55,21 @@ function CommandBlock({
   argv,
   context,
   route,
+  routeProved,
 }: {
   argv: string[];
   context: ServerExecutionContext | null | undefined;
   route: ServerOperatorRoute | null;
+  routeProved: boolean;
 }) {
   const command = formatCommandArgv(argv);
   const where = executionLabel(context);
   // Only offer the saved route as the way in when it actually lands in the
-  // shell this command needs. A direct route signs in as the service account,
-  // which cannot then elevate into it, so pasting it beside a command that
-  // expects the operator's own login would strand them mid-stop.
-  const reaches = context != null && routeLandsAs(route) === context.shell_account;
+  // shell this command needs, and only once it has been proved to run these
+  // commands. A route signing in as the service account cannot then elevate
+  // into it, and nothing stops one being saved that way, so recommending it
+  // would strand the operator mid-stop.
+  const reaches = routeProved && context != null && routeLandsAs(route) === context.shell_account;
   // Quoted like any other displayed command: a saved target may legally hold
   // shell metacharacters, and this string is copied straight into a shell.
   const entry = where && route && reaches ? formatCommandArgv(["ssh", route.ssh_target]) : null;
@@ -120,10 +127,13 @@ function OperatorStep({ title, children }: { title?: string; children: React.Rea
 export function OperatorActionPanel({
   step,
   route = null,
+  routeProved = false,
   onRefresh,
 }: {
   step: ServerStep;
   route?: ServerOperatorRoute | null;
+  /** Whether that route has been proved able to run these commands. */
+  routeProved?: boolean;
   onRefresh?: () => void;
 }) {
   const target =
@@ -215,7 +225,12 @@ export function OperatorActionPanel({
         {actions.map((action, index) =>
           action.kind === "command" ? (
             <OperatorStep key={index} title={action.title ?? undefined}>
-              <CommandBlock argv={action.argv} context={action.execution} route={route} />
+              <CommandBlock
+                argv={action.argv}
+                context={action.execution}
+                route={route}
+                routeProved={routeProved}
+              />
             </OperatorStep>
           ) : (
             <OperatorStep key={index} title={action.title ?? undefined}>
@@ -226,7 +241,12 @@ export function OperatorActionPanel({
         )}
         {step.resume_argv.length > 0 && (
           <OperatorStep title="Resume setup">
-            <CommandBlock argv={step.resume_argv} context={step.resume_execution} route={route} />
+            <CommandBlock
+              argv={step.resume_argv}
+              context={step.resume_execution}
+              route={route}
+              routeProved={routeProved}
+            />
             {onRefresh && (
               <div className="operator-run-on">
                 <button className="button primary tiny" type="button" onClick={onRefresh}>

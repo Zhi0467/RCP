@@ -1379,6 +1379,7 @@ export function ProvisioningStatus({
         <OperatorActionPanel
           step={request.operator_action}
           route={connection?.operator_route ?? null}
+          routeProved={probe?.available === true}
           onRefresh={onRefresh}
         />
       )}

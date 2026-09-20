@@ -189,7 +189,11 @@ Four slices. The first is the shared contract and lands alone.
    copy controls on every command and on every carried value, the execution
    label with the entry line composed from the saved operator route, and the
    resume command as the final step followed by Refresh. Per decision 5 the
-   stop-specific form is not reproduced.
+   stop declares what the panel cannot know: each action's name and its one
+   requirement, and whether a value is pasted into a form or only compared, so
+   the deploy-key grant draws as two inputs with the fingerprint beside them as
+   evidence. The saved route is offered as the way into a shell only when it
+   lands in that shell and has been proved to run these commands.
    Replace the `.operator-action-line` grid with full-width blocks, keeping the
    two-column grid only for labelled rows. `TransferProjectSetup` renders no
    actions, fields, or resume command at all today; it reuses the same panel.

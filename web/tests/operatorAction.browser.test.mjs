@@ -75,8 +75,9 @@ test("a human stop is ordered, says where each command runs, and copies its valu
     const headings = await page.locator(".operator-steps > li > header > span").allInnerTexts();
     assert.deepEqual(headings, [
       "Add the key to GitHub",
+      // The warning comes before the command that stops and waits for it.
+      "Know the host key before you are asked to accept it",
       "Trust github.com from the server",
-      "Check the host key before accepting it",
       "Resume setup",
     ]);
 
@@ -151,6 +152,13 @@ test("a human stop is ordered, says where each command runs, and copies its valu
       await page.locator(".operator-run-on code").first().innerText(),
       "ssh rcp@server.example",
     );
+
+    // A route is saved before its probe runs, and a sudo route may name the
+    // service account, so an unproved route is never offered as the way in.
+    await page.goto(`http://127.0.0.1:${port}/tests/fixtures/operatorAction.html?mode=unproved`);
+    await page.waitForSelector(".provisioning-operator-action");
+    assert.ok((await page.locator(".operator-run-on .tag").count()) >= 2);
+    assert.equal(await page.locator(".operator-run-on code").count(), 0);
 
     assert.deepEqual(errors, []);
   } finally {

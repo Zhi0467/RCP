@@ -949,18 +949,21 @@ def deploy_key_operator_step(
                 instruction=instruction,
                 requirement="Enable Allow write access",
             ),
+            # Before, not after: the command below stops at an unknown host
+            # key and waits, so an operator reading in order has to already
+            # know what to compare it against.
+            ExternalAction(
+                title="Know the host key before you are asked to accept it",
+                instruction=(
+                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
+                    "key; accept it only if the offered fingerprint is listed there. A "
+                    "successful no-shell authentication may then exit with status 1."
+                ),
+            ),
             CommandAction(
                 title="Trust github.com from the server",
                 argv=manager.github_trust_argv(machine, material),
                 execution=OPERATOR_SHELL,
-            ),
-            ExternalAction(
-                title="Check the host key before accepting it",
-                instruction=(
-                    "Compare the offered fingerprint with "
-                    f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
-                    "with status 1."
-                ),
             ),
         ),
         fields=(
@@ -1020,18 +1023,21 @@ def restore_deploy_key_operator_step(
                 instruction=instruction,
                 requirement="Enable Allow write access",
             ),
+            # Before, not after: the command below stops at an unknown host
+            # key and waits, so an operator reading in order has to already
+            # know what to compare it against.
+            ExternalAction(
+                title="Know the host key before you are asked to accept it",
+                instruction=(
+                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
+                    "key; accept it only if the offered fingerprint is listed there. A "
+                    "successful no-shell authentication may then exit with status 1."
+                ),
+            ),
             CommandAction(
                 title="Trust github.com from the server",
                 argv=manager.github_trust_argv(machine, material),
                 execution=OPERATOR_SHELL,
-            ),
-            ExternalAction(
-                title="Check the host key before accepting it",
-                instruction=(
-                    "Compare the offered fingerprint with "
-                    f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
-                    "with status 1."
-                ),
             ),
         ),
         fields=(
