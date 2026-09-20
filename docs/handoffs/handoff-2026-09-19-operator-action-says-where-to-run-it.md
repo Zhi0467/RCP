@@ -125,12 +125,24 @@ other end are never named as two things.
    therefore out of scope; the execution context supplies the missing frame
    without moving any execution.
 5. **A human stop renders as an ordered list of single actions.** One numbered
-   step per action, each with a heading. `purpose` and `expected_success` move
-   behind one explicit disclosure; `performed_by` is dropped from the body,
-   because the card already says a human is required. This follows
+   step per action. `purpose` and `expected_success` move behind one explicit
+   disclosure; `performed_by` is dropped from the body, because the card
+   already says a human is required. This follows
    [interface and visual design](../specs/interface-and-visual-design.md): no
    muted commentary line under a heading, and a read-only inspector rather than
    a caption when there is more to say.
+
+   Revised while implementing, and not yet reconfirmed with the human. The
+   mockup they approved was drawn for the deploy-key stop alone, and three of
+   its affordances need to know which stop is being drawn: a name for each
+   numbered step, which of the carried values are GitHub inputs rather than the
+   fingerprint that is only verification evidence, and *Allow write access* as
+   its own requirement. A shared panel may not hold that knowledge, so the
+   implementation numbers each action without naming it, renders every value
+   the same way, and leaves the write-access requirement inside the
+   instruction text that already states it. The alternative is to let a step
+   declare those roles, which is a further contract change and was not taken
+   here.
 6. **The operator stop keeps its own title.** `_copy_operator_contract` takes
    `title` and `purpose` from the operator step, not the pending plan step, so
    the card is named after the human's task. Two independent event validators
@@ -168,10 +180,10 @@ Four slices. The first is the shared contract and lands alone.
    forwards only actions, fields, and diagnostic from its operator step, so the
    restore twin needs its title forwarded too or the rename is invisible.
 3. **Web panel.** Rebuild `OperatorAction` as the ordered list: numbered steps,
-   copy controls on every command and on each deploy-key value, the execution
-   label with the entry line composed from the saved operator route, the grant
-   rendered as a titled two-field form with *Allow write access* as an explicit
-   requirement, and the resume command as the final step followed by Refresh.
+   copy controls on every command and on every carried value, the execution
+   label with the entry line composed from the saved operator route, and the
+   resume command as the final step followed by Refresh. Per decision 5 the
+   stop-specific form is not reproduced.
    Replace the `.operator-action-line` grid with full-width blocks, keeping the
    two-column grid only for labelled rows. `TransferProjectSetup` renders no
    actions, fields, or resume command at all today; it reuses the same panel.
