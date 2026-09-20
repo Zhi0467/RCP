@@ -253,7 +253,11 @@ They are found by the alias they were filed under and by the working tree each
 record declared it opened on — its path, host and account — because settings
 can drop an alias and register the same checkout under another name. A blocker
 filed under the old alias still names a unit on that working tree, and the new
-alias would otherwise open a second shell on it. A machine alias is the label
+alias would otherwise open a second shell on it. Declarations are compared
+before the open resolves anything, which is what refuses it without work a
+manifest may not even permit; once it has resolved the tree, the records that
+resolved one of their own are compared against that instead, which is where
+two spellings of one remote tree meet. A machine alias is the label
 RCP gives a host rather than part of what makes two things one tree, so
 renaming it changes no blocker's reach. Neither does the spelling of a local
 path: a symlink and its target name one working tree. A local record holds the

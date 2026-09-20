@@ -361,7 +361,11 @@ class TerminalManager:
         retained.append(session)
 
     async def _resolve_unfinished(
-        self, project_id: str, manifest: Manifest, repository_alias: str
+        self,
+        project_id: str,
+        manifest: Manifest,
+        repository_alias: str,
+        resolved: tuple[str, str, str] | None = None,
     ) -> None:
         """Retry every retained record that still speaks for this checkout.
 
@@ -372,11 +376,21 @@ class TerminalManager:
         The alias alone does not find them all. Settings can drop an alias and
         register the same checkout under another name, and the old alias's
         blocker then names a unit on the very working tree the new alias is
-        about to open. The tree itself — path, host and account — identifies
-        it across that rename, and across a rename of the machine alias too,
-        which is a label rather than part of what makes two things one tree.
-        A record this version could not read declares nothing, so its alias is
-        all it has, which is why both are consulted.
+        about to open. The registration each named identifies it across that
+        rename, and across a rename of the machine alias too, which is a label
+        rather than part of what makes two things one tree.
+
+        That comparison is between declarations, which is all an alias and a
+        manifest can offer, and a remote declaration is a path this machine
+        cannot resolve — so two spellings of one remote tree do not meet
+        there. Once a caller has resolved the tree it is about to open it says
+        so, and the records that resolved one of their own are compared
+        against it. Both calls happen: the first refuses before the work of
+        resolving, which a manifest may not even permit, and the second sees
+        what only resolving can show.
+
+        A record this version could not read resolved nothing and declares
+        nothing, so its alias is all it has.
         """
         target = (
             manifest_checkout(manifest, repository_alias)
@@ -389,6 +403,7 @@ class TerminalManager:
             for session in retained
             if (key[0] == project_id and key[1] == repository_alias)
             or (target is not None and session_checkout(session) == target)
+            or (resolved is not None and session.path and held_checkout(session) == resolved)
         ]
         if not speaking:
             return
@@ -831,6 +846,14 @@ class TerminalManager:
             inventory=repository_inventory,
             data_dir=self.data_dir,
             remote_stage=RemoteRunStage(machine.host) if machine.host else None,
+        )
+        # Once the tree is known: a record retained on it blocks this open
+        # whatever alias filed it, and a stop it can now finish releases it.
+        await self._resolve_unfinished(
+            project_id,
+            manifest,
+            repository_alias,
+            resolved=(str(root), machine.host, machine.os_account),
         )
         session_id = uuid.uuid4().hex
         session = TerminalSession(

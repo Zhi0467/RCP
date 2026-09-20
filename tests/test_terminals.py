@@ -1767,6 +1767,71 @@ async def test_a_rename_during_an_open_cannot_start_a_second_shell_on_the_tree(
 
 
 @pytest.mark.asyncio
+async def test_a_retained_remote_record_blocks_its_tree_under_another_spelling(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A record whose remote stop was never confirmed holds its tree, and the
+    tree can come back under another name and spelling. Nothing live remains
+    for the reservation to find, so the record is what has to be matched —
+    against what each side resolved, since a remote declaration is a path this
+    machine cannot resolve.
+    """
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    overrides = {
+        "/declared/repo-b": "/canonical/tree",
+        "/declared/moved": "/canonical/tree",
+    }
+    machine = manifest.machine_map["laptop"]
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(lambda value: TerminalProbe("Linux", "reachable", "Ready."))
+    monkeypatch.setattr(
+        "rcp.terminals.manager.RemoteRunStage",
+        lambda host: _RemoteScopeStage(host=host, overrides=overrides),
+    )
+    monkeypatch.setattr(
+        remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
+    )
+
+    def unconfirmed(*args):
+        raise TerminalUnavailable("The execution machine is unreachable.")
+
+    monkeypatch.setattr(remote, "stop_remote_unit", unconfirmed)
+    await manager.start()
+    try:
+        # What an earlier shell on that tree left behind, under its own name.
+        manager.mark_unresolved(
+            TerminalSession(
+                session_id="earlier",
+                project_id="project",
+                member_id="member",
+                repository_id="repo-b",
+                path="/canonical/tree",
+                started_at="start",
+                last_activity_at="start",
+                unit=f"{manager._unit_prefix}-earlier",
+                containment="mirrored",
+                declared_path="/declared/repo-b",
+                declared_machine="laptop",
+                declared_account=machine.os_account,
+                execution_host=machine.host,
+            )
+        )
+        repository = manifest.repository_map["repo-b"]
+        manifest.repositories = [
+            item for item in manifest.repositories if item.alias != "repo-b"
+        ] + [repository.model_copy(update={"alias": "repo-b-moved", "path": "/declared/moved"})]
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**{**arguments(manifest), "repository_alias": "repo-b-moved"})
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_two_remote_declarations_of_one_tree_hold_one_shell(
     manifest, tmp_path, process_factory, monkeypatch
 ):
