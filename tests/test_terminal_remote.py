@@ -263,25 +263,37 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     os.close(slave)
     output = bytearray()
 
-    def read_until(marker):
-        deadline = time.monotonic() + 10
+    def read_until(marker, seconds=10):
+        deadline = time.monotonic() + seconds
         while marker not in output:
             remaining = deadline - time.monotonic()
-            assert remaining > 0, output.decode(errors="replace")
-            assert select.select([master], [], [], remaining)[0]
+            if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
+                return False
             output.extend(os.read(master, 4096))
+        return True
+
+    def require(marker, seconds=10):
+        assert read_until(marker, seconds), output.decode(errors="replace")
 
     try:
-        read_until(profile._READY_MARKER)
+        require(profile._READY_MARKER)
         os.write(master, b"sleep 30\n")
-        read_until(b"sleep 30\r\n")
+        require(b"sleep 30\r\n")
         os.write(master, b"\x03")
         # A tty flushes its input queue while processing INTR, so the next
         # command may only be sent once the interrupt's own echo proves that
         # flush is already behind us.
-        read_until(b"^C")
-        os.write(master, b"printf 'job-%s\\n' control\n")
-        read_until(b"job-control\r\n")
+        require(b"^C")
+        # An interrupt delivered while the shell is still forking its job can
+        # arrive before that job exists, leaving it running and swallowing what
+        # follows. Ask again, interrupting once more, until the shell answers.
+        deadline = time.monotonic() + 30
+        while True:
+            os.write(master, b"printf 'job-%s\\n' control\n")
+            if read_until(b"job-control\r\n", 3):
+                break
+            assert time.monotonic() < deadline, output.decode(errors="replace")
+            os.write(master, b"\x03")
         assert b"no job control" not in output
         os.close(master)
         master = -1

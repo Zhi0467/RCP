@@ -62,6 +62,20 @@ def test_every_terminal_http_route_hides_nonmember_projects(tmp_path, method, su
     assert response.json() == unknown.json() == {"detail": "Project not found"}
 
 
+def _lifecycle_frame(socket):
+    """The next JSON frame, skipping PTY bytes still queued ahead of it.
+
+    A PTY read can split output across frames, so a binary frame can sit
+    between the output a test consumed and the lifecycle frame it waits for.
+    """
+    while True:
+        message = socket.receive()
+        if message.get("type") == "websocket.close":
+            raise AssertionError(f"socket closed before a lifecycle frame: {message}")
+        if "text" in message:
+            return json.loads(message["text"])
+
+
 def test_terminal_websocket_checks_membership_independently(tmp_path):
     _app, client, _store, people, acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
@@ -235,7 +249,7 @@ def test_session_pty_reconnect_resize_and_end(tmp_path, terminal_pty):
             assert b"terminal-input" in socket.receive_bytes()
             ended = client.delete(f"{path}/{session_id}")
             assert ended.status_code == 200, ended.text
-            assert socket.receive_json()["type"] == "ended"
+            assert _lifecycle_frame(socket)["type"] == "ended"
         assert client.get(path).json() == []
         assert client.delete(f"{path}/{session_id}").status_code == 404
 
@@ -592,7 +606,7 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
                 )
             process.poll.return_value = 255
             client.portal.call(app.state.services.terminals.sweep)
-            ended = socket.receive_json()
+            ended = _lifecycle_frame(socket)
             assert ended["type"] == "ended"
             assert ended["reason"] == (
                 "Terminal session ended."
