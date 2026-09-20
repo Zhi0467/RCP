@@ -1954,6 +1954,68 @@ async def test_a_cancel_during_the_membership_end_does_not_end_it_again(
 
 
 @pytest.mark.asyncio
+async def test_stops_do_not_run_on_the_shared_default_pool(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """Ending several shells together is only as concurrent as the pool the
+    stops run on, and the caller holds the instance lock across all of them.
+    On the pool the rest of the application uses for every other blocking
+    call, a project's worth of unreachable machines would queue behind it.
+    """
+    running_on = []
+
+    def stop(unit):
+        running_on.append(threading.current_thread().name)
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        monkeypatch.setattr(launch, "stop_unit", stop)
+        await manager.end("project", session.session_id)
+        assert running_on == [running_on[0]]
+        assert running_on[0].startswith("rcp-terminal-stop")
+        shared = await asyncio.to_thread(lambda: threading.current_thread().name)
+        assert not shared.startswith("rcp-terminal-stop")
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_input_stops_when_its_session_ends_mid_write(manifest, tmp_path, process_factory):
+    """A backpressured write waits with a descriptor in hand. If the session
+    ends meanwhile, that descriptor is closed and its number can be handed to
+    another shell, so the runtime is checked again before the write resumes —
+    writing first would deliver the rest of one member's input somewhere else.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    writing = None
+    try:
+        manager._sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await manager._sweeper
+        session = await manager.open(**arguments(manifest))
+        # Nothing reads the far side, so this fills the PTY and waits.
+        writing = asyncio.create_task(
+            manager.write("project", session.session_id, b"x" * (8 * 1024 * 1024))
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not writing.done(), "the PTY took the whole write, so nothing was waiting"
+        await manager.end("project", session.session_id)
+        # Not an OSError from writing to the descriptor it had been holding.
+        with pytest.raises(KeyError):
+            await writing
+    finally:
+        if writing is not None:
+            writing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, KeyError):
+                await writing
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_input_renews_the_lifetime_before_the_pty_drains_it(
     manifest, tmp_path, process_factory
 ):

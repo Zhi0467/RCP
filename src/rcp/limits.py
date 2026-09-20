@@ -355,6 +355,13 @@ TERMINAL_PROBE_WORKERS = 4
 # a burst abandons, so the newest answer still finds a thread.
 TERMINAL_PROBE_THREADS = 16
 TERMINAL_STOP_TIMEOUT_SECONDS = 5.0
+# Stops run on their own threads, not the interpreter's shared default pool,
+# which the rest of the application uses for every other blocking call. Ending
+# a project's worth of shells at once is only as concurrent as the pool it runs
+# on, and a stop against a machine that has gone spends its own timeout while
+# its caller holds the instance lock. This admits a realistic project's worth
+# at once; beyond it they still queue, but never behind unrelated work.
+TERMINAL_STOP_THREADS = 32
 # Startup reconciles every record at once, but their stops run in a shared
 # thread pool, so enough unreachable records still queue into timeout-sized
 # batches. This bounds what they can cost the boot; whatever has not finished

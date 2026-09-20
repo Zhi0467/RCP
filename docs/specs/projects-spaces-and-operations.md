@@ -269,7 +269,10 @@ Both passes run: the first refuses without work a manifest may not even permit,
 and the second sees what only resolving can show.
 
 A machine alias is the label RCP gives a host rather than part of what makes
-two things one tree, so renaming it changes no blocker's reach. A record this
+two things one tree, so renaming it changes no blocker's reach. Neither does a
+registered account on a local machine: a local shell runs as the RCP process
+account whatever the manifest says, and that setting is only consulted, and
+checked against the answer, for a remote one. A record this
 version could not read resolved nothing and declares nothing, so its alias is
 all it has. The same holds for one whose containment this version does not
 recognise, and for one whose session identifier is not the name of the file

@@ -17,6 +17,8 @@ import termios
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 from rcp.agents.write_scope import RegisteredRepositoryRoot
@@ -26,6 +28,7 @@ from rcp.limits import (
     TERMINAL_MAX_DIMENSION,
     TERMINAL_POLL_INTERVAL_SECONDS,
     TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS,
+    TERMINAL_STOP_THREADS,
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
 from rcp.terminals import launch, remote
@@ -76,6 +79,17 @@ def _checkout_path(path: str, host: str) -> str:
         return path
 
 
+def _checkout_account(host: str, os_account: str) -> str:
+    """The account a working tree is identified by, which is none locally.
+
+    A local shell runs as the RCP process account whatever a manifest says:
+    the setting is consulted only for a remote machine, whose answer is
+    checked against it before a launch. Letting it into a local identity
+    would split one working tree in two the moment it changed.
+    """
+    return os_account if host else ""
+
+
 def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, str, str]:
     """The working tree this alias names: path, host and account.
 
@@ -88,7 +102,11 @@ def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, s
     """
     repository = manifest.repository_map[repository_alias]
     machine = manifest.machine_map[repository.machine]
-    return (_checkout_path(repository.path, machine.host), machine.host, machine.os_account)
+    return (
+        _checkout_path(repository.path, machine.host),
+        machine.host,
+        _checkout_account(machine.host, machine.os_account),
+    )
 
 
 def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
@@ -104,7 +122,7 @@ def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
     """
     if session.execution_host:
         return (session.declared_path, session.execution_host, session.declared_account)
-    return (session.path, "", session.declared_account)
+    return (session.path, "", "")
 
 
 # Every field of `TerminalSession` holds a string; two of them may be null
@@ -173,7 +191,7 @@ def held_checkout(session: TerminalSession) -> tuple[str, str, str]:
     return (
         session.path or session.declared_path,
         session.execution_host,
-        session.declared_account,
+        _checkout_account(session.execution_host, session.declared_account),
     )
 
 
@@ -210,6 +228,9 @@ class TerminalManager:
         # Records left unfinished because a unit could not be confirmed gone.
         self._unresolved: dict[tuple[str, str], list[TerminalSession]] = {}
         self._local_capability: TerminalCapability | None = None
+        self._stops = ThreadPoolExecutor(
+            max_workers=TERMINAL_STOP_THREADS, thread_name_prefix="rcp-terminal-stop"
+        )
         self._lock = asyncio.Lock()
         self._sweeper: asyncio.Task[None] | None = None
         self._started = False
@@ -613,14 +634,16 @@ class TerminalManager:
         if session.containment == "mirrored":
             try:
                 if session.execution_host:
-                    await asyncio.to_thread(
-                        remote.stop_remote_unit,
-                        session.execution_host,
-                        session.unit,
-                        session.declared_account,
+                    await self.stop_thread(
+                        partial(
+                            remote.stop_remote_unit,
+                            session.execution_host,
+                            session.unit,
+                            session.declared_account,
+                        )
                     )
                 else:
-                    await asyncio.to_thread(launch.stop_unit, session.unit)
+                    await self.stop_thread(partial(launch.stop_unit, session.unit))
             except (
                 TerminalUnavailable,
                 OSError,
@@ -698,6 +721,12 @@ class TerminalManager:
         errors = [str(failure) for _, failure in failures]
         self._started = False
         await self.probes.close()
+        if not self.sessions:
+            # Queued stops are dropped; the few already in a thread end on
+            # their own timeout, because shutdown must not wait on the
+            # network. A session whose stop failed is still here, and closing
+            # again is how it is retried, so it keeps the pool it needs.
+            self._stops.shutdown(wait=False, cancel_futures=True)
         if errors:
             raise TerminalUnavailable("; ".join(errors))
 
@@ -774,6 +803,17 @@ class TerminalManager:
             )
         finally:
             self._opening.discard(key)
+
+    def stop_thread(self, call: Callable[[], object]):
+        """Run one blocking stop off the interpreter's shared pool.
+
+        Ending several shells together is only as concurrent as the pool the
+        stops run on, and a caller holds the instance lock across all of them.
+        On the shared pool a project's worth of unreachable machines would
+        queue into timeout-sized batches behind — and ahead of — every other
+        blocking call the application makes.
+        """
+        return asyncio.get_running_loop().run_in_executor(self._stops, call)
 
     @contextlib.asynccontextmanager
     async def _reserved_checkout(self, session: TerminalSession) -> AsyncIterator[None]:
@@ -984,14 +1024,16 @@ class TerminalManager:
             return False
         try:
             if session.execution_host:
-                await asyncio.to_thread(
-                    remote.stop_remote_unit,
-                    session.execution_host,
-                    session.unit,
-                    session.declared_account,
+                await self.stop_thread(
+                    partial(
+                        remote.stop_remote_unit,
+                        session.execution_host,
+                        session.unit,
+                        session.declared_account,
+                    )
                 )
             else:
-                await asyncio.to_thread(launch.stop_unit, session.unit)
+                await self.stop_thread(partial(launch.stop_unit, session.unit))
         except (TerminalUnavailable, OSError, RuntimeError, subprocess.SubprocessError) as exc:
             logger.warning(
                 "Terminal unit %s may still be running; it is retried before a reopen: %s",

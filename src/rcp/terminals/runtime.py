@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import subprocess
+from functools import partial
 from typing import TYPE_CHECKING
 
 from rcp.limits import (
@@ -97,9 +98,9 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
         if session.containment == "mirrored":
             stopped = await _confirm_remote_stop(manager, session)
     elif session.containment == "mirrored":
-        await asyncio.to_thread(launch.stop_unit, session.unit)
+        await manager.stop_thread(partial(launch.stop_unit, session.unit))
     else:
-        await asyncio.to_thread(launch.stop_cooperative, runtime.process)
+        await manager.stop_thread(partial(launch.stop_cooperative, runtime.process))
     # Retire once before any subsequent cleanup/audit operation can fail. The
     # unfinished persisted intent still causes startup to retry the unit stop.
     await release_runtime(manager, runtime)
@@ -133,10 +134,12 @@ async def release_runtime(manager: TerminalManager, runtime: TerminalRuntime) ->
     if runtime.process.poll() is None:
         runtime.process.terminate()
         try:
-            await asyncio.to_thread(runtime.process.wait, timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
+            await manager.stop_thread(
+                partial(runtime.process.wait, timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
+            )
         except subprocess.TimeoutExpired:
             runtime.process.kill()
-            await asyncio.to_thread(runtime.process.wait)
+            await manager.stop_thread(runtime.process.wait)
 
 
 async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSession) -> bool:
@@ -149,11 +152,13 @@ async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSessio
         # Shutdown must not wait on the network for every live session.
         return False
     try:
-        await asyncio.to_thread(
-            remote.stop_remote_unit,
-            session.execution_host,
-            session.unit,
-            session.declared_account,
+        await manager.stop_thread(
+            partial(
+                remote.stop_remote_unit,
+                session.execution_host,
+                session.unit,
+                session.declared_account,
+            )
         )
     except TerminalUnavailable as exc:
         logger.warning(
