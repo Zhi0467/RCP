@@ -179,11 +179,22 @@ This is not systemd cgroup ownership. Its session payload reports `cooperative`
 and the missing canonical-state protection: no canonical-state fence exists on
 that machine.
 
-Eligibility belongs to the repository's machine, never its space kind. Local
-Linux selects the mirrored backend only with usable systemd tools, `findmnt`,
-and a user manager; other local operating systems select cooperative. Remote
-machines are unavailable because PTY-over-SSH transport is not built. A mirrored
-profile or verification failure ends the launch with its diagnostic and never
+Eligibility belongs to the repository's machine, never its space kind. Linux
+selects the mirrored backend only with usable systemd tools, `findmnt`, and a
+reachable user manager; other operating systems select cooperative. A remote
+machine's source-shipped capability probe supplies its OS and prerequisites,
+including lingering for its execution account.
+`TerminalManager` caches one probe per machine for its lifetime, including failed
+results. A cache miss schedules background work and projects pending without
+blocking the route. Changed machine metadata invalidates the matching result;
+the explicit terminal Refresh action invalidates the project's machine results.
+An older in-flight result cannot replace a newer probe.
+
+Remote sessions use a server-owned SSH PTY. Browser detachment still leaves the
+same session running, but loss of the SSH link ends its RCP session and records
+the link failure. A shell completion marker distinguishes an actual shell exit
+255 from SSH's ambiguous exit 255. There is no automatic replacement shell. A
+mirrored profile or verification failure ends the launch with its diagnostic and never
 starts a cooperative session. Backend selection and launch details are owned by
 [Providers and containment](providers-and-containment.md#member-terminals).
 

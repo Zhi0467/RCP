@@ -37,7 +37,8 @@ they cannot widen or narrow these capabilities.
 ## Member terminals
 
 `terminals/` owns member shell sessions separately from provider tasks. A session
-runs as the service account, in the same registered checkout used by agents,
+runs as the local service account or remote execution account, in the same
+registered checkout used by agents,
 with the Work turn's trust boundary. Where supported, its mount namespace provides
 accident resistance to a wrong-directory mistake, never isolation from the
 service account or a security boundary against a deliberate member. Read access to a Git deploy key conveys
@@ -47,19 +48,32 @@ A small terminal backend registry owns an id, display name, and
 `supports(os_name, is_remote)` predicate per backend, following the compute
 backend pattern. Selection is per machine and independent of space kind:
 
-- Local Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
-  user manager reports `mirrored`.
-- Other local operating systems, including macOS, report `cooperative` and use a
+- Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
+  user manager reports `mirrored`. Remote accounts also require lingering.
+- Other operating systems, including macOS, report `cooperative` and use a
   plain PTY in the registered repository. Canonical-state protection is
   unavailable on that machine: there is no canonical-state fence.
-- A machine with a non-empty `host` is unavailable because PTY-over-SSH transport
-  is not built, regardless of its OS.
+- A machine with a non-empty `host` uses its probed remote OS, never the OS of
+  the RCP process. A source-shipped Python probe checks the execution account's
+  tools and user manager. The shared SSH failure vocabulary distinguishes
+  unreachable, authentication failed, host key failed, and reachable but
+  incapable machines, with the actual diagnostic.
 
 The `containment` field reuses compute's `mirrored` / `cooperative` vocabulary;
 those labels do not make the terminal mount profile a security boundary.
 Linux with missing tools or an unusable user manager is unavailable, with the
 prerequisite diagnostic. Cooperative is selected by OS, never after a mirrored
-launch fails. Terminal capability does not reuse compute readiness.
+launch or probe fails. Terminal capability does not reuse compute readiness.
+A non-Linux remote selects cooperative only after its OS is known.
+
+Remote launches allocate a PTY through SSH and ship the remote launcher module's
+source. Local and remote launchers share `terminals/profile.py` for the scrubbed
+shell and mirrored profile rather than maintaining a second set of mount properties.
+Remote canonicalization uses `protected_repository_paths` with `remote_stage`,
+so declared paths and remote symlink targets receive the same refusal checks.
+An explicit shell completion marker distinguishes a shell exiting 255 from an
+SSH connection failure; exit 255 without completion reports the lost link and
+ends the session. RCP never reconnects into a replacement shell.
 
 The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
 with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
@@ -75,9 +89,9 @@ launch with the real diagnostic. There is no cooperative retry or downgrade.
 
 For mirrored sessions, canonical-state writes are refused through
 `agents/write_scope.py`'s shared `protected_repository_paths` construction,
-including declared and canonicalized `.research` paths for registered local
-repositories. These paths receive read-only mounts even beneath the writable
-checkout. Absent protected directories receive read-only empty mounts so absence
+including declared and canonicalized `.research` paths for registered
+repositories on the execution machine. These paths receive read-only mounts
+even beneath the writable checkout. Absent protected directories receive read-only empty mounts so absence
 cannot turn a deny into write access. An overlapping or canonical-state
 repository root is refused. These filesystem-view restrictions provide accident
 resistance against corruption; the retained service identity does not prevent

@@ -12,6 +12,8 @@ The project-scoped terminal routes are:
 - `GET /api/projects/{project_id}/terminals/repositories`: repository alias,
   starting path, per-machine capability, and running Work identities.
 - `GET /api/projects/{project_id}/terminals`: open sessions and live/idle state.
+- `POST /api/projects/{project_id}/terminals/probe`: invalidate this project's
+  machine probes and schedule fresh results.
 - `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
   the single existing session for that repository and project.
 - `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
@@ -26,20 +28,28 @@ periodically while connected; cookie revocation and loss of membership close the
 connection. Unknown and nonmember projects remain indistinguishable.
 
 Repository rows retain `eligible` and `unavailable_reason` and include
-`machine_id`, `backend_id`, `backend_name`, `containment`, and a `reason` for every
-outcome. Available machines report `mirrored` or `cooperative`; unavailable
+`machine_id`, `backend_id`, `backend_name`, `containment`, `os_name`,
+`probe_state`, and a `reason` for every outcome. Available machines report `mirrored` or `cooperative`; unavailable
 machines have null `containment`. The reason names the applicable launch
 capability, missing canonical-state protection, or failed prerequisite. Remote
-machines report that PTY-over-SSH transport is not built. Space kind does not
-participate in eligibility. The projection and open guard use the same
+probe states distinguish `pending`, `reachable`, `incapable`, `unreachable`,
+`authentication_failed`, and `host_key_failed`. A cold projection schedules one
+probe per machine and returns pending immediately; repositories reuse the cached
+result without an SSH round trip per row. The cache lives with the terminal
+manager and is invalidated explicitly by Refresh or by changed machine metadata.
+Space kind does not participate in eligibility. The projection and open guard use the same
 per-machine capability resolution; a later mirrored launch failure remains a
 hard failure with its real diagnostic, never a cooperative session.
 
 Session payloads carry `containment` and `protection_notice`. A cooperative
 session explicitly reports that canonical-state protection is unavailable on
-this machine. The Terminals destination is hidden when no project machine can
-host a session; otherwise its repository controls show unavailable rows with
-their reasons.
+this machine. The Terminals destination appears when any machine can host a
+session. Remote pending and failed probes also keep the destination visible so
+members can read the reason and refresh it. Empty projects and projects with
+only unavailable local machines hide it. Repository controls show unavailable
+rows with their reasons. A lost SSH link produces an `ended` reason, removes the
+session from the open list, and leaves the diagnostic visible without offering
+to reconnect into a new shell.
 
 The shell runs as the service account with the Work trust boundary. A mirrored
 session's mount namespace provides accident resistance to mistakes; it does not

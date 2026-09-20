@@ -239,12 +239,15 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
 Artifacts, Paper, Settings, and Chats when at least one project machine can host
-a session. It is hidden when no machine is eligible, including remote-only
-projects. Settings has no terminal control. The empty state consists of
-repository controls showing their starting paths. Unavailable repositories show
-their capability reason and cannot open a terminal; remote machines name the
-unbuilt PTY-over-SSH transport. Space kind does not affect visibility or
-eligibility.
+a session. Remote pending and failed probes also keep it visible so their
+status and recovery control remain reachable. It is hidden for empty projects
+or only unavailable local machines. Settings has no terminal control. The empty
+state consists of repository controls showing their starting paths. Unavailable
+repositories show their capability reason and cannot open a terminal. Remote
+rows distinguish pending checks, unreachable hosts, authentication failures,
+host-key failures, and missing prerequisites. The tab polls while a probe is
+pending; ordinary refresh reads cached results. The terminal Refresh control
+explicitly retries machine probes. Space kind does not affect eligibility.
 
 A left rail lists open sessions with Live or Idle state, selection, and an
 individual End control. One session exists per repository in each project.
@@ -255,8 +258,10 @@ instructional helper copy.
 
 Leaving the destination detaches the viewer without ending the shell. Returning
 lists the existing sessions; ending a session, losing membership, or idle expiry
-ends it. Theme and mode changes repaint the terminal using the same surface and
-text tokens as the project UI.
+ends it. SSH link loss ends the session with an explicit link-drop diagnostic
+that survives removal from the open-session list. It offers no reconnect into a
+new shell; opening the repository again is a new session. Theme and mode changes
+repaint the terminal using the same surface and text tokens as the project UI.
 
 The shell runs as the service account and inherits the Work turn's trust
 boundary. A mirrored session's mount namespace provides accident resistance to
