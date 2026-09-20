@@ -1,9 +1,10 @@
 # A terminal in a project, fenced to its repositories
 
 Date: 2026-09-19
-Status: REFUTED as written. A gpt-6-astra review on 2026-09-19 broke the
-containment mechanism; two of its findings were reverified directly. Nothing is
-implemented, and one blocking question must be answered before a redesign.
+Status: design confirmed by the human on 2026-09-19, after a gpt-6-astra review
+refuted the original containment mechanism and two of its findings were
+reverified directly. The trust model and the collision behavior are settled.
+Nothing is implemented; this handoff is awaiting a start.
 
 Close this handoff when a project member can open an interactive shell on a
 registered repository from the project UI, that shell runs every ordinary Git
@@ -158,11 +159,15 @@ names Claude's unbounded `Bash` an accepted gap rather than a boundary.
 the purpose. Agents and the terminal share it. Git's own index locking handles
 the common collision.
 
-*Remaining sub-decision:* whether to additionally refuse opening a terminal
-while a Work turn is live on that repository, and refuse starting a turn while a
-session is open. Recommended yes — the failure is confusing rather than
-dangerous, and the busy-state admission pattern already exists in
-[`conversation_worktrees.py`](../../src/rcp/conversation_worktrees.py).
+A live Work turn on that repository does not block a terminal. The session
+opens, and the UI states that a turn is running and what it is. Confirmed by
+the human 2026-09-19: watching an agent work is a real use for this feature,
+and an interlock would forbid the case a human most wants. The member owns the
+consequence of touching the index underneath a running turn.
+
+This follows from the settled trust model rather than sitting beside it. A
+product that refuses to fence a trusted member's shell has no reason to fence
+their timing either.
 
 **Session lifecycle.** An idle timeout belongs in
 [`limits.py`](../../src/rcp/limits.py). A closed tab must not leak a shell;

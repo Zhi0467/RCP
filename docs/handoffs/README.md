@@ -3,12 +3,14 @@
 Active:
 
 - [A terminal in a project, fenced to its repositories](handoff-2026-09-19-a-terminal-fenced-to-its-project.md)
-  — design proposed 2026-09-19, reviewed, and revised after the review refuted
-  its containment mechanism; nothing implemented and awaiting a start. A project
-  member opens an interactive shell on a registered server repository from the
-  project UI. Its trust boundary is settled in
-  [a decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md);
-  one sub-decision on interlocking with live Work turns remains.
+  — design confirmed 2026-09-19 after a review refuted its original containment
+  mechanism; nothing implemented and awaiting a start. A project member opens an
+  interactive shell on a registered server repository from the project UI. Its
+  trust boundary is settled in
+  [a decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md):
+  the terminal inherits the Work turn's boundary rather than isolating from the
+  service account, so it must never describe itself as containment, and
+  canonical state stays refused through the existing protected-path construction.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
