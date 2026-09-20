@@ -111,42 +111,86 @@ copied, so exposing it read-only is possession, not containment. And the Claude
 setup token lives under `<data_dir>/providers/...`, not in `rcp-server/credentials`
 as stated above.
 
-## Where this leaves the design
+## The settled trust model
 
-The expensive part was never PTY transport. It is separating member-controlled
-execution from RCP's machine authority. Any workable version needs a distinct
-execution identity that is not the service account, an independent clone rather
-than a linked worktree sharing `.git`, no reachable control or agent socket, and
-Git authentication that does not hand over the central deploy key.
+A member terminal inherits the Work turn's trust boundary. It is convenience
+for a colleague who is already trusted on this machine, not isolation against
+one who is not. The rationale is in
+[the decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md).
 
-That is a materially larger feature than this handoff described, and its shape
-depends entirely on the question below.
+This resolves the review's blocking question and discards most of what it
+costed. There is no separate execution identity, no independent clone, and no
+Git credential broker, because none of those defend against a threat this
+product has decided it does not face.
 
-## The question that precedes the others
+What survives from the review is everything about **accidents** rather than
+attackers, and one honesty requirement: the feature must not describe itself as
+containment.
 
-**What authority may member-controlled code hold on the server?**
+## The design
 
-RCP's existing provider containment assumes cooperative inputs
-([`providers-and-containment.md`](../specs/providers-and-containment.md)). A
-member terminal either keeps that assumption — convenience for colleagues who
-could already ask an agent to run anything — or breaks it, and then needs
-hostile-code isolation, credential delegation with revocation, and adversarial
-verification of its own.
+One interactive shell, per registered repository on the local machine, opened by
+a project member from the project UI, running as the service account in the
+same checkout agents use.
 
-Answer that and the remaining questions resolve:
+**Authorization** is project membership, checked on the route like every other
+project-scoped route. The WebSocket needs its own admission check: the existing
+authentication is HTTP middleware
+([`api/app.py`](../../src/rcp/api/app.py)) and does not cover an upgraded
+connection. Losing membership closes live sessions.
 
-1. **Execution identity.** Separate account, container, or VM.
-2. **Git credential.** Member credentials, a scoped auth broker, or none.
-3. **Repository ownership.** Independent clone versus shared `.git`, and what
-   happens to refs, config, and hooks a later service-account operation runs.
-4. **What survives membership loss.** A copied key does not expire.
-5. **Audit.** Session metadata — member, target, profile, termination — is
-   available without recording terminal bytes.
+**Canonical state is refused, and this one is enforced.** Invariants 1, 2, and 6
+are about corruption, and a slipped `rm` corrupts history exactly as well as
+malice does. The terminal reuses the protected-path construction in
+[`agents/write_scope.py`](../../src/rcp/agents/write_scope.py), including its
+canonicalized `.research` entries, rather than growing a second list. This is a
+code contract, not manifest configuration.
 
-Remote execution machines stay out of scope until the local case is settled.
+**Accident resistance, named as such.** The shell runs under `systemd-run` with
+`ProtectHome=tmpfs` plus `BindPaths` for the repository root — the idiom that
+actually works, unlike the refuted profile — and `ReadOnlyPaths` for what Git
+needs. This stops a wrong-directory mistake. It stops nothing deliberate, and
+the spec text must say so in the same breath, the way
+[`providers-and-containment.md`](../specs/providers-and-containment.md) already
+names Claude's unbounded `Bash` an accepted gap rather than a boundary.
+
+**Shared checkout.** A pull that does not update the tree agents run in fails
+the purpose. Agents and the terminal share it. Git's own index locking handles
+the common collision.
+
+*Remaining sub-decision:* whether to additionally refuse opening a terminal
+while a Work turn is live on that repository, and refuse starting a turn while a
+session is open. Recommended yes — the failure is confusing rather than
+dangerous, and the busy-state admission pattern already exists in
+[`conversation_worktrees.py`](../../src/rcp/conversation_worktrees.py).
+
+**Session lifecycle.** An idle timeout belongs in
+[`limits.py`](../../src/rcp/limits.py). A closed tab must not leak a shell;
+orphan cleanup is required, not optional.
+
+**Audit is metadata only.** Member, repository, start, end, termination reason.
+No byte transcript: a transcript is a credential-leak surface and buys little
+when the working tree is the thing that changed.
+
+**Scope.** Repositories on the server itself. A repository on a remote execution
+machine shows why the terminal is unavailable there rather than offering a
+weaker one. Remote support is a later handoff, not a later commit.
+
+## What this is not
+
+- Not a machine console. One repository, not one server.
+- Not a graph channel. `patch.json` in the task stage stays the only way a graph
+  changes (invariant 4b). A terminal writes repository files and nothing else.
+- Not an administrator role. It confers nothing over projects the member does
+  not belong to — but see the decision record: this is enforced by the route's
+  membership check, not by the shell's identity.
+- Not a containment claim. Said twice on purpose.
 
 ## Closure condition
 
-Deliberately not yet written. The previous one tested three reads and a rebase,
-and would have passed a shell that could still reach `/run/rcp/control.sock` and
-rewrite `.research`.
+A project member opens a terminal on a registered repository from the project
+UI and completes a real conflicted `git rebase -i` in it. A regression test
+proves the session cannot write under `.research` on any registered repository,
+including through a canonicalized path. The served-app journey is driven on a
+throwaway data directory, and the spec text that lands with it states plainly
+that the shell is not contained against a member acting deliberately.
