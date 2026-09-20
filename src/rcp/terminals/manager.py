@@ -108,6 +108,25 @@ def _record_values_are_well_typed(payload: object) -> bool:
     return True
 
 
+def _readable_record(payload: object) -> tuple[TerminalSession | None, str]:
+    """This version's view of a record, or why it cannot read it.
+
+    A record naming every field this version knows plus one it does not is
+    still a record of a shell that may be running, so a caller that must block
+    on it is told what was wrong rather than left to guess.
+    """
+    if not _record_is_complete(payload):
+        return None, "does not name every field this version writes"
+    if not _record_values_are_well_typed(payload):
+        return None, "holds values of the wrong kind"
+    try:
+        # TerminalSession is a dataclass, so a record written by another
+        # version raises TypeError rather than a validation error.
+        return TerminalSession(**payload), ""
+    except TypeError as exc:
+        return None, f"is not this version's: {exc}"
+
+
 def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
     """Why this session's alias no longer names it, or None while it still does."""
     if session.repository_id not in manifest.repository_map:
@@ -371,12 +390,29 @@ class TerminalManager:
             self._block_unreadable_repository(path, payload)
 
     def _block_record_path(self, path: Path) -> None:
-        """Block whatever repository this record names, reading it afresh."""
+        """Block whatever repository this record names, reading it afresh.
+
+        A reconciliation that ran out of the startup budget was never shown to
+        be unreadable; only its stop was slow. Retaining what the record
+        actually says is what lets `unit_confirmed_gone` retry that stop on a
+        later attempt and release the repository, which is the retry the
+        budget promises. The opaque blocker nothing can ever confirm gone is
+        for a record this version genuinely cannot read.
+        """
         try:
             payload = json.loads(path.read_text())
         except (OSError, ValueError):
             return
-        self._block_unreadable_repository(path, payload)
+        session, _unreadable = _readable_record(payload)
+        if session is None or session.session_id != path.stem:
+            # A record naming another session is not this file's to speak for;
+            # `_reconcile_record` says why.
+            self._block_unreadable_repository(path, payload)
+            return
+        if session.ended_at:
+            # It finished inside the budget after all, so nothing is blocked.
+            return
+        self.mark_unresolved(session)
 
     def _block_unreadable_repository(self, path: Path, payload: object) -> None:
         """Keep a record this version cannot read from yielding a second shell.
@@ -418,40 +454,18 @@ class TerminalManager:
 
     async def _reconcile_record(self, path: Path, payload: object) -> None:
         """Retire, retain or block one persisted record, or raise to its guard."""
-        if not _record_is_complete(payload):
+        # A mistyped value that happens to be falsey reads as an ordinary
+        # empty one rather than raising — an `execution_host` of `[]` makes a
+        # remote record look local and get cleaned up against a local unit
+        # that was never there — and the per-record guard only catches records
+        # that raise. An unreadable record can still say which repository it
+        # belongs to, so it blocks that one.
+        session, unreadable = _readable_record(payload)
+        if session is None:
             logger.warning(
-                "Terminal record %s does not name every field this version writes; "
-                "leaving it and blocking its repository.",
+                "Terminal record %s %s; leaving it and blocking its repository.",
                 path.name,
-            )
-            self._block_unreadable_repository(path, payload)
-            return
-        if not _record_values_are_well_typed(payload):
-            # A dataclass enforces no field's type, and a wrong type that
-            # happens to be falsey reads as an ordinary empty value rather
-            # than raising — an `execution_host` of `[]` makes a remote
-            # record look local and get cleaned up against a local unit that
-            # was never there. Nothing below can tell the difference, and the
-            # per-record guard only catches records that raise, so the
-            # mistyped ones are refused here.
-            logger.warning(
-                "Terminal record %s holds values of the wrong kind; leaving it and "
-                "blocking its repository.",
-                path.name,
-            )
-            self._block_unreadable_repository(path, payload)
-            return
-        try:
-            session = TerminalSession(**payload)
-        except TypeError as exc:
-            # TerminalSession is a dataclass, so a record written by another
-            # version raises TypeError rather than a validation error. It can
-            # still say which repository it belongs to.
-            logger.warning(
-                "Terminal record %s is not this version's; leaving it and blocking "
-                "its repository: %s",
-                path.name,
-                exc,
+                unreadable,
             )
             self._block_unreadable_repository(path, payload)
             return
@@ -927,26 +941,25 @@ class TerminalManager:
         stopping one at a time let that one shell delay even the membership
         check for every session behind it, and `sweep_loop` sleeps again only
         once the whole pass returns.
+
+        Both happen under one hold of the lock. Deciding is all local state,
+        so it costs the hold nothing, and a decision made before the wait
+        would be acted on after it: input arriving meanwhile renews the very
+        lifetime an `idle_timeout` ended, and a route may retire a session
+        this pass still holds.
         """
         errors = []
         expired = []
-        for runtime in list(self.sessions.values()):
-            try:
-                reason = self._expiry_reason(runtime)
-            except Exception as exc:
-                errors.append(str(exc))
-                continue
-            if reason is not None:
-                expired.append((runtime, reason))
-        if expired:
-            async with self._lock:
-                # A route may have ended one of these while this waited.
-                live = [
-                    (runtime, reason)
-                    for runtime, reason in expired
-                    if self.sessions.get(runtime.session.session_id) is runtime
-                ]
-                failures = await self._end_each(live)
-            errors.extend(str(failure) for _, failure in failures)
+        async with self._lock:
+            for runtime in list(self.sessions.values()):
+                try:
+                    reason = self._expiry_reason(runtime)
+                except Exception as exc:
+                    errors.append(str(exc))
+                    continue
+                if reason is not None:
+                    expired.append((runtime, reason))
+            failures = await self._end_each(expired)
+        errors.extend(str(failure) for _, failure in failures)
         if errors:
             raise TerminalUnavailable("; ".join(errors))

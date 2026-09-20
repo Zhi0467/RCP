@@ -995,7 +995,9 @@ async def test_a_malformed_record_cannot_borrow_another_blocker_identity(
 
 
 @pytest.mark.asyncio
-async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(tmp_path, monkeypatch, caplog):
+async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(
+    manifest, tmp_path, monkeypatch, caplog
+):
     """Reconciling records at once is not the same as finishing at once: the
     stops are blocking calls in a shared pool, so enough of them queue anyway.
     The budget is what bounds the boot, and a record still running when it
@@ -1036,6 +1038,21 @@ async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(tmp_path, m
         assert any("startup budget" in message for message in caplog.messages)
         assert ("project", "repo-a") in manager._unresolved
         assert json.loads((manager.directory / "wedged.json").read_text())["ended_at"] is None
+        # The budget expired; the record was never unreadable. What it says is
+        # retained in full, so the stop it names is one a later attempt can
+        # retry rather than a blocker nothing can ever confirm gone.
+        retained = manager._unresolved[("project", "repo-a")][0]
+        assert (retained.containment, retained.unit, retained.execution_host) == (
+            "mirrored",
+            f"{manager._unit_prefix}-wedged",
+            "worker.invalid",
+        )
+        release.set()
+        await manager._resolve_unfinished("project", manifest, "repo-a")
+        assert ("project", "repo-a") not in manager._unresolved
+        record = json.loads((manager.directory / "wedged.json").read_text())
+        assert record["ended_at"]
+        assert record["termination_reason"] == "server_restart"
     finally:
         release.set()
         await manager.close()
@@ -1536,6 +1553,38 @@ async def test_stale_aliases_are_retired_together(manifest, tmp_path, process_fa
         assert manager.list("project") == []
     finally:
         meeting.abort()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_input_during_a_sweeps_wait_renews_the_lifetime(manifest, tmp_path, process_factory):
+    """Only the member's input renews a terminal's lifetime. A sweep that
+    decided a session was idle before waiting for the lock would act on that
+    decision after the input that renewed it had already arrived.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        # The background sweeper would run its own pass on its own schedule.
+        manager._sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await manager._sweeper
+        session = await manager.open(**arguments(manifest))
+        runtime = manager.sessions[session.session_id]
+        runtime.last_activity = time.monotonic() - TERMINAL_IDLE_TIMEOUT_SECONDS - 1
+
+        await manager._lock.acquire()
+        sweeping = asyncio.create_task(manager.sweep())
+        # Let the pass get as far as it can before the lock stops it.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await manager.write("project", session.session_id, b"still here\n")
+        manager._lock.release()
+        await sweeping
+
+        assert manager.get("project", session.session_id) is session
+        assert session.termination_reason is None
+    finally:
         await manager.close()
 
 
