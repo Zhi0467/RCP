@@ -140,12 +140,25 @@ authentication is HTTP middleware
 ([`api/app.py`](../../src/rcp/api/app.py)) and does not cover an upgraded
 connection. Losing membership closes live sessions.
 
-**Canonical state is refused, and this one is enforced.** Invariants 1, 2, and 6
-are about corruption, and a slipped `rm` corrupts history exactly as well as
-malice does. The terminal reuses the protected-path construction in
+**Canonical state is refused where the OS can refuse it, and reported where it
+cannot.** Invariants 1, 2, and 6 are about corruption, and a slipped `rm`
+corrupts history exactly as well as malice does. The terminal reuses the
+protected-path construction in
 [`agents/write_scope.py`](../../src/rcp/agents/write_scope.py), including its
 canonicalized `.research` entries, rather than growing a second list. This is a
 code contract, not manifest configuration.
+
+A machine either can make those paths read-only or cannot, and that is an OS
+capability, not a policy choice. This follows the vocabulary compute already
+uses in [`compute-jobs.md`](../specs/compute-jobs.md): **mirrored** containment
+on local Linux with systemd, **cooperative** elsewhere, and a cooperative
+session states that canonical-state protection is unavailable on that machine
+rather than implying a guarantee it does not keep. Confirmed by the human on
+2026-09-19.
+
+Cooperative is chosen by what the machine is, never by a mirrored launch
+failing. A machine that should support mirrored containment and does not
+produce it is a failure, not a downgrade.
 
 **Accident resistance, named as such.** The shell runs under `systemd-run` with
 `ProtectHome=tmpfs` plus `BindPaths` for the repository root — the idiom that

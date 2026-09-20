@@ -52,10 +52,15 @@ accident; it is now true on purpose.
 namespace to survive a wrong-directory mistake, and the spec text must name that
 accident resistance in the same breath, never a boundary.
 
-**Corruption is still refused.** Invariants 1, 2, and 6 protect against slips as
-much as against malice, so the terminal reuses the protected-path construction
-in [`agents/write_scope.py`](../../src/rcp/agents/write_scope.py) and cannot
-write canonical state.
+**Corruption is still refused wherever the OS allows it.** Invariants 1, 2, and
+6 protect against slips as much as against malice, so the terminal reuses the
+protected-path construction in
+[`agents/write_scope.py`](../../src/rcp/agents/write_scope.py). Whether those
+paths can be made read-only is a property of the machine, not of the space or
+the member: local Linux with systemd gets mirrored containment, and anything
+else is cooperative and says so. On a machine that cannot enforce it, the human
+already had a shell there, so the terminal takes nothing away — but it must
+report the limit rather than imply the guarantee.
 
 **Membership still gates.** Nothing here weakens the route's membership check.
 A member reaches their own projects; the shell's identity is not what decides
