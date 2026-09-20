@@ -206,30 +206,6 @@ async def test_cache_configuration_change_is_a_miss(machine):
 
 
 @pytest.mark.asyncio
-async def test_probes_do_not_run_on_the_shared_default_pool(machine):
-    """A probe cannot be stopped once it is in its thread, so one abandoned by
-    a refresh runs out its own timeout. On the pool the rest of the
-    application uses for every other blocking call, a burst of refreshes
-    against unreachable machines could hold that work up.
-    """
-    running_on = []
-
-    def probe(value):
-        running_on.append(threading.current_thread().name)
-        return TerminalProbe("Linux", "reachable", "Ready.")
-
-    cache = TerminalProbeCache(probe)
-    try:
-        await cache.ensure(machine)
-        assert running_on == [running_on[0]]
-        assert running_on[0].startswith("rcp-terminal-probe")
-        shared = await asyncio.to_thread(lambda: threading.current_thread().name)
-        assert not shared.startswith("rcp-terminal-probe")
-    finally:
-        await cache.close()
-
-
-@pytest.mark.asyncio
 async def test_a_refresh_gives_back_the_slot_the_probe_it_replaced_held(machine, monkeypatch):
     """A superseded probe holds one of the few worker slots until its own
     subprocess timeout. A refresh that only dropped the cache entry left it

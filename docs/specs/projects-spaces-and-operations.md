@@ -156,15 +156,14 @@ still has whatever read visibility its host operating-system account permits.
 ## Member terminal lifecycle
 
 `TerminalManager` owns one session per repository per project, and underneath
-that one shell per working tree: a request is refused when any session — under
-another alias, or in another project — is already open on the tree it names, or
-is still opening on it. An open reserves the tree it resolved, not the alias it
-was asked for, because a registration can be renamed or moved while that open
-is still probing or launching. Comparing one session against another uses what
-each of them resolved, on the execution machine for a remote one, so two
-declarations that spell a single tree are a single tree; comparing a session
-against a registration cannot, because a remote declaration is a path this
-machine has no way to resolve.
+that one shell per working tree: a request is refused when any session, under
+another alias or in another project, is already open on the tree it resolves
+to, or is still opening on it. An open reserves the tree it resolved, not the
+alias it was asked for, because a registration can be renamed or moved while
+that open is still probing or launching. A working tree is identified by the
+path a session resolved, locally or on its execution machine, and the host it
+resolved it on. Declarations are how settings name a tree and are never
+compared, so two declarations that spell one tree are one tree.
 Registrations can be renamed and moved between projects, and two shells writing
 one tree is what the rule exists to prevent. Project members may attach to the
 existing session of their own project's alias, or end it. The starting member remains its
@@ -213,85 +212,43 @@ lets what is queued through, because the shell finished and that output is
 theirs.
 
 Startup reconciliation is best effort per record and never refuses the server a
-boot. Each record is reconciled under its own guard, so no way of being
-malformed — truncated, carrying fields this version does not know, or carrying
-values of the wrong type — can abort startup; an unreconciled record stays as
-it was found and blocks its repository, because failing to reconcile a record
-is not evidence that its shell is gone. Reconciliation runs under a budget for
-the same reason it runs concurrently: the stops are blocking calls sharing a
-thread pool, so enough of them queue whatever the gather says. A record still
-running when the budget expires blocks its repository like one that raised. It
-keeps what it says rather than being treated as unreadable, so a later open
-retries the stop it names and can release the repository; only a record this
-version cannot read blocks in a way nothing can confirm gone.
+boot. A record is readable when this version can construct it and the file is
+named for the session in it; `save_metadata` writes every record whole under
+that name, so anything else was not written by this version. An unreadable
+record is left exactly as found and, if it still names a project and
+repository, blocks that repository in a way nothing can confirm gone, because
+being unable to read a record is not evidence that its shell is gone. It is
+resolved by hand or by the version that wrote it. A readable record that fails
+to reconcile for a reason no branch anticipates, such as a destination `ssh`
+refuses outright, blocks its repository the same way. Only the file's own name
+identifies a blocker, so two records never share one and resolving either
+cannot release the other.
 
-A record must also name every field this version writes, because a silently
-defaulted field is a claim rather than an absence: an absent execution host
-says local, and a remote record cleaned up against a local unit that was never
-there reports success and retires while its own unit runs. An execution host
-that is present and empty is not ambiguous — that is what a local session
-records. Records reconcile together rather than in turn, because shutdown
-leaves every live remote session unfinished and a machine that went away would
-otherwise cost one remote stop timeout per record before any other startup
-owner runs.
+A readable, unfinished record is retained before its stop is tried and finished
+only once its unit is confirmed gone. Records reconcile together, because
+shutdown leaves every live remote session unfinished and a machine that went
+away would otherwise cost one remote stop timeout per record before any other
+startup owner runs; the budget bounds the boot, because the stops are blocking
+calls in one thread pool. Retaining first is what makes the budget safe: a
+record still running when it expires stays retained with everything it says,
+so a later open retries the very stop it names. A record naming a unit this
+data directory does not own is retired as a unit-identity mismatch without a
+stop attempt, because the unit prefix hashes the data directory and moving it
+must not be a permanent startup failure. A launch that fails finishes its own
+record on the same condition: a cooperative launch has no unit, and a mirrored
+one is finished only once its unit is known to be gone, because a mirrored
+launch can create its unit and then fail before readiness.
 
-Being unable to read a record is not evidence that its shell is gone. A record
-this version cannot construct is left on disk, and if it still names a project
-and repository it blocks that repository. So is one holding a value of the
-wrong kind, because a dataclass enforces no field's type and a wrong type that
-happens to be empty reads as an ordinary empty value: a remote record would be
-cleaned up against a local unit that was never there, report success, and
-retire while its own unit still ran.
-
-A repository can be spoken for by more than one retained record. Every one of
-them has to be confirmed gone before it opens again; one still speaking for it
-is enough to refuse. They are told apart by the file each came from, never by
-an identifier a record claims, because a record this version cannot read can
-claim one another record already holds.
-
-They are found in two passes, because neither alone finds them all. Settings
-can drop an alias and register the same checkout under another name, and a
-blocker filed under the old alias still names a unit on that working tree.
-
-The first pass runs before the open resolves anything. It matches a record by
-the alias it was filed under, and by the working tree it names — path, host and
-account — against the tree the registration names. A local registration is
-resolved for that comparison, because a symlink and its target name one working
-tree; the record side is the tree it resolved when its shell opened, not its
-declaration resolved again, which would follow a symlink repointed since, away
-from the tree it holds. A remote registration names a path this machine cannot
-resolve, so there both sides are compared as written.
-
-The second pass runs once the open has resolved its own tree, and matches every
-record that resolved a tree of its own against it. This is where two spellings
-of one remote tree meet, each having been resolved on the execution machine.
-Both passes run: the first refuses without work a manifest may not even permit,
-and the second sees what only resolving can show.
-
-A machine alias is the label RCP gives a host rather than part of what makes
-two things one tree, so renaming it changes no blocker's reach. Neither does a
-registered account on a local machine: a local shell runs as the RCP process
-account whatever the manifest says, and that setting is only consulted, and
-checked against the answer, for a remote one. A record this
-version could not read resolved nothing and declares nothing, so its alias is
-all it has. The same holds for one whose containment this version does not
-recognise, and for one whose session identifier is not the name of the file
-holding it, because nothing here can confirm what any of them left running. Every record this application writes is named for the session in it,
-so acting on one that is not would retire a unit under another record's name
-and overwrite that record. A record naming a unit this data directory does not own is
-retired as a unit-identity mismatch without a stop attempt, and a unit that
-cannot be stopped keeps its unfinished record for a later startup. A launch that fails finishes its own record on the same
-condition: a cooperative launch has no unit, and a mirrored one is finished
-only once its unit is known to be gone, because a mirrored launch can create
-its unit and then fail before readiness. Failure to stop a unit remains visible
-and retryable.
-
-A retained record also blocks a reopen. Its unit may still own the checkout, so
-opening that repository again first retries the stop and refuses while it
-cannot be confirmed, rather than putting a second shell on one working tree.
-The retry runs wherever a record was retained: after a startup that could not
-stop it, after a launch that failed with its unit unaccounted for, and after an
-end whose stop went unconfirmed.
+A retained record blocks a reopen. Opening a repository retries every retained
+record that speaks for it, once the open has resolved its tree, and refuses
+while any cannot be confirmed gone, rather than putting a second shell on one
+working tree. A record speaks for an open by the alias it was filed under and
+by the tree its shell resolved, compared against the tree the open resolved, so
+settings dropping an alias and registering the same checkout under another
+name or spelling hide nothing. A record this version could not read resolved
+nothing, so its alias is all it has. The retry runs wherever a record was
+retained: after a startup that could not stop it, after a launch that failed
+with its unit unaccounted for, and after an end whose stop went unconfirmed.
 
 A session records what its repository was registered as: the declared path,
 the machine, that machine's host, and its account. Re-registering the alias as

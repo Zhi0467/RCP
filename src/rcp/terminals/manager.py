@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import fcntl
 import hashlib
 import json
@@ -52,156 +51,23 @@ from rcp.transport.run_stage import RemoteRunStage
 
 logger = logging.getLogger(__name__)
 
+RETIRING_REFUSAL = (
+    "An earlier terminal on this working tree could not be stopped, so its shell may "
+    "still be running. Opening another would put two on one checkout; the stop is "
+    "retried on its own."
+)
+RETAINED_REFUSAL = (
+    "An earlier terminal for this repository could not be stopped on its execution "
+    "machine, so its shell may still be running. Opening another is refused until that "
+    "one is gone."
+)
+
 
 def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[str, str, str, str]:
     """What this alias currently names: path, machine, host and account."""
     repository = manifest.repository_map[repository_alias]
     machine = manifest.machine_map[repository.machine]
     return (repository.path, repository.machine, machine.host, machine.os_account)
-
-
-def _checkout_path(path: str, host: str) -> str:
-    """One working tree spelled one way, so two spellings do not read as two.
-
-    A declaration is how settings named a tree, not what the tree is: a
-    symlink and its target name one working tree, and registering it afresh
-    under the other spelling must not hide the record that still speaks for
-    it. Opening already resolves the local declaration, so matching resolves
-    it too. A remote declaration names a path on another machine, which this
-    one cannot resolve and must not try to.
-    """
-    if host:
-        return path
-    try:
-        return str(Path(path).expanduser().resolve())
-    except OSError:
-        # A tree that cannot be looked at is still named by what it says.
-        return path
-
-
-def _checkout_account(host: str, os_account: str) -> str:
-    """The account a working tree is identified by, which is none locally.
-
-    A local shell runs as the RCP process account whatever a manifest says:
-    the setting is consulted only for a remote machine, whose answer is
-    checked against it before a launch. Letting it into a local identity
-    would split one working tree in two the moment it changed.
-    """
-    return os_account if host else ""
-
-
-def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, str, str]:
-    """The working tree this alias names: path, host and account.
-
-    A machine alias is the label RCP gives a host, not part of what makes two
-    things the same working tree, so it is absent here although
-    `manifest_registration` keeps it. Asking whether an alias still names what
-    a session opened on and asking whether a record speaks for the tree about
-    to be opened are different questions, and a rename answers them
-    differently.
-    """
-    repository = manifest.repository_map[repository_alias]
-    machine = manifest.machine_map[repository.machine]
-    return (
-        _checkout_path(repository.path, machine.host),
-        machine.host,
-        _checkout_account(machine.host, machine.os_account),
-    )
-
-
-def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
-    """The working tree this session opened on, as it was when it opened.
-
-    A local session recorded the tree its declaration resolved to, and that
-    recording is what identifies it. Resolving the declaration again now would
-    ask a different question: a symlink can be repointed after the shell
-    started, and the blocker would follow it to a tree the shell never opened
-    on while the one it did opens a second shell. A remote declaration was
-    resolved on its own machine, which this one cannot reproduce, so it is
-    compared as written — as the manifest side of that comparison is.
-    """
-    if session.execution_host:
-        return (session.declared_path, session.execution_host, session.declared_account)
-    return (session.path, "", "")
-
-
-# Every field of `TerminalSession` holds a string; two of them may be null
-# instead. `test_every_terminal_record_field_holds_a_string` fails if that
-# stops being true, because this check would then refuse valid records.
-_NULLABLE_RECORD_FIELDS = {"ended_at", "termination_reason"}
-_RECORD_FIELDS = frozenset(field.name for field in dataclasses.fields(TerminalSession))
-
-
-def _record_is_complete(payload: object) -> bool:
-    """Whether a record names every field this version writes.
-
-    `asdict` writes them all, so a record missing one was not written by this
-    application. The dataclass would default it silently, and a default is a
-    claim: an absent `execution_host` says local, and cleaning a remote record
-    up against a local unit that was never there reports success and retires
-    it while its own unit still runs.
-    """
-    return isinstance(payload, dict) and payload.keys() >= _RECORD_FIELDS
-
-
-def _record_values_are_well_typed(payload: object) -> bool:
-    """Whether a persisted record's values are the kind its fields declare."""
-    if not isinstance(payload, dict):
-        return False
-    for name, value in payload.items():
-        if value is None and name in _NULLABLE_RECORD_FIELDS:
-            continue
-        if not isinstance(value, str):
-            return False
-    return True
-
-
-def _readable_record(payload: object) -> tuple[TerminalSession | None, str]:
-    """This version's view of a record, or why it cannot read it.
-
-    A record naming every field this version knows plus one it does not is
-    still a record of a shell that may be running, so a caller that must block
-    on it is told what was wrong rather than left to guess.
-    """
-    if not _record_is_complete(payload):
-        return None, "does not name every field this version writes"
-    if not _record_values_are_well_typed(payload):
-        return None, "holds values of the wrong kind"
-    try:
-        # TerminalSession is a dataclass, so a record written by another
-        # version raises TypeError rather than a validation error.
-        return TerminalSession(**payload), ""
-    except TypeError as exc:
-        return None, f"is not this version's: {exc}"
-
-
-def held_checkout(session: TerminalSession) -> tuple[str, str, str]:
-    """The working tree this session actually holds, for comparing sessions.
-
-    Both sides of that comparison resolved their own declaration — locally, or
-    on the execution machine — so two declarations that spell one remote tree
-    are one tree here, as they already are locally.
-
-    `session_checkout` answers a different question: whether a registration
-    still names this session. That compares against a manifest declaration,
-    and a remote one names a path this machine cannot resolve, so there the
-    declarations are what meet. A record this version could not read resolved
-    nothing and has only what it declared.
-    """
-    return (
-        session.path or session.declared_path,
-        session.execution_host,
-        _checkout_account(session.execution_host, session.declared_account),
-    )
-
-
-def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
-    """Why this session's alias no longer names it, or None while it still does."""
-    if session.repository_id not in manifest.repository_map:
-        return "repository_unregistered"
-    if session_registration(session) != manifest_registration(manifest, session.repository_id):
-        return "repository_repointed"
-    return None
 
 
 def session_registration(session: TerminalSession) -> tuple[str, str, str, str]:
@@ -214,6 +80,25 @@ def session_registration(session: TerminalSession) -> tuple[str, str, str, str]:
     )
 
 
+def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
+    """Why this session's alias no longer names it, or None while it still does."""
+    if session.repository_id not in manifest.repository_map:
+        return "repository_unregistered"
+    if session_registration(session) != manifest_registration(manifest, session.repository_id):
+        return "repository_repointed"
+    return None
+
+
+def working_tree(session: TerminalSession) -> tuple[str, str]:
+    """The tree a session holds: the path it resolved, on the host that resolved it.
+
+    Every session resolved its own declaration, locally or on the execution
+    machine, so two declarations that spell one tree meet here as one. A
+    declaration is only how settings named the tree, and is never compared.
+    """
+    return (session.path, session.execution_host)
+
+
 class TerminalManager:
     def __init__(self, data_dir: Path, membership_check: Callable[[str, str], bool]) -> None:
         self.probes = TerminalProbeCache()
@@ -222,10 +107,9 @@ class TerminalManager:
         self.membership_check = membership_check
         self.sessions: dict[str, TerminalRuntime] = {}
         self._opening: set[tuple[str, str]] = set()
-        # Working trees an in-flight open has resolved, which is what one
-        # shell per tree has to be reserved by; an alias is only its name.
-        self._opening_trees: set[tuple[str, str, str]] = set()
-        # Records left unfinished because a unit could not be confirmed gone.
+        self._opening_trees: set[tuple[str, str]] = set()
+        # Records left unfinished because a unit could not be confirmed gone,
+        # keyed by the alias each was filed under.
         self._unresolved: dict[tuple[str, str], list[TerminalSession]] = {}
         self._local_capability: TerminalCapability | None = None
         self._stops = ThreadPoolExecutor(
@@ -246,48 +130,15 @@ class TerminalManager:
         The caller holds the manager lock. An alias that names another path,
         machine or account has stopped naming what its session opened on, so
         handing that session back would answer a request for one checkout with
-        a shell somewhere else.
+        a shell somewhere else. Collisions with sessions under other aliases
+        or projects are decided by the tree an open resolves, not here.
         """
-        target = (
-            manifest_checkout(manifest, repository_alias)
-            if repository_alias in manifest.repository_map
-            else None
-        )
         for runtime in list(self.sessions.values()):
             session = runtime.session
-            holds_target = target is not None and session_checkout(session) == target
-            same_project = session.project_id == project_id
-            if not same_project and not holds_target:
-                # Another project's shell is another project's business until
-                # it is on the tree this one is about to open.
+            if session.project_id != project_id or session.repository_id != repository_alias:
                 continue
-            # An alias is a name inside one project, so another project's
-            # session never answers for this one however it spells its own.
-            names_alias = same_project and session.repository_id == repository_alias
-            if not runtime.retiring and not names_alias and holds_target:
-                # Another alias has a shell on this very working tree. Two of
-                # them would write one tree, which is what one-session-per-
-                # repository exists to prevent, and the alias asked for is not
-                # what decides that.
-                raise TerminalUnavailable(
-                    "Another terminal is already open on this working tree. "
-                    "End it before opening one here."
-                )
             if runtime.retiring:
-                # Its stop failed, so its shell may still own the checkout, and
-                # a failed local stop leaves no retained record to find it by.
-                # The alias it carries is not the only one that can name that
-                # tree: settings can drop an alias and register the same
-                # checkout under another, as retained records are matched for.
-                if names_alias or holds_target:
-                    raise TerminalUnavailable(
-                        "An earlier terminal for this repository could not be stopped, so "
-                        "its shell may still be running. Opening another would put two on "
-                        "one checkout; it is retried on its own."
-                    )
-                continue
-            if not names_alias:
-                continue
+                raise TerminalUnavailable(RETIRING_REFUSAL)
             reason = registration_lapse(manifest, session)
             if reason is None:
                 return session
@@ -350,29 +201,21 @@ class TerminalManager:
         The intent is persisted before the launch, and an unfinished record is
         both what startup reconciles and what blocks a reopen. A mirrored
         launch may have created its unit before failing, so the record is
-        finished only once that unit is known to be gone. The caller names the
-        reason, because a launch that failed and one that was cancelled after
-        succeeding end for different reasons and the record is the audit.
+        finished only once that unit is known to be gone.
         """
         session.termination_reason = reason
+        self.mark_unresolved(session)
         if await self.unit_confirmed_gone(session):
-            session.ended_at = timestamp()
+            self._finish_retained(session, reason)
         else:
-            self.mark_unresolved(session)
-        save_metadata(self.directory, session)
+            save_metadata(self.directory, session)
 
     def mark_unresolved(self, session: TerminalSession) -> None:
         """Remember that this repository may still have a shell on it.
 
-        A repository can be spoken for by more than one record: a unit that
-        outlived a restart and a record this version cannot read both claim
-        it, and keeping only the last would unblock the repository as soon as
-        that one was confirmed gone, while the other may still be running.
-
-        `session_id` is what distinguishes them, and every caller derives it
-        from the record's own file rather than from anything the record
-        claims, so reconciling one record twice replaces its blocker while
-        two records never share one.
+        One repository can be spoken for by several records, and each is
+        tracked by its own `session_id`, so reconciling a record twice
+        replaces its entry while two records never share one.
         """
         retained = self._unresolved.setdefault((session.project_id, session.repository_id), [])
         for index, existing in enumerate(retained):
@@ -381,86 +224,51 @@ class TerminalManager:
                 return
         retained.append(session)
 
+    def _finish_retained(self, session: TerminalSession, reason: str) -> None:
+        """Finish a retained record now that its unit is known to be gone."""
+        session.ended_at = timestamp()
+        session.termination_reason = reason
+        save_metadata(self.directory, session)
+        key = (session.project_id, session.repository_id)
+        remaining = [
+            item for item in self._unresolved.get(key, []) if item.session_id != session.session_id
+        ]
+        if remaining:
+            self._unresolved[key] = remaining
+        else:
+            self._unresolved.pop(key, None)
+
     async def _resolve_unfinished(
-        self,
-        project_id: str,
-        manifest: Manifest,
-        repository_alias: str,
-        resolved: tuple[str, str, str] | None = None,
+        self, project_id: str, repository_alias: str, tree: tuple[str, str] | None = None
     ) -> None:
-        """Retry every retained record that still speaks for this checkout.
+        """Retry every retained record that speaks for this alias or this tree.
 
-        A retained record means a unit may still own the checkout. Opening a
-        second shell there would let two of them write one working tree, which
-        the one-session-per-repository rule exists to prevent.
-
-        The alias alone does not find them all. Settings can drop an alias and
-        register the same checkout under another name, and the old alias's
-        blocker then names a unit on the very working tree the new alias is
-        about to open. The registration each named identifies it across that
-        rename, and across a rename of the machine alias too, which is a label
-        rather than part of what makes two things one tree.
-
-        That comparison is between declarations, which is all an alias and a
-        manifest can offer, and a remote declaration is a path this machine
-        cannot resolve — so two spellings of one remote tree do not meet
-        there. Once a caller has resolved the tree it is about to open it says
-        so, and the records that resolved one of their own are compared
-        against it. Both calls happen: the first refuses before the work of
-        resolving, which a manifest may not even permit, and the second sees
-        what only resolving can show.
-
-        A record this version could not read resolved nothing and declares
-        nothing, so its alias is all it has.
+        A retained record means a unit may still own the checkout, and opening
+        a second shell there is what one shell per working tree exists to
+        prevent. Settings can drop an alias and register the same checkout
+        under another name, so a record is matched by the tree it resolved as
+        well as by the alias it was filed under. A record this version could
+        not read resolved nothing, so its alias is all it has.
         """
-        target = (
-            manifest_checkout(manifest, repository_alias)
-            if repository_alias in manifest.repository_map
-            else None
-        )
         speaking = [
-            (key, session)
+            session
             for key, retained in self._unresolved.items()
             for session in retained
-            if (key[0] == project_id and key[1] == repository_alias)
-            or (target is not None and session_checkout(session) == target)
-            or (resolved is not None and session.path and held_checkout(session) == resolved)
+            if key == (project_id, repository_alias)
+            or (tree is not None and session.path and working_tree(session) == tree)
         ]
         if not speaking:
             return
         # Confirmed together: this is a member waiting to open, and a record
         # whose machine has gone costs a stop timeout apiece.
-        confirmed = await asyncio.gather(
-            *(self.unit_confirmed_gone(session) for _, session in speaking)
-        )
-        refused = False
-        for (key, session), gone in zip(speaking, confirmed, strict=True):
-            if not gone:
-                # One record still speaking for this checkout is enough.
-                refused = True
-                continue
-            session.ended_at = timestamp()
-            # A record retained by startup carries no reason yet, and one
-            # retained by a failed launch already carries its own. Finishing
-            # late must leave the same durable reason as finishing on the
-            # first attempt would have.
-            session.termination_reason = session.termination_reason or "server_restart"
-            save_metadata(self.directory, session)
-            remaining = [
-                item
-                for item in self._unresolved.get(key, [])
-                if item.session_id != session.session_id
-            ]
-            if remaining:
-                self._unresolved[key] = remaining
-            else:
-                self._unresolved.pop(key, None)
-        if refused:
-            raise TerminalUnavailable(
-                "An earlier terminal for this repository could not be stopped on its "
-                "execution machine, so its shell may still be running. Opening another "
-                "is refused until that one is gone."
-            )
+        confirmed = await asyncio.gather(*(self.unit_confirmed_gone(item) for item in speaking))
+        for session, gone in zip(speaking, confirmed, strict=True):
+            if gone:
+                # A record retained by startup carries no reason yet; one
+                # retained by a failed launch already carries its own.
+                self._finish_retained(session, session.termination_reason or "server_restart")
+        if not all(confirmed):
+            raise TerminalUnavailable(RETAINED_REFUSAL)
 
     async def capability(
         self, machine: MachineConfig, probe: TerminalProbe | None
@@ -480,71 +288,40 @@ class TerminalManager:
     def invalidate_local_capability(self) -> None:
         self._local_capability = None
 
-    async def _reconcile_guarded(self, path: Path) -> None:
-        """Reconcile one record, and never let it cost the server its boot.
+    def _read_record(self, path: Path) -> TerminalSession | None:
+        """This file's record, or None once the repository it names is blocked.
 
-        A record can be truncated, carry fields this version does not know, or
-        carry values of the wrong type entirely; a dataclass enforces none of
-        that. Guarding the whole record ends that class rather than naming each
-        way one can be malformed. An unreconciled record stays put.
-
-        Failing to reconcile a record is not evidence that its shell is gone,
-        so the repository is blocked as well. A record can fail here in ways
-        no branch below anticipates — a destination `ssh` refuses, a stop that
-        raises something unlisted — and every one of them leaves a unit this
-        startup could not account for.
+        `save_metadata` writes every record whole and names the file for the
+        session in it, so one that does not construct, or names another
+        session, was not written by this version. It is left as found. Being
+        unable to read it is not evidence that its shell is gone, so whatever
+        repository it still names stays blocked until the file is resolved by
+        hand or by the version that wrote it.
         """
+        payload: object = None
         try:
             payload = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            # Nothing was read, so nothing names a repository to block.
-            logger.warning("Terminal record %s cannot be read; leaving it: %s", path.name, exc)
-            return
-        try:
-            await self._reconcile_record(path, payload)
-        except Exception as exc:
+            session = TerminalSession(**payload)
+            if session.session_id != path.stem:
+                raise ValueError(f"names session {session.session_id!r}")
+            return session
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning(
-                "Terminal record %s could not be reconciled; leaving it and blocking "
-                "its repository: %s",
+                "Terminal record %s cannot be read; leaving it and blocking its repository: %s",
                 path.name,
                 exc,
             )
-            self._block_unreadable_repository(path, payload)
+            self._block_unreadable(path, payload)
+            return None
 
-    def _block_record_path(self, path: Path) -> None:
-        """Block whatever repository this record names, reading it afresh.
+    def _block_unreadable(self, path: Path, payload: object) -> None:
+        """Block the repository a record this version cannot read still names.
 
-        A reconciliation that ran out of the startup budget was never shown to
-        be unreadable; only its stop was slow. Retaining what the record
-        actually says is what lets `unit_confirmed_gone` retry that stop on a
-        later attempt and release the repository, which is the retry the
-        budget promises. The opaque blocker nothing can ever confirm gone is
-        for a record this version genuinely cannot read.
-        """
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, ValueError):
-            return
-        session, _unreadable = _readable_record(payload)
-        if session is None or session.session_id != path.stem:
-            # A record naming another session is not this file's to speak for;
-            # `_reconcile_record` says why.
-            self._block_unreadable_repository(path, payload)
-            return
-        if session.ended_at:
-            # It finished inside the budget after all, so nothing is blocked.
-            return
-        self.mark_unresolved(session)
-
-    def _block_unreadable_repository(self, path: Path, payload: object) -> None:
-        """Keep a record this version cannot read from yielding a second shell.
-
-        A record naming every field this version knows plus one it does not is
-        still a record of a shell that may be running. Only its identity is
-        trusted here, because the rest is this version reading another
-        version's file. `unit_confirmed_gone` treats a containment outside the
-        two known ones as never confirmable, so the repository stays blocked
-        until the record is resolved by hand or by the version that wrote it.
+        The file, not anything inside it, identifies the blocker: two records
+        must never share one identity, or resolving either would release the
+        repository from both. Its containment is left blank, which
+        `unit_confirmed_gone` never confirms, because nothing here can know
+        what the record left running.
         """
         if not isinstance(payload, dict):
             return
@@ -556,12 +333,6 @@ class TerminalManager:
             return
         self.mark_unresolved(
             TerminalSession(
-                # The file, not the identifier inside it. A record this
-                # version cannot read can claim any `session_id`, including
-                # one another record already holds, and two blockers sharing
-                # an identity means resolving either releases the repository
-                # from both. One file is one record, so one file is one
-                # blocker.
                 session_id=path.stem,
                 project_id=project_id,
                 member_id="",
@@ -574,50 +345,33 @@ class TerminalManager:
             )
         )
 
-    async def _reconcile_record(self, path: Path, payload: object) -> None:
-        """Retire, retain or block one persisted record, or raise to its guard."""
-        # A mistyped value that happens to be falsey reads as an ordinary
-        # empty one rather than raising — an `execution_host` of `[]` makes a
-        # remote record look local and get cleaned up against a local unit
-        # that was never there — and the per-record guard only catches records
-        # that raise. An unreadable record can still say which repository it
-        # belongs to, so it blocks that one.
-        session, unreadable = _readable_record(payload)
+    async def _reconcile_guarded(self, path: Path) -> None:
+        """Reconcile one record, and never let it cost the server its boot.
+
+        Failing to reconcile a record is not evidence that its shell is gone.
+        A readable record can still fail in ways no branch anticipates, such
+        as a destination `ssh` refuses outright, and each of them leaves a
+        unit this startup could not account for, so its repository is blocked.
+        """
+        session = self._read_record(path)
         if session is None:
-            logger.warning(
-                "Terminal record %s %s; leaving it and blocking its repository.",
-                path.name,
-                unreadable,
-            )
-            self._block_unreadable_repository(path, payload)
             return
+        try:
+            await self._reconcile_record(session)
+        except Exception as exc:
+            logger.warning(
+                "Terminal record %s could not be reconciled; leaving it and blocking "
+                "its repository: %s",
+                path.name,
+                exc,
+            )
+            self._block_unreadable(
+                path, {"project_id": session.project_id, "repository_id": session.repository_id}
+            )
+
+    async def _reconcile_record(self, session: TerminalSession) -> None:
+        """Retire one unfinished record, or retain it while its unit may run."""
         if session.ended_at:
-            return
-        if session.session_id != path.stem:
-            # Every record this application writes is named for the session in
-            # it. One that is not was damaged or written by something else, and
-            # acting on it would retire a unit under another record's name and
-            # overwrite that record — including an unfinished one whose whole
-            # job is to keep a repository blocked. It may still describe a live
-            # shell, so it blocks its own repository instead.
-            logger.warning(
-                "Terminal record %s carries session id %r; leaving it and blocking its repository.",
-                path.name,
-                session.session_id,
-            )
-            self._block_unreadable_repository(path, payload)
-            return
-        if session.containment not in {"mirrored", "cooperative"}:
-            # A dataclass does not enforce its Literal, so a version-skewed
-            # value would otherwise skip the unit stop and then be retired,
-            # hiding a possible mirrored shell from every later startup.
-            logger.warning(
-                "Terminal record %s has containment %r this version does not know; leaving it.",
-                session.session_id,
-                session.containment,
-            )
-            # It may name a running unit, so it also blocks its repository.
-            self.mark_unresolved(session)
             return
         if session.unit != f"{self._unit_prefix}-{session.session_id}":
             # Another data directory wrote this record. Its unit is not ours
@@ -631,58 +385,25 @@ class TerminalManager:
             session.termination_reason = "unit_identity_mismatch"
             save_metadata(self.directory, session)
             return
-        if session.containment == "mirrored":
-            try:
-                if session.execution_host:
-                    await self.stop_thread(
-                        partial(
-                            remote.stop_remote_unit,
-                            session.execution_host,
-                            session.unit,
-                            session.declared_account,
-                        )
-                    )
-                else:
-                    await self.stop_thread(partial(launch.stop_unit, session.unit))
-            except (
-                TerminalUnavailable,
-                OSError,
-                RuntimeError,
-                subprocess.SubprocessError,
-            ) as exc:
-                # The unfinished record is itself the retry. Keep it.
-                logger.warning(
-                    "Could not stop terminal unit %s; a later startup retries it: %s",
-                    session.unit,
-                    exc,
-                )
-                self.mark_unresolved(session)
-                return
-        session.ended_at = timestamp()
-        session.termination_reason = "server_restart"
-        save_metadata(self.directory, session)
+        # Retained before the stop is tried: a reconciliation that outlasts
+        # the startup budget is cancelled with its stop still running, and the
+        # record has to keep blocking its repository exactly as it stands.
+        self.mark_unresolved(session)
+        if await self.unit_confirmed_gone(session):
+            self._finish_retained(session, "server_restart")
 
     async def start(self) -> None:
         if self._started:
             return
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.directory / "empty").mkdir(exist_ok=True, mode=0o500)
-        # Only this application's persisted unit names are stopped. Persisting
-        # intent before launch also covers a crash during systemd admission.
-        # Reconciliation is best effort per record. This runs before every other
-        # startup owner, so a stale record, a moved data directory, or an
-        # unreachable machine must never be able to refuse the server a boot.
-        # Records are reconciled together. Shutdown deliberately leaves every
-        # live remote session unfinished, so a machine that went away takes a
-        # remote stop timeout per record, and in turn that is startup spent
-        # before any other owner runs. They touch separate files and separate
-        # repositories, so they are safe to run at once.
-        #
-        # At once is not all at the same time: each stop is a blocking call in
-        # the shared thread pool, so enough of them queue into timeout-sized
-        # batches anyway. The budget is what actually bounds the boot. A
-        # record still running when it expires keeps its record and blocks its
-        # repository, exactly as one that raised would.
+        # This runs before every other startup owner, so a stale record, a
+        # moved data directory, or an unreachable machine must never be able
+        # to refuse the server a boot. Records are reconciled together,
+        # because shutdown leaves every live remote session unfinished and a
+        # machine that went away costs a remote stop timeout per record. The
+        # budget is what actually bounds the boot: the stops are blocking
+        # calls in one thread pool, so enough of them queue anyway.
         started = {
             asyncio.create_task(self._reconcile_guarded(path)): path
             for path in self.directory.glob("*.json")
@@ -693,13 +414,11 @@ class TerminalManager:
             )
             for task in unfinished:
                 task.cancel()
-                path = started[task]
                 logger.warning(
                     "Terminal record %s did not reconcile within the startup budget; "
-                    "leaving it and blocking its repository.",
-                    path.name,
+                    "its repository stays blocked until a later attempt.",
+                    started[task].name,
                 )
-                self._block_record_path(path)
             if unfinished:
                 # Cancelling a task waiting on a worker thread returns at
                 # once; the thread finishes its own stop with nobody reading.
@@ -737,19 +456,13 @@ class TerminalManager:
 
         A single stop can spend its own timeout against a machine that has
         become unreachable, and every caller here has something waiting behind
-        it. Shutdown and the update boundary hold the instance lock until they
-        return, and a replacement server waits only
-        `SERVER_SHUTDOWN_TIMEOUT_SECONDS` for the old one to go; a member is
-        waiting on the listing, open or attach that settles registrations; and
-        the lifecycle sweep cannot look at the next expired shell until this
-        one is dealt with, so one unreachable machine would hold back retiring
-        every other. Each ending touches only its own runtime, and the two
-        manager dictionaries they write are keyed per session, so they can run
-        together.
+        it: shutdown holds the instance lock, a member is waiting on a listing
+        or an open, and the sweep cannot look at the next expired shell until
+        this one is dealt with. Each ending touches only its own runtime, and
+        the manager dictionaries they write are keyed per session.
 
-        Callers hold the manager lock; ending concurrently does not widen what
-        else may run. Each ending is reported against its own runtime, because
-        the caller names the failure by what it was ending.
+        Callers hold the manager lock. Each ending is reported against its own
+        runtime, because the caller names the failure by what it was ending.
         """
         outcomes = await asyncio.gather(
             *(end_runtime(self, runtime, reason) for runtime, reason in endings),
@@ -810,48 +523,43 @@ class TerminalManager:
         Ending several shells together is only as concurrent as the pool the
         stops run on, and a caller holds the instance lock across all of them.
         On the shared pool a project's worth of unreachable machines would
-        queue into timeout-sized batches behind — and ahead of — every other
+        queue into timeout-sized batches behind, and ahead of, every other
         blocking call the application makes.
         """
         return asyncio.get_running_loop().run_in_executor(self._stops, call)
 
     @contextlib.asynccontextmanager
-    async def _reserved_checkout(self, session: TerminalSession) -> AsyncIterator[None]:
+    async def _reserved_tree(self, session: TerminalSession) -> AsyncIterator[None]:
         """Hold this working tree for one open, from resolution to publication.
 
         `_opening` reserves the alias asked for, and a registration can be
         renamed or moved to another project while this open is still probing
         or launching. A request arriving under the new name carries a
         different alias, so it passes that guard, and neither shell is in
-        `sessions` yet for the other's admission check to find. Both would
-        then launch on one working tree.
-
-        A session published since admission is refused here too: the open that
-        published it has already given its own reservation back.
-
-        Both sides here are sessions that resolved their own declaration, so
-        this compares the trees they hold rather than the registrations that
-        named them, which is the only way two spellings of one remote tree
-        meet.
+        `sessions` yet for the other to find. The tree itself is what one
+        shell per tree has to be reserved by, whoever asks and under whatever
+        name.
         """
-        checkout = held_checkout(session)
+        tree = working_tree(session)
         async with self._lock:
-            if checkout in self._opening_trees:
+            if tree in self._opening_trees:
                 raise TerminalUnavailable(
                     "Another terminal is already opening on this working tree."
                 )
-            if any(
-                held_checkout(runtime.session) == checkout for runtime in self.sessions.values()
-            ):
+            for runtime in self.sessions.values():
+                if working_tree(runtime.session) != tree:
+                    continue
+                if runtime.retiring:
+                    raise TerminalUnavailable(RETIRING_REFUSAL)
                 raise TerminalUnavailable(
                     "Another terminal is already open on this working tree. "
                     "End it before opening one here."
                 )
-            self._opening_trees.add(checkout)
+            self._opening_trees.add(tree)
         try:
             yield
         finally:
-            self._opening_trees.discard(checkout)
+            self._opening_trees.discard(tree)
 
     async def _open(
         self,
@@ -871,7 +579,6 @@ class TerminalManager:
         Holding the lock across that would stall every other project's open,
         end and sweep behind it, so only admission and publication take it.
         """
-        await self._resolve_unfinished(project_id, manifest, repository_alias)
         repository = manifest.repository_map[repository_alias]
         machine = manifest.machine_map[repository.machine]
         probe = await self.probes.ensure(machine) if machine.host else None
@@ -887,14 +594,9 @@ class TerminalManager:
             data_dir=self.data_dir,
             remote_stage=RemoteRunStage(machine.host) if machine.host else None,
         )
-        # Once the tree is known: a record retained on it blocks this open
-        # whatever alias filed it, and a stop it can now finish releases it.
-        await self._resolve_unfinished(
-            project_id,
-            manifest,
-            repository_alias,
-            resolved=(str(root), machine.host, machine.os_account),
-        )
+        # A record retained on this tree blocks the open whatever alias filed
+        # it, and a stop that can now be finished releases it.
+        await self._resolve_unfinished(project_id, repository_alias, (str(root), machine.host))
         session_id = uuid.uuid4().hex
         session = TerminalSession(
             session_id=session_id,
@@ -911,7 +613,7 @@ class TerminalManager:
             containment=capability.backend.containment,
             execution_host=machine.host,
         )
-        async with self._reserved_checkout(session):
+        async with self._reserved_tree(session):
             save_metadata(self.directory, session)
             if machine.host:
                 start = asyncio.to_thread(
@@ -1019,8 +721,8 @@ class TerminalManager:
         if session.containment == "cooperative":
             return True
         if session.containment != "mirrored":
-            # This version cannot know what this record left running, so it can
-            # never be confirmed gone and never stops blocking its repository.
+            # A record this version could not read: nothing here can know what
+            # it left running, so it never stops blocking its repository.
             return False
         try:
             if session.execution_host:

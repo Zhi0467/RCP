@@ -14,8 +14,10 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from rcp.api.app import create_app
+from rcp.api.dependencies import get_project_service
 from rcp.config import MachineConfig, RepositoryConfig
 from rcp.storage import AppStore
+from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
 
 from .helpers import wait_until
@@ -74,6 +76,21 @@ def _lifecycle_frame(socket):
             raise AssertionError(f"socket closed before a lifecycle frame: {message}")
         if "text" in message:
             return json.loads(message["text"])
+
+
+def _open_terminal(client, path, repository_id="paper-repo"):
+    opened = client.post(path, json={"repository_id": repository_id})
+    assert opened.status_code == 200, opened.text
+    return opened.json()
+
+
+def _repoint(app, project_id, tmp_path):
+    """Register the alias on another checkout, so its running shell is stale."""
+    moved = tmp_path / "moved-checkout"
+    (moved / ".research").mkdir(parents=True)
+    manifest = get_project_service(app.state.services.catalog, project_id).manifest
+    manifest.repository_map["paper-repo"].path = str(moved)
+    return moved
 
 
 def test_terminal_websocket_checks_membership_independently(tmp_path):
@@ -194,7 +211,6 @@ def test_remote_probe_failure_is_projected_without_launch(
 @pytest.fixture
 def terminal_pty(monkeypatch):
     """Keep real session/transport owners, replacing only Linux process launch."""
-    from rcp.terminals import launch
 
     slaves = []
 
@@ -221,13 +237,8 @@ def test_session_pty_reconnect_resize_and_end(tmp_path, terminal_pty):
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
-        assert (
-            client.post(path, json={"repository_id": "paper-repo"}).json()["session_id"]
-            == session_id
-        )
+        session_id = _open_terminal(client, path)["session_id"]
+        assert _open_terminal(client, path)["session_id"] == session_id
         assert len(terminal_pty) == 1
         socket_path = f"{path}/{session_id}/ws"
         with client.websocket_connect(
@@ -259,9 +270,7 @@ def test_live_membership_loss_closes_socket_before_more_input(tmp_path, terminal
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
+        session_id = _open_terminal(client, path)["session_id"]
         with client.websocket_connect(
             f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
         ) as socket:
@@ -290,9 +299,7 @@ def test_live_membership_loss_stops_output_too(tmp_path, terminal_pty, monkeypat
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
+        session_id = _open_terminal(client, path)["session_id"]
         with client.websocket_connect(
             f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
         ) as socket:
@@ -322,8 +329,7 @@ def test_a_live_session_is_returned_even_when_its_machine_now_probes_badly(
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
+        opened = _open_terminal(client, path)
 
         async def unavailable(machine, probe):
             return TerminalCapability(None, "Machine temporarily unavailable.")
@@ -331,7 +337,7 @@ def test_a_live_session_is_returned_even_when_its_machine_now_probes_badly(
         monkeypatch.setattr(app.state.services.terminals, "capability", unavailable)
         again = client.post(path, json={"repository_id": "paper-repo"})
         assert again.status_code == 200, again.text
-        assert again.json()["session_id"] == opened.json()["session_id"]
+        assert again.json()["session_id"] == opened["session_id"]
 
 
 def test_a_repointed_alias_retires_its_shell_even_when_the_new_machine_fails(
@@ -343,20 +349,15 @@ def test_a_repointed_alias_retires_its_shell_even_when_the_new_machine_fails(
     not answer with an error while the old shell stays listed and attachable
     on the checkout the alias has left.
     """
-    from rcp.api.dependencies import get_project_service
     from rcp.terminals.backends import TerminalCapability
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
+        _open_terminal(client, path)
 
-        moved = tmp_path / "moved-checkout"
-        (moved / ".research").mkdir(parents=True)
-        manifest = get_project_service(app.state.services.catalog, project_id).manifest
-        manifest.repository_map["paper-repo"].path = str(moved)
+        _repoint(app, project_id, tmp_path)
 
         async def unavailable(machine, probe):
             return TerminalCapability(None, "Machine temporarily unavailable.")
@@ -377,21 +378,14 @@ def test_a_stale_session_that_cannot_be_stopped_is_an_operational_failure(
     session is correctly kept for retry either way; what is at stake is
     whether the member is told the machine is busy or that RCP broke.
     """
-    from rcp.terminals import launch
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
+        _open_terminal(client, path)
 
-        from rcp.api.dependencies import get_project_service
-
-        moved = tmp_path / "moved-checkout"
-        (moved / ".research").mkdir(parents=True)
-        manifest = get_project_service(app.state.services.catalog, project_id).manifest
-        manifest.repository_map["paper-repo"].path = str(moved)
+        _repoint(app, project_id, tmp_path)
 
         def unstoppable(unit):
             raise RuntimeError("systemctl user manager unavailable")
@@ -411,15 +405,12 @@ def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
     stopped naming it therefore hides the only control that would replace it,
     so nothing but the listing itself can settle the registration.
     """
-    from rcp.api.dependencies import get_project_service
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
+        session_id = _open_terminal(client, path)["session_id"]
         assert [item["session_id"] for item in client.get(path).json()] == [session_id]
 
         manifest = get_project_service(app.state.services.catalog, project_id).manifest
@@ -458,19 +449,13 @@ def test_a_repoint_during_an_open_is_settled_by_the_socket_itself(tmp_path, term
     than trusting that a poll already has: the stale shell is retired instead
     of handed over.
     """
-    from rcp.api.dependencies import get_project_service
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
-        moved = tmp_path / "moved-checkout"
-        (moved / ".research").mkdir(parents=True)
-        manifest = get_project_service(app.state.services.catalog, project_id).manifest
-        manifest.repository_map["paper-repo"].path = str(moved)
+        session_id = _open_terminal(client, path)["session_id"]
+        moved = _repoint(app, project_id, tmp_path)
 
         # No listing intervenes: the socket is the first thing to look.
         with (
@@ -496,20 +481,13 @@ def test_a_stale_alias_that_cannot_be_stopped_stops_listing_and_attaching(
     stop being one a member can list or attach to while the stop is retried;
     otherwise they keep a shell in a checkout the project no longer registers.
     """
-    from rcp.api.dependencies import get_project_service
-    from rcp.terminals import launch
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
-        moved = tmp_path / "moved-checkout"
-        (moved / ".research").mkdir(parents=True)
-        manifest = get_project_service(app.state.services.catalog, project_id).manifest
-        manifest.repository_map["paper-repo"].path = str(moved)
+        session_id = _open_terminal(client, path)["session_id"]
+        _repoint(app, project_id, tmp_path)
 
         def unstoppable(unit):
             raise RuntimeError("systemctl user manager unavailable")
@@ -536,23 +514,16 @@ def test_a_viewer_is_let_go_when_retirement_fails(tmp_path, terminal_pty, monkey
     viewer go rather than keep feeding it a checkout the project no longer
     registers.
     """
-    from rcp.api.dependencies import get_project_service
-    from rcp.terminals import launch
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
+        session_id = _open_terminal(client, path)["session_id"]
         with client.websocket_connect(
             f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
         ) as socket:
-            moved = tmp_path / "moved-checkout"
-            (moved / ".research").mkdir(parents=True)
-            manifest = get_project_service(app.state.services.catalog, project_id).manifest
-            manifest.repository_map["paper-repo"].path = str(moved)
+            _repoint(app, project_id, tmp_path)
 
             def unstoppable(unit):
                 raise RuntimeError("systemctl user manager unavailable")
@@ -566,7 +537,6 @@ def test_a_viewer_is_let_go_when_retirement_fails(tmp_path, terminal_pty, monkey
 
 
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
-    from rcp.terminals import launch
 
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch.shutil, "which", lambda _name: None)
@@ -623,9 +593,8 @@ def test_running_work_is_visible_and_does_not_block_open(tmp_path, terminal_pty,
         repositories = client.get(f"{path}/repositories").json()
         expected = [{"operation_id": "running-work", "title": "Updating the analysis"}]
         assert repositories[0]["running_work"] == expected
-        opened = client.post(path, json={"repository_id": "paper-repo"})
-        assert opened.status_code == 200, opened.text
-        assert opened.json()["running_work"] == expected
+        opened = _open_terminal(client, path)
+        assert opened["running_work"] == expected
         assert client.get(path).json()[0]["running_work"] == expected
 
         # A recorded launch overrides the requested aliases: a Work turn in a
@@ -653,7 +622,6 @@ def test_running_work_is_visible_and_does_not_block_open(tmp_path, terminal_pty,
 def test_projection_reports_machine_capability_independent_of_space(
     tmp_path, manifest, monkeypatch, os_name, expected, space_kind
 ):
-    from rcp.terminals import launch
 
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: os_name)
     monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
@@ -835,10 +803,9 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
     )
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        opened = client.post(path, json={"repository_id": "remote-0"})
-        assert opened.status_code == 200, opened.text
-        session_id = opened.json()["session_id"]
-        assert opened.json()["containment"] == "mirrored"
+        opened = _open_terminal(client, path, "remote-0")
+        session_id = opened["session_id"]
+        assert opened["containment"] == "mirrored"
         process, slave, host, settings = remote_pty[0]
         assert host == machine.host
         assert settings["repository"] == Path("/srv/repo-0")
