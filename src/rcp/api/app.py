@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -56,6 +55,7 @@ from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
 from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
+from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
@@ -68,6 +68,7 @@ from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
+from rcp.api.terminals import router as terminals_router
 from rcp.api.watchers import router as watchers_router
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
@@ -191,6 +192,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
+from rcp.terminals import TerminalManager
 from rcp.transfer.target import (
     TargetTransferActivationCoordinator,
     TargetTransferUploadCoordinator,
@@ -276,21 +278,6 @@ class _LazyProjectService:
 
     def __setattr__(self, name: str, value) -> None:
         setattr(self._resolve(), name, value)
-
-
-_DESKTOP_TEAM_HOST = re.compile(r"rcp-[0-9a-f]{32}\.rcp\.localhost:(?P<port>[0-9]{1,5})")
-
-
-def _team_mutation_origin_matches(request: Request, origin: str) -> bool:
-    host = request.headers.get("host", "")
-    normalized_origin = origin.rstrip("/")
-    if normalized_origin == f"{request.url.scheme}://{host}".rstrip("/"):
-        return True
-    match = _DESKTOP_TEAM_HOST.fullmatch(host)
-    if request.url.scheme != "http" or match is None:
-        return False
-    port = int(match.group("port"))
-    return 0 < port <= 65_535 and normalized_origin == f"https://{host}"
 
 
 def create_app(
@@ -1323,6 +1310,17 @@ def create_app(
         restore_completed_at_reader=server_restore_completed_at_reader,
         clock=server_status_clock or (lambda: datetime.now(UTC)),
     )
+
+    def terminal_member_active(project_id: str, member_id: str) -> bool:
+        member = store.space_user(member_id)
+        return (
+            member is not None
+            and member.removal_started_at is None
+            and member.removed_at is None
+            and store.is_project_member(project_id, member_id)
+        )
+
+    terminals = TerminalManager(app_data, membership_check=terminal_member_active)
     services = ApiServices(
         store=store,
         catalog=catalog,
@@ -1343,6 +1341,7 @@ def create_app(
         provider_credentials=provider_credentials,
         provider_sign_ins=provider_sign_ins,
         episode_reconciliation=reconcile_episodes,
+        terminals=terminals,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1442,6 +1441,7 @@ def create_app(
             raise MaintenanceRefused("The app runtime loop is unavailable at the update boundary.")
 
         async def wait_for_scheduled_reads() -> None:
+            await terminals.end_all(reason="server_maintenance")
             pending = {
                 task
                 for task in (
@@ -1498,6 +1498,7 @@ def create_app(
                 # This is the one ordinary startup sequence. Normal startup calls
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
+                await terminals.start()
                 background_tasks.recover_at_startup()
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
@@ -1627,7 +1628,11 @@ def create_app(
         # Preserve ordinary startup's fail-fast boundary: if recovery fails, do
         # not run the shutdown path over state that never completed startup.
         if not fenced_startup:
-            await start_deferred_runtime()
+            try:
+                await start_deferred_runtime()
+            except BaseException:
+                await terminals.close()
+                raise
         try:
             if fenced_startup:
                 app.state.startup_recovery_plan = background_tasks.plan_startup_recovery().as_dict()
@@ -1676,6 +1681,10 @@ def create_app(
             for task in list(project_display_cache.reconciliation_tasks.values()):
                 with suppress(asyncio.CancelledError):
                     await task
+            try:
+                await terminals.close()
+            except Exception:
+                logger.exception("Terminal shutdown cleanup failed; startup will retry it.")
             watcher_poller.stop()
             graph_watcher_retry_worker.stop()
             background_tasks.shutdown()
@@ -1689,6 +1698,7 @@ def create_app(
 
     app = FastAPI(title="RCP", version=__version__, lifespan=lifespan)
     app.state.services = services
+    app.state.server_layout = server_layout
     app.state.catalog = catalog
     app.state.provider_skills = provider_skills
     app.state.setup = setup
@@ -1922,6 +1932,7 @@ def create_app(
     app.include_router(sync_router)
     app.include_router(tasks_router)
     app.include_router(watchers_router)
+    app.include_router(terminals_router)
 
     web_dist = web_dist_path()
     if web_dist.exists():

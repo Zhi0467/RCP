@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from fastapi import HTTPException, Request
@@ -145,8 +146,26 @@ class IdentityAccess:
         }
 
 
+_DESKTOP_TEAM_HOST = re.compile(r"rcp-[0-9a-f]{32}\.rcp\.localhost:(?P<port>[0-9]{1,5})")
+
+
+def mutation_origin_matches(request: Request, origin: str) -> bool:
+    """Match a browser origin, including the desktop's HTTPS loopback relay."""
+
+    host = request.headers.get("host", "")
+    normalized_origin = origin.rstrip("/")
+    if normalized_origin == f"{request.url.scheme}://{host}".rstrip("/"):
+        return True
+    match = _DESKTOP_TEAM_HOST.fullmatch(host)
+    if request.url.scheme != "http" or match is None:
+        return False
+    port = int(match.group("port"))
+    return 0 < port <= 65_535 and normalized_origin == f"https://{host}"
+
+
 __all__ = [
     "TEAM_SESSION_COOKIE",
     "IdentityAccess",
     "TrustedPrincipalResolver",
+    "mutation_origin_matches",
 ]
