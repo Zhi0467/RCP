@@ -21,9 +21,16 @@ after(async () => {
   await server?.close();
 });
 
+const protectionNotice =
+  "Canonical-state protection is unavailable on this machine. There is no filesystem fence around canonical state.";
 const repositories = [
   {
     repository_id: "code",
+    machine_id: "local",
+    backend_id: "systemd_user",
+    backend_name: "systemd user manager",
+    containment: "mirrored",
+    reason: "Local Linux supports the canonical-state mount profile.",
     path: "/srv/project/code",
     eligible: true,
     unavailable_reason: null,
@@ -31,6 +38,11 @@ const repositories = [
   },
   {
     repository_id: "notes",
+    machine_id: "local",
+    backend_id: "systemd_user",
+    backend_name: "systemd user manager",
+    containment: "mirrored",
+    reason: "Local Linux supports the canonical-state mount profile.",
     path: "/srv/project/notes",
     eligible: true,
     unavailable_reason: null,
@@ -38,13 +50,29 @@ const repositories = [
   },
   {
     repository_id: "remote",
+    machine_id: "remote",
+    backend_id: null,
+    backend_name: null,
+    containment: null,
+    reason: "PTY-over-SSH transport is not built.",
     path: "/remote/code",
     eligible: false,
-    unavailable_reason: "Terminals require a server-local repository.",
+    unavailable_reason: "PTY-over-SSH transport is not built.",
     running_work: [],
   },
 ];
-async function fixture(t, { failLaunch = false } = {}) {
+async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
+  let projectedRepositories = repositories.map((repository) =>
+    cooperative && repository.eligible
+      ? {
+          ...repository,
+          containment: "cooperative",
+          backend_id: "pty",
+          backend_name: "Local PTY",
+          reason: protectionNotice,
+        }
+      : repository,
+  );
   const context = await browser.newContext();
   t.after(() => context.close());
   const page = await context.newPage();
@@ -57,7 +85,8 @@ async function fixture(t, { failLaunch = false } = {}) {
   t.after(() => assert.deepEqual(errors, []));
   await page.route("**/api/projects/alpha/terminals**", async (route) => {
     const request = route.request();
-    if (request.url().endsWith("/repositories")) return route.fulfill({ json: repositories });
+    if (request.url().endsWith("/repositories"))
+      return route.fulfill({ json: projectedRepositories });
     if (request.method() === "POST") {
       opens++;
       if (failLaunch)
@@ -65,7 +94,7 @@ async function fixture(t, { failLaunch = false } = {}) {
           status: 503,
           json: { detail: "Member terminals require systemd-run; executable not found." },
         });
-      const repository = repositories.find(
+      const repository = projectedRepositories.find(
         (repo) => repo.repository_id === request.postDataJSON().repository_id,
       );
       const session = {
@@ -73,6 +102,8 @@ async function fixture(t, { failLaunch = false } = {}) {
         repository_id: repository.repository_id,
         path: repository.path,
         state: "live",
+        containment: repository.containment,
+        protection_notice: repository.containment === "cooperative" ? protectionNotice : null,
         running_work:
           repository.repository_id === "code"
             ? [{ operation_id: "work-1", title: "Update results" }]
@@ -97,8 +128,17 @@ async function fixture(t, { failLaunch = false } = {}) {
     });
   });
   await page.goto(`${origin}/tests/fixtures/terminals.html`);
+  await page.getByRole("button", { name: "Terminals", exact: true }).click();
   await page.getByRole("button", { name: "code /srv/project/code", exact: true }).waitFor();
-  return { page, input, opens: () => opens, connections: () => connections };
+  return {
+    page,
+    input,
+    opens: () => opens,
+    connections: () => connections,
+    setRepositories: (value) => {
+      projectedRepositories = value;
+    },
+  };
 }
 
 test("Terminals hashes restore the project destination", async () => {
@@ -161,8 +201,8 @@ test("sessions reconnect after navigating, resize and type, expose Work on both 
   assert.equal(await page.getByRole("button", { name: "End notes terminal" }).count(), 1);
 });
 
-test("both themes and all modes repaint the emulator and keep mobile controls reachable", async (t) => {
-  const { page } = await fixture(t);
+test("both themes and all modes show the cooperative warning, repaint the emulator, and keep mobile controls reachable", async (t) => {
+  const { page } = await fixture(t, { cooperative: true });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
   await page.locator(".xterm-screen").waitFor();
@@ -176,6 +216,35 @@ test("both themes and all modes repaint the emulator and keep mobile controls re
           document.documentElement.dataset.colorMode === (mode === "Light" ? "light" : "dark"),
         { theme, mode },
       );
+      const warning = page.getByRole("alert").filter({ hasText: protectionNotice });
+      assert.ok(await warning.isVisible());
+      const style = await warning.evaluate((element) => {
+        const actual = getComputedStyle(element);
+        const tokenSample = document.createElement("div");
+        tokenSample.style.color = "var(--walnut)";
+        tokenSample.style.backgroundColor = "var(--amber-soft)";
+        document.body.appendChild(tokenSample);
+        const expected = getComputedStyle(tokenSample);
+        const result = {
+          readableInk: actual.color === expected.color,
+          warningSurface: actual.backgroundColor === expected.backgroundColor,
+          distinctSurface:
+            actual.backgroundColor !== getComputedStyle(element.parentElement).backgroundColor,
+          fullSize: parseFloat(actual.fontSize) >= 14,
+          opacity: actual.opacity,
+          icon: !!element.querySelector("svg"),
+        };
+        tokenSample.remove();
+        return result;
+      });
+      assert.deepEqual(style, {
+        readableInk: true,
+        warningSurface: true,
+        distinctSurface: true,
+        fullSize: true,
+        opacity: "1",
+        icon: true,
+      });
       await page.waitForFunction(
         () =>
           getComputedStyle(document.querySelector(".xterm-viewport")).backgroundColor ===
@@ -192,6 +261,7 @@ test("both themes and all modes repaint the emulator and keep mobile controls re
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.getByRole("button", { name: "End code terminal" }).isVisible());
+  assert.ok(await page.getByRole("alert").filter({ hasText: protectionNotice }).isVisible());
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 });
 
@@ -200,4 +270,20 @@ test("launch failure displays the real missing systemd diagnostic", async (t) =>
   await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "systemd-run; executable not found" }).waitFor();
   assert.equal(await page.locator(".xterm-screen").count(), 0);
+  assert.equal(await page.locator(".terminal-protection-warning").count(), 0);
+});
+
+test("Terminals tab disappears when no machine can host a session and returns for cooperative support", async (t) => {
+  const { page, setRepositories } = await fixture(t);
+  await page.getByRole("button", { name: "Research", exact: true }).click();
+  const tab = page.getByRole("button", { name: "Terminals", exact: true });
+  for (const unavailable of [[repositories[2]], []]) {
+    setRepositories(unavailable);
+    await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+    await tab.waitFor({ state: "hidden" });
+    assert.ok(await page.getByRole("heading", { name: "Research", exact: true }).isVisible());
+    setRepositories([{ ...repositories[0], containment: "cooperative", reason: protectionNotice }]);
+    await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+    await tab.waitFor({ state: "visible" });
+  }
 });

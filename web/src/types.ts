@@ -2849,6 +2849,11 @@ export interface TerminalWorkTurn {
 
 export interface TerminalRepository {
   repository_id: string;
+  machine_id: string;
+  backend_id: string | null;
+  backend_name: string | null;
+  containment: "mirrored" | "cooperative" | null;
+  reason: string;
   path: string;
   eligible: boolean;
   unavailable_reason: string | null;
@@ -2857,6 +2862,8 @@ export interface TerminalRepository {
 
 export interface TerminalSession {
   session_id: string;
+  containment: "mirrored" | "cooperative";
+  protection_notice: string | null;
   repository_id: string;
   path: string;
   state: "live" | "idle";

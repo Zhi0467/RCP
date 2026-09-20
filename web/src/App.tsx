@@ -1,3 +1,4 @@
+import { TerminalTab } from "./components/TerminalTab";
 import { branchMergeStateLabel } from "./components/CampaignRuns";
 import {
   graphSessionKey,
@@ -4246,41 +4247,54 @@ export default function App() {
         >
           {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
-        {navItems.map((item) => (
-          <button
-            key={item.view}
-            className={
-              view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
-            }
-            aria-current={
-              view === item.view || (item.view === "scientific" && view === "dag")
-                ? "page"
-                : undefined
-            }
-            onClick={() =>
-              item.view === "chats"
-                ? openChats()
-                : item.view === "scientific"
-                  ? openLastResearchView()
-                  : changeView(item.view)
-            }
-          >
-            {item.icon}
-            <span>{item.label}</span>
-            {item.view === "attention" && attentionCount > 0 && (
-              <small className="inbox-count">{attentionCount}</small>
-            )}
-            {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
-            {item.view === "chats" && chatsIndicator && (
-              <small
-                className={`chats-indicator ${chatsIndicator}`}
-                aria-label={chatsIndicator === "active" ? "Chat task active" : "Unread chat result"}
-              >
-                {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
-              </small>
-            )}
-          </button>
-        ))}
+        {navItems.map((item) =>
+          item.view === "terminals" ? (
+            <TerminalTab
+              key={`terminals-${project.id}`}
+              projectId={project.id}
+              refreshKey={JSON.stringify([project.machines, project.repositories])}
+              active={view === "terminals"}
+              onClick={() => changeView("terminals")}
+              onError={reportErrorNotice}
+            />
+          ) : (
+            <button
+              key={item.view}
+              className={
+                view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
+              }
+              aria-current={
+                view === item.view || (item.view === "scientific" && view === "dag")
+                  ? "page"
+                  : undefined
+              }
+              onClick={() =>
+                item.view === "chats"
+                  ? openChats()
+                  : item.view === "scientific"
+                    ? openLastResearchView()
+                    : changeView(item.view)
+              }
+            >
+              {item.icon}
+              <span>{item.label}</span>
+              {item.view === "attention" && attentionCount > 0 && (
+                <small className="inbox-count">{attentionCount}</small>
+              )}
+              {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
+              {item.view === "chats" && chatsIndicator && (
+                <small
+                  className={`chats-indicator ${chatsIndicator}`}
+                  aria-label={
+                    chatsIndicator === "active" ? "Chat task active" : "Unread chat result"
+                  }
+                >
+                  {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
+                </small>
+              )}
+            </button>
+          ),
+        )}
         {showTrustFilter && (
           <label className="trust-filter">
             <span>Show</span>

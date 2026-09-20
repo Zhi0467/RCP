@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, TerminalSquare, X } from "lucide-react";
+import { AlertTriangle, RefreshCw, TerminalSquare, X } from "lucide-react";
 import { api } from "../api";
 import { TerminalPane } from "../components/TerminalPane";
 import type { TerminalRepository, TerminalSession } from "../types";
@@ -165,6 +165,12 @@ export function Terminals({ projectId }: { projectId: string }) {
               <strong>{active.repository_id}</strong>
               <code>{active.path}</code>
             </div>
+            {active.containment === "cooperative" && (
+              <div className="terminal-protection-warning" role="alert">
+                <AlertTriangle size={20} aria-hidden="true" />
+                <strong>{active.protection_notice}</strong>
+              </div>
+            )}
             {active.running_work.length > 0 && (
               <div className="terminal-work-strip" role="status">
                 Work running: {active.running_work.map((turn) => turn.title).join(" · ")}

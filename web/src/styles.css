@@ -13482,6 +13482,19 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 12px 16px;
   border-bottom: 1px solid var(--rule);
 }
+.terminal-protection-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--mustard);
+  background: var(--amber-soft);
+  color: var(--walnut);
+  font-size: 14px;
+}
+.terminal-protection-warning svg {
+  flex: none;
+}
 .terminal-work-strip {
   background: var(--forest-soft);
   color: var(--forest);
