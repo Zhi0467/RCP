@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from rcp.config import MachineConfig
+from rcp.limits import TERMINAL_PROBE_WORKERS
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache, probe_remote_terminal
 from rcp.transport import remote_terminal_probe
 
@@ -231,6 +232,43 @@ async def test_invalidated_inflight_probe_cannot_replace_new_result(machine):
     finally:
         release.set()
         await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drops_probes_still_queued_for_a_worker():
+    """Closing must not wait out one probe timeout per queued batch.
+
+    The lifespan's `finally` holds the instance lock until this returns, and a
+    replacement server waits only so long for the old one to go.
+    """
+    release = threading.Event()
+    running = threading.Semaphore(0)
+    started: list[str] = []
+    counted = threading.Lock()
+
+    def probe(machine):
+        with counted:
+            started.append(machine.alias)
+        running.release()
+        assert release.wait(30)
+        return TerminalProbe("Linux", "reachable", "Ready.")
+
+    machines = [
+        MachineConfig(alias=f"remote-{index}", host=f"host-{index}.example")
+        for index in range(TERMINAL_PROBE_WORKERS * 3)
+    ]
+    cache = TerminalProbeCache(probe)
+    try:
+        for candidate in machines:
+            assert cache.get(candidate).state == "pending"
+        for _ in range(TERMINAL_PROBE_WORKERS):
+            assert await asyncio.to_thread(running.acquire, True, 5)
+        # Draining would block on a probe that never returns on its own.
+        await asyncio.wait_for(cache.close(), timeout=5)
+        with counted:
+            assert len(started) == TERMINAL_PROBE_WORKERS
+    finally:
+        release.set()
 
 
 @pytest.mark.asyncio

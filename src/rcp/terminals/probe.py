@@ -159,7 +159,18 @@ class TerminalProbeCache:
             self._entries.pop(self._key(machine), None)
 
     async def close(self) -> None:
+        # Shutdown reads no probe result, and the lifespan's `finally` holds the
+        # instance lock until this returns. Draining instead of cancelling let
+        # each batch of unreachable machines spend a full probe timeout in turn,
+        # so a project with enough of them outlasted the window a replacement
+        # server waits for the old one to go. Cancelling drops the probes still
+        # queued for a worker outright and detaches the few already in a thread,
+        # which end on their own subprocess timeout with nobody reading them.
         self._closed = True
-        if self._tasks:
-            await asyncio.gather(*self._tasks)
         self._entries.clear()
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
