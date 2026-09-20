@@ -99,13 +99,15 @@ An explicit shell completion marker distinguishes a shell exiting 255 from an
 SSH connection failure; exit 255 without completion reports the lost link and
 ends the session. RCP never reconnects into a replacement shell.
 
-Hanging up a live remote session also confirms that its unit stopped, through
-one explicit remote stop. A stop that cannot be confirmed leaves the session
-record unfinished, so the next startup reconciles that unit instead of skipping
-it. A session whose SSH has already exited is never confirmed: a dead link
-cannot be reached, and a supervisor that exited has already run its own
-cleanup. Server shutdown skips the round trip and leaves the same unfinished
-record rather than waiting on the network.
+Ending a mirrored remote session confirms that its unit stopped, through one
+explicit remote stop over a fresh connection. A stop that cannot be confirmed
+leaves the session record unfinished, so the next startup reconciles that unit
+instead of skipping it. A session whose SSH has already exited is confirmed the
+same way: the supervisor writes its completion marker before the cleanup that
+can still fail, and reports that failure only through an exit status a dropped
+link produces too, so neither says whether the unit went with the shell. Server
+shutdown skips the round trip and leaves the same unfinished record rather than
+waiting on the network.
 
 The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
 with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and

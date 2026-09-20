@@ -753,6 +753,53 @@ async def test_open_cancellation_stops_the_inflight_launch(
 
 
 @pytest.mark.asyncio
+async def test_a_cancelled_open_whose_stop_fails_leaves_no_reusable_session(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """The launch wins the race, then its unit refuses to stop.
+
+    Nothing drains this PTY, because a cancelled open never registers a
+    reader. Publishing the runtime would let the next open hand back a
+    session whose output never arrives, and a stop that raises would leave it
+    in `sessions` where neither the sweep nor startup retires it.
+    """
+    started = threading.Event()
+    release = threading.Event()
+    original = launch.launch
+
+    def delayed(command, unit):
+        started.set()
+        assert release.wait(5)
+        return original(command, unit)
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    monkeypatch.setattr(launch, "launch", delayed)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        opening = asyncio.create_task(manager.open(**arguments(manifest)))
+        assert await asyncio.to_thread(started.wait, 5)
+        opening.cancel()
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+        assert manager.sessions == {}
+        assert manager.list("project") == []
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["termination_reason"] == "opening_cancelled"
+        assert receipt["ended_at"] is None
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+    finally:
+        release.set()
+        monkeypatch.setattr(launch, "stop_unit", process_factory[2].append)
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_open_whose_launch_then_fails_still_tracks_its_unit(
     manifest, tmp_path, process_factory, monkeypatch
 ):

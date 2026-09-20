@@ -77,15 +77,19 @@ class TerminalManager:
             "rcp-terminal-" + hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()[:12]
         )
 
-    async def _record_launch_failure(self, session: TerminalSession) -> None:
-        """Finish or retain a failed launch's record; never leave it untracked.
+    async def _record_launch_failure(
+        self, session: TerminalSession, reason: str = "launch_failed"
+    ) -> None:
+        """Finish or retain an unopened session's record; never leave it untracked.
 
         The intent is persisted before the launch, and an unfinished record is
         both what startup reconciles and what blocks a reopen. A mirrored
         launch may have created its unit before failing, so the record is
-        finished only once that unit is known to be gone.
+        finished only once that unit is known to be gone. The caller names the
+        reason, because a launch that failed and one that was cancelled after
+        succeeding end for different reasons and the record is the audit.
         """
-        session.termination_reason = "launch_failed"
+        session.termination_reason = reason
         if await self.unit_confirmed_gone(session):
             session.ended_at = timestamp()
         else:
@@ -409,9 +413,18 @@ class TerminalManager:
                 await self._record_launch_failure(session)
                 raise cancelled from None
             runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
-            async with self._lock:
-                self.sessions[session_id] = runtime
-                await end_runtime(self, runtime, "opening_cancelled")
+            try:
+                async with self._lock:
+                    # This runtime is never published. It has no reader, so a
+                    # reuse would hand back a session whose output never
+                    # arrives, and a stop that fails here would strand it in
+                    # `sessions` where nothing retires or retries it.
+                    await end_runtime(self, runtime, "opening_cancelled")
+            except Exception:
+                # The unit outlived the launch this cancellation stopped. As
+                # with a failed launch, the record is the only thing that can
+                # block a reopen before the next startup reconciles it.
+                await self._record_launch_failure(session, "opening_cancelled")
             raise
         except Exception:
             await self._record_launch_failure(session)
