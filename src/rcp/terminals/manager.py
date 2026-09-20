@@ -95,6 +95,16 @@ class TerminalManager:
                 continue
             if session.ended_at:
                 continue
+            if session.containment not in {"mirrored", "cooperative"}:
+                # A dataclass does not enforce its Literal, so a version-skewed
+                # value would otherwise skip the unit stop and then be retired,
+                # hiding a possible mirrored shell from every later startup.
+                logger.warning(
+                    "Terminal record %s has containment %r this version does not know; leaving it.",
+                    session.session_id,
+                    session.containment,
+                )
+                continue
             if session.unit != f"{self._unit_prefix}-{session.session_id}":
                 # Another data directory wrote this record. Its unit is not ours
                 # to stop, and refusing to boot would need a hand deletion.

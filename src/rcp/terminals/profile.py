@@ -36,6 +36,12 @@ exec /bin/bash --noprofile --norc -i
 """
 
 
+# A transient unit is built over D-Bus rather than parsed from a unit file, so
+# systemd applies no `%` specifier expansion to it. Measured on the execution
+# host (systemd 249): `%h` stays `%h` in both properties and command arguments,
+# and doubling it instead breaks a real path — `--working-directory` with `%%`
+# fails with "Changing to the requested working directory failed". Paths
+# therefore reach systemd exactly as registered.
 def launch_command(
     *,
     unit: str,
@@ -106,7 +112,7 @@ def launch_command(
         "--quiet",
         "--service-type=exec",
         f"--unit={unit}",
-        f"--working-directory={_specifier_safe(str(repository))}",
+        f"--working-directory={repository}",
     ]
     if expand_environment_option:
         command.insert(1, "--expand-environment=no")
@@ -143,17 +149,8 @@ def shell_environment(git_environment: dict[str, str]) -> list[str]:
     return ["/usr/bin/env", "-i", *(f"{name}={value}" for name, value in environment.items())]
 
 
-def _specifier_safe(value: str) -> str:
-    """systemd expands `%` specifiers in unit settings; `%%` is a literal one.
-
-    A repository path containing `%h` would otherwise resolve to the account's
-    home rather than the registered path, or fail admission outright.
-    """
-    return value.replace("%", "%%")
-
-
 def _path(value: str) -> str:
     if any(character in value for character in (":", "\n", "\r", "\0")):
         raise ValueError("Terminal mount paths cannot contain colons or control characters.")
     quoted = value.replace("\\", "\\\\").replace('"', '\\"')
-    return '"' + _specifier_safe(quoted) + '"'
+    return '"' + quoted + '"'

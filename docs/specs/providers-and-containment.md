@@ -58,7 +58,10 @@ backend pattern. Selection is per machine and independent of space kind:
   it, the launch refuses any path or value containing `$` rather than running
   under an expansion it cannot disable. The shipped preflight also sets a value
   and reads it back, so a manager that rewrote the command line is caught
-  whatever version it reports.
+  whatever version it reports. A transient unit is built over D-Bus rather than
+  parsed from a unit file and receives no `%` specifier expansion, so registered
+  paths are passed through exactly as they are; doubling a literal percent
+  instead makes the working directory unreachable.
 - Every machine requires an executable `/bin/bash` before it is offered at all.
   The cooperative helper writes its readiness marker before replacing itself
   with the shell, so an unrunnable shell would otherwise admit a session that

@@ -378,6 +378,48 @@ async def test_startup_survives_a_record_written_by_another_version(tmp_path, ca
 
 
 @pytest.mark.asyncio
+async def test_startup_leaves_a_record_whose_containment_it_does_not_know(
+    tmp_path, monkeypatch, caplog
+):
+    """`containment` is a Literal on a dataclass, so nothing enforces it at
+    runtime. An unknown value must not fall through the mirrored check and be
+    retired, which would hide a possible shell from every later startup.
+    """
+    from rcp.terminals import remote
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    session = TerminalSession(
+        session_id="skewed",
+        project_id="project",
+        member_id="member",
+        repository_id="repo",
+        path="/checkout",
+        started_at="start",
+        last_activity_at="start",
+        unit=f"{manager._unit_prefix}-skewed",
+    )
+    save_metadata(manager.directory, session)
+    record = json.loads((manager.directory / "skewed.json").read_text())
+    record["containment"] = "mirrored-with-something-new"
+    (manager.directory / "skewed.json").write_text(json.dumps(record))
+    monkeypatch.setattr(
+        remote, "stop_remote_unit", lambda *args: pytest.fail("Containment is unknown here")
+    )
+    monkeypatch.setattr(
+        launch, "stop_unit", lambda *args: pytest.fail("Containment is unknown here")
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        recorded = json.loads((manager.directory / "skewed.json").read_text())
+        assert recorded["ended_at"] is None
+        assert any("does not know" in message for message in caplog.messages)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_startup_retires_a_record_belonging_to_another_data_directory(tmp_path, monkeypatch):
     """The unit prefix hashes the data directory, so moving it makes every
     unfinished record foreign. That must not be a permanent startup failure.
@@ -683,7 +725,14 @@ def test_collected_unit_cleanup_accepts_explicit_not_found(monkeypatch):
     launch.stop_unit("already-collected")
 
 
-def test_transient_arguments_escape_percent_and_preserve_dollar_and_space_paths(tmp_path):
+def test_transient_arguments_pass_percent_and_space_paths_through_literally(tmp_path):
+    """A transient unit is built over D-Bus, not parsed from a unit file, so
+    systemd applies no specifier expansion to it.
+
+    Measured on the execution host (systemd 249): `%h` stays `%h` in both
+    properties and command arguments, and doubling it breaks a real path —
+    `--working-directory` with `%%` fails to change directory at all.
+    """
     repository = tmp_path / "repo %h $HOME with space"
     repository.mkdir()
     protected = repository / ".research"
@@ -696,17 +745,10 @@ def test_transient_arguments_escape_percent_and_preserve_dollar_and_space_paths(
         empty_directory=tmp_path,
     )
     assert "--expand-environment=no" in argv
-    # systemd expands `%` specifiers in unit settings, so a literal percent
-    # reaches it doubled. `--expand-environment=no` covers `$HOME`, not `%h`.
-    escaped = str(repository).replace("%", "%%")
-    assert f"--working-directory={escaped}" in argv
-    assert f'BindPaths="{escaped}"' in argv
-    # Only systemd property values are specifier-expanded; the preflight's own
-    # shell arguments take the path literally and must not be doubled.
-    properties = [argv[i + 1] for i, item in enumerate(argv) if item == "--property"]
-    assert properties
-    assert all("%h" not in value.replace("%%h", "") for value in properties)
+    assert f"--working-directory={repository}" in argv
+    assert f'BindPaths="{repository}"' in argv
     assert argv[-1] == str(protected)
+    assert "%%" not in " ".join(argv)
     assert launch._SHELL_PREFLIGHT in argv
 
 
