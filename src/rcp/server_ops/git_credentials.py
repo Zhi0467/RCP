@@ -30,6 +30,7 @@ from rcp.server_ops.layout import (
     remote_projects_root,
 )
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     CommandAction,
     ExternalAction,
     ExternalServiceTarget,
@@ -944,7 +945,10 @@ def deploy_key_operator_step(
         ),
         actions=(
             ExternalAction(instruction=instruction),
-            CommandAction(argv=manager.github_trust_argv(machine, material)),
+            CommandAction(
+                argv=manager.github_trust_argv(machine, material),
+                execution=OPERATOR_SHELL,
+            ),
             ExternalAction(
                 instruction=(
                     "Before accepting GitHub's host key, compare its fingerprint with "
@@ -962,6 +966,7 @@ def deploy_key_operator_step(
             ),
         ),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -1004,7 +1009,10 @@ def restore_deploy_key_operator_step(
         ),
         actions=(
             ExternalAction(instruction=instruction),
-            CommandAction(argv=manager.github_trust_argv(machine, material)),
+            CommandAction(
+                argv=manager.github_trust_argv(machine, material),
+                execution=OPERATOR_SHELL,
+            ),
             ExternalAction(
                 instruction=(
                     "Before accepting GitHub's host key, compare its fingerprint with "
@@ -1022,6 +1030,7 @@ def restore_deploy_key_operator_step(
             ),
         ),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -1062,6 +1071,7 @@ def empty_repository_operator_step(
         ),
         fields=(NonsecretField(name="repository", value=material.repository.identity),),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -1102,6 +1112,7 @@ def cleanup_ref_operator_step(
         ),
         fields=(NonsecretField(name="temporary_ref", value=probe.temporary_ref),),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 

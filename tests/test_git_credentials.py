@@ -1129,6 +1129,12 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     }
     assert "Allow write access" in grant.actions[0].instruction
     assert grant.resume_argv == resume
+    # The operator never typed a shell when the desktop ran this for them, so
+    # every command in the stop has to say which one it belongs to.
+    assert grant.resume_execution is not None
+    assert grant.resume_execution.shell_account is None
+    trust = next(action for action in grant.actions if action.kind == "command")
+    assert trust.execution is not None and trust.execution.shell_account is None
     serialized = grant.model_dump_json()
     assert "OPENSSH PRIVATE KEY" not in serialized
     assert material.private_key_path in serialized

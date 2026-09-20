@@ -22,9 +22,11 @@ from rcp.server_ops.cli import (
     run_server_command,
 )
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     SERVER_CLI_MAX_EXECUTION_BYTES,
     SERVER_CLI_MAX_STEPS,
     CommandAction,
+    ExecutionContext,
     ExternalAction,
     ExternalServiceTarget,
     MachineTarget,
@@ -572,6 +574,62 @@ def test_operator_action_requires_human_responsibility_actions_and_resume() -> N
         )
     with pytest.raises(ValidationError, match="require actions and resume"):
         ServerStep(**common, performed_by="human")
+
+
+def test_a_command_without_an_execution_context_serializes_exactly_as_before() -> None:
+    """A separately versioned supervisor and every pause stored before the
+    execution context existed must keep decoding, and a transition digest taken
+    over one of them must keep matching."""
+
+    legacy = {
+        "kind": "command",
+        "argv": ["sudo", "-n", "-u", "rcp", "-H", "rcp", "server", "doctor"],
+    }
+    action = CommandAction.model_validate_json(json.dumps(legacy))
+    assert action.execution is None
+    assert action.model_dump(mode="json") == legacy
+
+    stated = CommandAction(argv=tuple(legacy["argv"]), execution=OPERATOR_SHELL)
+    assert stated.model_dump(mode="json")["execution"] == {
+        "kind": "server_shell",
+        "shell_account": None,
+    }
+
+
+def test_an_execution_context_names_the_shell_not_the_operations_target() -> None:
+    """The same removal typed two ways differs only by a sudo prefix, so the
+    context is the only thing telling the operator which shell each needs."""
+
+    direct = CommandAction(
+        argv=("rcp", "server", "member", "remove", MEMBER_ID),
+        execution=ExecutionContext(shell_account="rcp"),
+    )
+    elevated = CommandAction(
+        argv=("sudo", "-n", "-u", "rcp", "-H", "rcp", "server", "member", "remove", MEMBER_ID),
+        execution=OPERATOR_SHELL,
+    )
+    assert direct.execution != elevated.execution
+    assert direct.execution is not None and direct.execution.shell_account == "rcp"
+    assert elevated.execution is not None and elevated.execution.shell_account is None
+
+    with pytest.raises(ValidationError):
+        ExecutionContext(shell_account="rcp_member_abcdefghijklmnop")
+
+
+def test_a_resume_execution_context_requires_a_resume_command() -> None:
+    with pytest.raises(ValidationError, match="requires a resume command"):
+        ServerStep(
+            number=1,
+            title="Enter server preparation",
+            purpose="Claim the next durable preparation revision.",
+            performed_by="system",
+            target=MachineTarget(host="server.example", os_account="rcp"),
+            phase="provisioning_start",
+            state="pending",
+            expected_success="The request is marked as setup in progress.",
+            message="RCP will enter server preparation.",
+            resume_execution=OPERATOR_SHELL,
+        )
 
 
 def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause() -> None:

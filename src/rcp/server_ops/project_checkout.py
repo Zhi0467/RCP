@@ -31,6 +31,7 @@ from rcp.server_ops.git_credentials import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout, remote_projects_root
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     ExternalAction,
     MachineTarget,
     NonsecretField,
@@ -959,6 +960,7 @@ def retained_research_operator_step(
             ),
         ),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 

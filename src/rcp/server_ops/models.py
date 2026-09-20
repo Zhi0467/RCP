@@ -362,6 +362,38 @@ class ServerCommandRequest(_StrictModel):
         return self
 
 
+class ExecutionContext(_StrictModel):
+    """The shell an operator types a displayed command into.
+
+    This is not the machine an operation acts on, which `MachineTarget`
+    already names: a local machine target carries the service account while the
+    operator is logged in under their own name and the command itself elevates.
+    `shell_account` names the OS account the shell must already belong to, and
+    `None` means the operator's own login.
+    """
+
+    kind: Literal["server_shell"] = "server_shell"
+    shell_account: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+        | None
+    ) = None
+
+    @field_validator("shell_account")
+    @classmethod
+    def validate_account(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        _single_line_text(value)
+        if redact_server_text(value) != value:
+            raise ValueError("execution contexts cannot contain credential-shaped values")
+        return value
+
+
+OPERATOR_SHELL = ExecutionContext()
+"""A shell the operator opens under their own login on the machine running the
+command. Displayed commands elevate from there themselves."""
+
+
 class MachineTarget(_StrictModel):
     kind: Literal["machine"] = "machine"
     host: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
@@ -425,6 +457,12 @@ ServerStepTarget: TypeAlias = Annotated[
 class CommandAction(_StrictModel):
     kind: Literal["command"] = "command"
     argv: tuple[ArgvToken, ...] = Field(min_length=1, max_length=SERVER_CLI_MAX_ARGV)
+    # Optional on the wire: the separately versioned supervisor emits its own
+    # operator steps, and a pause persisted before this field existed must still
+    # decode. Absent means unstated, and renders exactly as it did before. It
+    # leaves the serialized form entirely when unset, so a transition digest
+    # taken before this field existed still matches on retry.
+    execution: ExecutionContext | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("argv")
     @classmethod
@@ -485,6 +523,9 @@ class ServerStep(_StrictModel):
     actions: tuple[OperatorAction, ...] = Field(default=(), max_length=SERVER_CLI_MAX_ACTIONS)
     fields: tuple[NonsecretField, ...] = Field(default=(), max_length=SERVER_CLI_MAX_FIELDS)
     resume_argv: tuple[ArgvToken, ...] = Field(default=(), max_length=SERVER_CLI_MAX_ARGV)
+    resume_execution: ExecutionContext | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("phase")
     @classmethod
@@ -501,6 +542,8 @@ class ServerStep(_StrictModel):
         has_operator_contract = bool(self.actions or self.resume_argv)
         if any(_SENSITIVE_ARG_FLAG.match(token) for token in self.resume_argv):
             raise ValueError("resume argv cannot accept raw credential flags")
+        if self.resume_execution is not None and not self.resume_argv:
+            raise ValueError("a resume execution context requires a resume command")
         if self.state == "operator_action_needed":
             if self.performed_by != "human":
                 raise ValueError("operator-action steps must be performed by a human")
@@ -668,10 +711,12 @@ class ServerCommandExecution(_StrictModel):
 
 __all__ = [
     "CommandAction",
+    "ExecutionContext",
     "ExternalAction",
     "ExternalServiceTarget",
     "MachineTarget",
     "NonsecretField",
+    "OPERATOR_SHELL",
     "OperatorAction",
     "SERVER_CLI_MAX_ACTIONS",
     "SERVER_CLI_MAX_ARGV",
