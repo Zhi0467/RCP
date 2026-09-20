@@ -313,6 +313,31 @@ async def test_startup_survives_a_record_whose_unit_cannot_be_stopped(
 
 
 @pytest.mark.asyncio
+async def test_startup_survives_a_record_written_by_another_version(tmp_path, caplog):
+    """`TerminalSession` is a dataclass, so a record carrying an unknown or
+    missing field raises TypeError rather than a validation error. Startup runs
+    before every other owner, so that must be skipped, not fatal.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "skewed.json").write_text(
+        json.dumps({"session_id": "skewed", "a_field_from_another_version": True})
+    )
+    (manager.directory / "unparsable.json").write_text("{ not json")
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        # Both are left exactly as found; neither stopped the boot.
+        assert json.loads((manager.directory / "skewed.json").read_text())[
+            "a_field_from_another_version"
+        ]
+        assert (manager.directory / "unparsable.json").read_text() == "{ not json"
+        assert len([m for m in caplog.messages if "unreadable" in m]) == 2
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_startup_retires_a_record_belonging_to_another_data_directory(tmp_path, monkeypatch):
     """The unit prefix hashes the data directory, so moving it makes every
     unfinished record foreign. That must not be a permanent startup failure.

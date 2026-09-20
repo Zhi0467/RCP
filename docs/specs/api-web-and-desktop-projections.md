@@ -23,9 +23,11 @@ The project-scoped terminal routes are:
 
 Every HTTP route checks project membership. The WebSocket performs its own
 identity, project membership, same-origin, and maintenance admission because
-HTTP middleware does not cover upgrades. It rechecks before input/output and
-periodically while connected; cookie revocation and loss of membership close the
-connection. Unknown and nonmember projects remain indistinguishable.
+HTTP middleware does not cover upgrades. It rechecks before every input, on a
+short interval before output, and periodically while connected; cookie
+revocation and loss of membership close the connection. Output is rechecked on
+an interval rather than per frame because the check is a synchronous store read
+and a PTY can produce hundreds of frames a second. Unknown and nonmember projects remain indistinguishable.
 
 Repository rows retain `eligible` and `unavailable_reason` and include
 `machine_id`, `backend_id`, `backend_name`, `containment`, `os_name`,

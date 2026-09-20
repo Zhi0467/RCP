@@ -88,7 +88,9 @@ class TerminalManager:
         for path in self.directory.glob("*.json"):
             try:
                 session = TerminalSession(**json.loads(path.read_text()))
-            except (OSError, ValueError) as exc:
+            except (OSError, TypeError, ValueError) as exc:
+                # TerminalSession is a dataclass, so a record written by another
+                # version raises TypeError rather than a validation error.
                 logger.warning("Terminal record %s is unreadable; leaving it: %s", path.name, exc)
                 continue
             if session.ended_at:

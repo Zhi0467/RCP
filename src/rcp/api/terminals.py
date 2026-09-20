@@ -21,6 +21,7 @@ from rcp.api.terminal_projection import running_repository_work, terminal_sessio
 from rcp.limits import (
     TERMINAL_IO_CHUNK_BYTES,
     TERMINAL_MAX_DIMENSION,
+    TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
@@ -239,12 +240,17 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
                 manager.resize(project_id, session_id, dimensions.cols, dimensions.rows)
 
     async def send_output() -> None:
+        checked = 0.0
         while True:
             data = await queue.get()
-            # Admission is not rechecked per chunk: that is a synchronous store
-            # read on the event loop at full PTY throughput. `watch_admission`
-            # rechecks on the sweep interval and `receive_input` before every
-            # write, which is the direction that has to fail closed.
+            # Admission is a synchronous store read, so rechecking it per chunk
+            # costs hundreds of reads a second on the event loop at full PTY
+            # throughput. Rechecking on a short interval bounds what a revoked
+            # viewer can still receive without paying that per chunk.
+            now = asyncio.get_running_loop().time()
+            if now - checked >= TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS:
+                _admit_socket(websocket, project_id)
+                checked = now
             if data is DETACHED:
                 await websocket.send_json(
                     {

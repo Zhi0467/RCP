@@ -267,6 +267,35 @@ def test_live_membership_loss_closes_socket_before_more_input(tmp_path, terminal
         assert app.state.services.terminals.list(project_id) == []
 
 
+def test_live_membership_loss_stops_output_too(tmp_path, terminal_pty, monkeypatch):
+    """Input is not the only direction that must fail closed: a revoked viewer
+    must stop receiving PTY bytes as well.
+    """
+    monkeypatch.setattr("rcp.api.terminals.TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS", 0.0)
+    app, client, store, people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        with client.websocket_connect(
+            f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
+        ) as socket:
+            with store.connection() as connection:
+                connection.execute(
+                    "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+                    (project_id, people[0].user_id),
+                )
+            os.write(terminal_pty[0], b"secret output after revocation\n")
+            with pytest.raises(WebSocketDisconnect) as refused:
+                for _ in range(4):
+                    assert b"secret output" not in socket.receive_bytes()
+            assert refused.value.code == 4404
+        client.portal.call(app.state.services.terminals.sweep)
+        assert app.state.services.terminals.list(project_id) == []
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 
