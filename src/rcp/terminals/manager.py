@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -51,6 +52,8 @@ from rcp.transport.run_stage import RemoteRunStage
 
 logger = logging.getLogger(__name__)
 
+RECORD_FIELDS = frozenset(field.name for field in dataclasses.fields(TerminalSession))
+NULLABLE_FIELDS = frozenset({"ended_at", "termination_reason"})
 RETIRING_REFUSAL = (
     "An earlier terminal on this working tree could not be stopped, so its shell may "
     "still be running. Opening another would put two on one checkout; the stop is "
@@ -291,16 +294,24 @@ class TerminalManager:
     def _read_record(self, path: Path) -> TerminalSession | None:
         """This file's record, or None once the repository it names is blocked.
 
-        `save_metadata` writes every record whole and names the file for the
-        session in it, so one that does not construct, or names another
-        session, was not written by this version. It is left as found. Being
-        unable to read it is not evidence that its shell is gone, so whatever
-        repository it still names stays blocked until the file is resolved by
-        hand or by the version that wrote it.
+        `save_metadata` writes every field as a string, or null for the two
+        that end a record, and names the file for the session in it. A record
+        that does not look like that was not written by this version and is
+        left as found. It is not read through the dataclass's defaults: an
+        absent or mistyped `execution_host` would read as local, and a remote
+        unit would then be cleaned up against a local one that was never
+        there. Being unable to read a record is not evidence that its shell is
+        gone, so whatever repository it still names stays blocked until the
+        file is resolved by hand or by the version that wrote it.
         """
         payload: object = None
         try:
             payload = json.loads(path.read_text())
+            if not isinstance(payload, dict) or payload.keys() < RECORD_FIELDS:
+                raise ValueError("does not name every field this version writes")
+            for key, value in payload.items():
+                if not isinstance(value, str) and (value is not None or key not in NULLABLE_FIELDS):
+                    raise ValueError(f"holds a {type(value).__name__} for {key!r}")
             session = TerminalSession(**payload)
             if session.session_id != path.stem:
                 raise ValueError(f"names session {session.session_id!r}")

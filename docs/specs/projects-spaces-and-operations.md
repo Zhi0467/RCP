@@ -212,9 +212,11 @@ lets what is queued through, because the shell finished and that output is
 theirs.
 
 Startup reconciliation is best effort per record and never refuses the server a
-boot. A record is readable when this version can construct it and the file is
-named for the session in it; `save_metadata` writes every record whole under
-that name, so anything else was not written by this version. An unreadable
+boot. A record is readable when it names every field this version writes,
+each holding a string or, for the two that end a record, null, and the file is
+named for the session in it; `save_metadata` writes every record that way, so
+anything else was not written by this version and is not read through the
+dataclass's defaults, where an absent execution host would say local. An unreadable
 record is left exactly as found and, if it still names a project and
 repository, blocks that repository in a way nothing can confirm gone, because
 being unable to read a record is not evidence that its shell is gone. It is

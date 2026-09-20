@@ -111,10 +111,15 @@ def session_record(manager, name, **overrides) -> TerminalSession:
 
 
 def write_record(manager, name, **overrides) -> Path:
-    """Write `<name>.json` as `save_metadata` would; overrides may name fields no version knows."""
-    known = {key: value for key, value in overrides.items() if key in RECORD_FIELDS}
+    """Write `<name>.json` as `save_metadata` would.
+
+    Overrides may name fields no version knows; an override of `...` drops the field.
+    """
+    known = {k: v for k, v in overrides.items() if k in RECORD_FIELDS and v is not ...}
     payload = asdict(session_record(manager, name, **known))
-    payload.update(overrides)
+    payload.update({key: value for key, value in overrides.items() if value is not ...})
+    for key in [key for key, value in overrides.items() if value is ...]:
+        del payload[key]
     path = manager.directory / f"{name}.json"
     path.write_text(json.dumps(payload))
     return path
@@ -1637,6 +1642,8 @@ UNREADABLE_RECORDS = {
     "unparsable": ("{ not json", False),
     "unknown_field": ({"a_field_from_another_version": True}, True),
     "wrong_typed_project": ({"project_id": []}, False),
+    "missing_host": ({"execution_host": ...}, True),
+    "wrong_typed_host": ({"execution_host": []}, True),
     "names_another_file": ({"session_id": "../rcp-server"}, True),
     "unknown_containment": ({"containment": "mirrored-with-something-new"}, True),
 }
@@ -1651,11 +1658,13 @@ async def test_startup_leaves_a_record_it_cannot_read_and_blocks_what_it_names(
 
     Startup runs before every other owner, so no malformed record may refuse
     the boot. The file is left exactly as found, nothing else is written, and
-    whatever repository it still names stays blocked: a record this version
-    cannot construct, one named for another session or for a file outside the
-    directory, and one whose containment this version does not know can none
-    of them confirm what they left running. A record naming no readable
-    repository has nothing to block.
+    whatever repository it still names stays blocked: a record missing a field
+    or holding one of the wrong kind, one named for another session or for a
+    file outside the directory, and one whose containment this version does
+    not know can none of them confirm what they left running. A missing or
+    mistyped execution host in particular must not read as local, or a remote
+    unit is cleaned up against a local one that was never there. A record
+    naming no readable repository has nothing to block.
     """
     content, blocked = UNREADABLE_RECORDS[case]
     server_metadata = unstarted.data_dir / "rcp-server.json"
