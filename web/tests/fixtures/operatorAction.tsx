@@ -27,7 +27,9 @@ const step: ServerStep = {
     {
       kind: "external",
       instruction:
-        "Open https://github.com/zhi0467/rcp/settings/keys; add the displayed public key with title 'rcp:7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2:2ad064a6-f015-4703-a223-1d64cde75cc8:paper', and enable Allow write access.",
+        "Open https://github.com/zhi0467/rcp/settings/keys; add the displayed public key with title 'rcp:7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2:2ad064a6-f015-4703-a223-1d64cde75cc8:paper'.",
+      title: "Add the key to GitHub",
+      requirement: "Enable Allow write access",
     },
     {
       kind: "command",
@@ -41,7 +43,7 @@ const step: ServerStep = {
         "-F",
         "/dev/null",
         "-i",
-        "/var/folders/fy/n_7qxz0s3h32g3p8_lnj6c6c0000gn/T/tmp24wdmybh/home/rcp/rcp-server/credentials/projects/2ad064a6-f015-4703-a223-1d64cde75cc8/paper/id_ed25519",
+        "/var/folders/fy/n_7qxz0s3h32g3p8_lnj6c6c0000gn/T/tmpj7afetn2/home/rcp/rcp-server/credentials/projects/2ad064a6-f015-4703-a223-1d64cde75cc8/paper/id_ed25519",
         "-o",
         "IdentitiesOnly=yes",
         "-o",
@@ -49,7 +51,7 @@ const step: ServerStep = {
         "-o",
         "GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts",
         "-o",
-        "UserKnownHostsFile=/var/folders/fy/n_7qxz0s3h32g3p8_lnj6c6c0000gn/T/tmp24wdmybh/home/rcp/.ssh/known_hosts",
+        "UserKnownHostsFile=/var/folders/fy/n_7qxz0s3h32g3p8_lnj6c6c0000gn/T/tmpj7afetn2/home/rcp/.ssh/known_hosts",
         "-T",
         "git@github.com",
       ],
@@ -57,26 +59,31 @@ const step: ServerStep = {
         kind: "server_shell",
         shell_account: null,
       },
+      title: "Trust github.com from the server",
     },
     {
       kind: "external",
       instruction:
-        "Before accepting GitHub's host key, compare its fingerprint with https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints. A successful no-shell authentication may exit with status 1.",
+        "Compare the offered fingerprint with https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints. A successful no-shell authentication may exit with status 1.",
+      title: "Check the host key before accepting it",
     },
   ],
   fields: [
     {
       name: "deploy_key_label",
       value: "rcp:7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2:2ad064a6-f015-4703-a223-1d64cde75cc8:paper",
+      role: "input",
     },
     {
       name: "deploy_public_key",
       value:
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rcp:7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2:2ad064a6-f015-4703-a223-1d64cde75cc8:paper",
+      role: "input",
     },
     {
       name: "public_key_fingerprint",
       value: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      role: "evidence",
     },
   ],
   resume_argv: [

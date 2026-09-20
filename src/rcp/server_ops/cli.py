@@ -1006,18 +1006,23 @@ class _InteractiveServerRenderer:
             print(file=self.stream)
             print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
             for index, action in enumerate(step.actions, start=1):
+                if action.title:
+                    print(f"  {index}. {action.title}", file=self.stream)
+                lead = f"  {index}. " if not action.title else "     "
                 if action.kind == "command":
                     if (action.argv, action.execution) == (step.resume_argv, step.resume_execution):
                         continue
                     shell = _execution_prefix(action.execution)
-                    print(f"  {index}. {shell}$ {shlex.join(action.argv)}", file=self.stream)
+                    print(f"{lead}{shell}$ {shlex.join(action.argv)}", file=self.stream)
                 else:
                     _print_wrapped(
                         action.instruction,
                         self.stream,
-                        indent=f"  {index}. ",
+                        indent=lead,
                         subsequent_indent="     ",
                     )
+                    if action.requirement:
+                        print(f"     Required: {action.requirement}", file=self.stream)
         if step.resume_argv:
             print(file=self.stream)
             print("Continue:", file=self.stream)

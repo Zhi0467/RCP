@@ -921,7 +921,7 @@ def deploy_key_operator_step(
     _require_resume_request(resume_argv, request_id)
     instruction = (
         f"Open {material.repository.settings_url}; add the displayed public key with title "
-        f"{material.label!r}, and enable Allow write access."
+        f"{material.label!r}."
     )
     return ServerStep(
         number=number,
@@ -944,25 +944,32 @@ def deploy_key_operator_step(
             "key. Complete the displayed grant and host-trust steps, then resume."
         ),
         actions=(
-            ExternalAction(instruction=instruction),
+            ExternalAction(
+                title="Add the key to GitHub",
+                instruction=instruction,
+                requirement="Enable Allow write access",
+            ),
             CommandAction(
+                title="Trust github.com from the server",
                 argv=manager.github_trust_argv(machine, material),
                 execution=OPERATOR_SHELL,
             ),
             ExternalAction(
+                title="Check the host key before accepting it",
                 instruction=(
-                    "Before accepting GitHub's host key, compare its fingerprint with "
+                    "Compare the offered fingerprint with "
                     f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
                     "with status 1."
-                )
+                ),
             ),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label),
-            NonsecretField(name="deploy_public_key", value=material.public_key),
+            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
+            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
+                role="evidence",
             ),
         ),
         resume_argv=resume_argv,
@@ -983,7 +990,7 @@ def restore_deploy_key_operator_step(
     _require_restore_resume(resume_argv)
     instruction = (
         f"Open {material.repository.settings_url}; replace any stale RCP deploy key for "
-        f"{material.label!r} with the displayed fresh public key, and enable Allow write access."
+        f"{material.label!r} with the displayed fresh public key."
     )
     return ServerStep(
         number=number,
@@ -1008,25 +1015,32 @@ def restore_deploy_key_operator_step(
             "Complete the displayed grant and host-trust steps, then resume restore."
         ),
         actions=(
-            ExternalAction(instruction=instruction),
+            ExternalAction(
+                title="Add the key to GitHub",
+                instruction=instruction,
+                requirement="Enable Allow write access",
+            ),
             CommandAction(
+                title="Trust github.com from the server",
                 argv=manager.github_trust_argv(machine, material),
                 execution=OPERATOR_SHELL,
             ),
             ExternalAction(
+                title="Check the host key before accepting it",
                 instruction=(
-                    "Before accepting GitHub's host key, compare its fingerprint with "
+                    "Compare the offered fingerprint with "
                     f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
                     "with status 1."
-                )
+                ),
             ),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label),
-            NonsecretField(name="deploy_public_key", value=material.public_key),
+            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
+            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
+                role="evidence",
             ),
         ),
         resume_argv=resume_argv,

@@ -3223,6 +3223,54 @@ button:disabled {
   line-height: 1.6;
   margin: 0;
 }
+/* The one thing that must be true when a step is finished, which a sentence
+ * ending in "and enable X" reliably loses. */
+.operator-requirement {
+  align-items: center;
+  background: var(--amber-soft);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 7px;
+  display: flex;
+  font-size: 10px;
+  font-weight: 600;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+}
+.operator-requirement::before {
+  content: "☑";
+  font-size: 11px;
+}
+/* Values that are only compared against what the other side shows. They are
+ * not form fields and do not offer to be copied. */
+.provisioning-operator-action .operator-evidence {
+  display: grid;
+  /* Stated, not inherited: `.provisioning-operator-action dl` is the more
+   * specific selector and would otherwise impose its three-column grid, which
+   * is how the old panel wrapped single children down a narrow ribbon. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin: 12px 0 0;
+}
+.provisioning-operator-action .operator-evidence > div {
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: minmax(110px, 0.26fr) minmax(0, 1fr);
+}
+.provisioning-operator-action .operator-evidence dt {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.provisioning-operator-action .operator-evidence dd {
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .provisioning-ledger {
   display: grid;
   gap: 8px;

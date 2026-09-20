@@ -15,12 +15,12 @@ stored stop are verified end to end, but the `ssh` entry line is composed from
 the saved operator route, which only the Tauri runtime supplies, so it was
 exercised through the fixture rather than through a running desktop.
 
-Close this handoff when the human accepts the generic panel described in
-decision 5, or when a step can declare the role of each value it carries and
-the deploy-key grant is drawn as the two-field form they approved. Everything
-else it promised is built: a human stop reaches the operator as an ordered list
-of single actions titled for their task, every command in it names the shell it
-runs in, and the same execution context appears in the interactive CLI wizard.
+Close this handoff when the rebuilt panel has been driven against a provisioning
+request paused on a live server. Everything it promised is built: a human stop
+reaches the operator as an ordered list of named single actions titled for
+their task, every command in it names the shell it runs in, the deploy-key
+grant is the two-field form with *Allow write access* as its own requirement,
+and the interactive CLI wizard says the same things.
 
 ## The problem
 
@@ -137,17 +137,16 @@ other end are never named as two things.
    muted commentary line under a heading, and a read-only inspector rather than
    a caption when there is more to say.
 
-   Revised while implementing, and not yet reconfirmed with the human. The
-   mockup they approved was drawn for the deploy-key stop alone, and three of
-   its affordances need to know which stop is being drawn: a name for each
-   numbered step, which of the carried values are GitHub inputs rather than the
-   fingerprint that is only verification evidence, and *Allow write access* as
-   its own requirement. A shared panel may not hold that knowledge, so the
-   implementation numbers each action without naming it, renders every value
-   the same way, and leaves the write-access requirement inside the
-   instruction text that already states it. The alternative is to let a step
-   declare those roles, which is a further contract change and was not taken
-   here.
+   The mockup the human approved was drawn for the deploy-key stop alone, and
+   three of its affordances need to know which stop is being drawn: a name for
+   each numbered step, which carried values are pasted into GitHub rather than
+   only compared, and *Allow write access* as its own requirement. A shared
+   panel may not hold that knowledge, so the step declares it instead: an
+   action may carry a `title` and a `requirement`, and a value may carry a
+   `role` of `input` or `evidence`. All three are optional on the same terms as
+   the execution context, and a stop that says nothing renders as it did
+   before. Chosen by the human on 2026-09-19 over accepting a generic panel.
+
 6. **The operator stop keeps its own title.** `_copy_operator_contract` takes
    `title` and `purpose` from the operator step, not the pending plan step, so
    the card is named after the human's task. Two independent event validators

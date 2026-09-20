@@ -133,6 +133,11 @@ export function OperatorActionPanel({
   const authority = step.target.kind === "machine" ? null : step.target.required_authority_role;
   // A stop may list its resume command among its actions; it is one step, not
   // two, and it belongs at the end where the resume block already puts it.
+  // A value the operator pastes somewhere is a form field; one they only
+  // compare is not, and giving it a Copy button invites pasting it into the
+  // wrong box. A step that says nothing keeps the copyable form it had.
+  const inputs = step.fields.filter((field) => field.role !== "evidence");
+  const evidence = step.fields.filter((field) => field.role === "evidence");
   const actions = step.actions.filter(
     (action) =>
       action.kind !== "command" ||
@@ -181,9 +186,9 @@ export function OperatorActionPanel({
         </a>
       )}
 
-      {step.fields.length > 0 && (
+      {inputs.length > 0 && (
         <div className="operator-values">
-          {step.fields.map((field) => (
+          {inputs.map((field) => (
             <label key={field.name}>
               <span className="operator-value-name">{field.name.replaceAll("_", " ")}</span>
               <div className="operator-copy-row">
@@ -195,15 +200,27 @@ export function OperatorActionPanel({
         </div>
       )}
 
+      {evidence.length > 0 && (
+        <dl className="operator-evidence">
+          {evidence.map((field) => (
+            <div key={field.name}>
+              <dt>{field.name.replaceAll("_", " ")}</dt>
+              <dd>{String(field.value)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
       <ol className="operator-steps">
         {actions.map((action, index) =>
           action.kind === "command" ? (
-            <OperatorStep key={index}>
+            <OperatorStep key={index} title={action.title ?? undefined}>
               <CommandBlock argv={action.argv} context={action.execution} route={route} />
             </OperatorStep>
           ) : (
-            <OperatorStep key={index}>
+            <OperatorStep key={index} title={action.title ?? undefined}>
               <p className="operator-note">{action.instruction}</p>
+              {action.requirement && <p className="operator-requirement">{action.requirement}</p>}
             </OperatorStep>
           ),
         )}

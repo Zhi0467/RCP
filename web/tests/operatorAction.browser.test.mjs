@@ -71,7 +71,30 @@ test("a human stop is ordered, says where each command runs, and copies its valu
       markers.every((value) => value && value !== "none"),
       `every step needs its number, saw ${markers.join(" | ")}`,
     );
-    assert.equal(await page.locator(".operator-steps > li > header").count(), 1);
+    // Each step is named by the stop itself, not by a filler heading.
+    const headings = await page.locator(".operator-steps > li > header > span").allInnerTexts();
+    assert.deepEqual(headings, [
+      "Add the key to GitHub",
+      "Trust github.com from the server",
+      "Check the host key before accepting it",
+      "Resume setup",
+    ]);
+
+    // Two values are GitHub inputs with their own Copy button; the fingerprint
+    // is only compared, so it is not offered as a third thing to paste.
+    assert.equal(await page.locator(".operator-values label").count(), 2);
+    assert.equal(await page.locator(".operator-evidence > div").count(), 1);
+    assert.match(
+      await page.locator(".operator-evidence dt").innerText(),
+      /public key fingerprint/i,
+    );
+    assert.equal(await page.locator(".operator-evidence button").count(), 0);
+
+    // Allow write access is its own requirement, not a trailing clause.
+    assert.match(
+      await page.locator(".operator-requirement").innerText(),
+      /Enable Allow write access/,
+    );
 
     // Purpose and expected success are behind one disclosure, not loose text.
     assert.equal(await page.locator(".operator-details[open]").count(), 0);

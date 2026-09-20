@@ -1127,7 +1127,17 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
         "deploy_public_key": material.public_key,
         "public_key_fingerprint": material.public_key_fingerprint,
     }
-    assert "Allow write access" in grant.actions[0].instruction
+    # The write-access grant is the requirement of its own step, not a clause
+    # buried at the end of a sentence.
+    assert grant.actions[0].requirement == "Enable Allow write access"
+    assert grant.actions[0].title == "Add the key to GitHub"
+    # Two values go into GitHub's form; the fingerprint is only compared.
+    roles = {field.name: field.role for field in grant.fields}
+    assert roles == {
+        "deploy_key_label": "input",
+        "deploy_public_key": "input",
+        "public_key_fingerprint": "evidence",
+    }
     assert grant.resume_argv == resume
     # The operator never typed a shell when the desktop ran this for them, so
     # every command in the stop has to say which one it belongs to.

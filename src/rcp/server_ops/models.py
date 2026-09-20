@@ -463,6 +463,7 @@ class CommandAction(_StrictModel):
     # leaves the serialized form entirely when unset, so a transition digest
     # taken before this field existed still matches on retry.
     execution: ExecutionContext | None = Field(default=None, exclude_if=lambda value: value is None)
+    title: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("argv")
     @classmethod
@@ -475,6 +476,11 @@ class CommandAction(_StrictModel):
 class ExternalAction(_StrictModel):
     kind: Literal["external"] = "external"
     instruction: MessageText
+    # Presentation facts only a step knows. Both are optional and leave the
+    # serialized form when unset, for the same compatibility reasons as
+    # `CommandAction.execution`.
+    title: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
+    requirement: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 OperatorAction: TypeAlias = Annotated[
@@ -486,6 +492,12 @@ OperatorAction: TypeAlias = Annotated[
 class NonsecretField(_StrictModel):
     name: str
     value: str | int | bool
+    # What the operator does with this value. `input` is typed or pasted
+    # somewhere; `evidence` is only compared against what the other side shows,
+    # and offering it for copying invites pasting it into the wrong box.
+    role: Literal["input", "evidence"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("name")
     @classmethod
