@@ -369,6 +369,51 @@ def test_a_repointed_alias_retires_its_shell_even_when_the_new_machine_fails(
         assert [session["session_id"] for session in listed.json()] == []
 
 
+@pytest.mark.parametrize("change", ["repointed", "unregistered"])
+def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
+    tmp_path, terminal_pty, change
+):
+    """The listing is what a member watches, and the Open control is hidden
+    for any repository that already has a session. A session whose alias has
+    stopped naming it therefore hides the only control that would replace it,
+    so nothing but the listing itself can settle the registration.
+    """
+    from rcp.api.dependencies import get_project_service
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        assert [item["session_id"] for item in client.get(path).json()] == [session_id]
+
+        manifest = get_project_service(app.state.services.catalog, project_id).manifest
+        if change == "repointed":
+            moved = tmp_path / "moved-checkout"
+            (moved / ".research").mkdir(parents=True)
+            manifest.repository_map["paper-repo"].path = str(moved)
+        else:
+            # repository_map is computed from repositories, so the alias has
+            # to leave the list it is computed from.
+            manifest.repositories = [
+                item for item in manifest.repositories if item.alias != "paper-repo"
+            ]
+
+        # No POST is issued: the UI could not offer one.
+        assert client.get(path).json() == []
+        with (
+            pytest.raises(WebSocketDisconnect),
+            client.websocket_connect(f"{path}/{session_id}/ws"),
+        ):
+            pass
+        receipt = json.loads(
+            (app.state.services.terminals.directory / f"{session_id}.json").read_text()
+        )
+        assert receipt["termination_reason"] == f"repository_{change}"
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 

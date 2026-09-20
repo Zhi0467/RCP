@@ -97,11 +97,45 @@ class TerminalManager:
             session = runtime.session
             if session.project_id != project_id or session.repository_id != repository_alias:
                 continue
+            if repository_alias not in manifest.repository_map:
+                # The project no longer claims this checkout at all.
+                await end_runtime(self, runtime, "repository_unregistered")
+                return None
             if session_registration(session) == manifest_registration(manifest, repository_alias):
                 return session
             await end_runtime(self, runtime, "repository_repointed")
             return None
         return None
+
+    async def reconcile_registrations(self, project_id: str, manifest: Manifest) -> None:
+        """Retire this project's sessions whose alias has stopped naming them.
+
+        Nothing recomputes a registration on its own. `open` settles the alias
+        it was asked for, and the member whose repository was repointed or
+        unregistered while their shell ran is not going to ask: the stale
+        session is exactly what hides the control that would replace it. So
+        the projections a member reaches a session through settle it instead.
+
+        One alias that cannot be retired must not cost the others their
+        reconciliation or the caller its listing, so each is guarded. A stop
+        that failed leaves its session live and listed, and the next call
+        retries it, which is what a failed stop does everywhere here.
+        """
+        aliases = {
+            runtime.session.repository_id
+            for runtime in list(self.sessions.values())
+            if runtime.session.project_id == project_id
+        }
+        for alias in aliases:
+            try:
+                await self.retire_repointed(project_id, manifest, alias)
+            except Exception as exc:
+                logger.warning(
+                    "Terminal session for repository %s could not be retired after its "
+                    "registration changed; it is retried: %s",
+                    alias,
+                    exc,
+                )
 
     async def retire_repointed(
         self, project_id: str, manifest: Manifest, repository_alias: str

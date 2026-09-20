@@ -230,11 +230,18 @@ launch prerequisite is consulted. A capability probe or inventory read that now
 fails gates a new launch; it never withholds a session that is already running.
 
 That holds only while the alias still names what the session opened on. Once it
-names another path, machine or account, the running shell is not what was
-asked for, and it is retired before any launch prerequisite is consulted rather
-than as part of the launch that replaces it. Every prerequisite belongs to the
-new registration, so one of them failing must leave nothing attachable on the
-checkout the alias has left.
+names another path, machine or account, or the project stops registering it at
+all, the running shell is not what was asked for.
+
+Nothing recomputes a registration on its own, and a member cannot be relied on
+to ask: the Open control is hidden for a repository that already has a session,
+so a stale session hides the very control that would replace it. The
+projections a member reaches a session through settle registrations instead —
+the polling session list, the open request before its 404 and before every
+launch prerequisite, and the socket, which is reached by id rather than through
+the list. A session whose alias has stopped naming it is retired there, so it
+stops being listed and stops being attachable without anyone opening anything.
+An alias whose retirement fails keeps its session, and the next call retries.
 
 Opening a session holds the manager lock only to admit the request and to
 publish the result. The capability probe, remote repository resolution, and the

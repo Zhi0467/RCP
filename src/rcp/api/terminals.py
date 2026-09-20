@@ -26,7 +26,6 @@ from rcp.limits import (
 )
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
-from rcp.terminals.manager import manifest_registration, session_registration
 from rcp.terminals.models import DETACHED
 
 router = APIRouter()
@@ -103,9 +102,13 @@ async def refresh_probes(request: Request, project_id: str = _member) -> list[di
 
 
 @router.get("/api/projects/{project_id}/terminals")
-def sessions(request: Request, project_id: str = _member) -> list[dict[str, object]]:
+async def sessions(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
+    # This is the polling projection every member watches, so it is where a
+    # repointed or unregistered alias is noticed. A session it kept listing
+    # would also keep hiding the control that replaces it.
+    await services.terminals.reconcile_registrations(project_id, manifest)
     work = running_repository_work(services.store, project_id, manifest)
     return [
         terminal_session_payload(session, work) for session in services.terminals.list(project_id)
@@ -122,27 +125,19 @@ async def open_session(
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     member = services.identity_access.acting_user(request)
+    # Before the 404 and before every launch prerequisite: all of them belong
+    # to what the alias names now, and any of them answering first would leave
+    # a shell listed and attachable on the checkout it has stopped naming.
+    await services.terminals.reconcile_registrations(project_id, manifest)
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
     work = running_repository_work(services.store, project_id, manifest)
     for session in services.terminals.list(project_id):
         if session.repository_id == body.repository_id:
-            if session_registration(session) != manifest_registration(manifest, body.repository_id):
-                # The alias names another path, machine or account now. Retire
-                # the old session here rather than leaving it to `open`: every
-                # check below belongs to the new registration, and one of them
-                # failing must not answer with a 409 while the old shell stays
-                # listed and attachable on the checkout the alias has left.
-                try:
-                    await services.terminals.retire_repointed(
-                        project_id, manifest, body.repository_id
-                    )
-                except (OSError, RuntimeError, ValueError) as exc:
-                    raise HTTPException(503, str(exc)) from exc
-                break
-            # Open-or-return-existing: a live session must not be withheld
-            # because a later probe refresh or inventory read failed. Those are
-            # prerequisites for launching, not for handing back what is running.
+            # Registrations were just settled, so a session still listed here
+            # is one its alias still names. Open-or-return-existing: it must
+            # not be withheld because a later probe refresh or inventory read
+            # failed. Those gate a launch, not handing back what is running.
             return terminal_session_payload(session, work)
     repository = manifest.repository_map[body.repository_id]
     machine = manifest.machine_map[repository.machine]
@@ -235,6 +230,10 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
     manager = websocket.app.state.services.terminals
     try:
         project_id = _admit_socket(websocket, project_id)
+        # A socket is reached by id, not through the listing, so it settles
+        # registrations itself rather than trusting that a poll already has.
+        manifest = get_project_service(websocket.app.state.services.catalog, project_id).manifest
+        await manager.reconcile_registrations(project_id, manifest)
         session = manager.get(project_id, session_id)
     except HTTPException as exc:
         await websocket.close(code=_SOCKET_CLOSE_CODES.get(exc.status_code, 4400))
