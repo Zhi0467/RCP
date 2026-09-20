@@ -189,7 +189,8 @@ Startup reconciliation is best effort per record and never refuses the server a
 boot. Each record is reconciled under its own guard, so no way of being
 malformed — truncated, carrying fields this version does not know, or carrying
 values of the wrong type — can abort startup; an unreconciled record stays as
-it was found. Records reconcile together rather than in turn, because shutdown
+it was found and blocks its repository, because failing to reconcile a record
+is not evidence that its shell is gone. Records reconcile together rather than in turn, because shutdown
 leaves every live remote session unfinished and a machine that went away would
 otherwise cost one remote stop timeout per record before any other startup
 owner runs.

@@ -800,6 +800,48 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
 
 
 @pytest.mark.asyncio
+async def test_a_record_that_cannot_be_reconciled_at_all_blocks_its_repository(
+    manifest, tmp_path, process_factory, caplog
+):
+    """Failing to reconcile a record is not evidence that its shell is gone.
+
+    An `execution_host` can be a string and still be one `ssh` refuses, which
+    raises where no branch expects it. Whatever the reason, the record names a
+    unit this startup could not account for, so the repository is blocked
+    rather than merely logged about.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "unreachable.json").write_text(
+        json.dumps(
+            {
+                "session_id": "unreachable",
+                "project_id": "project",
+                "member_id": "member",
+                "repository_id": "repo-a",
+                "path": "/checkout",
+                "started_at": "start",
+                "last_activity_at": "start",
+                "unit": f"{manager._unit_prefix}-unreachable",
+                "containment": "mirrored",
+                "execution_host": "bad\nhost",
+            }
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        # Left as written, and the boot completed.
+        assert "ended_at" not in json.loads((manager.directory / "unreachable.json").read_text())
+        assert any("blocking its repository" in message for message in caplog.messages)
+        assert ("project", "repo-a") in manager._unresolved
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_malformed_record_cannot_borrow_another_blocker_identity(
     manifest, tmp_path, process_factory, monkeypatch
 ):

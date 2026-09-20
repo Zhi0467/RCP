@@ -289,15 +289,29 @@ class TerminalManager:
         carry values of the wrong type entirely; a dataclass enforces none of
         that. Guarding the whole record ends that class rather than naming each
         way one can be malformed. An unreconciled record stays put.
+
+        Failing to reconcile a record is not evidence that its shell is gone,
+        so the repository is blocked as well. A record can fail here in ways
+        no branch below anticipates — a destination `ssh` refuses, a stop that
+        raises something unlisted — and every one of them leaves a unit this
+        startup could not account for.
         """
         try:
-            await self._reconcile_record(path)
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            # Nothing was read, so nothing names a repository to block.
+            logger.warning("Terminal record %s cannot be read; leaving it: %s", path.name, exc)
+            return
+        try:
+            await self._reconcile_record(path, payload)
         except Exception as exc:
             logger.warning(
-                "Terminal record %s could not be reconciled; leaving it: %s",
+                "Terminal record %s could not be reconciled; leaving it and blocking "
+                "its repository: %s",
                 path.name,
                 exc,
             )
+            self._block_unreadable_repository(path, payload)
 
     def _block_unreadable_repository(self, path: Path, payload: object) -> None:
         """Keep a record this version cannot read from yielding a second shell.
@@ -337,14 +351,8 @@ class TerminalManager:
             )
         )
 
-    async def _reconcile_record(self, path: Path) -> None:
-        """Retire, retain or block one persisted record. Never raise past start()."""
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            # Nothing here names a repository, so there is nothing to block.
-            logger.warning("Terminal record %s cannot be read; leaving it: %s", path.name, exc)
-            return
+    async def _reconcile_record(self, path: Path, payload: object) -> None:
+        """Retire, retain or block one persisted record, or raise to its guard."""
         if not _record_values_are_well_typed(payload):
             # A dataclass enforces no field's type, and a wrong type that
             # happens to be falsey reads as an ordinary empty value rather
