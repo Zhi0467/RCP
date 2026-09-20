@@ -32,19 +32,22 @@ def running_repository_work(
         for repository in manifest.repositories:
             if repository.machine != request.get("run_on"):
                 continue
-            if roots is not None:
-                path = (
-                    repository.path
-                    if manifest.machine_map[repository.machine].host
-                    else str(Path(repository.path).resolve())
-                )
-                matches = path in roots
+            declared = (
+                repository.alias in (request.get("run_truth_scope") or [])
+                and repository.machine == request.get("run_on")
+                and (not request.get("worktree") or bool(request.get("worktree_integration")))
+            )
+            if roots is None:
+                matches = declared
+            elif manifest.machine_map[repository.machine].host:
+                # A remote path cannot be canonicalized from here, and the
+                # receipt carries the far side's canonical root, so a symlinked
+                # repository never matches by path. Losing the match would drop
+                # the collision warning silently, so the declared scope stays a
+                # second chance rather than a fallback only for old receipts.
+                matches = repository.path in roots or declared
             else:
-                matches = (
-                    repository.alias in (request.get("run_truth_scope") or [])
-                    and repository.machine == request.get("run_on")
-                    and (not request.get("worktree") or bool(request.get("worktree_integration")))
-                )
+                matches = str(Path(repository.path).resolve()) in roots
             if matches:
                 work[repository.alias].append(
                     {

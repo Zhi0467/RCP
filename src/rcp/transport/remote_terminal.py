@@ -77,7 +77,13 @@ def run_session(settings: dict[str, Any]) -> int:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         with tempfile.TemporaryDirectory(prefix="rcp-terminal-") as empty:
-            paths, environment = git_access["terminal_git_access"](None)
+            # The far side is the only place that knows this account's home,
+            # so the server sends the key's path relative to it. A team
+            # repository's deploy key is the only Git credential a remote
+            # session gets; the shell scrubs the ambient environment.
+            relative = settings.get("git_key_relative")
+            key = (Path.home() / relative) if relative else None
+            paths, environment = git_access["terminal_git_access"](key)
             if mirrored:
                 command = profile["launch_command"](
                     unit=settings["unit"],

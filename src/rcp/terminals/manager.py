@@ -103,6 +103,7 @@ class TerminalManager:
         repository_inventory: list[RegisteredRepositoryRoot],
         git_read_paths: tuple[str, ...] = (),
         git_environment: dict[str, str] | None = None,
+        remote_git_key_relative: str | None = None,
     ) -> TerminalSession:
         async with self._lock:
             if not self._started:

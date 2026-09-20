@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from pathlib import PurePosixPath
 from typing import Literal
 
 import anyio
@@ -23,6 +24,7 @@ from rcp.limits import (
     TERMINAL_MAX_DIMENSION,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
+from rcp.server_ops.layout import project_deploy_key_relative_path
 from rcp.terminals.backends import machine_capability
 from rcp.terminals.git_access import terminal_git_access
 
@@ -136,6 +138,17 @@ async def open_session(
             else None
         )
         paths, environment = ((), {}) if machine.host else terminal_git_access(key)
+        # A remote team checkout authenticates with its provisioned deploy key,
+        # which lives under the far account's home. Only that side knows the
+        # home, so send the path relative to it.
+        remote_key_relative = (
+            str(
+                PurePosixPath(".local/share/rcp/credentials")
+                / project_deploy_key_relative_path(project_id, body.repository_id)
+            )
+            if machine.host and services.store.space_kind == "team"
+            else None
+        )
         session = await services.terminals.open(
             project_id=project_id,
             member_id=member.user_id,
@@ -144,6 +157,7 @@ async def open_session(
             repository_inventory=inventory,
             git_read_paths=paths,
             git_environment=environment,
+            remote_git_key_relative=remote_key_relative,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(503, str(exc)) from exc

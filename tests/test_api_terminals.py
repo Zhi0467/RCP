@@ -583,3 +583,41 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
             pytest.fail("An ended SSH session was silently reconnected")
         assert refused.value.code == 4404
         assert len(remote_pty) == 1
+
+
+def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatch):
+    """A receipt names the far side's canonical root, which we cannot resolve.
+
+    Matching a remote repository by declared path alone would silently drop the
+    running-Work warning for a symlinked checkout, so the declared run scope
+    stays a second chance.
+    """
+    from rcp.api import terminal_projection
+
+    class _Task:
+        active, queued, kind = True, False, "chat"
+        operation_id, status_message = "op-1", "Refit the damping window"
+        request = {"mode": "work", "run_truth_scope": ["code"], "run_on": "remote-1"}
+
+    class _Receipt:
+        payload = {"canonical_repository_roots": ["/canonical/elsewhere/code"]}
+
+    class _Store:
+        def all_project_agent_tasks(self, project_id):
+            return [_Task()]
+
+        def agent_task_receipts(self, operation_id):
+            return [_Receipt()]
+
+    class _Repo:
+        alias, machine, path = "code", "remote-1", "/symlinked/code"
+
+    class _Machine:
+        host = "example.invalid"
+
+    class _Manifest:
+        repositories = [_Repo()]
+        machine_map = {"remote-1": _Machine()}
+
+    work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest())
+    assert [entry["operation_id"] for entry in work["code"]] == ["op-1"]
