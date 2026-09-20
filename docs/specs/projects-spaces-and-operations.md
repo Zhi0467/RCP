@@ -155,8 +155,12 @@ still has whatever read visibility its host operating-system account permits.
 
 ## Member terminal lifecycle
 
-`TerminalManager` owns one session per repository per project. Project members
-may attach to the existing session or end it. The starting member remains its
+`TerminalManager` owns one session per repository per project, and underneath
+that one shell per working tree: a request is refused when any session — under
+another alias, or in another project — is already open on the tree it names.
+Registrations can be renamed and moved between projects, and two shells writing
+one tree is what the rule exists to prevent. Project members may attach to the
+existing session of their own project's alias, or end it. The starting member remains its
 audit actor; losing that member's project membership or beginning account
 removal ends the shell, including detached sessions. A viewing member who loses
 access is disconnected independently. A deleted or retired project's sessions
@@ -167,7 +171,9 @@ shell keeps running and the view offers a reconnect. Reusing the session-end
 signal there would report a live shell as terminated.
 
 Sessions outlive the Terminals view and disconnected browsers. Only terminal
-input renews the 30-minute idle lifetime in `limits.py`; output and passive
+input renews the 30-minute idle lifetime in `limits.py`, and it renews it on
+arrival rather than once the shell has taken it, because a backpressured PTY
+can leave a write waiting for as long as it likes; output and passive
 attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
 membership, process exit, and idle expiry every five seconds. Clean server
 shutdown and maintenance end sessions. For mirrored sessions, startup stops

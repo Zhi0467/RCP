@@ -211,16 +211,31 @@ class TerminalManager:
         )
         for runtime in list(self.sessions.values()):
             session = runtime.session
-            if session.project_id != project_id:
+            holds_target = target is not None and session_checkout(session) == target
+            same_project = session.project_id == project_id
+            if not same_project and not holds_target:
+                # Another project's shell is another project's business until
+                # it is on the tree this one is about to open.
                 continue
-            names_alias = session.repository_id == repository_alias
+            # An alias is a name inside one project, so another project's
+            # session never answers for this one however it spells its own.
+            names_alias = same_project and session.repository_id == repository_alias
+            if not runtime.retiring and not names_alias and holds_target:
+                # Another alias has a shell on this very working tree. Two of
+                # them would write one tree, which is what one-session-per-
+                # repository exists to prevent, and the alias asked for is not
+                # what decides that.
+                raise TerminalUnavailable(
+                    "Another terminal is already open on this working tree. "
+                    "End it before opening one here."
+                )
             if runtime.retiring:
                 # Its stop failed, so its shell may still own the checkout, and
                 # a failed local stop leaves no retained record to find it by.
                 # The alias it carries is not the only one that can name that
                 # tree: settings can drop an alias and register the same
                 # checkout under another, as retained records are matched for.
-                if names_alias or (target is not None and session_checkout(session) == target):
+                if names_alias or holds_target:
                     raise TerminalUnavailable(
                         "An earlier terminal for this repository could not be stopped, so "
                         "its shell may still be running. Opening another would put two on "
@@ -349,11 +364,8 @@ class TerminalManager:
             (key, session)
             for key, retained in self._unresolved.items()
             for session in retained
-            if key[0] == project_id
-            and (
-                key[1] == repository_alias
-                or (target is not None and session_checkout(session) == target)
-            )
+            if (key[0] == project_id and key[1] == repository_alias)
+            or (target is not None and session_checkout(session) == target)
         ]
         if not speaking:
             return
@@ -839,7 +851,13 @@ class TerminalManager:
             # during that wait publishes nothing, so without this the shell
             # and its record are both abandoned while `_opening` is cleared,
             # and the next attempt opens a second one on the same checkout.
-            await self._abandon_opening(runtime)
+            if runtime.session.termination_reason is None:
+                # Unless the membership end above already finished: `end_runtime`
+                # completes its cleanup before re-raising a cancellation, so
+                # the record is written and the descriptor given back. Ending
+                # again would overwrite why this session ended and act on a
+                # descriptor another launch may already have been handed.
+                await self._abandon_opening(runtime)
             raise
         return session
 
@@ -938,6 +956,12 @@ class TerminalManager:
 
     async def write(self, project_id: str, session_id: str, data: bytes) -> None:
         runtime = get_runtime(self, project_id, session_id)
+        # The lifetime is renewed by input arriving, not by the PTY finishing
+        # with it. A backpressured shell can leave this loop waiting for
+        # writable space for as long as it likes, and a sweep meanwhile would
+        # read the older time and expire a session being typed into.
+        runtime.last_activity = time.monotonic()
+        runtime.session.last_activity_at = timestamp()
         view = memoryview(data)
         while view:
             try:
@@ -947,8 +971,6 @@ class TerminalManager:
                 await asyncio.sleep(TERMINAL_POLL_INTERVAL_SECONDS)
                 if get_runtime(self, project_id, session_id) is not runtime:
                     raise KeyError("Terminal session ended during input.") from None
-        runtime.last_activity = time.monotonic()
-        runtime.session.last_activity_at = timestamp()
 
     def resize(self, project_id: str, session_id: str, cols: int, rows: int) -> None:
         if not (1 <= cols <= TERMINAL_MAX_DIMENSION and 1 <= rows <= TERMINAL_MAX_DIMENSION):

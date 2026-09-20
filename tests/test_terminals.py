@@ -1719,6 +1719,115 @@ async def test_a_failed_retirement_drops_the_output_still_queued(
 
 
 @pytest.mark.asyncio
+async def test_one_working_tree_holds_one_shell_across_projects(
+    manifest, tmp_path, process_factory
+):
+    """A checkout can leave one project's manifest and arrive in another while
+    the first still has a shell on it. Nothing else catches that: the overlap
+    check at resolution compares registrations, and by then only the new one
+    is registered. Two shells on one working tree is the thing being
+    prevented, and which project asked is not what decides it.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        await manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
+        # The same working tree, reached as another project's registration.
+        with pytest.raises(TerminalUnavailable, match="already open on this working tree"):
+            await manager.open(
+                **{
+                    **arguments(manifest),
+                    "project_id": "other-project",
+                    "repository_alias": "repo-b",
+                    "repository_inventory": registered_repository_roots(
+                        manifest, project_id="other-project"
+                    ),
+                }
+            )
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_membership_end_does_not_end_it_again(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """`end_runtime` finishes its cleanup before it re-raises a cancellation,
+    so by then the record is written and the descriptor given back. Ending
+    again would overwrite why the session ended and act on a descriptor
+    another launch may already have been handed.
+    """
+    checks = []
+    stopping = threading.Event()
+    release = threading.Event()
+    stops = []
+
+    def membership(project, member):
+        checks.append(member)
+        # Admitted on entry, gone by the time the shell is published.
+        return len(checks) == 1
+
+    def stop(unit):
+        stops.append(unit)
+        stopping.set()
+        assert release.wait(5)
+
+    manager = TerminalManager(tmp_path / "data", membership)
+    await manager.start()
+    try:
+        monkeypatch.setattr(launch, "stop_unit", stop)
+        opening = asyncio.create_task(manager.open(**arguments(manifest)))
+        assert await asyncio.to_thread(stopping.wait, 5)
+        opening.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+        records = list(manager.directory.glob("*.json"))
+        assert len(records) == 1
+        # The reason it actually ended for, and one stop, not two.
+        assert json.loads(records[0].read_text())["termination_reason"] == "membership_lost"
+        assert len(stops) == 1
+    finally:
+        release.set()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_input_renews_the_lifetime_before_the_pty_drains_it(
+    manifest, tmp_path, process_factory
+):
+    """A backpressured shell can leave a write waiting for writable space for
+    as long as it likes. Input renews the lifetime by arriving, or a sweep
+    meanwhile expires a session being typed into.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    writing = None
+    try:
+        manager._sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await manager._sweeper
+        session = await manager.open(**arguments(manifest))
+        runtime = manager.sessions[session.session_id]
+        runtime.last_activity = time.monotonic() - TERMINAL_IDLE_TIMEOUT_SECONDS - 1
+        # Nothing reads the far side, so this fills the PTY and waits.
+        writing = asyncio.create_task(
+            manager.write("project", session.session_id, b"x" * (8 * 1024 * 1024))
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not writing.done(), "the PTY took the whole write, so nothing was waiting"
+        await manager.sweep()
+        assert manager.get("project", session.session_id) is session
+    finally:
+        if writing is not None:
+            writing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, KeyError):
+                await writing
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_input_during_a_sweeps_wait_renews_the_lifetime(manifest, tmp_path, process_factory):
     """Only the member's input renews a terminal's lifetime. A sweep that
     decided a session was idle before waiting for the lock would act on that
