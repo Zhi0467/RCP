@@ -148,6 +148,23 @@ class TerminalManager:
     def invalidate_local_capability(self) -> None:
         self._local_capability = None
 
+    async def _reconcile_guarded(self, path: Path) -> None:
+        """Reconcile one record, and never let it cost the server its boot.
+
+        A record can be truncated, carry fields this version does not know, or
+        carry values of the wrong type entirely; a dataclass enforces none of
+        that. Guarding the whole record ends that class rather than naming each
+        way one can be malformed. An unreconciled record stays put.
+        """
+        try:
+            await self._reconcile_record(path)
+        except Exception as exc:
+            logger.warning(
+                "Terminal record %s could not be reconciled; leaving it: %s",
+                path.name,
+                exc,
+            )
+
     def _block_unreadable_repository(self, payload: object) -> None:
         """Keep a record this version cannot read from yielding a second shell.
 
@@ -202,6 +219,20 @@ class TerminalManager:
             self._block_unreadable_repository(payload)
             return
         if session.ended_at:
+            return
+        if session.session_id != path.stem:
+            # Every record this application writes is named for the session in
+            # it. One that is not was damaged or written by something else, and
+            # acting on it would retire a unit under another record's name and
+            # overwrite that record — including an unfinished one whose whole
+            # job is to keep a repository blocked. It may still describe a live
+            # shell, so it blocks its own repository instead.
+            logger.warning(
+                "Terminal record %s carries session id %r; leaving it and blocking its repository.",
+                path.name,
+                session.session_id,
+            )
+            self._block_unreadable_repository(payload)
             return
         if session.containment not in {"mirrored", "cooperative"}:
             # A dataclass does not enforce its Literal, so a version-skewed
@@ -266,21 +297,14 @@ class TerminalManager:
         # Reconciliation is best effort per record. This runs before every other
         # startup owner, so a stale record, a moved data directory, or an
         # unreachable machine must never be able to refuse the server a boot.
-        for path in self.directory.glob("*.json"):
-            try:
-                await self._reconcile_record(path)
-            except Exception as exc:
-                # Startup runs before every other owner, and nothing here is
-                # worth a boot. A record can be truncated, carry fields this
-                # version does not know, or carry values of the wrong type
-                # entirely; a dataclass enforces none of that. Guarding the
-                # whole record ends that class rather than naming each way
-                # one can be malformed. An unreconciled record stays put.
-                logger.warning(
-                    "Terminal record %s could not be reconciled; leaving it: %s",
-                    path.name,
-                    exc,
-                )
+        # Records are reconciled together. Shutdown deliberately leaves every
+        # live remote session unfinished, so a machine that went away takes a
+        # remote stop timeout per record, and in turn that is startup spent
+        # before any other owner runs. They touch separate files and separate
+        # repositories, so the wait is one timeout rather than one each.
+        await asyncio.gather(
+            *(self._reconcile_guarded(path) for path in self.directory.glob("*.json"))
+        )
         self._started = True
         self._sweeper = asyncio.create_task(sweep_loop(self))
 

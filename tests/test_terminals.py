@@ -491,7 +491,105 @@ async def test_a_record_cannot_name_a_file_outside_the_terminal_directory(tmp_pa
         await manager.start()
     try:
         assert json.loads(server_metadata.read_text()) == {"instance": "original"}
-        assert any("does not name a record" in message for message in caplog.messages)
+        assert any("carries session id" in message for message in caplog.messages)
+        assert ("project", "repo-a") in manager._unresolved
+    finally:
+        await manager.close()
+
+
+def test_a_record_path_refuses_an_identifier_that_leaves_its_directory(tmp_path):
+    """The self-naming check catches these first, but this is the guard that
+    every `save_metadata` caller sits behind, including any later one.
+    """
+    from rcp.terminals.utilities import record_path
+
+    assert record_path(tmp_path, "ordinary") == tmp_path / "ordinary.json"
+    for identifier in ("", "../rcp-server", "nested/session", "/etc/rcp-absolute"):
+        with pytest.raises(TerminalUnavailable, match="does not name a record"):
+            record_path(tmp_path, identifier)
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciles_records_together(tmp_path, monkeypatch):
+    """Shutdown leaves every live remote session unfinished on purpose, so a
+    machine that went away costs a remote stop timeout per record, and startup
+    runs before every other owner. A barrier proves the overlap without timing
+    anything: reconciling in turn never brings a second stop here.
+    """
+    from rcp.terminals import remote
+
+    meeting = threading.Barrier(2)
+    met = []
+
+    def stop(host, unit, account=""):
+        meeting.wait(timeout=5)
+        met.append(unit)
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    for name in ("first", "second"):
+        (manager.directory / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "session_id": name,
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": f"repo-{name}",
+                    "path": f"/checkout/{name}",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-{name}",
+                    "containment": "mirrored",
+                    "execution_host": "worker.invalid",
+                }
+            )
+        )
+    monkeypatch.setattr(remote, "stop_remote_unit", stop)
+    await manager.start()
+    try:
+        assert sorted(met) == sorted(
+            f"{manager._unit_prefix}-{name}" for name in ("first", "second")
+        )
+        for name in ("first", "second"):
+            record = json.loads((manager.directory / f"{name}.json").read_text())
+            assert record["termination_reason"] == "server_restart"
+            assert record["ended_at"]
+    finally:
+        meeting.abort()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_record_cannot_overwrite_a_sibling_record(tmp_path, caplog):
+    """A damaged record naming another session's id would retire that session
+    under its own name. The record it overwrote may be an unfinished one whose
+    whole job is to keep a repository blocked, which would then be unblocked
+    with its unit still running.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    retained = {
+        "session_id": "real",
+        "project_id": "project",
+        "member_id": "member",
+        "repository_id": "repo-a",
+        "path": "/checkout",
+        "started_at": "start",
+        "last_activity_at": "start",
+        "unit": f"{manager._unit_prefix}-real",
+        # Unknown to this version, so it is retained and blocks its repository
+        # without any network call.
+        "containment": "from-a-newer-version",
+    }
+    (manager.directory / "real.json").write_text(json.dumps(retained))
+    (manager.directory / "damaged.json").write_text(
+        json.dumps({**retained, "unit": "rcp-terminal-elsewhere-real", "containment": "mirrored"})
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        assert json.loads((manager.directory / "real.json").read_text()) == retained
+        assert ("project", "repo-a") in manager._unresolved
     finally:
         await manager.close()
 
