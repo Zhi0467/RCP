@@ -2,6 +2,12 @@
 
 Active:
 
+- [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
+  — design confirmed 2026-09-19 against a rendered mockup; nothing implemented.
+  A command action will name the shell it runs in, the deploy-key grant becomes
+  a titled two-field copy form, and the human stop renders as an ordered list of
+  single actions in both the desktop panel and the CLI wizard.
+
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
   slices implemented and driven against a copy of the production data;
