@@ -198,15 +198,26 @@ export function OperatorActionPanel({
 
       {inputs.length > 0 && (
         <div className="operator-values">
-          {inputs.map((field) => (
-            <label key={field.name}>
-              <span className="operator-value-name">{field.name.replaceAll("_", " ")}</span>
-              <div className="operator-copy-row">
-                <code className="operator-value">{String(field.value)}</code>
-                <CopyButton value={String(field.value)} label={field.name} />
+          {inputs.map((field) => {
+            // Not a <label>: one with no `for` labels its first labelable
+            // descendant, so wrapping the Copy button would make a click on the
+            // value text -- the natural way to select it by hand -- press Copy,
+            // and would fold the whole value into the button's name.
+            const named = `operator-value-${field.name}`;
+            return (
+              <div className="operator-values-item" key={field.name}>
+                <span className="operator-value-name" id={named}>
+                  {field.name.replaceAll("_", " ")}
+                </span>
+                <div className="operator-copy-row">
+                  <code className="operator-value" aria-labelledby={named}>
+                    {String(field.value)}
+                  </code>
+                  <CopyButton value={String(field.value)} label={field.name} />
+                </div>
               </div>
-            </label>
-          ))}
+            );
+          })}
         </div>
       )}
 

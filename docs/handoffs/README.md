@@ -10,7 +10,8 @@ Active:
   the CLI wizard. Python, web, browser, and native checks pass against a stop
   from the real builder, and a step now declares each action's name, its one
   requirement, and whether a value is pasted or only compared. Driving the
-  panel against a request paused on a live server remains.
+  panel from the desktop app, so the sign-in line comes from a real saved
+  operator route rather than its fixture, remains.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six

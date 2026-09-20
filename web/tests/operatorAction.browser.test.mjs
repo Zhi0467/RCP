@@ -83,7 +83,7 @@ test("a human stop is ordered, says where each command runs, and copies its valu
 
     // Two values are GitHub inputs with their own Copy button; the fingerprint
     // is only compared, so it is not offered as a third thing to paste.
-    assert.equal(await page.locator(".operator-values label").count(), 2);
+    assert.equal(await page.locator(".operator-values-item").count(), 2);
     assert.equal(await page.locator(".operator-evidence > div").count(), 1);
     assert.match(
       await page.locator(".operator-evidence dt").innerText(),
@@ -101,6 +101,14 @@ test("a human stop is ordered, says where each command runs, and copies its valu
     assert.equal(await page.locator(".operator-details[open]").count(), 0);
     await page.locator(".operator-details > summary").click();
     assert.equal(await page.locator(".operator-details[open]").count(), 1);
+
+    // Selecting a value by clicking its text must not press Copy: a <label>
+    // wrapper used to make the whole row activate the button.
+    await page.locator(".operator-values .operator-value").first().click();
+    assert.equal(
+      await page.locator('.operator-values button[aria-label^="Copy"]').first().innerText(),
+      "Copy",
+    );
 
     // Each value GitHub asks for is copyable on its own.
     const label = await page.locator(".operator-values .operator-value").first().innerText();

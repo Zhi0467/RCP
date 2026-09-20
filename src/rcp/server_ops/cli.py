@@ -993,7 +993,10 @@ class _InteractiveServerRenderer:
         print(file=self.stream)
         shown = fields[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
         for field in shown:
-            print(f"  {field.name.replace('_', ' ')}: {field.value}", file=self.stream)
+            # A value the operator pastes somewhere and one they only compare
+            # read alike in a terminal; the panel separates them visually.
+            compare = " (compare only)" if field.role == "evidence" else ""
+            print(f"  {field.name.replace('_', ' ')}: {field.value}{compare}", file=self.stream)
         hidden = len(fields) - len(shown)
         if hidden:
             print(
@@ -1002,15 +1005,19 @@ class _InteractiveServerRenderer:
             )
 
     def _render_actions(self, step: ServerStep) -> None:
-        if step.actions:
+        # A stop may list its resume command among its actions; it is one step,
+        # not two. Drop it before numbering so the wizard and the panel number
+        # the same list, and so a stop left with nothing prints no heading.
+        actions = tuple(
+            action
+            for action in step.actions
+            if action.kind != "command"
+            or (action.argv, action.execution) != (step.resume_argv, step.resume_execution)
+        )
+        if actions:
             print(file=self.stream)
             print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
-            for index, action in enumerate(step.actions, start=1):
-                if action.kind == "command" and (action.argv, action.execution) == (
-                    step.resume_argv,
-                    step.resume_execution,
-                ):
-                    continue
+            for index, action in enumerate(actions, start=1):
                 if action.title:
                     print(f"  {index}. {action.title}", file=self.stream)
                 lead = f"  {index}. " if not action.title else "     "

@@ -1495,6 +1495,11 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
 
     Reading the sources is deliberate: two construction sites were missed by
     eye during review, and both looked exactly like the ones that were found.
+
+    The walk recognises `ServerStep(...)` keyword arguments and
+    `model_copy(update={<literal string keys>})`. A builder that spreads its
+    update (`dict(...)`, `{**base, ...}`) passes unread, so a new construction
+    style needs this walk taught about it rather than trusted.
     """
 
     import ast
@@ -1502,8 +1507,13 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
     def carries(keys: set[str]) -> bool:
         return "resume_argv" in keys and "resume_execution" not in keys
 
+    # Anchored to this file, not the process working directory: a relative glob
+    # yields nothing when pytest runs from elsewhere, and a guard that scans no
+    # files passes every time.
+    sources = Path(__file__).resolve().parents[1] / "src" / "rcp"
     offenders: list[str] = []
-    for path in sorted(Path("src/rcp").rglob("*.py")):
+    scanned = 0
+    for path in sorted(sources.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -1511,6 +1521,7 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
             target = node.func
             name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
             if name == "ServerStep":
+                scanned += 1
                 supplied = {keyword.arg for keyword in node.keywords if keyword.arg}
                 if carries(supplied):
                     offenders.append(f"{path}:{node.lineno} ServerStep(...)")
@@ -1526,6 +1537,7 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
                     if carries(supplied):
                         offenders.append(f"{path}:{node.lineno} model_copy(update=...)")
 
+    assert scanned > 0, f"no ServerStep construction sites found under {sources}"
     assert offenders == [], "these stops never say which shell to resume from:\n" + "\n".join(
         offenders
     )
@@ -1585,7 +1597,8 @@ def test_the_wizard_says_where_a_command_runs_and_stays_quiet_when_unsaid() -> N
 
 def test_a_resume_duplicate_action_leaves_no_heading_without_a_command() -> None:
     """The renderer skips an action that repeats the resume command; skipping it
-    after printing its title would leave a numbered heading with nothing under."""
+    after printing its title would leave a numbered heading with nothing under,
+    and leaving it in the count would number the rest 1, 3."""
 
     from rcp.server_ops.cli import _InteractiveServerRenderer
 
@@ -1610,3 +1623,46 @@ def test_a_resume_duplicate_action_leaves_no_heading_without_a_command() -> None
 
     assert "1. Resume setup" not in rendered
     assert "Continue:" in rendered
+
+
+def test_the_wizard_numbers_the_same_list_the_panel_shows() -> None:
+    """The resume command is dropped before numbering, so a stop whose middle
+    action repeats it reads 1, 2 in the wizard exactly as it does in the panel,
+    and a value the operator only compares says so."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+    step = paused.step.model_copy(
+        update={
+            "actions": (
+                ExternalAction(instruction="Add the key to GitHub", title="Add the key"),
+                CommandAction(
+                    title="Resume setup",
+                    argv=paused.step.resume_argv,
+                    execution=OPERATOR_SHELL,
+                ),
+                CommandAction(
+                    title="Trust github.com",
+                    argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                    execution=OPERATOR_SHELL,
+                ),
+            ),
+            "fields": (
+                NonsecretField(name="deploy_key_title", value="rcp", role="input"),
+                NonsecretField(name="public_key_fingerprint", value="SHA256:x", role="evidence"),
+            ),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    stream = StringIO()
+    _InteractiveServerRenderer(plan_size=1, stream=stream).render(
+        ServerStepEvent(command="server doctor", timestamp=NOW, step=step)
+    )
+    rendered = stream.getvalue()
+
+    assert "1. Add the key" in rendered
+    assert "2. Trust github.com" in rendered
+    assert "3." not in rendered
+    assert "deploy key title: rcp\n" in rendered
+    assert "public key fingerprint: SHA256:x (compare only)" in rendered

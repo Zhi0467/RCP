@@ -15,8 +15,11 @@ stored stop are verified end to end, but the `ssh` entry line is composed from
 the saved operator route, which only the Tauri runtime supplies, so it was
 exercised through the fixture rather than through a running desktop.
 
-Close this handoff when the rebuilt panel has been driven against a provisioning
-request paused on a live server. Everything it promised is built: a human stop
+Close this handoff when the rebuilt panel has been driven from the desktop app
+against a provisioning request paused on a server, so that the sign-in line is
+composed from a real saved operator route rather than from its fixture. A
+throwaway server was already driven to the deploy-key pause to confirm the
+stored record; that is not this. Everything it promised is built: a human stop
 reaches the operator as an ordered list of named single actions titled for
 their task, every command in it names the shell it runs in, the deploy-key
 grant is the two-field form with *Allow write access* as its own requirement,
@@ -230,6 +233,9 @@ Four slices. The first is the shared contract and lands alone.
   terminal run, including Enter-driven continuation rather than rendering alone.
 
 ## Open
+
+These outlive this handoff. Move them to a successor handoff or an issue before
+archiving it, or they stop being citable.
 
 The design review's open question — whether the resume command should become an
 action carrying its own context — is answered in decision 1: it stays

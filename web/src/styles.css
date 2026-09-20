@@ -3238,7 +3238,7 @@ button:disabled {
   padding: 8px 10px;
 }
 .operator-requirement::before {
-  content: "☑";
+  content: "☐";
   font-size: 11px;
 }
 /* Values that are only compared against what the other side shows. They are

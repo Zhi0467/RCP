@@ -365,12 +365,18 @@ class ServerCommandRequest(_StrictModel):
 class ExecutionContext(_StrictModel):
     """The shell an operator types a displayed command into.
 
+    Frozen: `OPERATOR_SHELL` is one shared instance handed to every stop that
+    needs it, and equality between two contexts decides whether a renderer
+    treats two commands as the same step.
+
     This is not the machine an operation acts on, which `MachineTarget`
     already names: a local machine target carries the service account while the
     operator is logged in under their own name and the command itself elevates.
     `shell_account` names the OS account the shell must already belong to, and
     `None` means the operator's own login.
     """
+
+    model_config = ConfigDict(frozen=True)
 
     kind: Literal["server_shell"] = "server_shell"
     shell_account: (

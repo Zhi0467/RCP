@@ -392,11 +392,15 @@ export function TransferProjectSetup({
   // same way the team setup view does; `routeProvedBy` decides whether the
   // answer still describes what is on screen, so this effect never has to win
   // a race with the render that changed the selection.
+  //
+  // Only when a stop is actually waiting: the probe is an SSH round trip, and
+  // selecting a connection is not by itself a reason to reach the server.
   const operatorTarget = selectedConnection?.operator_route?.ssh_target ?? null;
   const operatorMode = selectedConnection?.operator_route?.mode ?? null;
+  const awaitingOperator = bundle?.incoming_provisioning.operator_action != null;
   useEffect(() => {
     const connectionId = selectedConnection?.connection_id;
-    if (!connectionId || !operatorTarget) return;
+    if (!connectionId || !operatorTarget || !awaitingOperator) return;
     let stopped = false;
     probeDesktopServerOperator(connectionId)
       .then((checked) => {
@@ -408,7 +412,7 @@ export function TransferProjectSetup({
     return () => {
       stopped = true;
     };
-  }, [selectedConnection?.connection_id, operatorTarget, operatorMode]);
+  }, [selectedConnection?.connection_id, operatorTarget, operatorMode, awaitingOperator]);
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
