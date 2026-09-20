@@ -849,7 +849,11 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
         "/declared/repo-a/.research",
         "/srv/repo-a/.research",
     ]
-    assert [writable for _paths, writable in stage.calls] == [True, False, False]
+    assert stage.calls[0][1] is True
+    assert all(not writable for _paths, writable in stage.calls[1:])
+    inspected = {path for paths, _writable in stage.calls for path in paths}
+    assert "/srv/repo-a/.research" in inspected
+    assert "/declared/repo-a/.research" in inspected
 
 
 @pytest.mark.parametrize(

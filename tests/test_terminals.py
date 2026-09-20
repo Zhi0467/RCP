@@ -141,9 +141,9 @@ def test_canonical_state_cannot_be_a_terminal_root(manifest, tmp_path):
         )
 
 
-def test_remote_repository_never_reaches_launcher(manifest, tmp_path):
+def test_remote_repository_requires_matching_remote_stage(manifest, tmp_path):
     manifest.machine_map["laptop"].host = "worker.invalid"
-    with pytest.raises(TerminalUnavailable, match="PTY-over-SSH transport"):
+    with pytest.raises(TerminalUnavailable, match="requires its execution host"):
         resolve_repository(
             manifest=manifest,
             project_id="project",
@@ -449,7 +449,7 @@ def test_collected_unit_cleanup_accepts_explicit_not_found(monkeypatch):
     launch.stop_unit("already-collected")
 
 
-def test_transient_arguments_preserve_literal_percent_dollar_and_space_paths(tmp_path):
+def test_transient_arguments_escape_percent_and_preserve_dollar_and_space_paths(tmp_path):
     repository = tmp_path / "repo %h $HOME with space"
     repository.mkdir()
     protected = repository / ".research"
@@ -462,8 +462,16 @@ def test_transient_arguments_preserve_literal_percent_dollar_and_space_paths(tmp
         empty_directory=tmp_path,
     )
     assert "--expand-environment=no" in argv
-    assert f"--working-directory={repository}" in argv
-    assert f'BindPaths="{repository}"' in argv
+    # systemd expands `%` specifiers in unit settings, so a literal percent
+    # reaches it doubled. `--expand-environment=no` covers `$HOME`, not `%h`.
+    escaped = str(repository).replace("%", "%%")
+    assert f"--working-directory={escaped}" in argv
+    assert f'BindPaths="{escaped}"' in argv
+    # Only systemd property values are specifier-expanded; the preflight's own
+    # shell arguments take the path literally and must not be doubled.
+    properties = [argv[i + 1] for i, item in enumerate(argv) if item == "--property"]
+    assert properties
+    assert all("%h" not in value.replace("%%h", "") for value in properties)
     assert argv[-1] == str(protected)
     assert launch._SHELL_PREFLIGHT in argv
 
@@ -534,13 +542,10 @@ async def test_one_failed_stop_does_not_starve_other_sessions(
 @pytest.mark.parametrize("is_remote", [False, True])
 def test_backend_selection_belongs_to_machine(os_name, is_remote):
     backend = resolve_backend(os_name, is_remote)
-    if is_remote:
-        assert backend is None
-    else:
-        expected = "systemd_user" if os_name == "Linux" else "pty"
-        assert backend is TERMINAL_BACKENDS[expected]
-        assert backend.supports(os_name, is_remote)
-        assert backend.display_name
+    expected = "systemd_user" if os_name == "Linux" else "pty"
+    assert backend is TERMINAL_BACKENDS[expected]
+    assert backend.supports(os_name, is_remote)
+    assert backend.display_name
 
 
 @pytest.mark.parametrize("missing", ["systemd-run", "systemctl", "findmnt"])
@@ -695,3 +700,126 @@ def test_cooperative_shell_entry_point_works_in_packaged_backend(monkeypatch):
     monkeypatch.setattr(launch.sys, "argv", command[-2:])
     __main__.main()
     assert called == ["shell"]
+
+
+@pytest.mark.parametrize("remote_os,expected", [("Linux", "mirrored"), ("Darwin", "cooperative")])
+def test_remote_capability_uses_probed_os(manifest, monkeypatch, remote_os, expected):
+    from rcp.terminals.probe import TerminalProbe
+
+    machine = manifest.machine_map["laptop"]
+    machine.host = "worker.invalid"
+    monkeypatch.setattr(
+        "rcp.terminals.backends.platform.system",
+        lambda: "Darwin" if remote_os == "Linux" else "Linux",
+    )
+    monkeypatch.setattr(
+        launch, "availability_diagnostic", lambda: pytest.fail("No local probe for remote machine")
+    )
+    capability = machine_capability(machine, TerminalProbe(remote_os, "reachable", "Ready."))
+    assert capability.containment == expected
+    assert capability.os_name == remote_os
+
+
+def test_remote_paths_refuse_canonical_state_and_protect_symlinks(manifest, tmp_path):
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    stage = _RemoteScopeStage(
+        overrides={
+            "/declared/repo-a": "/srv/repo-a",
+            "/declared/repo-b": "/srv/repo-b",
+            "/srv/repo-b/.research": "/srv/canonical-b",
+        }
+    )
+    kwargs = dict(
+        manifest=manifest,
+        project_id="project",
+        repository_id="repo-a",
+        inventory=registered_repository_roots(manifest, project_id="project"),
+        data_dir=tmp_path / "data",
+        remote_stage=stage,
+    )
+    root, protected = resolve_repository(**kwargs)
+    assert str(root) == "/srv/repo-a"
+    assert "/srv/canonical-b" in protected
+    assert "/declared/repo-b/.research" in protected
+    stage.overrides["/srv/repo-b/.research"] = "/srv/repo-a"
+    with pytest.raises(TerminalUnavailable, match="Canonical state"):
+        resolve_repository(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_remote_linux_probe_failure_cannot_launch_cooperative(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+
+    manifest.machine_map["laptop"].host = "worker.invalid"
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "incapable", "Linger is disabled.")
+    )
+    monkeypatch.setattr(
+        remote,
+        "start_remote",
+        lambda *args, **kwargs: pytest.fail("Probe failure must refuse launch"),
+    )
+    await manager.start()
+    try:
+        with pytest.raises(TerminalUnavailable, match="Linger is disabled"):
+            await manager.open(**arguments(manifest))
+        assert manager.list("project") == []
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed", [False, True])
+async def test_remote_255_retires_session_with_completion_evidence(
+    manifest, tmp_path, process_factory, monkeypatch, completed
+):
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+    from rcp.transport.remote_terminal import EXIT_PREFIX, EXIT_SUFFIX
+
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "reachable", "Ready.")
+    )
+    monkeypatch.setattr(
+        "rcp.terminals.manager.RemoteRunStage", lambda host: _RemoteScopeStage(host=host)
+    )
+    monkeypatch.setattr(
+        remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
+    )
+    monkeypatch.setattr(
+        remote,
+        "stop_remote_unit",
+        lambda *args: pytest.fail("Dead link must retire without another SSH connection"),
+    )
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        runtime = manager.sessions[session.session_id]
+        queue = manager.attach("project", session.session_id)
+        if completed:
+            # Completion can sit behind multiple output chunks when SSH exits.
+            monkeypatch.setattr("rcp.terminals.runtime.TERMINAL_IO_CHUNK_BYTES", 5)
+            os.write(process_factory[0][0], b"last output" + EXIT_PREFIX + b"255" + EXIT_SUFFIX)
+        runtime.process.returncode = 255
+        await manager.sweep()
+        assert session.termination_reason == ("shell_exited" if completed else "link_dropped")
+        assert session.ended_at
+        assert manager.list("project") == []
+        visible = bytearray()
+        while (chunk := await queue.get()) is not None:
+            visible.extend(chunk)
+        assert bytes(visible) == (b"last output" if completed else b"")
+        receipt = json.loads((manager.directory / f"{session.session_id}.json").read_text())
+        assert receipt["termination_reason"] == session.termination_reason
+    finally:
+        await manager.close()

@@ -30,10 +30,15 @@ def running_repository_work(
         ]
         roots = launches[-1].payload["canonical_repository_roots"] if launches else None
         for repository in manifest.repositories:
-            if manifest.machine_map[repository.machine].host:
+            if repository.machine != request.get("run_on"):
                 continue
             if roots is not None:
-                matches = str(Path(repository.path).resolve()) in roots
+                path = (
+                    repository.path
+                    if manifest.machine_map[repository.machine].host
+                    else str(Path(repository.path).resolve())
+                )
+                matches = path in roots
             else:
                 matches = (
                     repository.alias in (request.get("run_truth_scope") or [])

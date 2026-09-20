@@ -10,13 +10,13 @@ from typing import Literal
 
 from rcp.config import MachineConfig
 from rcp.terminals import launch
+from rcp.terminals.probe import TerminalProbe
 
 Containment = Literal["mirrored", "cooperative"]
 COOPERATIVE_NOTICE = (
     "Canonical-state protection is unavailable on this machine. "
     "There is no filesystem fence around canonical state."
 )
-REMOTE_REASON = "PTY-over-SSH transport is not built."
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,6 @@ class TerminalBackend:
     containment: Containment
 
     def supports(self, os_name: str, is_remote: bool) -> bool:
-        if is_remote:
-            return False
         if self.containment == "mirrored":
             return os_name.casefold() == "linux"
         return os_name.casefold() != "linux"
@@ -59,7 +57,7 @@ TERMINAL_BACKENDS = {
     backend.id: backend
     for backend in (
         TerminalBackend("systemd_user", "systemd user manager", "mirrored"),
-        TerminalBackend("pty", "Local PTY", "cooperative"),
+        TerminalBackend("pty", "PTY", "cooperative"),
     )
 }
 
@@ -68,6 +66,8 @@ TERMINAL_BACKENDS = {
 class TerminalCapability:
     backend: TerminalBackend | None
     reason: str
+    probe_state: str = "reachable"
+    os_name: str | None = None
 
     @property
     def containment(self) -> Containment | None:
@@ -81,10 +81,22 @@ def resolve_backend(os_name: str, is_remote: bool) -> TerminalBackend | None:
     )
 
 
-def machine_capability(machine: MachineConfig) -> TerminalCapability:
-    backend = resolve_backend(platform.system(), bool(machine.host))
-    if backend is None:
-        return TerminalCapability(None, REMOTE_REASON)
+def machine_capability(
+    machine: MachineConfig, probe: TerminalProbe | None = None
+) -> TerminalCapability:
+    if machine.host:
+        if probe is None:
+            return TerminalCapability(None, "Checking remote terminal capability…", "pending")
+        if not probe.ready or not probe.os_name:
+            return TerminalCapability(None, probe.diagnostic, probe.state, probe.os_name)
+        backend = resolve_backend(probe.os_name, True)
+        return TerminalCapability(
+            backend,
+            COOPERATIVE_NOTICE if backend.containment == "cooperative" else probe.diagnostic,
+            probe.state,
+            probe.os_name,
+        )
+    backend = resolve_backend(platform.system(), False)
     if backend.containment == "mirrored":
         diagnostic = launch.availability_diagnostic()
         if diagnostic:

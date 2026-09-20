@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from rcp.terminals.remote import CompletionParser
 
 
 class TerminalUnavailable(RuntimeError):
@@ -20,6 +23,7 @@ class TerminalSession:
     started_at: str
     last_activity_at: str
     unit: str
+    execution_host: str = ""
     containment: Literal["mirrored", "cooperative"] = "mirrored"
     state: Literal["live", "idle"] = "idle"
     ended_at: str | None = None
@@ -34,3 +38,4 @@ class TerminalRuntime:
     last_activity: float
     replay: bytearray = field(default_factory=bytearray)
     subscribers: set[asyncio.Queue[bytes | None]] = field(default_factory=set)
+    completion: CompletionParser | None = None

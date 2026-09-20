@@ -49,11 +49,14 @@ class TerminalResize(BaseModel):
 
 
 @router.get("/api/projects/{project_id}/terminals/repositories", dependencies=_http_membership)
-def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
+async def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     work = running_repository_work(services.store, project_id, manifest)
-    capabilities = {machine.alias: machine_capability(machine) for machine in manifest.machines}
+    capabilities = {}
+    for machine in manifest.machines:
+        probe = services.terminals.probes.get(machine) if machine.host else None
+        capabilities[machine.alias] = await asyncio.to_thread(machine_capability, machine, probe)
     result = []
     for repository in manifest.repositories:
         capability = capabilities[repository.machine]
@@ -64,6 +67,10 @@ def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
                 "machine_id": repository.machine,
                 "path": repository.path,
                 "eligible": backend is not None,
+                "probe_state": capability.probe_state
+                if manifest.machine_map[repository.machine].host
+                else None,
+                "os_name": capability.os_name,
                 "backend_id": backend.id if backend else None,
                 "backend_name": backend.display_name if backend else None,
                 "containment": capability.containment,
@@ -73,6 +80,16 @@ def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
             }
         )
     return result
+
+
+@router.post("/api/projects/{project_id}/terminals/probe", dependencies=_http_membership)
+async def refresh_probes(project_id: str, request: Request) -> list[dict[str, object]]:
+    services = _api_services(request)
+    manifest = get_project_service(services.catalog, project_id).manifest
+    for machine in manifest.machines:
+        if machine.host:
+            services.terminals.probes.invalidate(machine)
+    return await repositories(project_id, request)
 
 
 @router.get("/api/projects/{project_id}/terminals", dependencies=_http_membership)
@@ -101,9 +118,9 @@ async def open_session(
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
     repository = manifest.repository_map[body.repository_id]
-    capability = await asyncio.to_thread(
-        machine_capability, manifest.machine_map[repository.machine]
-    )
+    machine = manifest.machine_map[repository.machine]
+    probe = await services.terminals.probes.ensure(machine) if machine.host else None
+    capability = await asyncio.to_thread(machine_capability, machine, probe)
     if capability.backend is None:
         raise HTTPException(409, capability.reason)
     try:
@@ -118,7 +135,7 @@ async def open_session(
             if services.store.space_kind == "team"
             else None
         )
-        paths, environment = terminal_git_access(key)
+        paths, environment = ((), {}) if machine.host else terminal_git_access(key)
         session = await services.terminals.open(
             project_id=project_id,
             member_id=member.user_id,
@@ -176,7 +193,7 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
     manager = websocket.app.state.services.terminals
     try:
         project_id = _admit_socket(websocket, project_id)
-        manager.get(project_id, session_id)
+        session = manager.get(project_id, session_id)
     except HTTPException as exc:
         await websocket.close(code=4400 + exc.status_code % 100)
         return
@@ -206,7 +223,16 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
             data = await queue.get()
             _admit_socket(websocket, project_id)
             if data is None:
-                await websocket.send_json({"type": "ended", "reason": "Terminal session ended."})
+                await websocket.send_json(
+                    {
+                        "type": "ended",
+                        "reason": (
+                            "SSH link dropped; terminal session ended."
+                            if session.termination_reason == "link_dropped"
+                            else "Terminal session ended."
+                        ),
+                    }
+                )
                 return
             await websocket.send_bytes(data)
 

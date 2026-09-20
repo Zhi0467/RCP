@@ -355,8 +355,7 @@ def protected_repository_paths(
     declared = [str(PurePosixPath(root) / ".research") for root in repository_roots]
     declared.append(str(PurePosixPath(state_repository.path) / ".research"))
     protected = [*declared, *(additional_paths or [])]
-    to_resolve = declared if remote_stage is None else [declared[-1]]
-    for path in dict.fromkeys(to_resolve):
+    for path in dict.fromkeys(declared):
         try:
             canonical, _home = _canonical_directories(
                 [path], remote_stage=remote_stage, require_writable=False

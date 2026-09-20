@@ -24,15 +24,18 @@ from rcp.limits import (
     TERMINAL_POLL_INTERVAL_SECONDS,
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
-from rcp.terminals import launch
+from rcp.terminals import launch, remote
 from rcp.terminals.backends import machine_capability
 from rcp.terminals.models import TerminalRuntime, TerminalSession, TerminalUnavailable
+from rcp.terminals.probe import TerminalProbeCache
 from rcp.terminals.runtime import end_runtime, get_runtime, read_ready, sweep_loop
 from rcp.terminals.utilities import resolve_repository, save_metadata, timestamp
+from rcp.transport.run_stage import RemoteRunStage
 
 
 class TerminalManager:
     def __init__(self, data_dir: Path, membership_check: Callable[[str, str], bool]) -> None:
+        self.probes = TerminalProbeCache()
         self.data_dir = data_dir
         self.directory = data_dir / "terminals"
         self.membership_check = membership_check
@@ -58,7 +61,12 @@ class TerminalManager:
             if session.unit != f"{self._unit_prefix}-{session.session_id}":
                 raise TerminalUnavailable("Terminal cleanup found an unexpected unit identity.")
             if session.containment == "mirrored":
-                await asyncio.to_thread(launch.stop_unit, session.unit)
+                if session.execution_host:
+                    await asyncio.to_thread(
+                        remote.stop_remote_unit, session.execution_host, session.unit
+                    )
+                else:
+                    await asyncio.to_thread(launch.stop_unit, session.unit)
             session.ended_at = timestamp()
             session.termination_reason = "server_restart"
             save_metadata(self.directory, session)
@@ -81,6 +89,7 @@ class TerminalManager:
             except Exception as exc:
                 errors.append(str(exc))
         self._started = False
+        await self.probes.close()
         if errors:
             raise TerminalUnavailable("; ".join(errors))
 
@@ -105,17 +114,19 @@ class TerminalManager:
                 if session.project_id == project_id and session.repository_id == repository_alias:
                     return session
             repository = manifest.repository_map[repository_alias]
-            capability = await asyncio.to_thread(
-                machine_capability, manifest.machine_map[repository.machine]
-            )
+            machine = manifest.machine_map[repository.machine]
+            probe = await self.probes.ensure(machine) if machine.host else None
+            capability = await asyncio.to_thread(machine_capability, machine, probe)
             if capability.backend is None:
                 raise TerminalUnavailable(capability.reason)
-            root, protected = resolve_repository(
+            root, protected = await asyncio.to_thread(
+                resolve_repository,
                 manifest=manifest,
                 project_id=project_id,
                 repository_id=repository_alias,
                 inventory=repository_inventory,
                 data_dir=self.data_dir,
+                remote_stage=RemoteRunStage(machine.host) if machine.host else None,
             )
             session_id = uuid.uuid4().hex
             session = TerminalSession(
@@ -128,10 +139,20 @@ class TerminalManager:
                 last_activity_at=timestamp(),
                 unit=f"{self._unit_prefix}-{session_id}",
                 containment=capability.backend.containment,
+                execution_host=machine.host,
             )
             save_metadata(self.directory, session)
-            pending = asyncio.create_task(
-                asyncio.to_thread(
+            if machine.host:
+                start = asyncio.to_thread(
+                    remote.start_remote,
+                    machine.host,
+                    unit=session.unit,
+                    repository=root,
+                    protected_paths=protected,
+                    containment=session.containment,
+                )
+            else:
+                start = asyncio.to_thread(
                     capability.backend.start,
                     unit=session.unit,
                     repository=root,
@@ -140,7 +161,7 @@ class TerminalManager:
                     git_environment=git_environment or {},
                     empty_directory=self.directory / "empty",
                 )
-            )
+            pending = asyncio.create_task(start)
             try:
                 process, master_fd = await asyncio.shield(pending)
             except asyncio.CancelledError:
@@ -152,6 +173,8 @@ class TerminalManager:
                 await end_runtime(self, runtime, "opening_cancelled")
                 raise
             runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
+            if machine.host:
+                runtime.completion = remote.CompletionParser()
             self.sessions[session_id] = runtime
             asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
             if not self.membership_check(project_id, member_id):
@@ -231,7 +254,16 @@ class TerminalManager:
                 if not self.membership_check(session.project_id, session.member_id):
                     reason = "membership_lost"
                 elif runtime.process.poll() is not None:
-                    reason = "shell_exited"
+                    # Drain completion evidence before classifying SSH's ambiguous 255.
+                    while read_ready(runtime):
+                        pass
+                    reason = (
+                        "link_dropped"
+                        if session.execution_host
+                        and runtime.process.poll() == 255
+                        and runtime.completion.exit_code is None
+                        else "shell_exited"
+                    )
                 elif time.monotonic() - runtime.last_activity >= TERMINAL_IDLE_TIMEOUT_SECONDS:
                     reason = "idle_timeout"
                 else:

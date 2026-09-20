@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import threading
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -12,9 +16,28 @@ from starlette.websockets import WebSocketDisconnect
 from rcp.api.app import create_app
 from rcp.config import MachineConfig, RepositoryConfig
 from rcp.storage import AppStore
+from rcp.terminals.probe import TerminalProbe
 
 from .helpers import wait_until
 from .test_project_membership import _create_project, _team_app
+
+
+@pytest.fixture(autouse=True)
+def remote_probe(monkeypatch):
+    """No API fixture may reach a real SSH host, including cold-cache work."""
+    probe = Mock(
+        return_value=TerminalProbe(None, "unreachable", "SSH connection refused by test double.")
+    )
+    monkeypatch.setattr("rcp.terminals.probe.probe_remote_terminal", probe)
+    popen = subprocess.Popen
+
+    def guarded_popen(command, *args, **kwargs):
+        if isinstance(command, (list, tuple)) and Path(command[0]).name == "ssh":
+            pytest.fail("API terminal test attempted a real SSH connection")
+        return popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    return probe
 
 
 @pytest.mark.parametrize(
@@ -23,6 +46,7 @@ from .test_project_membership import _create_project, _team_app
         ("GET", "/repositories", None),
         ("GET", "", None),
         ("POST", "", {"repository_id": "paper-repo"}),
+        ("POST", "/probe", None),
         ("DELETE", "/unknown-session", None),
     ],
 )
@@ -108,7 +132,24 @@ def test_terminal_websocket_resolves_real_team_session_cookie(manifest, tmp_path
     assert refused.value.code == 4404
 
 
-def test_remote_repository_is_projected_as_unavailable_without_launch(tmp_path):
+@pytest.mark.parametrize(
+    "state,diagnostic",
+    [
+        ("unreachable", "SSH connection refused."),
+        ("authentication_failed", "Permission denied (publickey)."),
+        ("host_key_failed", "Host key verification failed."),
+        ("incapable", "The execution account requires a lingering systemd user manager."),
+    ],
+)
+def test_remote_probe_failure_is_projected_without_launch(
+    tmp_path, remote_probe, monkeypatch, state, diagnostic
+):
+    remote_probe.return_value = TerminalProbe(
+        "Linux" if state == "incapable" else None, state, diagnostic
+    )
+    launcher = Mock(side_effect=AssertionError("Unavailable remote must not launch a shell"))
+    monkeypatch.setattr("rcp.terminals.remote.start_remote", launcher)
+    monkeypatch.setattr("rcp.terminals.backends.TerminalBackend.start", launcher)
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     manifest = app.state.catalog.open(project_id).manifest
@@ -117,21 +158,23 @@ def test_remote_repository_is_projected_as_unavailable_without_launch(tmp_path):
         RepositoryConfig(alias="remote-repo", machine="remote", path="/srv/repo")
     )
 
-    response = client.get(f"/api/projects/{project_id}/terminals/repositories")
-
-    assert response.status_code == 200, response.text
-    repositories = {item["repository_id"]: item for item in response.json()}
-    assert repositories["paper-repo"]["path"] == str(tmp_path / "repo")
-    remote = repositories["remote-repo"]
-    assert remote["eligible"] is False
-    assert remote["path"] == "/srv/repo"
-    assert remote["unavailable_reason"] == "PTY-over-SSH transport is not built."
-    refused = client.post(
-        f"/api/projects/{project_id}/terminals", json={"repository_id": "remote-repo"}
-    )
-    assert refused.status_code == 409
-    assert refused.json()["detail"] == remote["unavailable_reason"]
-    assert client.get(f"/api/projects/{project_id}/terminals").json() == []
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        refused = client.post(path, json={"repository_id": "remote-repo"})
+        assert refused.status_code == 409
+        response = client.get(f"{path}/repositories")
+        assert response.status_code == 200, response.text
+        repositories = {item["repository_id"]: item for item in response.json()}
+        assert repositories["paper-repo"]["path"] == str(tmp_path / "repo")
+        remote = repositories["remote-repo"]
+        assert remote["eligible"] is False
+        assert remote["path"] == "/srv/repo"
+        assert remote["probe_state"] == state
+        assert remote["containment"] is None
+        assert remote["unavailable_reason"] == diagnostic == refused.json()["detail"]
+        assert client.get(path).json() == []
+        launcher.assert_not_called()
+        remote_probe.assert_called_once()
 
 
 @pytest.fixture
@@ -344,9 +387,8 @@ def test_projection_reports_machine_capability_independent_of_space(
     assert remote["eligible"] is False
     assert remote["containment"] is None
     assert remote["backend_id"] is None
-    assert (
-        remote["reason"] == remote["unavailable_reason"] == "PTY-over-SSH transport is not built."
-    )
+    assert remote["probe_state"] == "pending"
+    assert "Checking" in remote["reason"] == remote["unavailable_reason"]
 
 
 def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatch):
@@ -363,3 +405,181 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
         assert "no filesystem fence" in session["protection_notice"]
         assert client.get(path).json()[0]["protection_notice"] == session["protection_notice"]
         assert client.delete(f"{path}/{session['session_id']}").status_code == 200
+
+
+def _register_remote(app, project_id, *, repositories=1):
+    manifest = app.state.catalog.open(project_id).manifest
+    machine = MachineConfig(alias="remote", host="compute.example")
+    manifest.machines.append(machine)
+    manifest.repositories.extend(
+        RepositoryConfig(alias=f"remote-{index}", machine=machine.alias, path=f"/srv/repo-{index}")
+        for index in range(repositories)
+    )
+    return machine
+
+
+def test_remote_projection_probes_once_per_machine_and_refreshes(tmp_path, remote_probe):
+    release = threading.Event()
+    ready = TerminalProbe("Linux", "reachable", "Remote prerequisites available.")
+
+    def probe(_machine):
+        assert release.wait(5), "Projection blocked on its capability probe"
+        return ready
+
+    remote_probe.side_effect = probe
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    machine = _register_remote(app, project_id, repositories=2)
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        try:
+            pending = client.get(f"{path}/repositories").json()[1:]
+            assert len(pending) == 2
+            assert all(item["probe_state"] == "pending" for item in pending)
+            assert all(not item["eligible"] for item in pending)
+            assert all(item["reason"] for item in pending)
+        finally:
+            release.set()
+        client.portal.call(app.state.services.terminals.probes.ensure, machine)
+        for _ in range(2):
+            projected = client.get(f"{path}/repositories").json()[1:]
+            assert all(item["probe_state"] == "reachable" for item in projected)
+            assert all(item["eligible"] for item in projected)
+            assert all(item["os_name"] == "Linux" for item in projected)
+            assert all(item["containment"] == "mirrored" for item in projected)
+        remote_probe.assert_called_once()
+
+        remote_probe.side_effect = None
+        remote_probe.return_value = TerminalProbe(
+            None, "authentication_failed", "Permission denied (publickey)."
+        )
+        refreshed = client.post(f"{path}/probe")
+        assert refreshed.status_code == 200, refreshed.text
+        assert all(item["probe_state"] == "pending" for item in refreshed.json()[1:])
+        client.portal.call(app.state.services.terminals.probes.ensure, machine)
+        unavailable = client.get(f"{path}/repositories").json()[1:]
+        assert all(item["probe_state"] == "authentication_failed" for item in unavailable)
+        assert all(item["reason"] == "Permission denied (publickey)." for item in unavailable)
+        assert remote_probe.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "local_os,remote_os,profile",
+    [("Darwin", "Linux", "mirrored"), ("Linux", "Darwin", "cooperative")],
+)
+def test_remote_projection_uses_probed_os(
+    tmp_path, remote_probe, monkeypatch, local_os, remote_os, profile
+):
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: local_os)
+    monkeypatch.setattr("rcp.terminals.launch.availability_diagnostic", lambda: None)
+    remote_probe.return_value = TerminalProbe(
+        remote_os, "reachable", "Remote prerequisites available."
+    )
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    machine = _register_remote(app, project_id)
+    with client:
+        client.portal.call(app.state.services.terminals.probes.ensure, machine)
+        remote = client.get(f"/api/projects/{project_id}/terminals/repositories").json()[-1]
+        assert remote["eligible"]
+        assert remote["os_name"] == remote_os
+        assert remote["containment"] == profile
+        if profile == "cooperative":
+            assert "protection is unavailable" in remote["reason"]
+
+
+@pytest.fixture
+def remote_pty(monkeypatch, remote_probe):
+    """Keep HTTP, WS, ownership, and PTY readers real; double remote operations."""
+    remote_probe.return_value = TerminalProbe(
+        "Linux", "reachable", "Remote prerequisites available."
+    )
+    opened = []
+
+    def canonical_directories(_stage, paths, *, require_writable):
+        return {path: path for path in paths}, "/home/execution-account"
+
+    def start(host, **settings):
+        master, slave = os.openpty()
+        os.set_blocking(master, False)
+        process = Mock()
+        process.poll.return_value = None
+        process.terminate.side_effect = lambda: setattr(process.poll, "return_value", 0)
+        opened.append((process, slave, host, settings))
+        return process, master
+
+    monkeypatch.setattr(
+        "rcp.transport.run_stage.RemoteRunStage.canonical_directories", canonical_directories
+    )
+    monkeypatch.setattr("rcp.terminals.remote.start_remote", start)
+    monkeypatch.setattr("rcp.terminals.remote.stop_remote_unit", lambda *args: None)
+    yield opened
+    for _process, slave, _host, _settings in opened:
+        os.close(slave)
+
+
+@pytest.mark.parametrize("completion", [False, True], ids=["link-drop", "shell-exit-255"])
+def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
+    tmp_path, remote_pty, completion, monkeypatch
+):
+    from rcp.agents.write_scope import registered_repository_roots
+    from rcp.transport.remote_terminal import EXIT_PREFIX, EXIT_SUFFIX
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    machine = _register_remote(app, project_id)
+    monkeypatch.setattr(
+        app.state.catalog,
+        "repository_ownership_inventory",
+        lambda: registered_repository_roots(
+            app.state.catalog.open(project_id).manifest, project_id=project_id
+        ),
+    )
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "remote-0"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        assert opened.json()["containment"] == "mirrored"
+        process, slave, host, settings = remote_pty[0]
+        assert host == machine.host
+        assert settings["repository"] == Path("/srv/repo-0")
+        assert "/srv/repo-0/.research" in settings["protected_paths"]
+        socket_path = f"{path}/{session_id}/ws"
+        with client.websocket_connect(
+            socket_path, headers={"Origin": "http://testserver"}
+        ) as socket:
+            os.write(slave, b"remote-output\n")
+            assert b"remote-output" in socket.receive_bytes()
+            socket.send_json({"type": "resize", "cols": 100, "rows": 40})
+            wait_until(lambda: os.get_terminal_size(slave) == (100, 40))
+            if completion:
+                os.write(slave, EXIT_PREFIX + b"255" + EXIT_SUFFIX)
+                wait_until(
+                    lambda: (
+                        app.state.services.terminals.sessions[session_id].completion.exit_code
+                        == 255
+                    )
+                )
+            process.poll.return_value = 255
+            client.portal.call(app.state.services.terminals.sweep)
+            ended = socket.receive_json()
+            assert ended["type"] == "ended"
+            assert ended["reason"] == (
+                "Terminal session ended."
+                if completion
+                else "SSH link dropped; terminal session ended."
+            )
+        assert client.get(path).json() == []
+        metadata = json.loads(
+            (app.state.services.terminals.directory / f"{session_id}.json").read_text()
+        )
+        assert metadata["termination_reason"] == ("shell_exited" if completion else "link_dropped")
+        assert metadata["ended_at"]
+        with (
+            pytest.raises(WebSocketDisconnect) as refused,
+            client.websocket_connect(socket_path, headers={"Origin": "http://testserver"}),
+        ):
+            pytest.fail("An ended SSH session was silently reconnected")
+        assert refused.value.code == 4404
+        assert len(remote_pty) == 1

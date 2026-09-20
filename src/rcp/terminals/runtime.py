@@ -42,7 +42,12 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
 
 async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
     session = runtime.session
-    if session.containment == "mirrored":
+    if session.execution_host:
+        # Closing this exact SSH PTY hangs up its remote supervisor. A lost link
+        # must retire locally even when no further SSH cleanup can be reached.
+        if runtime.process.poll() is None:
+            runtime.process.terminate()
+    elif session.containment == "mirrored":
         await asyncio.to_thread(launch.stop_unit, session.unit)
     else:
         await asyncio.to_thread(launch.stop_cooperative, runtime.process)
@@ -69,16 +74,23 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
     save_metadata(manager.directory, session)
 
 
-def read_ready(runtime: TerminalRuntime) -> None:
+def read_ready(runtime: TerminalRuntime) -> bool:
     try:
         chunk = os.read(runtime.master_fd, TERMINAL_IO_CHUNK_BYTES)
     except BlockingIOError:
-        return
+        return False
     except OSError:
         chunk = b""
     if not chunk:
         asyncio.get_running_loop().remove_reader(runtime.master_fd)
-        return
+        if runtime.completion is not None:
+            chunk = runtime.completion.finish()
+        if not chunk:
+            return False
+    elif runtime.completion is not None:
+        chunk = runtime.completion.feed(chunk)
+    if not chunk:
+        return True
     runtime.replay.extend(chunk)
     del runtime.replay[:-TERMINAL_OUTPUT_BUFFER_BYTES]
     # Output does not reset idle expiry: a forgotten noisy command must not
@@ -93,6 +105,7 @@ def read_ready(runtime: TerminalRuntime) -> None:
             queue.put_nowait(chunk)
     if not runtime.subscribers:
         runtime.session.state = "idle"
+    return True
 
 
 async def sweep_loop(manager: TerminalManager) -> None:
