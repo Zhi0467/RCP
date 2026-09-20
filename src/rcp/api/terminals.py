@@ -123,6 +123,13 @@ async def open_session(
     member = services.identity_access.acting_user(request)
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
+    work = running_repository_work(services.store, project_id, manifest)
+    for session in services.terminals.list(project_id):
+        if session.repository_id == body.repository_id:
+            # Open-or-return-existing: a live session must not be withheld
+            # because a later probe refresh or inventory read failed. Those are
+            # prerequisites for launching, not for handing back what is running.
+            return terminal_session_payload(session, work)
     repository = manifest.repository_map[body.repository_id]
     machine = manifest.machine_map[repository.machine]
     probe = await services.terminals.probes.ensure(machine) if machine.host else None

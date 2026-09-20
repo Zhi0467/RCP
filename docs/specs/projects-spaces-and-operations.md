@@ -194,6 +194,17 @@ only once its unit is known to be gone, because a mirrored launch can create
 its unit and then fail before readiness. Failure to stop a unit remains visible
 and retryable.
 
+A retained record also blocks a reopen. Its unit may still own the checkout, so
+opening that repository again first retries the stop and refuses while it
+cannot be confirmed, rather than putting a second shell on one working tree.
+The retry runs wherever a record was retained: after a startup that could not
+stop it, after a launch that failed with its unit unaccounted for, and after an
+end whose stop went unconfirmed.
+
+Opening a session returns an existing session for that repository before any
+launch prerequisite is consulted. A capability probe or inventory read that now
+fails gates a new launch; it never withholds a session that is already running.
+
 Opening a session holds the manager lock only to admit the request and to
 publish the result. The capability probe, remote repository resolution, and the
 launch run outside it, so one unreachable machine cannot stall another member's

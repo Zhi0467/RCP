@@ -310,6 +310,30 @@ def test_live_membership_loss_stops_output_too(tmp_path, terminal_pty, monkeypat
         assert app.state.services.terminals.list(project_id) == []
 
 
+def test_a_live_session_is_returned_even_when_its_machine_now_probes_badly(
+    tmp_path, terminal_pty, monkeypatch
+):
+    """Open-or-return-existing: launch prerequisites gate a launch, not handing
+    back a session that is already running.
+    """
+    from rcp.terminals.backends import TerminalCapability
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+
+        async def unavailable(machine, probe):
+            return TerminalCapability(None, "Machine temporarily unavailable.")
+
+        monkeypatch.setattr(app.state.services.terminals, "capability", unavailable)
+        again = client.post(path, json={"repository_id": "paper-repo"})
+        assert again.status_code == 200, again.text
+        assert again.json()["session_id"] == opened.json()["session_id"]
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 

@@ -336,7 +336,7 @@ async def test_a_failed_mirrored_launch_keeps_its_record_when_the_unit_may_survi
         receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
         assert receipt["ended_at"] is None
         assert receipt["termination_reason"] == "launch_failed"
-        assert any("may have left a unit" in message for message in caplog.messages)
+        assert any("may still be running" in message for message in caplog.messages)
     finally:
         await manager.close()
 
@@ -373,6 +373,50 @@ async def test_startup_survives_a_record_written_by_another_version(tmp_path, ca
         ]
         assert (manager.directory / "unparsable.json").read_text() == "{ not json"
         assert len([m for m in caplog.messages if "unreadable" in m]) == 2
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_retained_record_refuses_a_reopen_until_its_unit_is_gone(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """Startup keeps a record whose unit it could not stop. That unit is not in
+    `sessions`, so nothing else stops a member opening a second shell on the
+    same checkout while the first may still be writing it.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    save_metadata(
+        manager.directory,
+        TerminalSession(
+            session_id="stranded",
+            project_id="project",
+            member_id="member",
+            repository_id="repo-a",
+            path=str(manifest.repository_map["repo-a"].path),
+            started_at="start",
+            last_activity_at="start",
+            unit=f"{manager._unit_prefix}-stranded",
+        ),
+    )
+    stoppable = False
+
+    def stop(unit):
+        if not stoppable:
+            raise TerminalUnavailable("systemctl is unavailable.")
+
+    monkeypatch.setattr(launch, "stop_unit", stop)
+    await manager.start()
+    try:
+        with pytest.raises(TerminalUnavailable, match="until that one is gone"):
+            await manager.open(**arguments(manifest))
+        assert manager.list("project") == []
+        # Once the unit is confirmed gone the record finishes and opening works.
+        stoppable = True
+        session = await manager.open(**arguments(manifest))
+        assert session.repository_id == "repo-a"
+        assert json.loads((manager.directory / "stranded.json").read_text())["ended_at"]
     finally:
         await manager.close()
 

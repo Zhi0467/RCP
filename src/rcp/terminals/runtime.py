@@ -85,6 +85,10 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
     session.termination_reason = reason
     if stopped:
         session.ended_at = timestamp()
+    else:
+        # A unit that may still own the checkout must also block a reopen, not
+        # only wait for the next startup.
+        manager.mark_unresolved(session)
     save_metadata(manager.directory, session)
 
 

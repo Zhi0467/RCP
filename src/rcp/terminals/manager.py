@@ -49,6 +49,8 @@ class TerminalManager:
         self.membership_check = membership_check
         self.sessions: dict[str, TerminalRuntime] = {}
         self._opening: set[tuple[str, str]] = set()
+        # Records left unfinished because a unit could not be confirmed gone.
+        self._unresolved: dict[tuple[str, str], TerminalSession] = {}
         self._local_capability: TerminalCapability | None = None
         self._lock = asyncio.Lock()
         self._sweeper: asyncio.Task[None] | None = None
@@ -56,6 +58,30 @@ class TerminalManager:
         self._unit_prefix = (
             "rcp-terminal-" + hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()[:12]
         )
+
+    def mark_unresolved(self, session: TerminalSession) -> None:
+        """Remember that this repository may still have a shell on it."""
+        self._unresolved[(session.project_id, session.repository_id)] = session
+
+    async def _resolve_unfinished(self, project_id: str, repository_alias: str) -> None:
+        """Retry a retained record's stop before opening this repository again.
+
+        A retained record means a unit may still own the checkout. Opening a
+        second shell there would let two of them write one working tree, which
+        the one-session-per-repository rule exists to prevent.
+        """
+        session = self._unresolved.get((project_id, repository_alias))
+        if session is None:
+            return
+        if not await self.unit_confirmed_gone(session):
+            raise TerminalUnavailable(
+                "An earlier terminal for this repository could not be stopped on its "
+                "execution machine, so its shell may still be running. Opening another "
+                "is refused until that one is gone."
+            )
+        session.ended_at = timestamp()
+        save_metadata(self.directory, session)
+        self._unresolved.pop((project_id, repository_alias), None)
 
     async def capability(
         self, machine: MachineConfig, probe: TerminalProbe | None
@@ -132,6 +158,7 @@ class TerminalManager:
                         session.unit,
                         exc,
                     )
+                    self.mark_unresolved(session)
                     continue
             session.ended_at = timestamp()
             session.termination_reason = "server_restart"
@@ -216,6 +243,7 @@ class TerminalManager:
         Holding the lock across that would stall every other project's open,
         end and sweep behind it, so only admission and publication take it.
         """
+        await self._resolve_unfinished(project_id, repository_alias)
         repository = manifest.repository_map[repository_alias]
         machine = manifest.machine_map[repository.machine]
         probe = await self.probes.ensure(machine) if machine.host else None
@@ -284,8 +312,10 @@ class TerminalManager:
             # still have created its unit, so finish the record only once that
             # unit is known to be gone.
             session.termination_reason = "launch_failed"
-            if await self._launch_left_no_unit(session):
+            if await self.unit_confirmed_gone(session):
                 session.ended_at = timestamp()
+            else:
+                self.mark_unresolved(session)
             save_metadata(self.directory, session)
             raise
         runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
@@ -299,12 +329,12 @@ class TerminalManager:
                 raise PermissionError("Project membership ended while the terminal was opening.")
         return session
 
-    async def _launch_left_no_unit(self, session: TerminalSession) -> bool:
-        """Whether a failed launch can be finished rather than left to startup.
+    async def unit_confirmed_gone(self, session: TerminalSession) -> bool:
+        """Whether this session's record can be finished rather than retained.
 
-        A cooperative launch has no unit. A mirrored one may have created its
-        unit before failing, and neither the local launcher's own cleanup nor a
-        remote supervisor's hangup is acknowledged here.
+        A cooperative session has no unit. A mirrored one may still have its
+        own, and neither the local launcher's cleanup nor a remote supervisor's
+        hangup is acknowledged, so it is stopped here to find out.
         """
         if session.containment != "mirrored":
             return True
@@ -317,7 +347,7 @@ class TerminalManager:
                 await asyncio.to_thread(launch.stop_unit, session.unit)
         except (TerminalUnavailable, OSError, RuntimeError) as exc:
             logger.warning(
-                "Failed terminal launch %s may have left a unit; startup retries it: %s",
+                "Terminal unit %s may still be running; it is retried before a reopen: %s",
                 session.unit,
                 exc,
             )
