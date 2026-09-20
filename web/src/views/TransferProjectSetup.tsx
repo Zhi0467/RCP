@@ -261,6 +261,7 @@ export function TransferProjectSetup({
   const [connections, setConnections] = useState<TeamConnectionMetadata[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [operatorProbe, setOperatorProbe] = useState<ServerOperatorProbe | null>(null);
+  const [probeAttempt, setProbeAttempt] = useState(0);
   const [targetProviders, setTargetProviders] = useState<TargetProviderSetupProjection[]>([]);
   const [targetName, setTargetName] = useState("");
   const [targetCeiling, setTargetCeiling] = useState(10);
@@ -395,6 +396,11 @@ export function TransferProjectSetup({
   //
   // Only when a stop is actually waiting: the probe is an SSH round trip, and
   // selecting a connection is not by itself a reason to reach the server.
+  //
+  // Refresh counts as a reason to ask again. A probe that failed while the
+  // server was briefly unreachable leaves nothing for the panel to offer, and
+  // the stop it belongs to does not change when connectivity comes back, so
+  // without this the sign-in line would stay hidden until a page reload.
   const operatorTarget = selectedConnection?.operator_route?.ssh_target ?? null;
   const operatorMode = selectedConnection?.operator_route?.mode ?? null;
   const awaitingOperator = bundle?.incoming_provisioning.operator_action != null;
@@ -412,7 +418,13 @@ export function TransferProjectSetup({
     return () => {
       stopped = true;
     };
-  }, [selectedConnection?.connection_id, operatorTarget, operatorMode, awaitingOperator]);
+  }, [
+    selectedConnection?.connection_id,
+    operatorTarget,
+    operatorMode,
+    awaitingOperator,
+    probeAttempt,
+  ]);
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
@@ -527,6 +539,7 @@ export function TransferProjectSetup({
   async function refreshTransfer(): Promise<void> {
     const sourceRequestId = bundle?.source.request_id ?? route.sourceRequestId;
     if (!sourceRequestId) return;
+    setProbeAttempt((attempt) => attempt + 1);
     setBusy("refresh");
     setError(null);
     try {
