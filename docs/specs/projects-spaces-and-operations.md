@@ -185,6 +185,12 @@ status a dropped link produces too, so a finished shell says nothing about
 whether its unit went with it. Server shutdown leaves the same unfinished
 record rather than waiting on the network for every live session.
 
+A live session whose stop fails keeps its runtime so the stop can be retried on
+the next sweep, and stops being one a member can list, attach to, or be handed
+back by a new open request. The decision to end it stands even though its shell
+may still be running, and a second shell on that checkout is refused until the
+stop succeeds.
+
 Startup reconciliation is best effort per record and never refuses the server a
 boot. Each record is reconciled under its own guard, so no way of being
 malformed — truncated, carrying fields this version does not know, or carrying
@@ -193,7 +199,10 @@ it was found and blocks its repository, because failing to reconcile a record
 is not evidence that its shell is gone. Reconciliation runs under a budget for
 the same reason it runs concurrently: the stops are blocking calls sharing a
 thread pool, so enough of them queue whatever the gather says. A record still
-running when the budget expires blocks its repository like one that raised.
+running when the budget expires blocks its repository like one that raised. It
+keeps what it says rather than being treated as unreadable, so a later open
+retries the stop it names and can release the repository; only a record this
+version cannot read blocks in a way nothing can confirm gone.
 
 A record must also name every field this version writes, because a silently
 defaulted field is a claim rather than an absence: an absent execution host
@@ -302,7 +311,8 @@ results, and caches the local machine's capability the same way rather than
 spawning its probe processes on every repositories poll. A cache miss schedules background work and projects pending without
 blocking the route. Changed machine metadata invalidates the matching result;
 the explicit terminal Refresh action invalidates the project's machine results.
-An older in-flight result cannot replace a newer probe.
+An older in-flight result cannot replace a newer probe, and is
+cancelled so it stops holding a probe worker its replacement needs.
 
 Remote sessions use a server-owned SSH PTY. Browser detachment still leaves the
 same session running, but loss of the SSH link ends its RCP session and records

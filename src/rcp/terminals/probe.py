@@ -147,16 +147,37 @@ class TerminalProbeCache:
     async def ensure(self, machine: MachineConfig) -> TerminalProbe:
         while True:
             task = self._task(machine)
-            result = await asyncio.shield(task)
+            try:
+                result = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # A refresh cancels the probe it supersedes, so wait for the
+                # one that replaced it. A cancellation of this caller leaves
+                # the task running and belongs to the caller.
+                if not task.cancelled():
+                    raise
+                continue
             # An explicit refresh must not let an older in-flight answer win.
             if self._entries.get(self._key(machine)) is task:
                 return result
 
     def invalidate(self, machine: MachineConfig | None = None) -> None:
+        """Drop cached answers, and the probes still producing them.
+
+        A superseded probe holds one of the few worker slots until its own
+        subprocess timeout, so leaving it to run makes each refresh of an
+        unreachable machine queue behind the timeouts of the refreshes before
+        it, and the newest answer is the one kept waiting. Cancelling gives
+        the slot back at once; one already inside its worker thread ends
+        there with nobody reading it, as at close.
+        """
         if machine is None:
+            superseded = list(self._entries.values())
             self._entries.clear()
         else:
-            self._entries.pop(self._key(machine), None)
+            task = self._entries.pop(self._key(machine), None)
+            superseded = [task] if task is not None else []
+        for task in superseded:
+            task.cancel()
 
     async def close(self) -> None:
         # Shutdown reads no probe result, and the lifespan's `finally` holds the

@@ -178,6 +178,15 @@ class TerminalManager:
             session = runtime.session
             if session.project_id != project_id or session.repository_id != repository_alias:
                 continue
+            if runtime.retiring:
+                # Its stop failed, so its shell may still own the checkout.
+                # Handing it back would offer a session already ending, and
+                # opening another would put two shells on one working tree.
+                raise TerminalUnavailable(
+                    "An earlier terminal for this repository could not be stopped, so its "
+                    "shell may still be running. Opening another would put two on one "
+                    "checkout; it is retried on its own."
+                )
             reason = registration_lapse(manifest, session)
             if reason is None:
                 return session
@@ -859,7 +868,7 @@ class TerminalManager:
         return [
             runtime.session
             for runtime in self.sessions.values()
-            if runtime.session.project_id == project_id
+            if runtime.session.project_id == project_id and not runtime.retiring
         ]
 
     def get(self, project_id: str, session_id: str) -> TerminalSession:
@@ -915,6 +924,9 @@ class TerminalManager:
         child's exit status and the clock. Nothing here waits on a machine, so
         every live session can be classified before the first stop begins.
         """
+        if runtime.retiring:
+            # Already decided by an ending that failed; this pass retries it.
+            return runtime.retiring
         session = runtime.session
         if not self.membership_check(session.project_id, session.member_id):
             return "membership_lost"

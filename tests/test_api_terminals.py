@@ -488,6 +488,47 @@ def test_a_repoint_during_an_open_is_settled_by_the_socket_itself(tmp_path, term
         assert receipt["declared_path"] != str(moved)
 
 
+def test_a_stale_alias_that_cannot_be_stopped_stops_listing_and_attaching(
+    tmp_path, terminal_pty, monkeypatch
+):
+    """Retiring a repointed session can fail on its machine, and the listing
+    and the socket only log that. The decision to end it stands, so it must
+    stop being one a member can list or attach to while the stop is retried;
+    otherwise they keep a shell in a checkout the project no longer registers.
+    """
+    from rcp.api.dependencies import get_project_service
+    from rcp.terminals import launch
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        moved = tmp_path / "moved-checkout"
+        (moved / ".research").mkdir(parents=True)
+        manifest = get_project_service(app.state.services.catalog, project_id).manifest
+        manifest.repository_map["paper-repo"].path = str(moved)
+
+        def unstoppable(unit):
+            raise RuntimeError("systemctl user manager unavailable")
+
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        assert client.get(path).json() == []
+        with (
+            pytest.raises(WebSocketDisconnect) as refused,
+            client.websocket_connect(
+                f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
+            ),
+        ):
+            pytest.fail("A shell the project no longer registers was attached to")
+        assert refused.value.code == 4404
+        # The runtime is kept, so the stop it could not finish is retried.
+        assert session_id in app.state.services.terminals.sessions
+        monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 

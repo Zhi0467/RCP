@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 
 def get_runtime(manager: TerminalManager, project_id: str, session_id: str) -> TerminalRuntime:
     runtime = manager.sessions.get(session_id)
-    if runtime is None or runtime.session.project_id != project_id:
+    if runtime is None or runtime.session.project_id != project_id or runtime.retiring:
+        # A session whose stop failed is retained for the retry, not offered.
         raise KeyError("Terminal session not found.")
     return runtime
 
@@ -38,11 +39,20 @@ def get_runtime(manager: TerminalManager, project_id: str, session_id: str) -> T
 async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
     pending = asyncio.create_task(_finish_end(manager, runtime, reason))
     try:
-        await asyncio.shield(pending)
-    except asyncio.CancelledError:
-        # Complete descriptor/process retirement before releasing the manager
-        # lock, even if shutdown cancels a sweep during systemctl stop.
-        await pending
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            # Complete descriptor/process retirement before releasing the
+            # manager lock, even if shutdown cancels a sweep during
+            # systemctl stop.
+            await pending
+            raise
+    except Exception:
+        # The shell may still be running, so the runtime stays for a later
+        # attempt. It stops being one a member can reach: this session has
+        # been decided to end, and a stop that failed does not unmake that.
+        # A plain cancellation is not a failed stop; `_abandon_opening` owns it.
+        runtime.retiring = reason
         raise
 
 

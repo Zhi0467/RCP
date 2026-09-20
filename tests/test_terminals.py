@@ -1721,7 +1721,11 @@ async def test_failed_stop_keeps_metadata_and_can_be_retried(
     monkeypatch.setattr(launch, "stop_unit", failed_stop)
     with pytest.raises(TerminalUnavailable, match="systemctl"):
         await manager.sweep()
-    assert manager.get("project", session.session_id) is session
+    # Kept for the retry, and unreachable while its shell may still be running.
+    assert manager.sessions[session.session_id].retiring == "idle_timeout"
+    with pytest.raises(KeyError):
+        manager.get("project", session.session_id)
+    assert manager.list("project") == []
     assert session.ended_at is None
     monkeypatch.setattr(launch, "stop_unit", original)
     await manager.sweep()
@@ -1936,10 +1940,20 @@ async def test_one_failed_stop_does_not_starve_other_sessions(
         original(unit)
 
     monkeypatch.setattr(launch, "stop_unit", partial_failure)
+    decided_by = {
+        "sweep": "idle_timeout",
+        "close": "server_shutdown",
+        "end_all": "server_maintenance",
+    }
     try:
         with pytest.raises(TerminalUnavailable, match="first unit"):
             await getattr(manager, operation)()
-        assert manager.get("project", first.session_id) is first
+        # Retained for the retry, carrying the reason that decided it, and no
+        # longer a session a member can reach or be handed back.
+        assert manager.sessions[first.session_id].retiring == decided_by[operation]
+        with pytest.raises(KeyError):
+            manager.get("project", first.session_id)
+        assert manager.list("project") == []
         assert second.ended_at is not None
         assert second.unit in process_factory[2]
     finally:

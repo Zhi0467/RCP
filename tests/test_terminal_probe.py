@@ -206,6 +206,39 @@ async def test_cache_configuration_change_is_a_miss(machine):
 
 
 @pytest.mark.asyncio
+async def test_a_refresh_gives_back_the_slot_the_probe_it_replaced_held(machine, monkeypatch):
+    """A superseded probe holds one of the few worker slots until its own
+    subprocess timeout. A refresh that only dropped the cache entry left it
+    there, so the newest answer waited behind every refresh before it.
+    """
+    monkeypatch.setattr("rcp.terminals.probe.TERMINAL_PROBE_WORKERS", 1)
+    wedged = threading.Event()
+    started = threading.Event()
+    fresh = TerminalProbe("Linux", "reachable", "Fresh result.")
+    calls = []
+
+    def probe(value):
+        calls.append(value.host)
+        if len(calls) == 1:
+            started.set()
+            assert wedged.wait(10)
+            return TerminalProbe("Linux", "incapable", "Stale result.")
+        return fresh
+
+    cache = TerminalProbeCache(probe)
+    try:
+        waiting = asyncio.create_task(cache.ensure(machine))
+        assert await asyncio.to_thread(started.wait, 5)
+        cache.invalidate(machine)
+        # The only slot is the one the wedged probe was holding.
+        assert await asyncio.wait_for(cache.ensure(machine), 5) == fresh
+        assert await asyncio.wait_for(waiting, 5) == fresh
+    finally:
+        wedged.set()
+        await cache.close()
+
+
+@pytest.mark.asyncio
 async def test_invalidated_inflight_probe_cannot_replace_new_result(machine):
     release = threading.Event()
     started = threading.Event()

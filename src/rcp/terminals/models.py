@@ -58,3 +58,7 @@ class TerminalRuntime:
     replay: bytearray = field(default_factory=bytearray)
     subscribers: set[asyncio.Queue[TerminalFrame]] = field(default_factory=set)
     completion: CompletionParser | None = None
+    # The reason a failed stop has already decided this session ends by. It
+    # stays in `sessions` so the stop can be retried, and stops being one a
+    # member can reach.
+    retiring: str | None = None
