@@ -46,10 +46,12 @@ hard failure with its real diagnostic, never a cooperative session.
 Session payloads carry `containment` and `protection_notice`. A cooperative
 session explicitly reports that canonical-state protection is unavailable on
 this machine. The Terminals destination appears when any machine can host a
-session. Remote pending and failed probes also keep the destination visible so
-members can read the reason and refresh it. Empty projects and projects with
-only unavailable local machines hide it. Repository controls show unavailable
-rows with their reasons. A lost SSH link produces an `ended` reason, removes the
+session, and whenever the project has an open one, because the destination is
+the only way back to a running shell and the only way to end it. Remote pending
+and failed probes also keep the destination visible so members can read the
+reason and refresh it. Empty projects and projects with only unavailable local
+machines and no open session hide it. Repository controls show unavailable rows
+with their reasons. A lost SSH link produces an `ended` reason, removes the
 session from the open list, and leaves the diagnostic visible without offering
 to reconnect into a new shell.
 

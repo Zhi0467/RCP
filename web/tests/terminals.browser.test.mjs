@@ -308,6 +308,31 @@ test("Terminals tab hides for unavailable local machines and returns for coopera
   }
 });
 
+test("an open session keeps the Terminals tab after its machine stops being eligible", async (t) => {
+  const { page, setRepositories, removeSessions } = await fixture(t);
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
+  await page.getByRole("button", { name: "Research", exact: true }).click();
+  const tab = page.getByRole("button", { name: "Terminals", exact: true });
+  // The machine can no longer launch a shell. One is already running on it,
+  // and this tab is the only way back to it and the only way to end it.
+  setRepositories([{ ...repositories[0], eligible: false, containment: null }]);
+  let settled = page.waitForResponse((response) =>
+    response.url().endsWith("/api/projects/alpha/terminals"),
+  );
+  await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+  await settled;
+  assert.ok(await tab.isVisible());
+  // Once that session is gone, an ineligible machine offers nothing.
+  removeSessions();
+  settled = page.waitForResponse((response) =>
+    response.url().endsWith("/api/projects/alpha/terminals"),
+  );
+  await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+  await settled;
+  await tab.waitFor({ state: "hidden" });
+});
+
 test("remote-only probe pending and failure remain visible and Refresh retries", async (t) => {
   const { page, setRepositories, probes } = await fixture(t);
   await page.getByRole("button", { name: "Research", exact: true }).click();

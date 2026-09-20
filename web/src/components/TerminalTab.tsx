@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { TerminalSquare } from "lucide-react";
 import { api } from "../api";
-import type { TerminalRepository } from "../types";
+import type { TerminalRepository, TerminalSession } from "../types";
 
 export function TerminalTab({
   projectId,
@@ -22,15 +22,19 @@ export function TerminalTab({
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const repositories = await api<TerminalRepository[]>(
-          `/api/projects/${encodeURIComponent(projectId)}/terminals/repositories`,
-          { signal: controller.signal },
-        );
+        const base = `/api/projects/${encodeURIComponent(projectId)}/terminals`;
+        const [repositories, sessions] = await Promise.all([
+          api<TerminalRepository[]>(`${base}/repositories`, { signal: controller.signal }),
+          api<TerminalSession[]>(base, { signal: controller.signal }),
+        ]);
         if (controller.signal.aborted) return;
         // Remote failures remain reachable here so members can read the reason
-        // and explicitly refresh after repairing the machine.
+        // and explicitly refresh after repairing the machine. An open session
+        // keeps the tab regardless: a machine that can no longer launch a
+        // shell still has one running, and it is reached and ended from here.
         setAvailable(
-          repositories.some((repository) => repository.eligible || repository.probe_state),
+          sessions.length > 0 ||
+            repositories.some((repository) => repository.eligible || repository.probe_state),
         );
         if (repositories.some((repository) => repository.probe_state === "pending"))
           timer = setTimeout(() => void load(), 1000);

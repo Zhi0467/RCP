@@ -766,11 +766,13 @@ async def test_a_cancelled_open_whose_stop_fails_leaves_no_reusable_session(
     started = threading.Event()
     release = threading.Event()
     original = launch.launch
+    launched = []
 
     def delayed(command, unit):
         started.set()
         assert release.wait(5)
-        return original(command, unit)
+        launched.append(original(command, unit))
+        return launched[-1]
 
     def unstoppable(unit):
         raise TerminalUnavailable("systemctl user manager unavailable")
@@ -788,6 +790,12 @@ async def test_a_cancelled_open_whose_stop_fails_leaves_no_reusable_session(
             await opening
         assert manager.sessions == {}
         assert manager.list("project") == []
+        # The record retains the unit; the descriptor and process are given
+        # back, or repeated cancellations would spend the server's descriptors.
+        process, master_fd = launched[0]
+        with pytest.raises(OSError):
+            os.fstat(master_fd)
+        assert process.poll() is not None
         receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
         assert receipt["termination_reason"] == "opening_cancelled"
         assert receipt["ended_at"] is None

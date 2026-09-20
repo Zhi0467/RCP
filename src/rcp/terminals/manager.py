@@ -35,7 +35,13 @@ from rcp.terminals.models import (
     TerminalUnavailable,
 )
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
-from rcp.terminals.runtime import end_runtime, get_runtime, read_ready, sweep_loop
+from rcp.terminals.runtime import (
+    end_runtime,
+    get_runtime,
+    read_ready,
+    release_runtime,
+    sweep_loop,
+)
 from rcp.terminals.utilities import resolve_repository, save_metadata, timestamp
 from rcp.transport.run_stage import RemoteRunStage
 
@@ -423,8 +429,11 @@ class TerminalManager:
             except Exception:
                 # The unit outlived the launch this cancellation stopped. As
                 # with a failed launch, the record is the only thing that can
-                # block a reopen before the next startup reconciles it.
+                # block a reopen before the next startup reconciles it. The
+                # runtime itself is still given back: the record is what
+                # retains the unit, not this descriptor and process.
                 await self._record_launch_failure(session, "opening_cancelled")
+                await release_runtime(self, runtime)
             raise
         except Exception:
             await self._record_launch_failure(session)

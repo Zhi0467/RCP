@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import subprocess
@@ -68,16 +69,7 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
         await asyncio.to_thread(launch.stop_cooperative, runtime.process)
     # Retire once before any subsequent cleanup/audit operation can fail. The
     # unfinished persisted intent still causes startup to retry the unit stop.
-    manager.sessions.pop(session.session_id, None)
-    asyncio.get_running_loop().remove_reader(runtime.master_fd)
-    os.close(runtime.master_fd)
-    if runtime.process.poll() is None:
-        runtime.process.terminate()
-        try:
-            await asyncio.to_thread(runtime.process.wait, timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            runtime.process.kill()
-            await asyncio.to_thread(runtime.process.wait)
+    await release_runtime(manager, runtime)
     for queue in runtime.subscribers:
         while queue.full():
             queue.get_nowait()
@@ -92,6 +84,29 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
         # only wait for the next startup.
         manager.mark_unresolved(session)
     save_metadata(manager.directory, session)
+
+
+async def release_runtime(manager: TerminalManager, runtime: TerminalRuntime) -> None:
+    """Give back everything this runtime holds: its slot, descriptor and process.
+
+    Ending a session calls this once its unit has been dealt with. A cancelled
+    open calls it too when that stop failed, because its record is retained but
+    its descriptor and process are not, and repeated cancellations against a
+    broken service manager would otherwise spend the server's descriptors.
+    """
+    manager.sessions.pop(runtime.session.session_id, None)
+    asyncio.get_running_loop().remove_reader(runtime.master_fd)
+    with contextlib.suppress(OSError):
+        # Releasing is the last thing either caller can do for this runtime, so
+        # it reports nothing: a descriptor already gone is still given back.
+        os.close(runtime.master_fd)
+    if runtime.process.poll() is None:
+        runtime.process.terminate()
+        try:
+            await asyncio.to_thread(runtime.process.wait, timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            runtime.process.kill()
+            await asyncio.to_thread(runtime.process.wait)
 
 
 async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSession) -> bool:
