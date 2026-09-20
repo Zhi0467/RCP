@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import struct
+import subprocess
 import termios
 import time
 import uuid
@@ -145,6 +146,8 @@ class TerminalManager:
                     session.session_id,
                     session.containment,
                 )
+                # It may name a running unit, so it also blocks its repository.
+                self.mark_unresolved(session)
                 continue
             if session.unit != f"{self._unit_prefix}-{session.session_id}":
                 # Another data directory wrote this record. Its unit is not ours
@@ -166,7 +169,12 @@ class TerminalManager:
                         )
                     else:
                         await asyncio.to_thread(launch.stop_unit, session.unit)
-                except (TerminalUnavailable, OSError, RuntimeError) as exc:
+                except (
+                    TerminalUnavailable,
+                    OSError,
+                    RuntimeError,
+                    subprocess.SubprocessError,
+                ) as exc:
                     # The unfinished record is itself the retry. Keep it.
                     logger.warning(
                         "Could not stop terminal unit %s; a later startup retries it: %s",
@@ -359,8 +367,12 @@ class TerminalManager:
         own, and neither the local launcher's cleanup nor a remote supervisor's
         hangup is acknowledged, so it is stopped here to find out.
         """
-        if session.containment != "mirrored":
+        if session.containment == "cooperative":
             return True
+        if session.containment != "mirrored":
+            # This version cannot know what this record left running, so it can
+            # never be confirmed gone and never stops blocking its repository.
+            return False
         try:
             if session.execution_host:
                 await asyncio.to_thread(
@@ -368,7 +380,7 @@ class TerminalManager:
                 )
             else:
                 await asyncio.to_thread(launch.stop_unit, session.unit)
-        except (TerminalUnavailable, OSError, RuntimeError) as exc:
+        except (TerminalUnavailable, OSError, RuntimeError, subprocess.SubprocessError) as exc:
             logger.warning(
                 "Terminal unit %s may still be running; it is retried before a reopen: %s",
                 session.unit,

@@ -186,7 +186,8 @@ network for every live session.
 Startup reconciliation is best effort per record and never refuses the server a
 boot. An unreadable record is left alone, as is one whose containment this
 version does not recognise, because retiring it would skip a unit stop it
-cannot reason about. A record naming a unit this data directory does not own is
+cannot reason about; that record also blocks its repository, since nothing
+here can confirm what it left running. A record naming a unit this data directory does not own is
 retired as a unit-identity mismatch without a stop attempt, and a unit that
 cannot be stopped keeps its unfinished record for a later startup. A launch that fails finishes its own record on the same
 condition: a cooperative launch has no unit, and a mirrored one is finished

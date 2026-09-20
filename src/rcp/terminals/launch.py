@@ -197,6 +197,9 @@ def stop_unit(unit: str) -> None:
         raise TerminalUnavailable(
             "Stopping a terminal unit requires usable systemctl; not installed."
         )
+    # Both calls are guarded together. `TimeoutExpired` is neither an OSError
+    # nor a RuntimeError, so one escaping here would abort startup
+    # reconciliation rather than leaving its record for a later attempt.
     try:
         result = subprocess.run(
             ["systemctl", "--user", "stop", unit],
@@ -205,9 +208,8 @@ def stop_unit(unit: str) -> None:
             env=_manager_environment(),
             timeout=TERMINAL_STOP_TIMEOUT_SECONDS * 2,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise TerminalUnavailable(f"Could not stop terminal unit {unit}: {exc}") from exc
-    if result.returncode:
+        if not result.returncode:
+            return
         check = subprocess.run(
             ["systemctl", "--user", "show", unit, "--property=LoadState", "--value"],
             capture_output=True,
@@ -215,9 +217,11 @@ def stop_unit(unit: str) -> None:
             env=_manager_environment(),
             timeout=TERMINAL_STOP_TIMEOUT_SECONDS,
         )
-        if check.stdout.strip() == "not-found":
-            return
-        raise TerminalUnavailable(f"Could not stop terminal unit {unit}: {result.stderr.strip()}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TerminalUnavailable(f"Could not stop terminal unit {unit}: {exc}") from exc
+    if check.stdout.strip() == "not-found":
+        return
+    raise TerminalUnavailable(f"Could not stop terminal unit {unit}: {result.stderr.strip()}")
 
 
 def _manager_environment() -> dict[str, str]:

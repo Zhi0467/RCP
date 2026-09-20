@@ -423,7 +423,7 @@ async def test_a_retained_record_refuses_a_reopen_until_its_unit_is_gone(
 
 @pytest.mark.asyncio
 async def test_startup_leaves_a_record_whose_containment_it_does_not_know(
-    tmp_path, monkeypatch, caplog
+    manifest, tmp_path, monkeypatch, caplog
 ):
     """`containment` is a Literal on a dataclass, so nothing enforces it at
     runtime. An unknown value must not fall through the mirrored check and be
@@ -459,6 +459,10 @@ async def test_startup_leaves_a_record_whose_containment_it_does_not_know(
         recorded = json.loads((manager.directory / "skewed.json").read_text())
         assert recorded["ended_at"] is None
         assert any("does not know" in message for message in caplog.messages)
+        # It may name a running unit, and this version cannot confirm otherwise,
+        # so it must keep blocking rather than admit a second shell there.
+        with pytest.raises(TerminalUnavailable, match="until that one is gone"):
+            await manager.open(**dict(arguments(manifest), repository_alias="repo"))
     finally:
         await manager.close()
 
@@ -814,6 +818,26 @@ def test_launcher_refuses_missing_preflight_marker(monkeypatch):
     finally:
         for descriptor in descriptors:
             os.close(descriptor)
+
+
+def test_a_timeout_confirming_a_failed_stop_is_reported_not_raised(monkeypatch):
+    """`TimeoutExpired` is neither an OSError nor a RuntimeError, so one
+    escaping the stop path would abort startup reconciliation instead of
+    leaving its record for a later attempt.
+    """
+    import subprocess
+
+    def answer(argv, **kwargs):
+        if "show" in argv:
+            raise subprocess.TimeoutExpired(argv, 1)
+        return subprocess.CompletedProcess(argv, 1, "", "Unit is wedged")
+
+    monkeypatch.setattr(
+        launch.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(launch.subprocess, "run", answer)
+    with pytest.raises(TerminalUnavailable, match="Could not stop terminal unit"):
+        launch.stop_unit("wedged")
 
 
 def test_collected_unit_cleanup_accepts_explicit_not_found(monkeypatch):
