@@ -49,6 +49,7 @@ import {
   invalidProjectProvisioningHash,
   projectProvisioningHash,
   projectProvisioningRequestId,
+  routeProvedBy,
 } from "../projectSetup";
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
@@ -1379,7 +1380,7 @@ export function ProvisioningStatus({
         <OperatorActionPanel
           step={request.operator_action}
           route={connection?.operator_route ?? null}
-          routeProved={probe?.available === true}
+          routeProved={routeProvedBy(probe, connection?.connection_id, connection?.operator_route)}
           onRefresh={onRefresh}
         />
       )}

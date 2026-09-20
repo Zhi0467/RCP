@@ -47,7 +47,12 @@ import {
   reasoningOptions,
   runtimeOptions,
 } from "../providers";
-import { formatCommandArgv, projectMoveSetupHash, type ProjectSetupRoute } from "../projectSetup";
+import {
+  formatCommandArgv,
+  projectMoveSetupHash,
+  routeProvedBy,
+  type ProjectSetupRoute,
+} from "../projectSetup";
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
@@ -384,12 +389,12 @@ export function TransferProjectSetup({
 
   // A saved route is stored before anything proves it can run these commands,
   // and the panel only offers one it trusts. Probe the selected connection the
-  // same way the team setup view does, and drop the answer the moment the
-  // selection changes so one connection's proof never speaks for another.
+  // same way the team setup view does; `routeProvedBy` decides whether the
+  // answer still describes what is on screen, so this effect never has to win
+  // a race with the render that changed the selection.
   const operatorTarget = selectedConnection?.operator_route?.ssh_target ?? null;
   const operatorMode = selectedConnection?.operator_route?.mode ?? null;
   useEffect(() => {
-    setOperatorProbe(null);
     const connectionId = selectedConnection?.connection_id;
     if (!connectionId || !operatorTarget) return;
     let stopped = false;
@@ -1180,7 +1185,11 @@ export function TransferProjectSetup({
               <OperatorActionPanel
                 step={bundle.incoming_provisioning.operator_action}
                 route={selectedConnection?.operator_route ?? null}
-                routeProved={operatorProbe?.available === true}
+                routeProved={routeProvedBy(
+                  operatorProbe,
+                  selectedConnection?.connection_id,
+                  selectedConnection?.operator_route,
+                )}
                 onRefresh={() => void refreshTransfer()}
               />
             )}

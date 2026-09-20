@@ -197,7 +197,10 @@ Four slices. The first is the shared contract and lands alone.
    Replace the `.operator-action-line` grid with full-width blocks, keeping the
    two-column grid only for labelled rows. `TransferProjectSetup` renders no
    actions, fields, or resume command at all today; it reuses the same panel,
-   and probes its selected connection so the panel can offer that route.
+   and probes its selected connection so the panel can offer that route. Proof
+   is bound to what is drawn by `routeProvedBy`, which compares the connection
+   and route a probe ran against with the ones on screen, rather than trusting
+   that an effect has already cleared a stale answer.
 4. **CLI wizard.** Render the execution context in `_render_actions` and in the
    `Continue:` block, in the same words the panel uses, and reserve silence for
    a stored step that never declared one. A declared operator login is still
