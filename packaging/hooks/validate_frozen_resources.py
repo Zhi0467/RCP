@@ -4,6 +4,7 @@ from rcp.agents.command_protocol import staged_command_broker_source, staged_com
 from rcp.artifacts import _selection_script, _viewer_script
 from rcp.skill_registry import official_registry
 from rcp.sources.indexer import _record_parsing_source
+from rcp.terminals.remote import terminal_source
 from rcp.transfer.repository_git import _remote_source
 from rcp.transport.state import _remote_script
 
@@ -33,6 +34,8 @@ if (
     raise RuntimeError("The packaged staged auto-research command broker is invalid.")
 
 for script_name, required in (
+    ("remote_terminal.py", "def run_session"),
+    ("remote_terminal_probe.py", "def probe_machine"),
     ("remote_lock_holder.py", "def apply_staged"),
     ("remote_archive_research.py", "def retained_history_fingerprint"),
     ("remote_read_kept_view.py", "def main"),
@@ -41,6 +44,13 @@ for script_name, required in (
 ):
     if required not in _remote_script(script_name):
         raise RuntimeError(f"The packaged remote script {script_name} is invalid.")
+
+for script_name, required in (
+    ("profile.py", "def launch_command"),
+    ("git_access.py", "def terminal_git_access"),
+):
+    if required not in terminal_source(script_name):
+        raise RuntimeError(f"The packaged terminal script {script_name} is invalid.")
 
 if not official_registry().packages:
     raise RuntimeError("The packaged official skill registry is empty.")
