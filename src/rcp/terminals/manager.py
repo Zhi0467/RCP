@@ -42,6 +42,23 @@ from rcp.transport.run_stage import RemoteRunStage
 logger = logging.getLogger(__name__)
 
 
+def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[str, str, str, str]:
+    """What this alias currently names: path, machine, host and account."""
+    repository = manifest.repository_map[repository_alias]
+    machine = manifest.machine_map[repository.machine]
+    return (repository.path, repository.machine, machine.host, machine.os_account)
+
+
+def session_registration(session: TerminalSession) -> tuple[str, str, str, str]:
+    """What the alias named when this session started."""
+    return (
+        session.declared_path,
+        session.declared_machine,
+        session.execution_host,
+        session.declared_account,
+    )
+
+
 class TerminalManager:
     def __init__(self, data_dir: Path, membership_check: Callable[[str, str], bool]) -> None:
         self.probes = TerminalProbeCache()
@@ -165,7 +182,10 @@ class TerminalManager:
                 try:
                     if session.execution_host:
                         await asyncio.to_thread(
-                            remote.stop_remote_unit, session.execution_host, session.unit
+                            remote.stop_remote_unit,
+                            session.execution_host,
+                            session.unit,
+                            session.declared_account,
                         )
                     else:
                         await asyncio.to_thread(launch.stop_unit, session.unit)
@@ -230,11 +250,14 @@ class TerminalManager:
             for runtime in self.sessions.values():
                 session = runtime.session
                 if session.project_id == project_id and session.repository_id == repository_alias:
-                    if session.declared_path == manifest.repository_map[repository_alias].path:
+                    if session_registration(session) == manifest_registration(
+                        manifest, repository_alias
+                    ):
                         return session
-                    # The alias points somewhere else now. Handing this session
-                    # back would answer a request for one checkout with a shell
-                    # on another, so it is retired and a new one opened.
+                    # The alias names something else now — another path, another
+                    # machine, or another account. Handing this session back
+                    # would answer a request for one checkout with a shell
+                    # somewhere else, so it is retired and a new one opened.
                     await end_runtime(self, runtime, "repository_repointed")
                     break
             if key in self._opening:
@@ -296,6 +319,8 @@ class TerminalManager:
             repository_id=repository_alias,
             path=str(root),
             declared_path=repository.path,
+            declared_machine=repository.machine,
+            declared_account=machine.os_account,
             started_at=timestamp(),
             last_activity_at=timestamp(),
             unit=f"{self._unit_prefix}-{session_id}",
@@ -376,7 +401,10 @@ class TerminalManager:
         try:
             if session.execution_host:
                 await asyncio.to_thread(
-                    remote.stop_remote_unit, session.execution_host, session.unit
+                    remote.stop_remote_unit,
+                    session.execution_host,
+                    session.unit,
+                    session.declared_account,
                 )
             else:
                 await asyncio.to_thread(launch.stop_unit, session.unit)

@@ -54,6 +54,28 @@ def hangup(signum: int, _frame: Any) -> None:
     raise InterruptedError(f"SSH terminal received signal {signum}.")
 
 
+def require_account(settings: dict[str, Any]) -> None:
+    """Refuse a connection that landed on the wrong account.
+
+    The probe answered on an earlier connection, and a destination carrying no
+    user takes its account from SSH configuration, which can change in between.
+    Cleanup checks this too: stopping under the wrong account would find no
+    unit, call that success, and finish a record whose unit is still running.
+    """
+    expected = settings.get("os_account") or ""
+    if not expected:
+        return
+    try:
+        actual = pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        actual = ""
+    if actual != expected:
+        raise ValueError(
+            "This connection landed on a different account than the registered one, "
+            "so a terminal here would hold the wrong home, credentials and authority."
+        )
+
+
 def run_session(settings: dict[str, Any]) -> int:
     profile = load_source(settings["profile_source"])
     git_access = load_source(settings["git_access_source"])
@@ -67,21 +89,7 @@ def run_session(settings: dict[str, Any]) -> int:
     )
     if any(repository == Path(path) or Path(path) in repository.parents for path in protected):
         raise ValueError("Canonical state cannot be a terminal repository.")
-    # The probe answered on an earlier connection. SSH configuration can change
-    # between then and now, and a destination carrying no user takes its account
-    # from that configuration, so the account is checked again here, inside the
-    # connection that is about to run the shell.
-    expected = settings.get("os_account") or ""
-    if expected:
-        try:
-            actual = pwd.getpwuid(os.geteuid()).pw_name
-        except (KeyError, OSError):
-            actual = ""
-        if actual != expected:
-            raise ValueError(
-                "This connection landed on a different account than the registered one, "
-                "so a terminal here would hold the wrong home, credentials and authority."
-            )
+    require_account(settings)
     timeout = settings["stop_timeout"]
     mirrored = settings["containment"] == "mirrored"
     if settings["containment"] not in {"mirrored", "cooperative"}:
@@ -146,6 +154,7 @@ def main() -> int:
     try:
         settings = json.loads(sys.argv[1])
         if settings.get("action") == "stop":
+            require_account(settings)
             stop_unit(settings["unit"], settings["stop_timeout"])
             return 0
         return run_session(settings)

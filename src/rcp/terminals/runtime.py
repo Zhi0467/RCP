@@ -102,7 +102,12 @@ async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSessio
         # Shutdown must not wait on the network for every live session.
         return False
     try:
-        await asyncio.to_thread(remote.stop_remote_unit, session.execution_host, session.unit)
+        await asyncio.to_thread(
+            remote.stop_remote_unit,
+            session.execution_host,
+            session.unit,
+            session.declared_account,
+        )
     except TerminalUnavailable as exc:
         logger.warning(
             "Terminal unit %s may survive on its execution machine; startup will retry: %s",

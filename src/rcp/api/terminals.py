@@ -26,6 +26,7 @@ from rcp.limits import (
 )
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
+from rcp.terminals.manager import manifest_registration, session_registration
 from rcp.terminals.models import DETACHED
 
 router = APIRouter()
@@ -126,8 +127,9 @@ async def open_session(
     work = running_repository_work(services.store, project_id, manifest)
     for session in services.terminals.list(project_id):
         if session.repository_id == body.repository_id:
-            if session.declared_path != manifest.repository_map[body.repository_id].path:
-                # Its alias was repointed; `open` retires it and launches anew.
+            if session_registration(session) != manifest_registration(manifest, body.repository_id):
+                # The alias names another path, machine or account now; `open`
+                # retires this session and launches where it now points.
                 break
             # Open-or-return-existing: a live session must not be withheld
             # because a later probe refresh or inventory read failed. Those are

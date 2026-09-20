@@ -16,6 +16,7 @@ from rcp.agents.write_scope import protected_repository_paths, registered_reposi
 from rcp.limits import TERMINAL_IDLE_TIMEOUT_SECONDS, TERMINAL_OUTPUT_BUFFER_BYTES
 from rcp.terminals import TerminalManager, TerminalSession, TerminalUnavailable, launch
 from rcp.terminals.backends import TERMINAL_BACKENDS, machine_capability, resolve_backend
+from rcp.terminals.manager import manifest_registration, session_registration
 from rcp.terminals.runtime import read_ready
 from rcp.terminals.utilities import resolve_repository, save_metadata
 
@@ -700,7 +701,34 @@ async def test_repointing_a_repository_does_not_hand_back_the_old_checkout(
         second = await manager.open(**arguments(manifest))
         assert second.session_id != first.session_id
         assert second.declared_path == str(moved)
+        # The same path on another machine is another registration too.
+        assert session_registration(second) != session_registration(first)
         assert [session.session_id for session in manager.list("project")] == [second.session_id]
+        retired = json.loads((manager.directory / f"{first.session_id}.json").read_text())
+        assert retired["termination_reason"] == "repository_repointed"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_moving_a_repository_to_another_machine_does_not_hand_back_the_old_shell(
+    manifest, tmp_path, process_factory
+):
+    """Two machines can share a path string, so the declared path alone does
+    not identify a registration; the machine and its account belong to it too.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        first = await manager.open(**arguments(manifest))
+        assert first.declared_machine == manifest.repository_map["repo-a"].machine
+        # Same declared path, different account on the same machine alias.
+        machine = manifest.machine_map[manifest.repository_map["repo-a"].machine]
+        machine.os_account = "someone-else"
+        assert manifest_registration(manifest, "repo-a") != session_registration(first)
+        second = await manager.open(**arguments(manifest))
+        assert second.session_id != first.session_id
+        assert second.declared_account == "someone-else"
         retired = json.loads((manager.directory / f"{first.session_id}.json").read_text())
         assert retired["termination_reason"] == "repository_repointed"
     finally:
@@ -1288,8 +1316,9 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     )
     stops = []
 
-    def stop(host, unit):
-        stops.append((host, unit))
+    def stop(host, unit, os_account=""):
+        # Cleanup carries the recorded account so it cannot run as another one.
+        stops.append((host, unit, os_account))
         if not confirmed:
             raise TerminalUnavailable("The execution machine is unreachable.")
 
@@ -1298,7 +1327,7 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     try:
         session = await manager.open(**arguments(manifest))
         await manager.end("project", session.session_id)
-        assert stops == [(session.execution_host, session.unit)]
+        assert stops == [(session.execution_host, session.unit, session.declared_account)]
         assert manager.list("project") == []
         receipt = json.loads((manager.directory / f"{session.session_id}.json").read_text())
         assert bool(receipt["ended_at"]) is confirmed

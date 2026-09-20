@@ -56,6 +56,27 @@ def test_remote_launch_uses_strict_unshared_ssh_pty_and_shipped_sources(tmp_path
     assert request["protected_paths"] == ["/remote/.research"]
 
 
+def test_the_shipped_stop_request_also_refuses_a_wrong_account(tmp_path):
+    """Stopping under the wrong account would find no unit, call that success,
+    and finish a record whose unit is still running on the right one.
+    """
+    payload = {
+        "action": "stop",
+        "unit": "rcp-terminal-test",
+        "os_account": "an-account-this-machine-is-not",
+        "stop_timeout": 1,
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", inspect.getsource(remote_terminal), json.dumps(payload)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "different account" in result.stderr
+
+
 def test_the_shipped_wrapper_refuses_a_connection_on_the_wrong_account(tmp_path):
     """The capability probe answered on an earlier connection and its result is
     cached for the manager's lifetime. SSH configuration can change in between,

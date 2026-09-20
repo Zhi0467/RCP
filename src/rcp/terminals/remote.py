@@ -56,8 +56,13 @@ def start_remote(
     return launch.launch(_command(host, settings, pty=True), None, label="SSH PTY")
 
 
-def stop_remote_unit(host: str, unit: str) -> None:
-    settings = {"action": "stop", "unit": unit, "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS}
+def stop_remote_unit(host: str, unit: str, os_account: str = "") -> None:
+    settings = {
+        "action": "stop",
+        "unit": unit,
+        "os_account": os_account,
+        "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS,
+    }
     try:
         result = subprocess.run(
             _command(host, settings, pty=False),
