@@ -15,11 +15,12 @@ stored stop are verified end to end, but the `ssh` entry line is composed from
 the saved operator route, which only the Tauri runtime supplies, so it was
 exercised through the fixture rather than through a running desktop.
 
-Close this handoff when a human stop in project provisioning reaches the
-operator as an ordered list of single actions, every command in it names the
-shell it runs in, the deploy-key grant is a two-field copy form titled for the
-human's task, and the same execution context appears in the interactive CLI
-wizard.
+Close this handoff when the human accepts the generic panel described in
+decision 5, or when a step can declare the role of each value it carries and
+the deploy-key grant is drawn as the two-field form they approved. Everything
+else it promised is built: a human stop reaches the operator as an ordered list
+of single actions titled for their task, every command in it names the shell it
+runs in, and the same execution context appears in the interactive CLI wizard.
 
 ## The problem
 
@@ -111,11 +112,15 @@ other end are never named as two things.
    is the machine an operation acts on; for a local machine it deliberately
    carries an empty host and the service account, while the operator logs in
    under their own name and the command inserts `sudo`. The context is its own
-   discriminated model: a server-shell context naming the account the shell must
-   belong to, where absent means the operator's own login, or an SSH context
-   naming the service account's own onward route. The desktop composes the entry
-   line from the saved operator route, which is the only layer that knows it.
-   Neither layer invents the other's fact.
+   discriminated model of one variant, `server_shell`, naming the account the
+   shell must already belong to; a `shell_account` of null is the operator's own
+   login, which the command elevates from itself. That is distinct from an
+   absent context, which per decision 2 means unstated and renders as it did
+   before. No SSH variant was built: every argv RCP displays runs in the shell
+   where the server command itself ran, so a second variant would have been
+   speculation. The desktop composes the entry line from the saved operator
+   route, a separate desktop contract and the only layer that knows it. Neither
+   layer invents the other's fact.
 4. **Existing argv is not re-split.** The interactive CLI wizard executes an
    action's argv directly, so removing the SSH wrapper from
    `github_trust_argv` while leaving the runner alone would run a remote command
