@@ -249,27 +249,31 @@ is enough to refuse. They are told apart by the file each came from, never by
 an identifier a record claims, because a record this version cannot read can
 claim one another record already holds.
 
-They are found by the alias they were filed under and by the working tree each
-record declared it opened on — its path, host and account — because settings
-can drop an alias and register the same checkout under another name. A blocker
-filed under the old alias still names a unit on that working tree, and the new
-alias would otherwise open a second shell on it. Declarations are compared
-before the open resolves anything, which is what refuses it without work a
-manifest may not even permit; once it has resolved the tree, the records that
-resolved one of their own are compared against that instead, which is where
-two spellings of one remote tree meet. A machine alias is the label
-RCP gives a host rather than part of what makes two things one tree, so
-renaming it changes no blocker's reach. Neither does the spelling of a local
-path: a symlink and its target name one working tree. A local record holds the
-tree its declaration resolved to when the shell opened, and the manifest side
-is resolved to compare against it; resolving the record's declaration again
-instead would follow a symlink repointed since, away from the tree it actually
-holds. A remote declaration was resolved on its own machine, which this one
-cannot reproduce, so both sides compare it as written. A record this version could not read
-declares nothing, so its alias is all it has. So does one whose containment this
-version does not recognise, and one whose session identifier is not the name of
-the file holding it, because nothing here can confirm what any of them left
-running. Every record this application writes is named for the session in it,
+They are found in two passes, because neither alone finds them all. Settings
+can drop an alias and register the same checkout under another name, and a
+blocker filed under the old alias still names a unit on that working tree.
+
+The first pass runs before the open resolves anything. It matches a record by
+the alias it was filed under, and by the working tree it names — path, host and
+account — against the tree the registration names. A local registration is
+resolved for that comparison, because a symlink and its target name one working
+tree; the record side is the tree it resolved when its shell opened, not its
+declaration resolved again, which would follow a symlink repointed since, away
+from the tree it holds. A remote registration names a path this machine cannot
+resolve, so there both sides are compared as written.
+
+The second pass runs once the open has resolved its own tree, and matches every
+record that resolved a tree of its own against it. This is where two spellings
+of one remote tree meet, each having been resolved on the execution machine.
+Both passes run: the first refuses without work a manifest may not even permit,
+and the second sees what only resolving can show.
+
+A machine alias is the label RCP gives a host rather than part of what makes
+two things one tree, so renaming it changes no blocker's reach. A record this
+version could not read resolved nothing and declares nothing, so its alias is
+all it has. The same holds for one whose containment this version does not
+recognise, and for one whose session identifier is not the name of the file
+holding it, because nothing here can confirm what any of them left running. Every record this application writes is named for the session in it,
 so acting on one that is not would retire a unit under another record's name
 and overwrite that record. A record naming a unit this data directory does not own is
 retired as a unit-identity mismatch without a stop attempt, and a unit that
