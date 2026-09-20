@@ -7,6 +7,7 @@ export type AppView =
   | "dag"
   | "execution"
   | "artifacts"
+  | "terminals"
   | "paper"
   | "settings"
   | "chats";
@@ -2839,4 +2840,25 @@ export interface ProviderLoginAccount extends ProviderLoginState {
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
 export interface ProviderResumeSummary {
   checked: number;
+}
+
+export interface TerminalWorkTurn {
+  operation_id: string;
+  title: string;
+}
+
+export interface TerminalRepository {
+  repository_id: string;
+  path: string;
+  eligible: boolean;
+  unavailable_reason: string | null;
+  running_work: TerminalWorkTurn[];
+}
+
+export interface TerminalSession {
+  session_id: string;
+  repository_id: string;
+  path: string;
+  state: "live" | "idle";
+  running_work: TerminalWorkTurn[];
 }
