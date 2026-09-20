@@ -263,9 +263,9 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     os.close(slave)
     output = bytearray()
 
-    def read_until(marker, seconds=10):
+    def read_until(marker, seconds=10, start=0):
         deadline = time.monotonic() + seconds
-        while marker not in output:
+        while marker not in output[start:]:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
                 return False
@@ -275,25 +275,33 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     def require(marker, seconds=10):
         assert read_until(marker, seconds), output.decode(errors="replace")
 
+    def interrupt():
+        """Send INTR and wait for its own echo before anything else is typed.
+
+        The tty flushes its input queue while processing INTR, so a command
+        written before that echo loses its leading characters — which reads as
+        `bash: rintf: command not found` rather than as a lost interrupt.
+        """
+        mark = len(output)
+        os.write(master, b"\x03")
+        assert read_until(b"^C", 5, mark), output.decode(errors="replace")
+
     try:
         require(profile._READY_MARKER)
         os.write(master, b"sleep 30\n")
         require(b"sleep 30\r\n")
-        os.write(master, b"\x03")
-        # A tty flushes its input queue while processing INTR, so the next
-        # command may only be sent once the interrupt's own echo proves that
-        # flush is already behind us.
-        require(b"^C")
+        interrupt()
         # An interrupt delivered while the shell is still forking its job can
         # arrive before that job exists, leaving it running and swallowing what
         # follows. Ask again, interrupting once more, until the shell answers.
         deadline = time.monotonic() + 30
         while True:
+            mark = len(output)
             os.write(master, b"printf 'job-%s\\n' control\n")
-            if read_until(b"job-control\r\n", 3):
+            if read_until(b"job-control\r\n", 3, mark):
                 break
             assert time.monotonic() < deadline, output.decode(errors="replace")
-            os.write(master, b"\x03")
+            interrupt()
         assert b"no job control" not in output
         os.close(master)
         master = -1
