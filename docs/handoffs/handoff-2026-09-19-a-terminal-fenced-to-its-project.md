@@ -177,6 +177,30 @@ orphan cleanup is required, not optional.
 No byte transcript: a transcript is a credential-leak surface and buys little
 when the working tree is the thing that changed.
 
+**Terminals is a destination, not a Settings panel.** It joins the project tab
+row in [`App.tsx`](../../web/src/App.tsx) beside Overview, Inbox, Research,
+Runs, Artifacts, Paper, Settings, and Chats. Settings keeps the repository list
+and grows no terminal control, so the feature has one owner. Confirmed by the
+human on 2026-09-19 against a rendered mockup.
+
+Its empty state is the repository list itself: each server-local repository is
+the control that opens a session on it, showing the path it will start in. No
+instructional empty-state copy, per the no-commentary rule in
+[`interface-and-visual-design.md`](../specs/interface-and-visual-design.md).
+
+Two consequences follow, and neither existed while this lived in Settings.
+Sessions now **outlive the view**, so leaving for Research and returning must
+find the same shell; session lifetime belongs to the idle timeout, not to the
+panel being mounted. And **concurrent sessions are expected**, so the rail lists
+them with live or idle state, one session per repository, each ended on its own.
+A running Work turn is marked twice: a strip above the active terminal and a
+mark on that session's rail row, so it is visible from a session the member is
+not looking at.
+
+*Remaining sub-decision:* whether the Terminals tab appears for a project whose
+repositories are all remote. Hiding it is cleaner; always showing it is more
+predictable. Either is defensible, and the mockup cannot settle it.
+
 **Scope.** Repositories on the server itself. A repository on a remote execution
 machine shows why the terminal is unavailable there rather than offering a
 weaker one. Remote support is a later handoff, not a later commit.
@@ -193,8 +217,9 @@ weaker one. Remote support is a later handoff, not a later commit.
 
 ## Closure condition
 
-A project member opens a terminal on a registered repository from the project
-UI and completes a real conflicted `git rebase -i` in it. A regression test
+A project member opens the Terminals destination, starts a session on a
+server-local repository, and completes a real conflicted `git rebase -i` in it,
+including after navigating away and back. A regression test
 proves the session cannot write under `.research` on any registered repository,
 including through a canonicalized path. The served-app journey is driven on a
 throwaway data directory, and the spec text that lands with it states plainly
