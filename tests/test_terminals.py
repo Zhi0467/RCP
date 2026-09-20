@@ -461,6 +461,42 @@ async def test_startup_survives_a_record_written_by_another_version(tmp_path, ca
 
 
 @pytest.mark.asyncio
+async def test_a_record_cannot_name_a_file_outside_the_terminal_directory(tmp_path, caplog):
+    """Reconciliation writes some records back, and a record's `session_id`
+    is whatever was written into it. `../rcp-server` is this data directory's
+    own server metadata, so deriving a destination from one must refuse to
+    leave the directory rather than overwrite what it lands on.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    server_metadata = manager.data_dir / "rcp-server.json"
+    server_metadata.write_text('{"instance": "original"}')
+    (manager.directory / "escape.json").write_text(
+        json.dumps(
+            {
+                "session_id": "../rcp-server",
+                "project_id": "project",
+                "member_id": "member",
+                "repository_id": "repo-a",
+                "path": "/checkout",
+                "started_at": "start",
+                "last_activity_at": "start",
+                # Not this directory's prefix, so reconciliation retires it,
+                # which is the branch that writes the record back.
+                "unit": "rcp-terminal-elsewhere-escape",
+            }
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        assert json.loads(server_metadata.read_text()) == {"instance": "original"}
+        assert any("does not name a record" in message for message in caplog.messages)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_record_from_another_version_still_blocks_its_repository(
     manifest, tmp_path, process_factory, caplog
 ):

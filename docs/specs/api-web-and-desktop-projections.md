@@ -53,7 +53,10 @@ reason and refresh it. Empty projects and projects with only unavailable local
 machines and no open session hide it. Repository controls show unavailable rows
 with their reasons. A lost SSH link produces an `ended` reason, removes the
 session from the open list, and leaves the diagnostic visible without offering
-to reconnect into a new shell.
+to reconnect into a new shell. That diagnostic belongs to the open destination
+and survives a refresh there, not a departure from it: the session projection
+carries open sessions only, so a link that drops while the member is elsewhere
+leaves the reason in the persisted record rather than on their screen.
 
 The shell runs as the service account with the Work trust boundary. A mirrored
 session's mount namespace provides accident resistance to mistakes; it does not

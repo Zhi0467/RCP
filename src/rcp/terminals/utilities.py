@@ -104,8 +104,24 @@ def _resolve_remote_repository(
     return root, protected
 
 
+def record_path(directory: Path, session_id: str) -> Path:
+    """This session's record, refusing an identifier that names somewhere else.
+
+    A record read back from disk carries whatever `session_id` was written
+    into it, and reconciliation writes some of them back. An identifier that
+    is absolute or climbs out turns that write into a write over an unrelated
+    file: `../rcp-server` is this data directory's own server metadata.
+    """
+    destination = directory / f"{session_id}.json"
+    if not session_id or destination.parent != directory:
+        raise TerminalUnavailable(
+            f"Terminal record identifier {session_id!r} does not name a record in this directory."
+        )
+    return destination
+
+
 def save_metadata(directory: Path, session: TerminalSession) -> None:
-    destination = directory / f"{session.session_id}.json"
+    destination = record_path(directory, session.session_id)
     fd, temporary = tempfile.mkstemp(prefix=".terminal-", dir=directory)
     try:
         with os.fdopen(fd, "w") as stream:
