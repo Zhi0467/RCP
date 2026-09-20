@@ -678,6 +678,31 @@ async def test_a_cancelled_open_whose_launch_then_fails_still_tracks_its_unit(
         await manager.close()
 
 
+@pytest.mark.asyncio
+async def test_repointing_a_repository_does_not_hand_back_the_old_checkout(
+    manifest, tmp_path, process_factory
+):
+    """Reusing an alias for a different path must not answer a request for one
+    checkout with a live shell on another.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        first = await manager.open(**arguments(manifest))
+        assert first.declared_path == manifest.repository_map["repo-a"].path
+        moved = tmp_path / "moved-checkout"
+        (moved / ".research").mkdir(parents=True)
+        manifest.repository_map["repo-a"].path = str(moved)
+        second = await manager.open(**arguments(manifest))
+        assert second.session_id != first.session_id
+        assert second.declared_path == str(moved)
+        assert [session.session_id for session in manager.list("project")] == [second.session_id]
+        retired = json.loads((manager.directory / f"{first.session_id}.json").read_text())
+        assert retired["termination_reason"] == "repository_repointed"
+    finally:
+        await manager.close()
+
+
 def test_failed_required_profile_never_launches_a_fallback(tmp_path, monkeypatch):
     commands = []
     stopped = []

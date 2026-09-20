@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import signal
 import subprocess
 import sys
@@ -66,6 +67,21 @@ def run_session(settings: dict[str, Any]) -> int:
     )
     if any(repository == Path(path) or Path(path) in repository.parents for path in protected):
         raise ValueError("Canonical state cannot be a terminal repository.")
+    # The probe answered on an earlier connection. SSH configuration can change
+    # between then and now, and a destination carrying no user takes its account
+    # from that configuration, so the account is checked again here, inside the
+    # connection that is about to run the shell.
+    expected = settings.get("os_account") or ""
+    if expected:
+        try:
+            actual = pwd.getpwuid(os.geteuid()).pw_name
+        except (KeyError, OSError):
+            actual = ""
+        if actual != expected:
+            raise ValueError(
+                "This connection landed on a different account than the registered one, "
+                "so a terminal here would hold the wrong home, credentials and authority."
+            )
     timeout = settings["stop_timeout"]
     mirrored = settings["containment"] == "mirrored"
     if settings["containment"] not in {"mirrored", "cooperative"}:

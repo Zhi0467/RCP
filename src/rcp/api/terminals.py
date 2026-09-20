@@ -126,6 +126,9 @@ async def open_session(
     work = running_repository_work(services.store, project_id, manifest)
     for session in services.terminals.list(project_id):
         if session.repository_id == body.repository_id:
+            if session.declared_path != manifest.repository_map[body.repository_id].path:
+                # Its alias was repointed; `open` retires it and launches anew.
+                break
             # Open-or-return-existing: a live session must not be withheld
             # because a later probe refresh or inventory read failed. Those are
             # prerequisites for launching, not for handing back what is running.

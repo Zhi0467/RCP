@@ -201,6 +201,10 @@ The retry runs wherever a record was retained: after a startup that could not
 stop it, after a launch that failed with its unit unaccounted for, and after an
 end whose stop went unconfirmed.
 
+A session records the path its repository was registered at. Repointing that
+alias retires the session rather than handing it back, so a request for one
+checkout is never answered with a live shell on another.
+
 Opening a session returns an existing session for that repository before any
 launch prerequisite is consulted. A capability probe or inventory read that now
 fails gates a new launch; it never withholds a session that is already running.

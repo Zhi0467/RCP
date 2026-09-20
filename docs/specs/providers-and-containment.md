@@ -77,7 +77,9 @@ backend pattern. Selection is per machine and independent of space kind:
   `os_account` is refused rather than offered: the shell would hold the wrong
   home, credentials and write authority, and the mount profile was computed for
   the registered account. A machine with no registered account has nothing to
-  compare and is not refused on this ground. The shared SSH failure vocabulary distinguishes
+  compare and is not refused on this ground. The probe's answer is cached for
+  the manager's lifetime, so the launch verifies the account again inside the
+  connection that runs the shell, and refuses there too. The shared SSH failure vocabulary distinguishes
   unreachable, authentication failed, host key failed, and reachable but
   incapable machines, with the actual diagnostic.
 

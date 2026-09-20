@@ -56,6 +56,24 @@ def test_remote_launch_uses_strict_unshared_ssh_pty_and_shipped_sources(tmp_path
     assert request["protected_paths"] == ["/remote/.research"]
 
 
+def test_the_shipped_wrapper_refuses_a_connection_on_the_wrong_account(tmp_path):
+    """The capability probe answered on an earlier connection and its result is
+    cached for the manager's lifetime. SSH configuration can change in between,
+    so the launch verifies the account inside its own connection.
+    """
+    payload = {**settings(tmp_path), "os_account": "an-account-this-machine-is-not"}
+    result = subprocess.run(
+        [sys.executable, "-c", inspect.getsource(remote_terminal), json.dumps(payload)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "different account" in result.stderr
+    assert profile._READY_MARKER.decode() not in result.stdout
+
+
 def test_shipped_cooperative_shell_emits_completion_even_for_exit_255(tmp_path):
     # Execute the exact shipped module in a subprocess with a disposable HOME;
     # no SSH process, key, config or remote host participates in this test.

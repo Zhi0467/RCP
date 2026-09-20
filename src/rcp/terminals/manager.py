@@ -222,7 +222,13 @@ class TerminalManager:
             for runtime in self.sessions.values():
                 session = runtime.session
                 if session.project_id == project_id and session.repository_id == repository_alias:
-                    return session
+                    if session.declared_path == manifest.repository_map[repository_alias].path:
+                        return session
+                    # The alias points somewhere else now. Handing this session
+                    # back would answer a request for one checkout with a shell
+                    # on another, so it is retired and a new one opened.
+                    await end_runtime(self, runtime, "repository_repointed")
+                    break
             if key in self._opening:
                 raise TerminalUnavailable("A terminal for this repository is already opening.")
             self._opening.add(key)
@@ -281,6 +287,7 @@ class TerminalManager:
             member_id=member_id,
             repository_id=repository_alias,
             path=str(root),
+            declared_path=repository.path,
             started_at=timestamp(),
             last_activity_at=timestamp(),
             unit=f"{self._unit_prefix}-{session_id}",
@@ -298,6 +305,7 @@ class TerminalManager:
                 containment=session.containment,
                 expand_environment_option=(probe.expand_environment_option if probe else True),
                 git_key_relative=remote_git_key_relative,
+                os_account=machine.os_account,
             )
         else:
             start = asyncio.to_thread(

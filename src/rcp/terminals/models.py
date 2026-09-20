@@ -35,6 +35,10 @@ class TerminalSession:
     started_at: str
     last_activity_at: str
     unit: str
+    # The path this repository was registered at when the shell started. Its
+    # resolved `path` can differ, so a settings change is only detectable by
+    # comparing what was declared then against what is declared now.
+    declared_path: str = ""
     execution_host: str = ""
     containment: Literal["mirrored", "cooperative"] = "mirrored"
     state: Literal["live", "idle"] = "idle"
