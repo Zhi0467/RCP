@@ -1006,12 +1006,15 @@ class _InteractiveServerRenderer:
             print(file=self.stream)
             print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
             for index, action in enumerate(step.actions, start=1):
+                if action.kind == "command" and (action.argv, action.execution) == (
+                    step.resume_argv,
+                    step.resume_execution,
+                ):
+                    continue
                 if action.title:
                     print(f"  {index}. {action.title}", file=self.stream)
                 lead = f"  {index}. " if not action.title else "     "
                 if action.kind == "command":
-                    if (action.argv, action.execution) == (step.resume_argv, step.resume_execution):
-                        continue
                     shell = _execution_prefix(action.execution)
                     print(f"{lead}{shell}$ {shlex.join(action.argv)}", file=self.stream)
                 else:
@@ -1031,15 +1034,19 @@ class _InteractiveServerRenderer:
 
 
 def _execution_prefix(execution: ExecutionContext | None) -> str:
-    """Name the shell a command needs, when it is not the one already open.
+    """Name the shell a command needs, in the words the panel uses for it.
 
-    A terminal operator is already in their own login, so only a command that
-    needs a different account has anything to add here.
+    Silence is reserved for a step that never said. A stop that did say names
+    the server even when the account is the operator's own login, because the
+    wizard has been reaching the server on the operator's behalf and this
+    command is theirs to run.
     """
 
-    if execution is None or execution.shell_account is None:
+    if execution is None:
         return ""
-    return f"in a shell as {execution.shell_account}: "
+    if execution.shell_account is None:
+        return "on the server: "
+    return f"on the server as {execution.shell_account}: "
 
 
 def _supports_live_updates(stream: TextIO) -> bool:

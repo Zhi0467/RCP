@@ -57,7 +57,7 @@ information: the desktop invoked `rcp server project provision` for the operator
 over the saved SSH route, so the operator never typed a shell prompt and has no
 reason to know one exists, let alone which host the printed `sudo` line belongs
 to. The interactive CLI wizard has the same gap in milder form: it prints
-`  1. $ sudo -u …` with no statement that this is the same shell.
+`  1. $ sudo -u …` with no statement of which shell that is.
 
 **The panel has no order and no affordances.**
 [`OperatorAction`](../../web/src/views/TeamProjectSetup.tsx) renders, in one
@@ -196,10 +196,15 @@ Four slices. The first is the shared contract and lands alone.
    lands in that shell and has been proved to run these commands.
    Replace the `.operator-action-line` grid with full-width blocks, keeping the
    two-column grid only for labelled rows. `TransferProjectSetup` renders no
-   actions, fields, or resume command at all today; it reuses the same panel.
+   actions, fields, or resume command at all today; it reuses the same panel,
+   and probes its selected connection so the panel can offer that route.
 4. **CLI wizard.** Render the execution context in `_render_actions` and in the
-   `Continue:` block. The wizard's own execution is unchanged because no argv
-   moves; its resume-deduplication now compares argv and context.
+   `Continue:` block, in the same words the panel uses, and reserve silence for
+   a stored step that never declared one. A declared operator login is still
+   named: the wizard has been reaching the server on the operator's behalf, so
+   an unlabelled command reads as one more thing RCP already handled. The
+   wizard's own execution is unchanged because no argv moves; its
+   resume-deduplication now compares argv and context.
 
 ## Verification
 

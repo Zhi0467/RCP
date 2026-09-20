@@ -25,6 +25,7 @@ import {
   loadDesktopProjectTransfer,
   openDesktopProjectTransferTerminal,
   prepareDesktopProjectTransfer,
+  probeDesktopServerOperator,
   readDesktopTargetProjectProvisioningOptions,
   runDesktopIncomingProjectProvision,
   selectDesktopProjectTransferExport,
@@ -34,6 +35,7 @@ import {
   type ProjectTransferProviderIntent,
   type ProjectTransferRunResult,
   type ServerCommandEvent,
+  type ServerOperatorProbe,
   type TargetProviderSetupProjection,
   type TeamConnectionMetadata,
 } from "../desktopRuntime";
@@ -253,6 +255,7 @@ export function TransferProjectSetup({
   const [source, setSource] = useState<TransferSourceData | null>(null);
   const [connections, setConnections] = useState<TeamConnectionMetadata[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [operatorProbe, setOperatorProbe] = useState<ServerOperatorProbe | null>(null);
   const [targetProviders, setTargetProviders] = useState<TargetProviderSetupProjection[]>([]);
   const [targetName, setTargetName] = useState("");
   const [targetCeiling, setTargetCeiling] = useState(10);
@@ -378,6 +381,29 @@ export function TransferProjectSetup({
     [connections, selectedConnectionId],
   );
   const targetReady = transferTargetIsReady(selectedConnection);
+
+  // A saved route is stored before anything proves it can run these commands,
+  // and the panel only offers one it trusts. Probe the selected connection the
+  // same way the team setup view does, and drop the answer the moment the
+  // selection changes so one connection's proof never speaks for another.
+  const operatorTarget = selectedConnection?.operator_route?.ssh_target ?? null;
+  const operatorMode = selectedConnection?.operator_route?.mode ?? null;
+  useEffect(() => {
+    setOperatorProbe(null);
+    const connectionId = selectedConnection?.connection_id;
+    if (!connectionId || !operatorTarget) return;
+    let stopped = false;
+    probeDesktopServerOperator(connectionId)
+      .then((checked) => {
+        if (!stopped) setOperatorProbe(checked);
+      })
+      .catch(() => {
+        if (!stopped) setOperatorProbe(null);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [selectedConnection?.connection_id, operatorTarget, operatorMode]);
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
@@ -1154,6 +1180,7 @@ export function TransferProjectSetup({
               <OperatorActionPanel
                 step={bundle.incoming_provisioning.operator_action}
                 route={selectedConnection?.operator_route ?? null}
+                routeProved={operatorProbe?.available === true}
                 onRefresh={() => void refreshTransfer()}
               />
             )}

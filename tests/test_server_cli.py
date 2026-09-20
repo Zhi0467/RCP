@@ -1529,3 +1529,84 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
     assert offenders == [], "these stops never say which shell to resume from:\n" + "\n".join(
         offenders
     )
+
+
+def test_the_wizard_says_where_a_command_runs_and_stays_quiet_when_unsaid() -> None:
+    """A stop that declares its shell must say so, including when that shell is
+    the operator's own login: the wizard has been reaching the server for them,
+    so an unlabelled command reads as one more thing RCP already handled. A
+    stored record that predates execution contexts claims nothing."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+
+    def render(step: ServerStep) -> str:
+        stream = StringIO()
+        renderer = _InteractiveServerRenderer(plan_size=1, stream=stream)
+        renderer.render(ServerStepEvent(command="server doctor", timestamp=NOW, step=step))
+        return stream.getvalue()
+
+    declared = render(
+        paused.step.model_copy(
+            update={
+                "actions": (
+                    CommandAction(
+                        title="Trust github.com from the server",
+                        argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                        execution=OPERATOR_SHELL,
+                    ),
+                ),
+                "resume_execution": ExecutionContext(shell_account="rcp"),
+            }
+        )
+    )
+    assert "on the server: $ sudo" in declared
+    assert "on the server as rcp: $ " in declared
+
+    # A record written before the contract carried an execution context is not
+    # given one by the renderer.
+    legacy = render(
+        paused.step.model_copy(
+            update={
+                "actions": (
+                    CommandAction(
+                        title="Trust github.com from the server",
+                        argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                    ),
+                ),
+                "resume_execution": None,
+            }
+        )
+    )
+    assert "on the server" not in legacy
+    assert "$ sudo" in legacy
+
+
+def test_a_resume_duplicate_action_leaves_no_heading_without_a_command() -> None:
+    """The renderer skips an action that repeats the resume command; skipping it
+    after printing its title would leave a numbered heading with nothing under."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+    step = paused.step.model_copy(
+        update={
+            "actions": (
+                CommandAction(
+                    title="Resume setup",
+                    argv=paused.step.resume_argv,
+                    execution=OPERATOR_SHELL,
+                ),
+            ),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    stream = StringIO()
+    _InteractiveServerRenderer(plan_size=1, stream=stream).render(
+        ServerStepEvent(command="server doctor", timestamp=NOW, step=step)
+    )
+    rendered = stream.getvalue()
+
+    assert "1. Resume setup" not in rendered
+    assert "Continue:" in rendered
