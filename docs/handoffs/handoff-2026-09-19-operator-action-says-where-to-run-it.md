@@ -181,9 +181,11 @@ Four slices. The first is the shared contract and lands alone.
 2. **Operator stop titles.** Relax both event validators to allow `title` and
    `purpose` to change on a human `operator_action_needed` event, take both from
    the operator step in `_copy_operator_contract`, and title the deploy-key grant
-   step and its restore twin for the human's task. `restore.py` currently
-   forwards only actions, fields, and diagnostic from its operator step, so the
-   restore twin needs its title forwarded too or the rename is invisible.
+   step and its restore twin for the human's task. The restore twin's new title
+   is inert: `restore.py` forwards only actions, fields, and diagnostic, and its
+   reply has no title to carry, so nothing propagates it. Giving that reply one
+   is a separate contract for a surface this work never touched, and was not
+   done here.
 3. **Web panel.** Rebuild `OperatorAction` as the ordered list: numbered steps,
    copy controls on every command and on every carried value, the execution
    label with the entry line composed from the saved operator route, and the
@@ -228,11 +230,8 @@ wrapper invocation with no context of its own. It is a projection field rather
 than a step, so giving it one is a separate contract change; until then that
 button still hands over a command without saying where it runs.
 
-Two things were deliberately left alone. The restore reply in
-[`restore.py`](../../src/rcp/server_ops/restore.py) has no title of its own to
-carry, only actions, fields, and a diagnostic, so its retitled twin is inert
-there until that reply grows a title; inventing one would be a new contract for
-a surface this work never touched. And the native test record in
+One unrelated defect was found and left alone: the native test record in
 [`server_commands.rs`](../../web/src-tauri/src/server_commands.rs) builds a
 `kind: "command"` action carrying `instruction` instead of `argv`, which is
-malformed and predates this work.
+malformed and predates this work. The restore reply's missing title is recorded
+with slice 2, which owns it.
