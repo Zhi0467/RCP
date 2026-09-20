@@ -100,15 +100,47 @@ const step: ServerStep = {
 // A direct route signs in as the service account itself, so the same stop must
 // render differently under each saved route.
 const mode = new URLSearchParams(window.location.search).get("mode");
+
+// The replacement-restore re-entry stop deliberately puts the same command in
+// its sole action and in its resume contract, and a saved target may legally
+// hold shell metacharacters.
+const reentry: ServerStep = {
+  ...step,
+  title: "Resume restored project setup",
+  actions: [
+    {
+      kind: "command",
+      argv: [
+        "/usr/local/bin/rcp",
+        "server",
+        "project",
+        "provision",
+        "a29ddba0-a0a7-46be-ab7a-7a6d77644ea5",
+      ],
+      execution: { kind: "server_shell", shell_account: "rcp" },
+    },
+  ],
+  fields: [],
+  resume_argv: [
+    "/usr/local/bin/rcp",
+    "server",
+    "project",
+    "provision",
+    "a29ddba0-a0a7-46be-ab7a-7a6d77644ea5",
+  ],
+  resume_execution: { kind: "server_shell", shell_account: "rcp" },
+};
 const route =
-  mode === "direct_rcp"
+  mode === "direct_rcp" || mode === "reentry"
     ? ({ ssh_target: "rcp@server.example", mode: "direct_rcp" } as const)
-    : ({ ssh_target: "operator@server.example", mode: "sudo_rcp" } as const);
+    : mode === "hostile"
+      ? ({ ssh_target: "operator@host;echo${IFS}oops", mode: "sudo_rcp" } as const)
+      : ({ ssh_target: "operator@server.example", mode: "sudo_rcp" } as const);
 
 createRoot(document.getElementById("root")!).render(
   <div style={{ padding: 24, maxWidth: 760 }}>
     <OperatorActionPanel
-      step={step}
+      step={mode === "reentry" ? reentry : step}
       route={route}
       onRefresh={() => {
         document.body.dataset.refreshed = "yes";

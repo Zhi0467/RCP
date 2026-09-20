@@ -63,7 +63,9 @@ function CommandBlock({
   // which cannot then elevate into it, so pasting it beside a command that
   // expects the operator's own login would strand them mid-stop.
   const reaches = context != null && routeLandsAs(route) === context.shell_account;
-  const entry = where && route && reaches ? `ssh ${route.ssh_target}` : null;
+  // Quoted like any other displayed command: a saved target may legally hold
+  // shell metacharacters, and this string is copied straight into a shell.
+  const entry = where && route && reaches ? formatCommandArgv(["ssh", route.ssh_target]) : null;
   return (
     <>
       {where && (
@@ -83,6 +85,15 @@ function CommandBlock({
       </div>
     </>
   );
+}
+
+/** Whether two execution contexts name the same shell. */
+function sameExecution(
+  left: ServerExecutionContext | null | undefined,
+  right: ServerExecutionContext | null | undefined,
+): boolean {
+  if (!left || !right) return !left && !right;
+  return left.kind === right.kind && left.shell_account === right.shell_account;
 }
 
 /** One numbered action. A step that needs no name does not get a filler one. */
@@ -120,6 +131,14 @@ export function OperatorActionPanel({
       ? `${step.target.os_account}@${step.target.host}`
       : `${step.target.service} · ${step.target.resource}`;
   const authority = step.target.kind === "machine" ? null : step.target.required_authority_role;
+  // A stop may list its resume command among its actions; it is one step, not
+  // two, and it belongs at the end where the resume block already puts it.
+  const actions = step.actions.filter(
+    (action) =>
+      action.kind !== "command" ||
+      formatCommandArgv(action.argv) !== formatCommandArgv(step.resume_argv) ||
+      !sameExecution(action.execution, step.resume_execution),
+  );
   return (
     <section className="provisioning-operator-action">
       <span className="eyebrow">Human action required</span>
@@ -177,7 +196,7 @@ export function OperatorActionPanel({
       )}
 
       <ol className="operator-steps">
-        {step.actions.map((action, index) =>
+        {actions.map((action, index) =>
           action.kind === "command" ? (
             <OperatorStep key={index}>
               <CommandBlock argv={action.argv} context={action.execution} route={route} />

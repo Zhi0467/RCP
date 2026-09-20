@@ -103,6 +103,32 @@ test("a human stop is ordered, says where each command runs, and copies its valu
     assert.ok((await page.locator(".operator-run-on .tag").count()) >= 2);
     assert.equal(await page.locator(".operator-run-on code").count(), 0);
 
+    // A target holding shell metacharacters is quoted, not pasted raw: the
+    // native validator rejects whitespace and slashes but not `;` or `$`, and
+    // this string is copied straight into a shell.
+    await page.goto(`http://127.0.0.1:${port}/tests/fixtures/operatorAction.html?mode=hostile`);
+    await page.waitForSelector(".provisioning-operator-action");
+    const hostile = await page.locator(".operator-run-on code").first().innerText();
+    assert.equal(hostile, "ssh 'operator@host;echo${IFS}oops'");
+
+    // A stop whose sole action is also its resume command is one step, not two.
+    await page.goto(`http://127.0.0.1:${port}/tests/fixtures/operatorAction.html?mode=reentry`);
+    await page.waitForSelector(".provisioning-operator-action");
+    assert.equal(await page.locator(".operator-steps > li").count(), 1);
+    assert.equal(
+      await page.locator(".operator-steps > li header > span").innerText(),
+      "Resume setup",
+    );
+    // Its shell is the service account, which the direct route does reach.
+    assert.equal(
+      await page.locator(".operator-run-on .tag").first().innerText(),
+      "RUN ON THE SERVER AS RCP",
+    );
+    assert.equal(
+      await page.locator(".operator-run-on code").first().innerText(),
+      "ssh rcp@server.example",
+    );
+
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close();
