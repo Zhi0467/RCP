@@ -834,6 +834,11 @@ class ServerEventEmitter:
                 "actions": (),
                 "fields": (),
                 "resume_argv": (),
+                # Clearing the command clears the shell it named. No reachable
+                # path carries one here today, because a step that may hold a
+                # resume contract is already terminal, but a half-cleared stop
+                # would be refused on emit rather than rendered.
+                "resume_execution": None,
             }
         )
         self.emit_step(failed)

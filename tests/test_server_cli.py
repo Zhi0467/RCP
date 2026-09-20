@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from io import BytesIO, StringIO
+from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -1448,3 +1449,46 @@ def test_supervisor_terminal_event_agrees_with_exit(monkeypatch, state, child_ex
     assert code == expected_exit
     observed = json.loads(output.getvalue().splitlines()[-1])["step"]["state"]
     assert observed == ("failed" if child_exit != expected_exit else state)
+
+
+def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
+    """A stop that stays silent renders without a shell label, so silence is
+    reserved for records written before the field existed and for the
+    separately versioned supervisor -- never for a stop this code builds.
+
+    Reading the sources is deliberate: two construction sites were missed by
+    eye during review, and both looked exactly like the ones that were found.
+    """
+
+    import ast
+
+    def carries(keys: set[str]) -> bool:
+        return "resume_argv" in keys and "resume_execution" not in keys
+
+    offenders: list[str] = []
+    for path in sorted(Path("src/rcp").rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            if name == "ServerStep":
+                supplied = {keyword.arg for keyword in node.keywords if keyword.arg}
+                if carries(supplied):
+                    offenders.append(f"{path}:{node.lineno} ServerStep(...)")
+            elif name == "model_copy":
+                for keyword in node.keywords:
+                    if keyword.arg != "update" or not isinstance(keyword.value, ast.Dict):
+                        continue
+                    supplied = {
+                        key.value
+                        for key in keyword.value.keys
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    }
+                    if carries(supplied):
+                        offenders.append(f"{path}:{node.lineno} model_copy(update=...)")
+
+    assert offenders == [], "these stops never say which shell to resume from:\n" + "\n".join(
+        offenders
+    )

@@ -82,7 +82,7 @@ other end are never named as two things.
 ## Decided on 2026-09-19
 
 1. **A command action names the shell it runs in.** `CommandAction` gains an
-   execution context, and `ServerStep` gains `resume_context` beside
+   execution context, and `ServerStep` gains `resume_execution` beside
    `resume_argv`. This is a shared contract across
    [`server_ops/models.py`](../../src/rcp/server_ops/models.py),
    [`web/src/types.ts`](../../web/src/types.ts), and the persisted
@@ -148,7 +148,7 @@ other end are never named as two things.
 Four slices. The first is the shared contract and lands alone.
 
 1. **Contract.** Add `ExecutionContext` and hang it off `CommandAction` and off
-   `ServerStep` as `resume_context`, optional per decision 2, with the existing
+   `ServerStep` as `resume_execution`, optional per decision 2, with the existing
    `_StrictModel` validation and credential-shaped-flag refusals unchanged.
    State the context at every operator stop RCP builds: the four Git operator
    builders in `git_credentials.py`, the retained-checkout stop in

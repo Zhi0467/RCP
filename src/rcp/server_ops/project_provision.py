@@ -1117,6 +1117,7 @@ class ProjectProvisionCoordinator:
                 "actions": actions,
                 "fields": fields,
                 "resume_argv": self._resume_argv(request.request_id),
+                "resume_execution": OPERATOR_SHELL,
             }
         )
         self._transition(

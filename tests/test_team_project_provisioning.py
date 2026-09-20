@@ -530,6 +530,10 @@ def test_legacy_request_without_project_configuration_pauses_before_machine_work
     assert result.step.state == "operator_action_needed"
     assert "legacy request" in result.step.message
     assert result.step.resume_argv[-1] == request.request_id
+    # A stop that stays silent about its shell renders without one, so every
+    # pause the coordinator builds has to state it.
+    assert result.step.resume_execution is not None
+    assert result.step.resume_execution.shell_account is None
     assert credentials.prepare_calls == 0
     assert checkouts.calls == 0
     paused = store.project_provisioning_request(request.request_id)
