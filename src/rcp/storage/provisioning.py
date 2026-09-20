@@ -15,7 +15,13 @@ from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
-from rcp.server_ops.models import CommandAction, MachineTarget, MessageText, ServerStep
+from rcp.server_ops.models import (
+    CommandAction,
+    ExecutionContext,
+    MachineTarget,
+    MessageText,
+    ServerStep,
+)
 from rcp.storage.models import (
     ProjectMemberRecord,
     ProjectProvisioningCancellationDisposition,
@@ -2770,6 +2776,7 @@ class ProjectProvisioningStoreMixin:
                 "provision",
                 current.request_id,
             )
+            reentry_shell = ExecutionContext(shell_account=DEFAULT_SERVER_LAYOUT.service_account)
             action = ServerStep(
                 number=1,
                 title="Resume restored project setup",
@@ -2792,8 +2799,12 @@ class ProjectProvisioningStoreMixin:
                 message=(
                     "The archived request lost every old machine claim during replacement restore."
                 ),
-                actions=(CommandAction(argv=resume),),
+                # The bare wrapper, unlike every other resume command, does not
+                # elevate on its own, so it needs a shell that already belongs
+                # to the service account.
+                actions=(CommandAction(argv=resume, execution=reentry_shell),),
                 resume_argv=resume,
+                resume_execution=reentry_shell,
             )
             self._transition_project_provisioning_to_restore_reentry(
                 connection,

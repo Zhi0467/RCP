@@ -104,8 +104,9 @@ other end are never named as two things.
    RCP refuse an installed older supervisor. Stored paused provisioning requests
    would likewise stop decoding. Absent context therefore renders exactly as the
    panel renders today: no execution label. Every operator stop RCP itself
-   builds states its context, and a test asserts that, so the optionality is a
-   compatibility boundary rather than a silent fallback.
+   builds states its context, asserted per builder, so the optionality is a
+   compatibility boundary rather than a silent fallback. There is no sweep that
+   proves a future builder cannot forget; each one is covered by its own test.
 3. **The context names the shell, not the operation's target.** `MachineTarget`
    is the machine an operation acts on; for a local machine it deliberately
    carries an empty host and the service account, while the operator logs in
@@ -203,6 +204,12 @@ Four slices. The first is the shared contract and lands alone.
 The design review's open question — whether the resume command should become an
 action carrying its own context — is answered in decision 1: it stays
 `resume_argv` with a sibling `resume_execution`.
+
+One gap is known and not closed here. `operator_argv` on the provisioning
+projection, which the panel's **Copy server command** button copies, is a bare
+wrapper invocation with no context of its own. It is a projection field rather
+than a step, so giving it one is a separate contract change; until then that
+button still hands over a command without saying where it runs.
 
 Two things were deliberately left alone. The restore reply in
 [`restore.py`](../../src/rcp/server_ops/restore.py) has no title of its own to
