@@ -58,18 +58,23 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
         # manager again, and its own recheck is of membership. They would go
         # on watching a checkout the project may no longer register until
         # some later stop happened to succeed.
-        end_subscribers(runtime)
+        end_subscribers(runtime, discard_pending=True)
         raise
 
 
-def end_subscribers(runtime: TerminalRuntime) -> None:
+def end_subscribers(runtime: TerminalRuntime, *, discard_pending: bool = False) -> None:
     """Tell everyone watching that this session is over.
 
-    A full queue is drained first: the end signal is the one frame that must
-    not be dropped for falling behind.
+    A stop that succeeded let the shell finish, and what is still queued is
+    output the member was entitled to, so the end signal follows it. A stop
+    that failed is instead a decision that this viewer stops receiving from
+    this session now — it may be a checkout the project no longer registers —
+    and a subscriber queue holds up to `TERMINAL_SUBSCRIBER_QUEUE_SIZE` frames
+    of it, so that goes with the session. Either way the end signal is the one
+    frame that must not be dropped for a queue that is full.
     """
     for queue in runtime.subscribers:
-        while queue.full():
+        while queue.full() or (discard_pending and not queue.empty()):
             queue.get_nowait()
         queue.put_nowait(None)
 

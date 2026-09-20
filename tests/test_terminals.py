@@ -1602,6 +1602,123 @@ async def test_a_record_blocks_the_same_tree_registered_under_another_spelling(
 
 
 @pytest.mark.asyncio
+async def test_a_record_follows_the_tree_it_opened_on_not_its_symlink(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A symlink can be repointed after its shell started. The record names the
+    tree it opened on, not whatever its declaration resolves to later, or the
+    blocker follows the link away while the tree it holds opens a second shell.
+    """
+    repository = manifest.repository_map["repo-a"]
+    machine = manifest.machine_map[repository.machine]
+    opened_on = Path(repository.path).resolve()
+    link = tmp_path / "moving-link"
+    link.symlink_to(opened_on)
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        manager.mark_unresolved(
+            TerminalSession(
+                session_id="earlier",
+                project_id="project",
+                member_id="member",
+                repository_id="alias-since-dropped",
+                path=str(opened_on),
+                started_at="start",
+                last_activity_at="start",
+                unit=f"{manager._unit_prefix}-earlier",
+                containment="mirrored",
+                declared_path=str(link),
+                declared_machine=repository.machine,
+                declared_account=machine.os_account,
+            )
+        )
+        # The declaration now names somewhere else entirely.
+        link.unlink()
+        link.symlink_to(Path(manifest.repository_map["repo-b"].path).resolve())
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        # "repo-a" is the tree that shell actually opened on.
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_retiring_shell_blocks_its_tree_under_a_new_alias(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A failed local stop leaves no retained record, only a runtime marked
+    retiring. Settings can drop the alias it carries and register the same
+    checkout under another, and the shell that may still be running is the
+    same shell.
+    """
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        # Not the canonical-state repository, which settings cannot unregister.
+        session = await manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
+        runtime = manager.sessions[session.session_id]
+        runtime.last_activity = time.monotonic() - TERMINAL_IDLE_TIMEOUT_SECONDS - 1
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        with pytest.raises(TerminalUnavailable, match="systemctl"):
+            await manager.sweep()
+        assert runtime.retiring == "idle_timeout"
+        assert manager.list("project") == []
+
+        repository = manifest.repository_map["repo-b"]
+        manifest.repositories = [
+            item for item in manifest.repositories if item.alias != "repo-b"
+        ] + [repository.model_copy(update={"alias": "repo-b-renamed"})]
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**{**arguments(manifest), "repository_alias": "repo-b-renamed"})
+    finally:
+        # Shutdown must not spend the test on the stop this one wedged.
+        monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_retirement_drops_the_output_still_queued(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """The decision is that this viewer stops receiving from this session. A
+    subscriber queue holds many frames of it, so they go with the session
+    rather than being delivered ahead of the end signal.
+    """
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        runtime = manager.sessions[session.session_id]
+        queue = manager.attach("project", session.session_id)
+        queue.put_nowait(b"output from a checkout it may no longer name")
+        runtime.last_activity = time.monotonic() - TERMINAL_IDLE_TIMEOUT_SECONDS - 1
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        with pytest.raises(TerminalUnavailable, match="systemctl"):
+            await manager.sweep()
+        # The end signal is the next thing that viewer sees, and the last.
+        assert queue.get_nowait() is None
+        assert queue.empty()
+    finally:
+        # Shutdown must not spend the test on the stop this one wedged.
+        monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_input_during_a_sweeps_wait_renews_the_lifetime(manifest, tmp_path, process_factory):
     """Only the member's input renews a terminal's lifetime. A sweep that
     decided a session was idle before waiting for the lock would act on that

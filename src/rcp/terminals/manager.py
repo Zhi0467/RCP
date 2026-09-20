@@ -92,12 +92,19 @@ def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, s
 
 
 def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
-    """The working tree this session opened on, spelled as a manifest one is."""
-    return (
-        _checkout_path(session.declared_path, session.execution_host),
-        session.execution_host,
-        session.declared_account,
-    )
+    """The working tree this session opened on, as it was when it opened.
+
+    A local session recorded the tree its declaration resolved to, and that
+    recording is what identifies it. Resolving the declaration again now would
+    ask a different question: a symlink can be repointed after the shell
+    started, and the blocker would follow it to a tree the shell never opened
+    on while the one it did opens a second shell. A remote declaration was
+    resolved on its own machine, which this one cannot reproduce, so it is
+    compared as written — as the manifest side of that comparison is.
+    """
+    if session.execution_host:
+        return (session.declared_path, session.execution_host, session.declared_account)
+    return (session.path, "", session.declared_account)
 
 
 # Every field of `TerminalSession` holds a string; two of them may be null
@@ -197,19 +204,31 @@ class TerminalManager:
         handing that session back would answer a request for one checkout with
         a shell somewhere else.
         """
+        target = (
+            manifest_checkout(manifest, repository_alias)
+            if repository_alias in manifest.repository_map
+            else None
+        )
         for runtime in list(self.sessions.values()):
             session = runtime.session
-            if session.project_id != project_id or session.repository_id != repository_alias:
+            if session.project_id != project_id:
                 continue
+            names_alias = session.repository_id == repository_alias
             if runtime.retiring:
-                # Its stop failed, so its shell may still own the checkout.
-                # Handing it back would offer a session already ending, and
-                # opening another would put two shells on one working tree.
-                raise TerminalUnavailable(
-                    "An earlier terminal for this repository could not be stopped, so its "
-                    "shell may still be running. Opening another would put two on one "
-                    "checkout; it is retried on its own."
-                )
+                # Its stop failed, so its shell may still own the checkout, and
+                # a failed local stop leaves no retained record to find it by.
+                # The alias it carries is not the only one that can name that
+                # tree: settings can drop an alias and register the same
+                # checkout under another, as retained records are matched for.
+                if names_alias or (target is not None and session_checkout(session) == target):
+                    raise TerminalUnavailable(
+                        "An earlier terminal for this repository could not be stopped, so "
+                        "its shell may still be running. Opening another would put two on "
+                        "one checkout; it is retried on its own."
+                    )
+                continue
+            if not names_alias:
+                continue
             reason = registration_lapse(manifest, session)
             if reason is None:
                 return session
