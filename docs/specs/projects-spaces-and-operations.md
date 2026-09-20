@@ -204,7 +204,9 @@ retire while its own unit still ran.
 
 A repository can be spoken for by more than one retained record. Every one of
 them has to be confirmed gone before it opens again; one still speaking for it
-is enough to refuse. So does one whose containment this
+is enough to refuse. They are told apart by the file each came from, never by
+an identifier a record claims, because a record this version cannot read can
+claim one another record already holds. So does one whose containment this
 version does not recognise, and one whose session identifier is not the name of
 the file holding it, because nothing here can confirm what any of them left
 running. Every record this application writes is named for the session in it,

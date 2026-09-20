@@ -800,6 +800,63 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_record_cannot_borrow_another_blocker_identity(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A record this version cannot read can claim any session id, including
+    one a real record already holds. If both blockers were filed under that
+    id, stopping the real unit would release the repository from the other
+    one too, while it may name a unit of its own.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    common = {
+        "project_id": "project",
+        "member_id": "member",
+        "repository_id": "repo-a",
+        "path": "/checkout",
+        "started_at": "start",
+        "last_activity_at": "start",
+        "containment": "mirrored",
+    }
+    (manager.directory / "real.json").write_text(
+        json.dumps({**common, "session_id": "real", "unit": f"{manager._unit_prefix}-real"})
+    )
+    # Claims the other record's identity, and cannot be read besides.
+    (manager.directory / "borrowed.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "session_id": "real",
+                "unit": f"{manager._unit_prefix}-borrowed",
+                "a_field_from_another_version": True,
+            }
+        )
+    )
+
+    stoppable = {"value": False}
+
+    def stop(unit):
+        if not stoppable["value"]:
+            raise TerminalUnavailable("systemctl user manager unavailable")
+
+    monkeypatch.setattr(launch, "stop_unit", stop)
+    await manager.start()
+    try:
+        assert sorted(
+            session.session_id for session in manager._unresolved[("project", "repo-a")]
+        ) == ["borrowed", "real"]
+        stoppable["value"] = True
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+        assert [session.session_id for session in manager._unresolved[("project", "repo-a")]] == [
+            "borrowed"
+        ]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_remote_record_is_never_cleaned_up_as_a_local_one(tmp_path, caplog, monkeypatch):
     """A wrong type that happens to be falsey reads as an ordinary empty
     value. An `execution_host` of `[]` would send a remote record down the

@@ -211,6 +211,11 @@ class TerminalManager:
         outlived a restart and a record this version cannot read both claim
         it, and keeping only the last would unblock the repository as soon as
         that one was confirmed gone, while the other may still be running.
+
+        `session_id` is what distinguishes them, and every caller derives it
+        from the record's own file rather than from anything the record
+        claims, so reconciling one record twice replaces its blocker while
+        two records never share one.
         """
         retained = self._unresolved.setdefault((session.project_id, session.repository_id), [])
         for index, existing in enumerate(retained):
@@ -294,7 +299,7 @@ class TerminalManager:
                 exc,
             )
 
-    def _block_unreadable_repository(self, payload: object) -> None:
+    def _block_unreadable_repository(self, path: Path, payload: object) -> None:
         """Keep a record this version cannot read from yielding a second shell.
 
         A record naming every field this version knows plus one it does not is
@@ -312,10 +317,15 @@ class TerminalManager:
             return
         if not (isinstance(repository_id, str) and repository_id):
             return
-        session_id = payload.get("session_id")
         self.mark_unresolved(
             TerminalSession(
-                session_id=session_id if isinstance(session_id, str) else "",
+                # The file, not the identifier inside it. A record this
+                # version cannot read can claim any `session_id`, including
+                # one another record already holds, and two blockers sharing
+                # an identity means resolving either releases the repository
+                # from both. One file is one record, so one file is one
+                # blocker.
+                session_id=path.stem,
                 project_id=project_id,
                 member_id="",
                 repository_id=repository_id,
@@ -348,7 +358,7 @@ class TerminalManager:
                 "blocking its repository.",
                 path.name,
             )
-            self._block_unreadable_repository(payload)
+            self._block_unreadable_repository(path, payload)
             return
         try:
             session = TerminalSession(**payload)
@@ -362,7 +372,7 @@ class TerminalManager:
                 path.name,
                 exc,
             )
-            self._block_unreadable_repository(payload)
+            self._block_unreadable_repository(path, payload)
             return
         if session.ended_at:
             return
@@ -378,7 +388,7 @@ class TerminalManager:
                 path.name,
                 session.session_id,
             )
-            self._block_unreadable_repository(payload)
+            self._block_unreadable_repository(path, payload)
             return
         if session.containment not in {"mirrored", "cooperative"}:
             # A dataclass does not enforce its Literal, so a version-skewed
