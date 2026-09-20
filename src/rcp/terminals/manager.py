@@ -57,6 +57,25 @@ def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[st
     return (repository.path, repository.machine, machine.host, machine.os_account)
 
 
+def _checkout_path(path: str, host: str) -> str:
+    """One working tree spelled one way, so two spellings do not read as two.
+
+    A declaration is how settings named a tree, not what the tree is: a
+    symlink and its target name one working tree, and registering it afresh
+    under the other spelling must not hide the record that still speaks for
+    it. Opening already resolves the local declaration, so matching resolves
+    it too. A remote declaration names a path on another machine, which this
+    one cannot resolve and must not try to.
+    """
+    if host:
+        return path
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        # A tree that cannot be looked at is still named by what it says.
+        return path
+
+
 def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, str, str]:
     """The working tree this alias names: path, host and account.
 
@@ -69,12 +88,16 @@ def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, s
     """
     repository = manifest.repository_map[repository_alias]
     machine = manifest.machine_map[repository.machine]
-    return (repository.path, machine.host, machine.os_account)
+    return (_checkout_path(repository.path, machine.host), machine.host, machine.os_account)
 
 
 def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
-    """The working tree this session opened on, as it recorded it."""
-    return (session.declared_path, session.execution_host, session.declared_account)
+    """The working tree this session opened on, spelled as a manifest one is."""
+    return (
+        _checkout_path(session.declared_path, session.execution_host),
+        session.execution_host,
+        session.declared_account,
+    )
 
 
 # Every field of `TerminalSession` holds a string; two of them may be null

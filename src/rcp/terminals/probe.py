@@ -7,6 +7,7 @@ import json
 import shlex
 import subprocess
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
 
@@ -14,6 +15,7 @@ from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import MachineConfig
 from rcp.limits import (
     TERMINAL_PROBE_COMMAND_TIMEOUT_SECONDS,
+    TERMINAL_PROBE_THREADS,
     TERMINAL_PROBE_TIMEOUT_SECONDS,
     TERMINAL_PROBE_WORKERS,
 )
@@ -111,6 +113,9 @@ class TerminalProbeCache:
         self._entries: dict[tuple[str, str, str], asyncio.Task[TerminalProbe]] = {}
         self._tasks: set[asyncio.Task[TerminalProbe]] = set()
         self._slots = asyncio.Semaphore(TERMINAL_PROBE_WORKERS)
+        self._threads = ThreadPoolExecutor(
+            max_workers=TERMINAL_PROBE_THREADS, thread_name_prefix="rcp-terminal-probe"
+        )
         self._closed = False
 
     @staticmethod
@@ -119,8 +124,9 @@ class TerminalProbeCache:
 
     async def _run(self, machine: MachineConfig) -> TerminalProbe:
         async with self._slots:
+            loop = asyncio.get_running_loop()
             try:
-                return await asyncio.to_thread(self._probe, machine)
+                return await loop.run_in_executor(self._threads, self._probe, machine)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                 return TerminalProbe(None, "unreachable", safe_compute_diagnostic(str(exc)))
 
@@ -195,3 +201,7 @@ class TerminalProbeCache:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        # Queued probes are dropped; the few already in a thread are left to
+        # end on their own subprocess timeout, because shutdown holds the
+        # instance lock and must not wait on the network.
+        self._threads.shutdown(wait=False, cancel_futures=True)

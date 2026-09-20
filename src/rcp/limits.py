@@ -346,6 +346,14 @@ TERMINAL_LAUNCH_TIMEOUT_SECONDS = 15.0
 TERMINAL_PROBE_TIMEOUT_SECONDS = 30.0
 TERMINAL_PROBE_COMMAND_TIMEOUT_SECONDS = 5.0
 TERMINAL_PROBE_WORKERS = 4
+# Probes run on their own threads, not the interpreter's shared default pool,
+# which the rest of the application uses for every other blocking call. A probe
+# cannot be stopped once it is in its thread, so one abandoned by a refresh
+# runs out its own timeout above; on the shared pool a burst of refreshes
+# against unreachable machines could therefore hold up unrelated work. This
+# bounds what probes can hold, with room above the admitted count for the ones
+# a burst abandons, so the newest answer still finds a thread.
+TERMINAL_PROBE_THREADS = 16
 TERMINAL_STOP_TIMEOUT_SECONDS = 5.0
 # Startup reconciles every record at once, but their stops run in a shared
 # thread pool, so enough unreachable records still queue into timeout-sized

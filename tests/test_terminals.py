@@ -1557,6 +1557,51 @@ async def test_stale_aliases_are_retired_together(manifest, tmp_path, process_fa
 
 
 @pytest.mark.asyncio
+async def test_a_record_blocks_the_same_tree_registered_under_another_spelling(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A symlink and its target name one working tree. Dropping an alias and
+    registering that tree afresh under the other spelling must not hide the
+    record that still speaks for it, or a second shell opens on a checkout
+    whose unit is unaccounted for.
+    """
+    repository = manifest.repository_map["repo-a"]
+    machine = manifest.machine_map[repository.machine]
+    link = tmp_path / "link-to-repo-a"
+    link.symlink_to(Path(repository.path))
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        # What an earlier session opened through the symlink spelling left.
+        manager.mark_unresolved(
+            TerminalSession(
+                session_id="earlier",
+                project_id="project",
+                member_id="member",
+                repository_id="alias-since-dropped",
+                path=str(Path(repository.path).resolve()),
+                started_at="start",
+                last_activity_at="start",
+                unit=f"{manager._unit_prefix}-earlier",
+                containment="mirrored",
+                declared_path=str(link),
+                declared_machine=repository.machine,
+                declared_account=machine.os_account,
+            )
+        )
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        # "repo-a" declares the resolved spelling of that very tree.
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_input_during_a_sweeps_wait_renews_the_lifetime(manifest, tmp_path, process_factory):
     """Only the member's input renews a terminal's lifetime. A sweep that
     decided a session was idle before waiting for the lock would act on that

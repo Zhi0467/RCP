@@ -189,7 +189,9 @@ A live session whose stop fails keeps its runtime so the stop can be retried on
 the next sweep, and stops being one a member can list, attach to, or be handed
 back by a new open request. The decision to end it stands even though its shell
 may still be running, and a second shell on that checkout is refused until the
-stop succeeds.
+stop succeeds. Anyone already watching is told the session ended, because a
+socket reads its queue without consulting the manager again, and refusing the
+next attach would leave the viewer it already has.
 
 Startup reconciliation is best effort per record and never refuses the server a
 boot. Each record is reconciled under its own guard, so no way of being
@@ -234,7 +236,10 @@ can drop an alias and register the same checkout under another name. A blocker
 filed under the old alias still names a unit on that working tree, and the new
 alias would otherwise open a second shell on it. A machine alias is the label
 RCP gives a host rather than part of what makes two things one tree, so
-renaming it changes no blocker's reach. A record this version could not read
+renaming it changes no blocker's reach. Neither does the spelling of a local
+path: a symlink and its target name one working tree, so both sides of the
+comparison are resolved. A remote declaration names a path on another machine
+and is compared as it was written. A record this version could not read
 declares nothing, so its alias is all it has. So does one whose containment this
 version does not recognise, and one whose session identifier is not the name of
 the file holding it, because nothing here can confirm what any of them left

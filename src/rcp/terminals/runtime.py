@@ -53,7 +53,25 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
         # been decided to end, and a stop that failed does not unmake that.
         # A plain cancellation is not a failed stop; `_abandon_opening` owns it.
         runtime.retiring = reason
+        # Refusing the next attach is not enough for a viewer already
+        # attached: their socket reads its queue without consulting the
+        # manager again, and its own recheck is of membership. They would go
+        # on watching a checkout the project may no longer register until
+        # some later stop happened to succeed.
+        end_subscribers(runtime)
         raise
+
+
+def end_subscribers(runtime: TerminalRuntime) -> None:
+    """Tell everyone watching that this session is over.
+
+    A full queue is drained first: the end signal is the one frame that must
+    not be dropped for falling behind.
+    """
+    for queue in runtime.subscribers:
+        while queue.full():
+            queue.get_nowait()
+        queue.put_nowait(None)
 
 
 async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
@@ -80,10 +98,7 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
     # Retire once before any subsequent cleanup/audit operation can fail. The
     # unfinished persisted intent still causes startup to retry the unit stop.
     await release_runtime(manager, runtime)
-    for queue in runtime.subscribers:
-        while queue.full():
-            queue.get_nowait()
-        queue.put_nowait(None)
+    end_subscribers(runtime)
     runtime.replay.clear()
     session.state = "idle"
     session.termination_reason = reason

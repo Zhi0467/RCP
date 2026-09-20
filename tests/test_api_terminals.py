@@ -529,6 +529,42 @@ def test_a_stale_alias_that_cannot_be_stopped_stops_listing_and_attaching(
         monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
 
 
+def test_a_viewer_is_let_go_when_retirement_fails(tmp_path, terminal_pty, monkeypatch):
+    """Refusing the next attach does nothing for a browser already attached:
+    its socket reads a queue without consulting the manager again, and its own
+    recheck is of membership. A stale session whose stop failed has to let its
+    viewer go rather than keep feeding it a checkout the project no longer
+    registers.
+    """
+    from rcp.api.dependencies import get_project_service
+    from rcp.terminals import launch
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        with client.websocket_connect(
+            f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
+        ) as socket:
+            moved = tmp_path / "moved-checkout"
+            (moved / ".research").mkdir(parents=True)
+            manifest = get_project_service(app.state.services.catalog, project_id).manifest
+            manifest.repository_map["paper-repo"].path = str(moved)
+
+            def unstoppable(unit):
+                raise RuntimeError("systemctl user manager unavailable")
+
+            monkeypatch.setattr(launch, "stop_unit", unstoppable)
+            # The listing settles the registration, and the stop fails.
+            assert client.get(path).json() == []
+            assert _lifecycle_frame(socket)["type"] == "ended"
+        assert session_id in app.state.services.terminals.sessions
+        monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 
