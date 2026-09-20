@@ -113,6 +113,10 @@ class TerminalManager:
                 "is refused until that one is gone."
             )
         session.ended_at = timestamp()
+        # A record retained by startup carries no reason yet, and one retained
+        # by a failed launch already carries its own. Finishing late must leave
+        # the same durable reason as finishing on the first attempt would have.
+        session.termination_reason = session.termination_reason or "server_restart"
         save_metadata(self.directory, session)
         self._unresolved.pop((project_id, repository_alias), None)
 

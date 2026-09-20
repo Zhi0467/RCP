@@ -314,6 +314,58 @@ async def test_startup_survives_a_record_whose_unit_cannot_be_stopped(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retained_reason", "expected"),
+    [(None, "server_restart"), ("launch_failed", "launch_failed")],
+)
+async def test_a_late_stop_finishes_its_record_with_the_same_reason(
+    tmp_path, monkeypatch, retained_reason, expected
+):
+    """Deferring cleanup must not cost the record its termination reason.
+
+    A record retired on the first startup attempt says why. One whose unit
+    could only be stopped later has to say the same thing, and one retained by
+    a failed launch keeps the reason it already had.
+    """
+    from rcp.terminals import remote
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    session = TerminalSession(
+        session_id="deferred",
+        project_id="project",
+        member_id="member",
+        repository_id="repo",
+        path="/checkout",
+        started_at="start",
+        last_activity_at="start",
+        unit=f"{manager._unit_prefix}-deferred",
+        containment="mirrored",
+        execution_host="worker.invalid",
+        termination_reason=retained_reason,
+    )
+    save_metadata(manager.directory, session)
+
+    reachable = False
+
+    def stop(*args):
+        if not reachable:
+            raise TerminalUnavailable("The execution machine is unreachable.")
+
+    monkeypatch.setattr(remote, "stop_remote_unit", stop)
+    await manager.start()
+    try:
+        assert json.loads((manager.directory / "deferred.json").read_text())["ended_at"] is None
+        reachable = True
+        await manager._resolve_unfinished("project", "repo")
+        recorded = json.loads((manager.directory / "deferred.json").read_text())
+        assert recorded["ended_at"]
+        assert recorded["termination_reason"] == expected
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_mirrored_launch_keeps_its_record_when_the_unit_may_survive(
     manifest, tmp_path, process_factory, monkeypatch, caplog
 ):
