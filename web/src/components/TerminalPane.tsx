@@ -3,9 +3,20 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-export function TerminalPane({ socketPath }: { socketPath: string }) {
+export function TerminalPane({
+  socketPath,
+  onEnded,
+  sessionMissing,
+}: {
+  socketPath: string;
+  onEnded: (reason: string) => void;
+  sessionMissing: boolean;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting…");
+  const endedCallback = useRef(onEnded);
+  endedCallback.current = onEnded;
+  const [sessionEnded, setSessionEnded] = useState(false);
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -42,6 +53,7 @@ export function TerminalPane({ socketPath }: { socketPath: string }) {
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     setStatus("Connecting…");
+    setSessionEnded(false);
     let ended = false;
     const resize = () => {
       if (!element.clientWidth || !element.clientHeight) return;
@@ -78,11 +90,16 @@ export function TerminalPane({ socketPath }: { socketPath: string }) {
         const message = JSON.parse(event.data) as { type: string; reason?: string };
         if (message.type === "ended") {
           ended = true;
-          setStatus(message.reason || "Session ended");
+          const reason = message.reason || "Session ended";
+          setStatus(reason);
+          setSessionEnded(true);
+          endedCallback.current(reason);
         }
       }
     };
-    socket.onerror = () => setStatus("Terminal connection failed");
+    socket.onerror = () => {
+      if (!ended) setStatus("Terminal connection failed");
+    };
     socket.onclose = (event) => {
       if (!ended) setStatus(event.reason || "Terminal disconnected");
     };
@@ -98,10 +115,10 @@ export function TerminalPane({ socketPath }: { socketPath: string }) {
 
   return (
     <div className="terminal-pane">
-      {status && (
+      {(status || sessionMissing) && (
         <div className="terminal-connection" role="status">
-          {status}
-          {status !== "Connecting…" && (
+          {sessionMissing && !sessionEnded ? "Session no longer running." : status}
+          {status !== "Connecting…" && !sessionEnded && !sessionMissing && (
             <button
               className="button compact secondary"
               onClick={() => setRetry((value) => value + 1)}

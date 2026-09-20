@@ -2848,6 +2848,15 @@ export interface TerminalWorkTurn {
 }
 
 export interface TerminalRepository {
+  probe_state:
+    | "pending"
+    | "reachable"
+    | "incapable"
+    | "unreachable"
+    | "authentication_failed"
+    | "host_key_failed"
+    | null;
+  os_name: string | null;
   repository_id: string;
   machine_id: string;
   backend_id: string | null;

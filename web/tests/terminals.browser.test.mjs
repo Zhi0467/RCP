@@ -54,10 +54,12 @@ const repositories = [
     backend_id: null,
     backend_name: null,
     containment: null,
-    reason: "PTY-over-SSH transport is not built.",
+    reason: "SSH host is unreachable.",
+    probe_state: "unreachable",
+    os_name: null,
     path: "/remote/code",
     eligible: false,
-    unavailable_reason: "PTY-over-SSH transport is not built.",
+    unavailable_reason: "SSH host is unreachable.",
     running_work: [],
   },
 ];
@@ -81,12 +83,18 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
   let sessions = [];
   let opens = 0;
   let connections = 0;
+  let probes = 0;
+  let latestSocket;
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   await page.route("**/api/projects/alpha/terminals**", async (route) => {
     const request = route.request();
     if (request.url().endsWith("/repositories"))
       return route.fulfill({ json: projectedRepositories });
+    if (request.url().endsWith("/probe")) {
+      probes++;
+      return route.fulfill({ json: { pending: true } });
+    }
     if (request.method() === "POST") {
       opens++;
       if (failLaunch)
@@ -120,6 +128,7 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
   });
   await page.routeWebSocket("**/terminals/*/ws", (socket) => {
     connections++;
+    latestSocket = socket;
     socket.send(Buffer.from("repository $ "));
     socket.onMessage((message) => {
       const event = JSON.parse(message);
@@ -135,6 +144,17 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
     input,
     opens: () => opens,
     connections: () => connections,
+    probes: () => probes,
+    removeSessions: () => {
+      sessions = [];
+    },
+    dropLink: () => {
+      sessions = [];
+      latestSocket.send(
+        JSON.stringify({ type: "ended", reason: "SSH link dropped; terminal session ended." }),
+      );
+      latestSocket.close();
+    },
     setRepositories: (value) => {
       projectedRepositories = value;
     },
@@ -273,11 +293,11 @@ test("launch failure displays the real missing systemd diagnostic", async (t) =>
   assert.equal(await page.locator(".terminal-protection-warning").count(), 0);
 });
 
-test("Terminals tab disappears when no machine can host a session and returns for cooperative support", async (t) => {
+test("Terminals tab hides for unavailable local machines and returns for cooperative support", async (t) => {
   const { page, setRepositories } = await fixture(t);
   await page.getByRole("button", { name: "Research", exact: true }).click();
   const tab = page.getByRole("button", { name: "Terminals", exact: true });
-  for (const unavailable of [[repositories[2]], []]) {
+  for (const unavailable of [[{ ...repositories[0], eligible: false, containment: null }], []]) {
     setRepositories(unavailable);
     await page.getByRole("button", { name: "Refresh project", exact: true }).click();
     await tab.waitFor({ state: "hidden" });
@@ -286,4 +306,93 @@ test("Terminals tab disappears when no machine can host a session and returns fo
     await page.getByRole("button", { name: "Refresh project", exact: true }).click();
     await tab.waitFor({ state: "visible" });
   }
+});
+
+test("remote-only probe pending and failure remain visible and Refresh retries", async (t) => {
+  const { page, setRepositories, probes } = await fixture(t);
+  await page.getByRole("button", { name: "Research", exact: true }).click();
+  setRepositories([
+    {
+      ...repositories[2],
+      probe_state: "pending",
+      reason: "Checking remote terminal capability…",
+      unavailable_reason: "Checking remote terminal capability…",
+    },
+  ]);
+  await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+  await page.getByRole("button", { name: "Terminals", exact: true }).click();
+  await page.getByRole("button", { name: /Checking remote terminal capability/ }).waitFor();
+  const diagnostic = "SSH authentication failed: permission denied.";
+  setRepositories([
+    {
+      ...repositories[2],
+      probe_state: "authentication_failed",
+      reason: diagnostic,
+      unavailable_reason: diagnostic,
+    },
+  ]);
+  await page.getByRole("button", { name: "Refresh terminals", exact: true }).click();
+  const row = page.getByRole("button", { name: /SSH authentication failed/ });
+  await row.waitFor();
+  assert.ok(await row.isDisabled());
+  assert.equal(probes(), 1);
+  await page.getByRole("button", { name: "Research", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+  assert.ok(await page.getByRole("button", { name: "Terminals", exact: true }).isVisible());
+});
+
+test("SSH link loss removes the session and retains the reason without reconnect", async (t) => {
+  const { page, dropLink, opens, connections } = await fixture(t);
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
+  await page.locator(".xterm-screen").waitFor();
+  await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
+  dropLink();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "SSH link dropped; terminal session ended." })
+    .waitFor();
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Reconnect", exact: true }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "End code terminal", exact: true }).count(),
+    0,
+  );
+  await page.getByRole("button", { name: "Refresh terminals", exact: true }).click();
+  assert.ok(await page.getByRole("status").filter({ hasText: "SSH link dropped" }).isVisible());
+  assert.equal(opens(), 1);
+  assert.equal(connections(), 1);
+});
+
+test("a pending remote probe refreshes the tab without a project refresh", async (t) => {
+  const { page, setRepositories } = await fixture(t);
+  await page.getByRole("button", { name: "Research", exact: true }).click();
+  setRepositories([{ ...repositories[2], probe_state: "pending" }]);
+  const loaded = page.waitForResponse((response) =>
+    response.url().endsWith("/terminals/repositories"),
+  );
+  await page.getByRole("button", { name: "Refresh project", exact: true }).click();
+  await loaded;
+  setRepositories([]);
+  await page.getByRole("button", { name: "Terminals", exact: true }).waitFor({ state: "hidden" });
+});
+
+test("session polling cannot discard the SSH exit reason before it arrives", async (t) => {
+  const { page, removeSessions, dropLink } = await fixture(t);
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
+  await page.locator(".xterm-screen").waitFor();
+  await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
+  removeSessions();
+  await page.getByRole("button", { name: "Refresh terminals", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Session no longer running." }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "End code terminal", exact: true }).count(),
+    0,
+  );
+  assert.equal(await page.getByRole("button", { name: "Reconnect", exact: true }).count(), 0);
+  dropLink();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "SSH link dropped; terminal session ended." })
+    .waitFor();
 });

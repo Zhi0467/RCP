@@ -35,9 +35,16 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       const errors = [];
       const unexpectedRequests = [];
       const submissions = [];
-      page.on("requestfailed", (request) =>
-        errors.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`),
-      );
+      page.on("requestfailed", (request) => {
+        // The Terminals tab's repository projection is abandoned when the view
+        // unmounts mid-flight. A deliberate abort is cleanup, not a failure.
+        if (
+          request.url().endsWith("/terminals/repositories") &&
+          request.failure()?.errorText === "net::ERR_ABORTED"
+        )
+          return;
+        errors.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`);
+      });
       page.on("response", (response) => {
         if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
       });
@@ -279,6 +286,9 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             "/api/projects/demo/history/summaries",
             "/api/projects/demo/transition-manifest",
             "/api/projects/demo/experiment-episodes",
+            // The Terminals tab's visibility is a project-level fact, so its
+            // repository projection loads with the project on every view.
+            "/api/projects/demo/terminals/repositories",
           ].includes(path)
         )
           unexpectedRequests.push(path);
