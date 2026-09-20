@@ -64,6 +64,30 @@ def process_factory(monkeypatch):
         os.close(descriptor)
 
 
+def record_payload(values):
+    """A record with every field present, the way `save_metadata` writes one.
+
+    Reconciliation refuses a record that does not name every field this
+    version writes, because a silently defaulted field is a claim — an absent
+    `execution_host` says local. Fixtures have to look like real records.
+    """
+    from dataclasses import asdict
+
+    base = asdict(
+        TerminalSession(
+            session_id="",
+            project_id="",
+            member_id="",
+            repository_id="",
+            path="",
+            started_at="",
+            last_activity_at="",
+            unit="",
+        )
+    )
+    return {**base, **values}
+
+
 def arguments(manifest):
     return dict(
         project_id="project",
@@ -442,7 +466,7 @@ async def test_startup_survives_a_record_written_by_another_version(tmp_path, ca
     manager = TerminalManager(tmp_path / "data", lambda project, member: True)
     manager.directory.mkdir(parents=True)
     (manager.directory / "skewed.json").write_text(
-        json.dumps({"session_id": "skewed", "a_field_from_another_version": True})
+        json.dumps(record_payload({"session_id": "skewed", "a_field_from_another_version": True}))
     )
     (manager.directory / "unparsable.json").write_text("{ not json")
     with caplog.at_level(logging.WARNING):
@@ -473,18 +497,20 @@ async def test_a_record_cannot_name_a_file_outside_the_terminal_directory(tmp_pa
     server_metadata.write_text('{"instance": "original"}')
     (manager.directory / "escape.json").write_text(
         json.dumps(
-            {
-                "session_id": "../rcp-server",
-                "project_id": "project",
-                "member_id": "member",
-                "repository_id": "repo-a",
-                "path": "/checkout",
-                "started_at": "start",
-                "last_activity_at": "start",
-                # Not this directory's prefix, so reconciliation retires it,
-                # which is the branch that writes the record back.
-                "unit": "rcp-terminal-elsewhere-escape",
-            }
+            record_payload(
+                {
+                    "session_id": "../rcp-server",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    # Not this directory's prefix, so reconciliation retires it,
+                    # which is the branch that writes the record back.
+                    "unit": "rcp-terminal-elsewhere-escape",
+                }
+            )
         )
     )
     with caplog.at_level(logging.WARNING):
@@ -530,18 +556,20 @@ async def test_startup_reconciles_records_together(tmp_path, monkeypatch):
     for name in ("first", "second"):
         (manager.directory / f"{name}.json").write_text(
             json.dumps(
-                {
-                    "session_id": name,
-                    "project_id": "project",
-                    "member_id": "member",
-                    "repository_id": f"repo-{name}",
-                    "path": f"/checkout/{name}",
-                    "started_at": "start",
-                    "last_activity_at": "start",
-                    "unit": f"{manager._unit_prefix}-{name}",
-                    "containment": "mirrored",
-                    "execution_host": "worker.invalid",
-                }
+                record_payload(
+                    {
+                        "session_id": name,
+                        "project_id": "project",
+                        "member_id": "member",
+                        "repository_id": f"repo-{name}",
+                        "path": f"/checkout/{name}",
+                        "started_at": "start",
+                        "last_activity_at": "start",
+                        "unit": f"{manager._unit_prefix}-{name}",
+                        "containment": "mirrored",
+                        "execution_host": "worker.invalid",
+                    }
+                )
             )
         )
     monkeypatch.setattr(remote, "stop_remote_unit", stop)
@@ -608,18 +636,20 @@ async def test_a_record_from_another_version_still_blocks_its_repository(
     manager.directory.mkdir(parents=True)
     (manager.directory / "newer.json").write_text(
         json.dumps(
-            {
-                "session_id": "newer",
-                "project_id": "project",
-                "member_id": "member",
-                "repository_id": "repo-a",
-                "path": "/checkout",
-                "started_at": "start",
-                "last_activity_at": "start",
-                "unit": f"{manager._unit_prefix}-newer",
-                "containment": "mirrored",
-                "a_field_from_another_version": True,
-            }
+            record_payload(
+                {
+                    "session_id": "newer",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-newer",
+                    "containment": "mirrored",
+                    "a_field_from_another_version": True,
+                }
+            )
         )
     )
     with caplog.at_level(logging.WARNING):
@@ -687,17 +717,19 @@ async def test_startup_survives_a_record_whose_field_types_are_wrong(tmp_path, c
     manager.directory.mkdir(parents=True)
     (manager.directory / "typed.json").write_text(
         json.dumps(
-            {
-                "session_id": "typed",
-                "project_id": [],
-                "member_id": "member",
-                "repository_id": "repo",
-                "path": "/checkout",
-                "started_at": "start",
-                "last_activity_at": "start",
-                "unit": f"{manager._unit_prefix}-typed",
-                "containment": "a-containment-from-another-version",
-            }
+            record_payload(
+                {
+                    "session_id": "typed",
+                    "project_id": [],
+                    "member_id": "member",
+                    "repository_id": "repo",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-typed",
+                    "containment": "a-containment-from-another-version",
+                }
+            )
         )
     )
     with caplog.at_level(logging.WARNING):
@@ -756,24 +788,28 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
     # A real unit this startup cannot stop, so its record is retained.
     (manager.directory / "stranded.json").write_text(
         json.dumps(
-            {
-                **common,
-                "session_id": "stranded",
-                "unit": f"{manager._unit_prefix}-stranded",
-                "containment": "mirrored",
-            }
+            record_payload(
+                {
+                    **common,
+                    "session_id": "stranded",
+                    "unit": f"{manager._unit_prefix}-stranded",
+                    "containment": "mirrored",
+                }
+            )
         )
     )
     # A second record for the same repository that this version cannot read.
     (manager.directory / "newer.json").write_text(
         json.dumps(
-            {
-                **common,
-                "session_id": "newer",
-                "unit": f"{manager._unit_prefix}-newer",
-                "containment": "mirrored",
-                "a_field_from_another_version": True,
-            }
+            record_payload(
+                {
+                    **common,
+                    "session_id": "newer",
+                    "unit": f"{manager._unit_prefix}-newer",
+                    "containment": "mirrored",
+                    "a_field_from_another_version": True,
+                }
+            )
         )
     )
 
@@ -813,19 +849,21 @@ async def test_a_renamed_alias_cannot_open_over_the_old_alias_blocker(
     manager.directory.mkdir(parents=True)
     (manager.directory / "stranded.json").write_text(
         json.dumps(
-            {
-                "session_id": "stranded",
-                "project_id": "project",
-                "member_id": "member",
-                "repository_id": "repo-a",
-                "path": str(checkout),
-                "started_at": "start",
-                "last_activity_at": "start",
-                "unit": f"{manager._unit_prefix}-stranded",
-                "containment": "mirrored",
-                "declared_path": str(checkout),
-                "declared_machine": "laptop",
-            }
+            record_payload(
+                {
+                    "session_id": "stranded",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": str(checkout),
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-stranded",
+                    "containment": "mirrored",
+                    "declared_path": str(checkout),
+                    "declared_machine": "laptop",
+                }
+            )
         )
     )
 
@@ -866,25 +904,27 @@ async def test_a_record_that_cannot_be_reconciled_at_all_blocks_its_repository(
     manager.directory.mkdir(parents=True)
     (manager.directory / "unreachable.json").write_text(
         json.dumps(
-            {
-                "session_id": "unreachable",
-                "project_id": "project",
-                "member_id": "member",
-                "repository_id": "repo-a",
-                "path": "/checkout",
-                "started_at": "start",
-                "last_activity_at": "start",
-                "unit": f"{manager._unit_prefix}-unreachable",
-                "containment": "mirrored",
-                "execution_host": "bad\nhost",
-            }
+            record_payload(
+                {
+                    "session_id": "unreachable",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-unreachable",
+                    "containment": "mirrored",
+                    "execution_host": "bad\nhost",
+                }
+            )
         )
     )
     with caplog.at_level(logging.WARNING):
         await manager.start()
     try:
         # Left as written, and the boot completed.
-        assert "ended_at" not in json.loads((manager.directory / "unreachable.json").read_text())
+        assert json.loads((manager.directory / "unreachable.json").read_text())["ended_at"] is None
         assert any("blocking its repository" in message for message in caplog.messages)
         assert ("project", "repo-a") in manager._unresolved
         with pytest.raises(TerminalUnavailable, match="may still be running"):
@@ -914,17 +954,21 @@ async def test_a_malformed_record_cannot_borrow_another_blocker_identity(
         "containment": "mirrored",
     }
     (manager.directory / "real.json").write_text(
-        json.dumps({**common, "session_id": "real", "unit": f"{manager._unit_prefix}-real"})
+        json.dumps(
+            record_payload({**common, "session_id": "real", "unit": f"{manager._unit_prefix}-real"})
+        )
     )
     # Claims the other record's identity, and cannot be read besides.
     (manager.directory / "borrowed.json").write_text(
         json.dumps(
-            {
-                **common,
-                "session_id": "real",
-                "unit": f"{manager._unit_prefix}-borrowed",
-                "a_field_from_another_version": True,
-            }
+            record_payload(
+                {
+                    **common,
+                    "session_id": "real",
+                    "unit": f"{manager._unit_prefix}-borrowed",
+                    "a_field_from_another_version": True,
+                }
+            )
         )
     )
 
@@ -951,6 +995,97 @@ async def test_a_malformed_record_cannot_borrow_another_blocker_identity(
 
 
 @pytest.mark.asyncio
+async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(tmp_path, monkeypatch, caplog):
+    """Reconciling records at once is not the same as finishing at once: the
+    stops are blocking calls in a shared pool, so enough of them queue anyway.
+    The budget is what bounds the boot, and a record still running when it
+    expires has to keep blocking its repository rather than be forgotten.
+    """
+    from rcp.terminals import remote
+
+    release = threading.Event()
+
+    def never(*args):
+        assert release.wait(10)
+
+    monkeypatch.setattr(remote, "stop_remote_unit", never)
+    monkeypatch.setattr("rcp.terminals.manager.TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS", 0.25)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "wedged.json").write_text(
+        json.dumps(
+            record_payload(
+                {
+                    "session_id": "wedged",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-wedged",
+                    "containment": "mirrored",
+                    "execution_host": "worker.invalid",
+                }
+            )
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        assert any("startup budget" in message for message in caplog.messages)
+        assert ("project", "repo-a") in manager._unresolved
+        assert json.loads((manager.directory / "wedged.json").read_text())["ended_at"] is None
+    finally:
+        release.set()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_record_missing_a_field_is_not_read_as_a_local_one(tmp_path, caplog, monkeypatch):
+    """A silently defaulted field is a claim, not an absence.
+
+    `asdict` writes every field, so a record missing one was not written by
+    this application. An absent `execution_host` defaults to empty, which says
+    local, and cleaning a remote record up against a local unit that was never
+    there reports success and retires it while its own unit still runs.
+    """
+    from rcp.terminals import remote
+
+    monkeypatch.setattr(
+        launch, "stop_unit", lambda unit: pytest.fail("This record cannot be trusted")
+    )
+    monkeypatch.setattr(
+        remote, "stop_remote_unit", lambda *args: pytest.fail("This record cannot be trusted")
+    )
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    complete = record_payload(
+        {
+            "session_id": "partial",
+            "project_id": "project",
+            "member_id": "member",
+            "repository_id": "repo-a",
+            "path": "/checkout",
+            "started_at": "start",
+            "last_activity_at": "start",
+            "unit": f"{manager._unit_prefix}-partial",
+            "containment": "mirrored",
+        }
+    )
+    del complete["execution_host"]
+    (manager.directory / "partial.json").write_text(json.dumps(complete))
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        assert json.loads((manager.directory / "partial.json").read_text())["ended_at"] is None
+        assert any("every field this version writes" in message for message in caplog.messages)
+        assert ("project", "repo-a") in manager._unresolved
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_a_remote_record_is_never_cleaned_up_as_a_local_one(tmp_path, caplog, monkeypatch):
     """A wrong type that happens to be falsey reads as an ordinary empty
     value. An `execution_host` of `[]` would send a remote record down the
@@ -969,25 +1104,27 @@ async def test_a_remote_record_is_never_cleaned_up_as_a_local_one(tmp_path, capl
     manager.directory.mkdir(parents=True)
     (manager.directory / "mistyped.json").write_text(
         json.dumps(
-            {
-                "session_id": "mistyped",
-                "project_id": "project",
-                "member_id": "member",
-                "repository_id": "repo-a",
-                "path": "/checkout",
-                "started_at": "start",
-                "last_activity_at": "start",
-                "unit": f"{manager._unit_prefix}-mistyped",
-                "containment": "mirrored",
-                "execution_host": [],
-            }
+            record_payload(
+                {
+                    "session_id": "mistyped",
+                    "project_id": "project",
+                    "member_id": "member",
+                    "repository_id": "repo-a",
+                    "path": "/checkout",
+                    "started_at": "start",
+                    "last_activity_at": "start",
+                    "unit": f"{manager._unit_prefix}-mistyped",
+                    "containment": "mirrored",
+                    "execution_host": [],
+                }
+            )
         )
     )
     with caplog.at_level(logging.WARNING):
         await manager.start()
     try:
         # Left exactly as written: never retired, never rewritten.
-        assert "ended_at" not in json.loads((manager.directory / "mistyped.json").read_text())
+        assert json.loads((manager.directory / "mistyped.json").read_text())["ended_at"] is None
         assert ("project", "repo-a") in manager._unresolved
     finally:
         await manager.close()

@@ -347,6 +347,11 @@ TERMINAL_PROBE_TIMEOUT_SECONDS = 30.0
 TERMINAL_PROBE_COMMAND_TIMEOUT_SECONDS = 5.0
 TERMINAL_PROBE_WORKERS = 4
 TERMINAL_STOP_TIMEOUT_SECONDS = 5.0
+# Startup reconciles every record at once, but their stops run in a shared
+# thread pool, so enough unreachable records still queue into timeout-sized
+# batches. This bounds what they can cost the boot; whatever has not finished
+# keeps its record and blocks its repository, and a later attempt retries it.
+TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS = 30.0
 TERMINAL_POLL_INTERVAL_SECONDS = 0.05
 TERMINAL_OUTPUT_BUFFER_BYTES = 256 * 1024
 TERMINAL_SUBSCRIBER_QUEUE_SIZE = 64

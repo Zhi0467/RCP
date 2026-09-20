@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -24,6 +25,7 @@ from rcp.limits import (
     TERMINAL_IDLE_TIMEOUT_SECONDS,
     TERMINAL_MAX_DIMENSION,
     TERMINAL_POLL_INTERVAL_SECONDS,
+    TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS,
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
 from rcp.terminals import launch, remote
@@ -79,6 +81,19 @@ def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
 # instead. `test_every_terminal_record_field_holds_a_string` fails if that
 # stops being true, because this check would then refuse valid records.
 _NULLABLE_RECORD_FIELDS = {"ended_at", "termination_reason"}
+_RECORD_FIELDS = frozenset(field.name for field in dataclasses.fields(TerminalSession))
+
+
+def _record_is_complete(payload: object) -> bool:
+    """Whether a record names every field this version writes.
+
+    `asdict` writes them all, so a record missing one was not written by this
+    application. The dataclass would default it silently, and a default is a
+    claim: an absent `execution_host` says local, and cleaning a remote record
+    up against a local unit that was never there reports success and retires
+    it while its own unit still runs.
+    """
+    return isinstance(payload, dict) and payload.keys() >= _RECORD_FIELDS
 
 
 def _record_values_are_well_typed(payload: object) -> bool:
@@ -362,6 +377,14 @@ class TerminalManager:
             )
             self._block_unreadable_repository(path, payload)
 
+    def _block_record_path(self, path: Path) -> None:
+        """Block whatever repository this record names, reading it afresh."""
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return
+        self._block_unreadable_repository(path, payload)
+
     def _block_unreadable_repository(self, path: Path, payload: object) -> None:
         """Keep a record this version cannot read from yielding a second shell.
 
@@ -402,6 +425,14 @@ class TerminalManager:
 
     async def _reconcile_record(self, path: Path, payload: object) -> None:
         """Retire, retain or block one persisted record, or raise to its guard."""
+        if not _record_is_complete(payload):
+            logger.warning(
+                "Terminal record %s does not name every field this version writes; "
+                "leaving it and blocking its repository.",
+                path.name,
+            )
+            self._block_unreadable_repository(path, payload)
+            return
         if not _record_values_are_well_typed(payload):
             # A dataclass enforces no field's type, and a wrong type that
             # happens to be falsey reads as an ordinary empty value rather
@@ -514,10 +545,34 @@ class TerminalManager:
         # live remote session unfinished, so a machine that went away takes a
         # remote stop timeout per record, and in turn that is startup spent
         # before any other owner runs. They touch separate files and separate
-        # repositories, so the wait is one timeout rather than one each.
-        await asyncio.gather(
-            *(self._reconcile_guarded(path) for path in self.directory.glob("*.json"))
-        )
+        # repositories, so they are safe to run at once.
+        #
+        # At once is not all at the same time: each stop is a blocking call in
+        # the shared thread pool, so enough of them queue into timeout-sized
+        # batches anyway. The budget is what actually bounds the boot. A
+        # record still running when it expires keeps its record and blocks its
+        # repository, exactly as one that raised would.
+        started = {
+            asyncio.create_task(self._reconcile_guarded(path)): path
+            for path in self.directory.glob("*.json")
+        }
+        if started:
+            _, unfinished = await asyncio.wait(
+                started, timeout=TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS
+            )
+            for task in unfinished:
+                task.cancel()
+                path = started[task]
+                logger.warning(
+                    "Terminal record %s did not reconcile within the startup budget; "
+                    "leaving it and blocking its repository.",
+                    path.name,
+                )
+                self._block_record_path(path)
+            if unfinished:
+                # Cancelling a task waiting on a worker thread returns at
+                # once; the thread finishes its own stop with nobody reading.
+                await asyncio.gather(*unfinished, return_exceptions=True)
         self._started = True
         self._sweeper = asyncio.create_task(sweep_loop(self))
 

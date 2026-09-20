@@ -190,7 +190,17 @@ boot. Each record is reconciled under its own guard, so no way of being
 malformed — truncated, carrying fields this version does not know, or carrying
 values of the wrong type — can abort startup; an unreconciled record stays as
 it was found and blocks its repository, because failing to reconcile a record
-is not evidence that its shell is gone. Records reconcile together rather than in turn, because shutdown
+is not evidence that its shell is gone. Reconciliation runs under a budget for
+the same reason it runs concurrently: the stops are blocking calls sharing a
+thread pool, so enough of them queue whatever the gather says. A record still
+running when the budget expires blocks its repository like one that raised.
+
+A record must also name every field this version writes, because a silently
+defaulted field is a claim rather than an absence: an absent execution host
+says local, and a remote record cleaned up against a local unit that was never
+there reports success and retires while its own unit runs. An execution host
+that is present and empty is not ambiguous — that is what a local session
+records. Records reconcile together rather than in turn, because shutdown
 leaves every live remote session unfinished and a machine that went away would
 otherwise cost one remote stop timeout per record before any other startup
 owner runs.
