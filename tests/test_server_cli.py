@@ -1290,6 +1290,43 @@ def test_top_level_main_routes_server_commands_before_personal_data_resolution(
     assert calls[0].server_operation == "server doctor"
 
 
+def test_outer_wizard_skips_a_resume_only_when_the_shell_matches_too() -> None:
+    """The renderer treats the same argv in a different shell as a separate
+    command, so the wizard must run it rather than collapse it into resume."""
+
+    from rcp.server_ops.cli import _continue_interactive_wizard
+
+    original = _operator_execution()
+    plan = original.events[0]
+    paused = original.events[-1]
+    resume = paused.step.resume_argv
+
+    def drive(execution_context) -> list[tuple[str, ...]]:
+        final = paused.step.model_copy(
+            update={
+                "actions": (CommandAction(argv=resume, execution=execution_context),),
+                "resume_execution": OPERATOR_SHELL,
+            }
+        )
+        execution = original.model_copy(
+            update={"events": (plan, paused.model_copy(update={"step": final}))}
+        )
+        ran: list[tuple[str, ...]] = []
+        _continue_interactive_wizard(
+            execution,
+            identity=CallerIdentity(uid=0, username="root", host="host"),
+            input_stream=StringIO("\n"),
+            output_stream=StringIO(),
+            runner=lambda argv: ran.append(argv) or 0,
+        )
+        return ran
+
+    # Same argv, same shell: one command, run once.
+    assert drive(OPERATOR_SHELL) == [resume]
+    # Same argv, a different shell: two commands, both run.
+    assert drive(ExecutionContext(shell_account="rcp")) == [resume, resume]
+
+
 def test_outer_wizard_refuses_to_run_mutually_exclusive_restore_actions():
     from rcp.server_ops.cli import _continue_interactive_wizard
 

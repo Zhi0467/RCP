@@ -546,7 +546,7 @@ def _continue_interactive_wizard(
     if not isinstance(final, ServerStepEvent):  # pragma: no cover - execution owns this
         return execution.exit_code
     step = final.step
-    commands = [action.argv for action in step.actions if action.kind == "command"]
+    commands = [action for action in step.actions if action.kind == "command"]
     if step.phase == "supervisor_restore" and len(commands) > 1:
         print(
             "Restore lists mutually exclusive authority choices. Run exactly one displayed confirmation command; the wizard will not execute both.",
@@ -564,10 +564,13 @@ def _continue_interactive_wizard(
         return execution.exit_code
     resume = step.resume_argv
     if step.phase == "supervisor_restore" and len(commands) == 1:
-        return runner(_wizard_command_for_identity(commands[0], identity))
+        return runner(_wizard_command_for_identity(commands[0].argv, identity))
     for command in commands:
-        if command != resume:
-            runner(_wizard_command_for_identity(command, identity))
+        # The same argv in a different shell is a different command, and the
+        # renderer shows it as one. Running only the resume would silently skip
+        # what the operator was just told to do.
+        if (command.argv, command.execution) != (resume, step.resume_execution):
+            runner(_wizard_command_for_identity(command.argv, identity))
     if step.phase == "team_space_init" and commands:
         output_stream.write("Save the one-time enrollment code, then press Enter to continue: ")
         output_stream.flush()
