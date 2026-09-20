@@ -5317,7 +5317,11 @@ def _wait_for_status(
 
     return wait_until(
         matching_status,
-        timeout=2,
+        # Every caller waits for a status a background run rests in, never one
+        # it passes through, so waiting longer cannot miss one. Two seconds was
+        # a budget rather than a deadline: it held locally and expired under a
+        # loaded runner, which made a real failure and a slow one look alike.
+        timeout=TASK_SETTLE_TIMEOUT,
         detail=f"background run did not reach {sorted(statuses)}",
     )
 
