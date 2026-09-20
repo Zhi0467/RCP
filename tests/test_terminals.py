@@ -1767,6 +1767,54 @@ async def test_a_rename_during_an_open_cannot_start_a_second_shell_on_the_tree(
 
 
 @pytest.mark.asyncio
+async def test_two_remote_declarations_of_one_tree_hold_one_shell(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A remote declaration is resolved on its own machine, so two of them can
+    name one tree. Comparing what each session resolved is the only place they
+    meet: this machine cannot resolve a remote registration to find out.
+    """
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    # Two declarations the execution machine canonicalises to one tree. Only
+    # one of them is registered at a time, so resolution has no overlap to
+    # refuse; what is left holding that tree is the session itself.
+    overrides = {
+        "/declared/repo-b": "/canonical/tree",
+        "/declared/moved": "/canonical/tree",
+    }
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "reachable", "Ready.")
+    )
+    monkeypatch.setattr(
+        "rcp.terminals.manager.RemoteRunStage",
+        lambda host: _RemoteScopeStage(host=host, overrides=overrides),
+    )
+    monkeypatch.setattr(
+        remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
+    )
+    monkeypatch.setattr(remote, "stop_remote_unit", lambda *args: None)
+    await manager.start()
+    try:
+        first = await manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
+        assert (first.path, first.declared_path) == ("/canonical/tree", "/declared/repo-b")
+        # The tree is registered afresh under another name and spelling.
+        repository = manifest.repository_map["repo-b"]
+        manifest.repositories = [
+            item for item in manifest.repositories if item.alias != "repo-b"
+        ] + [repository.model_copy(update={"alias": "repo-b-moved", "path": "/declared/moved"})]
+        with pytest.raises(TerminalUnavailable, match="already open on this working tree"):
+            await manager.open(**{**arguments(manifest), "repository_alias": "repo-b-moved"})
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_one_working_tree_holds_one_shell_across_projects(
     manifest, tmp_path, process_factory
 ):

@@ -157,6 +157,26 @@ def _readable_record(payload: object) -> tuple[TerminalSession | None, str]:
         return None, f"is not this version's: {exc}"
 
 
+def held_checkout(session: TerminalSession) -> tuple[str, str, str]:
+    """The working tree this session actually holds, for comparing sessions.
+
+    Both sides of that comparison resolved their own declaration — locally, or
+    on the execution machine — so two declarations that spell one remote tree
+    are one tree here, as they already are locally.
+
+    `session_checkout` answers a different question: whether a registration
+    still names this session. That compares against a manifest declaration,
+    and a remote one names a path this machine cannot resolve, so there the
+    declarations are what meet. A record this version could not read resolved
+    nothing and has only what it declared.
+    """
+    return (
+        session.path or session.declared_path,
+        session.execution_host,
+        session.declared_account,
+    )
+
+
 def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
     """Why this session's alias no longer names it, or None while it still does."""
     if session.repository_id not in manifest.repository_map:
@@ -753,15 +773,20 @@ class TerminalManager:
 
         A session published since admission is refused here too: the open that
         published it has already given its own reservation back.
+
+        Both sides here are sessions that resolved their own declaration, so
+        this compares the trees they hold rather than the registrations that
+        named them, which is the only way two spellings of one remote tree
+        meet.
         """
-        checkout = session_checkout(session)
+        checkout = held_checkout(session)
         async with self._lock:
             if checkout in self._opening_trees:
                 raise TerminalUnavailable(
                     "Another terminal is already opening on this working tree."
                 )
             if any(
-                session_checkout(runtime.session) == checkout for runtime in self.sessions.values()
+                held_checkout(runtime.session) == checkout for runtime in self.sessions.values()
             ):
                 raise TerminalUnavailable(
                     "Another terminal is already open on this working tree. "
