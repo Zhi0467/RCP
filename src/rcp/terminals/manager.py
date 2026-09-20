@@ -224,27 +224,49 @@ class TerminalManager:
                 return
         retained.append(session)
 
-    async def _resolve_unfinished(self, project_id: str, repository_alias: str) -> None:
-        """Retry a retained record's stop before opening this repository again.
+    async def _resolve_unfinished(
+        self, project_id: str, manifest: Manifest, repository_alias: str
+    ) -> None:
+        """Retry every retained record that still speaks for this checkout.
 
         A retained record means a unit may still own the checkout. Opening a
         second shell there would let two of them write one working tree, which
         the one-session-per-repository rule exists to prevent.
+
+        The alias alone does not find them all. Settings can drop an alias and
+        register the same checkout under another name, and the old alias's
+        blocker then names a unit on the very working tree the new alias is
+        about to open. What a record declared it opened on identifies it
+        across that rename. A record this version could not read declares
+        nothing, so its alias is all it has, which is why both are consulted.
         """
-        key = (project_id, repository_alias)
-        retained = self._unresolved.get(key)
-        if not retained:
+        target = (
+            manifest_registration(manifest, repository_alias)
+            if repository_alias in manifest.repository_map
+            else None
+        )
+        speaking = [
+            (key, session)
+            for key, retained in self._unresolved.items()
+            for session in retained
+            if key[0] == project_id
+            and (
+                key[1] == repository_alias
+                or (target is not None and session_registration(session) == target)
+            )
+        ]
+        if not speaking:
             return
         # Confirmed together: this is a member waiting to open, and a record
         # whose machine has gone costs a stop timeout apiece.
         confirmed = await asyncio.gather(
-            *(self.unit_confirmed_gone(session) for session in retained)
+            *(self.unit_confirmed_gone(session) for _, session in speaking)
         )
-        unresolved = [
-            session for session, gone in zip(retained, confirmed, strict=True) if not gone
-        ]
-        for session, gone in zip(retained, confirmed, strict=True):
+        refused = False
+        for (key, session), gone in zip(speaking, confirmed, strict=True):
             if not gone:
+                # One record still speaking for this checkout is enough.
+                refused = True
                 continue
             session.ended_at = timestamp()
             # A record retained by startup carries no reason yet, and one
@@ -253,16 +275,21 @@ class TerminalManager:
             # first attempt would have.
             session.termination_reason = session.termination_reason or "server_restart"
             save_metadata(self.directory, session)
-        if unresolved:
-            # Every record for this repository has to be accounted for; one
-            # still speaking for it is enough to refuse.
-            self._unresolved[key] = unresolved
+            remaining = [
+                item
+                for item in self._unresolved.get(key, [])
+                if item.session_id != session.session_id
+            ]
+            if remaining:
+                self._unresolved[key] = remaining
+            else:
+                self._unresolved.pop(key, None)
+        if refused:
             raise TerminalUnavailable(
                 "An earlier terminal for this repository could not be stopped on its "
                 "execution machine, so its shell may still be running. Opening another "
                 "is refused until that one is gone."
             )
-        self._unresolved.pop(key, None)
 
     async def capability(
         self, machine: MachineConfig, probe: TerminalProbe | None
@@ -569,7 +596,7 @@ class TerminalManager:
         Holding the lock across that would stall every other project's open,
         end and sweep behind it, so only admission and publication take it.
         """
-        await self._resolve_unfinished(project_id, repository_alias)
+        await self._resolve_unfinished(project_id, manifest, repository_alias)
         repository = manifest.repository_map[repository_alias]
         machine = manifest.machine_map[repository.machine]
         probe = await self.probes.ensure(machine) if machine.host else None

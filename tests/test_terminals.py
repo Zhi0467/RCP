@@ -347,7 +347,7 @@ async def test_startup_survives_a_record_whose_unit_cannot_be_stopped(
     [(None, "server_restart"), ("launch_failed", "launch_failed")],
 )
 async def test_a_late_stop_finishes_its_record_with_the_same_reason(
-    tmp_path, monkeypatch, retained_reason, expected
+    manifest, tmp_path, monkeypatch, retained_reason, expected
 ):
     """Deferring cleanup must not cost the record its termination reason.
 
@@ -385,7 +385,7 @@ async def test_a_late_stop_finishes_its_record_with_the_same_reason(
     try:
         assert json.loads((manager.directory / "deferred.json").read_text())["ended_at"] is None
         reachable = True
-        await manager._resolve_unfinished("project", "repo")
+        await manager._resolve_unfinished("project", manifest, "repo")
         recorded = json.loads((manager.directory / "deferred.json").read_text())
         assert recorded["ended_at"]
         assert recorded["termination_reason"] == expected
@@ -795,6 +795,53 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
         assert [session.session_id for session in manager._unresolved[("project", "repo-a")]] == [
             "newer"
         ]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_alias_cannot_open_over_the_old_alias_blocker(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """Settings can drop an alias and register the same checkout under another
+    name. A blocker filed under the old alias then names a unit on the very
+    working tree the new alias is about to open, and an alias-only lookup
+    never finds it.
+    """
+    checkout = Path(manifest.repository_map["repo-a"].path)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "stranded.json").write_text(
+        json.dumps(
+            {
+                "session_id": "stranded",
+                "project_id": "project",
+                "member_id": "member",
+                "repository_id": "repo-a",
+                "path": str(checkout),
+                "started_at": "start",
+                "last_activity_at": "start",
+                "unit": f"{manager._unit_prefix}-stranded",
+                "containment": "mirrored",
+                "declared_path": str(checkout),
+                "declared_machine": "laptop",
+            }
+        )
+    )
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl user manager unavailable")
+
+    monkeypatch.setattr(launch, "stop_unit", unstoppable)
+    await manager.start()
+    try:
+        assert ("project", "repo-a") in manager._unresolved
+        # The alias is renamed: repo-a is dropped and repo-b now names the
+        # very checkout the stranded unit may still own.
+        manifest.repositories = [item for item in manifest.repositories if item.alias != "repo-a"]
+        manifest.repository_map["repo-b"].path = str(checkout)
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
     finally:
         await manager.close()
 
