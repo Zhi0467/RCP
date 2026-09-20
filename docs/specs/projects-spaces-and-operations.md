@@ -178,10 +178,12 @@ A session record is finished only when its unit is known to be gone. Ending a
 mirrored remote session confirms the stop explicitly rather than trusting the
 far side's hangup handler, and a stop that cannot be confirmed leaves the
 record unfinished, because an unfinished record is what the next startup
-reconciles. A session whose SSH has already exited is not confirmed: a dead
-link cannot be reached, and a supervisor that exited has run its own cleanup.
-Server shutdown leaves the same unfinished record rather than waiting on the
-network for every live session.
+reconciles. A session whose SSH has already exited is confirmed the same way,
+over a fresh connection: the supervisor writes its completion marker before the
+cleanup that can still fail, and reports that failure only through an exit
+status a dropped link produces too, so a finished shell says nothing about
+whether its unit went with it. Server shutdown leaves the same unfinished
+record rather than waiting on the network for every live session.
 
 Startup reconciliation is best effort per record and never refuses the server a
 boot. Each record is reconciled under its own guard, so no way of being

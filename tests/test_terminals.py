@@ -1352,8 +1352,55 @@ async def test_remote_linux_probe_failure_cannot_launch_cooperative(
 
 
 @pytest.mark.asyncio
+async def test_an_unconfirmed_remote_unit_blocks_a_second_shell(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A supervisor can exit with its own cleanup still failed.
+
+    `run_session` writes the completion marker, then raises out of its own
+    `stop_unit`, and reports that only through an exit status a dropped link
+    produces too. Retiring the record on that evidence would hide a live unit
+    from startup and let a later open put a second shell on the checkout.
+    """
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "reachable", "Ready.")
+    )
+    monkeypatch.setattr(
+        "rcp.terminals.manager.RemoteRunStage", lambda host: _RemoteScopeStage(host=host)
+    )
+    monkeypatch.setattr(
+        remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
+    )
+
+    def unconfirmed(*args):
+        raise TerminalUnavailable("systemctl is unavailable on the execution machine.")
+
+    monkeypatch.setattr(remote, "stop_remote_unit", unconfirmed)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        manager.sessions[session.session_id].process.returncode = 255
+        await manager.sweep()
+        assert session.ended_at is None
+        receipt = json.loads((manager.directory / f"{session.session_id}.json").read_text())
+        assert receipt["ended_at"] is None
+        assert manager.list("project") == []
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("completed", [False, True])
-async def test_remote_255_retires_session_with_completion_evidence(
+async def test_remote_255_confirms_the_unit_before_retiring(
     manifest, tmp_path, process_factory, monkeypatch, completed
 ):
     from rcp.terminals import remote
@@ -1373,11 +1420,8 @@ async def test_remote_255_retires_session_with_completion_evidence(
     monkeypatch.setattr(
         remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
     )
-    monkeypatch.setattr(
-        remote,
-        "stop_remote_unit",
-        lambda *args: pytest.fail("Dead link must retire without another SSH connection"),
-    )
+    confirmations = []
+    monkeypatch.setattr(remote, "stop_remote_unit", lambda *args: confirmations.append(args))
     await manager.start()
     try:
         session = await manager.open(**arguments(manifest))
@@ -1390,6 +1434,9 @@ async def test_remote_255_retires_session_with_completion_evidence(
         runtime.process.returncode = 255
         await manager.sweep()
         assert session.termination_reason == ("shell_exited" if completed else "link_dropped")
+        # The supervisor writes its completion marker before the cleanup that
+        # can fail, so a finished shell is not evidence the unit went with it.
+        assert confirmations
         assert session.ended_at
         assert manager.list("project") == []
         visible = bytearray()

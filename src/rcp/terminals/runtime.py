@@ -50,16 +50,18 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
     stopped = True
     if session.execution_host:
         # Closing this exact SSH PTY hangs up its remote supervisor, which stops
-        # the unit. That hangup is never acknowledged, so when this server is the
-        # one hanging up a live session, confirm the stop. An SSH that has already
-        # exited is a dead link or a supervisor that has run its own cleanup, and
-        # neither can be confirmed from here.
+        # the unit, and that hangup is never acknowledged. An SSH that exited on
+        # its own is no better evidence: the supervisor writes its completion
+        # marker before the cleanup that can still fail, and it reports that
+        # failure only through an exit status a dropped link produces too. A
+        # finished shell therefore says nothing about whether its unit went with
+        # it, so the stop is confirmed over a fresh connection either way.
         if runtime.process.poll() is None:
             runtime.process.terminate()
-            # Only a mirrored session has a unit. A cooperative supervisor owns
-            # a plain PTY, and its machine may have no systemctl to ask.
-            if session.containment == "mirrored":
-                stopped = await _confirm_remote_stop(manager, session)
+        # Only a mirrored session has a unit. A cooperative supervisor owns
+        # a plain PTY, and its machine may have no systemctl to ask.
+        if session.containment == "mirrored":
+            stopped = await _confirm_remote_stop(manager, session)
     elif session.containment == "mirrored":
         await asyncio.to_thread(launch.stop_unit, session.unit)
     else:
