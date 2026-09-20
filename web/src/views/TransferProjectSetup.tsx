@@ -1153,7 +1153,7 @@ export function TransferProjectSetup({
             {bundle.incoming_provisioning.operator_action && (
               <OperatorActionPanel
                 step={bundle.incoming_provisioning.operator_action}
-                sshTarget={selectedConnection?.operator_route?.ssh_target ?? null}
+                route={selectedConnection?.operator_route ?? null}
                 onRefresh={() => void refreshTransfer()}
               />
             )}

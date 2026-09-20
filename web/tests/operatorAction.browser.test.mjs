@@ -95,6 +95,14 @@ test("a human stop is ordered, says where each command runs, and copies its valu
       .click();
     assert.equal(await page.evaluate(() => document.body.dataset.refreshed), "yes");
 
+    // A direct route signs in as the service account, which cannot then
+    // elevate into itself, so it is not offered as the way into a command that
+    // expects the operator's own login.
+    await page.goto(`http://127.0.0.1:${port}/tests/fixtures/operatorAction.html?mode=direct_rcp`);
+    await page.waitForSelector(".provisioning-operator-action");
+    assert.ok((await page.locator(".operator-run-on .tag").count()) >= 2);
+    assert.equal(await page.locator(".operator-run-on code").count(), 0);
+
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close();

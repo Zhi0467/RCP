@@ -1,5 +1,6 @@
 import { Check, Clipboard, ExternalLink, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { ServerOperatorRoute } from "../desktopRuntime";
 import { formatCommandArgv } from "../projectSetup";
 import type { ServerExecutionContext, ServerStep } from "../types";
 
@@ -9,6 +10,16 @@ function executionLabel(context: ServerExecutionContext | null | undefined): str
   return context.shell_account === null
     ? "Run on the server"
     : `Run on the server as ${context.shell_account}`;
+}
+
+/**
+ * The OS account a saved operator route signs into, or null for the operator's
+ * own login. A direct route is validated to be `rcp@host`, so it lands in the
+ * service account itself rather than in a login that can elevate into it.
+ */
+function routeLandsAs(route: ServerOperatorRoute | null): string | null {
+  if (!route || route.mode !== "direct_rcp") return null;
+  return route.ssh_target.split("@")[0] ?? null;
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {
@@ -39,15 +50,20 @@ function CopyButton({ value, label }: { value: string; label: string }) {
 function CommandBlock({
   argv,
   context,
-  sshTarget,
+  route,
 }: {
   argv: string[];
   context: ServerExecutionContext | null | undefined;
-  sshTarget: string | null;
+  route: ServerOperatorRoute | null;
 }) {
   const command = formatCommandArgv(argv);
   const where = executionLabel(context);
-  const entry = where && sshTarget ? `ssh ${sshTarget}` : null;
+  // Only offer the saved route as the way in when it actually lands in the
+  // shell this command needs. A direct route signs in as the service account,
+  // which cannot then elevate into it, so pasting it beside a command that
+  // expects the operator's own login would strand them mid-stop.
+  const reaches = context != null && routeLandsAs(route) === context.shell_account;
+  const entry = where && route && reaches ? `ssh ${route.ssh_target}` : null;
   return (
     <>
       {where && (
@@ -92,11 +108,11 @@ function OperatorStep({ title, children }: { title?: string; children: React.Rea
  */
 export function OperatorActionPanel({
   step,
-  sshTarget = null,
+  route = null,
   onRefresh,
 }: {
   step: ServerStep;
-  sshTarget?: string | null;
+  route?: ServerOperatorRoute | null;
   onRefresh?: () => void;
 }) {
   const target =
@@ -164,7 +180,7 @@ export function OperatorActionPanel({
         {step.actions.map((action, index) =>
           action.kind === "command" ? (
             <OperatorStep key={index}>
-              <CommandBlock argv={action.argv} context={action.execution} sshTarget={sshTarget} />
+              <CommandBlock argv={action.argv} context={action.execution} route={route} />
             </OperatorStep>
           ) : (
             <OperatorStep key={index}>
@@ -174,11 +190,7 @@ export function OperatorActionPanel({
         )}
         {step.resume_argv.length > 0 && (
           <OperatorStep title="Resume setup">
-            <CommandBlock
-              argv={step.resume_argv}
-              context={step.resume_execution}
-              sshTarget={sshTarget}
-            />
+            <CommandBlock argv={step.resume_argv} context={step.resume_execution} route={route} />
             {onRefresh && (
               <div className="operator-run-on">
                 <button className="button primary tiny" type="button" onClick={onRefresh}>

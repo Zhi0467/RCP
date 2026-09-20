@@ -1378,7 +1378,7 @@ export function ProvisioningStatus({
       {request.operator_action && (
         <OperatorActionPanel
           step={request.operator_action}
-          sshTarget={connection?.operator_route?.ssh_target ?? null}
+          route={connection?.operator_route ?? null}
           onRefresh={onRefresh}
         />
       )}

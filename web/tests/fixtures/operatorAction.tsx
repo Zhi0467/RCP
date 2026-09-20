@@ -97,11 +97,19 @@ const step: ServerStep = {
   },
 } as ServerStep;
 
+// A direct route signs in as the service account itself, so the same stop must
+// render differently under each saved route.
+const mode = new URLSearchParams(window.location.search).get("mode");
+const route =
+  mode === "direct_rcp"
+    ? ({ ssh_target: "rcp@server.example", mode: "direct_rcp" } as const)
+    : ({ ssh_target: "operator@server.example", mode: "sudo_rcp" } as const);
+
 createRoot(document.getElementById("root")!).render(
   <div style={{ padding: 24, maxWidth: 760 }}>
     <OperatorActionPanel
       step={step}
-      sshTarget="operator@server.example"
+      route={route}
       onRefresh={() => {
         document.body.dataset.refreshed = "yes";
       }}
