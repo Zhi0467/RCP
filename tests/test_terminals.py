@@ -840,6 +840,11 @@ async def test_a_renamed_alias_cannot_open_over_the_old_alias_blocker(
         # very checkout the stranded unit may still own.
         manifest.repositories = [item for item in manifest.repositories if item.alias != "repo-a"]
         manifest.repository_map["repo-b"].path = str(checkout)
+        # The machine alias is renamed in the same settings pass. It is the
+        # label RCP gives a host, so the tree is unchanged and the blocker
+        # still speaks for it.
+        manifest.machines[0].alias = "workstation"
+        manifest.repository_map["repo-b"].machine = "workstation"
         with pytest.raises(TerminalUnavailable, match="may still be running"):
             await manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
     finally:

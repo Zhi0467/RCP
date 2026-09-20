@@ -55,6 +55,26 @@ def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[st
     return (repository.path, repository.machine, machine.host, machine.os_account)
 
 
+def manifest_checkout(manifest: Manifest, repository_alias: str) -> tuple[str, str, str]:
+    """The working tree this alias names: path, host and account.
+
+    A machine alias is the label RCP gives a host, not part of what makes two
+    things the same working tree, so it is absent here although
+    `manifest_registration` keeps it. Asking whether an alias still names what
+    a session opened on and asking whether a record speaks for the tree about
+    to be opened are different questions, and a rename answers them
+    differently.
+    """
+    repository = manifest.repository_map[repository_alias]
+    machine = manifest.machine_map[repository.machine]
+    return (repository.path, machine.host, machine.os_account)
+
+
+def session_checkout(session: TerminalSession) -> tuple[str, str, str]:
+    """The working tree this session opened on, as it recorded it."""
+    return (session.declared_path, session.execution_host, session.declared_account)
+
+
 # Every field of `TerminalSession` holds a string; two of them may be null
 # instead. `test_every_terminal_record_field_holds_a_string` fails if that
 # stops being true, because this check would then refuse valid records.
@@ -236,12 +256,14 @@ class TerminalManager:
         The alias alone does not find them all. Settings can drop an alias and
         register the same checkout under another name, and the old alias's
         blocker then names a unit on the very working tree the new alias is
-        about to open. What a record declared it opened on identifies it
-        across that rename. A record this version could not read declares
-        nothing, so its alias is all it has, which is why both are consulted.
+        about to open. The tree itself — path, host and account — identifies
+        it across that rename, and across a rename of the machine alias too,
+        which is a label rather than part of what makes two things one tree.
+        A record this version could not read declares nothing, so its alias is
+        all it has, which is why both are consulted.
         """
         target = (
-            manifest_registration(manifest, repository_alias)
+            manifest_checkout(manifest, repository_alias)
             if repository_alias in manifest.repository_map
             else None
         )
@@ -252,7 +274,7 @@ class TerminalManager:
             if key[0] == project_id
             and (
                 key[1] == repository_alias
-                or (target is not None and session_registration(session) == target)
+                or (target is not None and session_checkout(session) == target)
             )
         ]
         if not speaking:

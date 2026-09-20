@@ -209,12 +209,14 @@ is enough to refuse. They are told apart by the file each came from, never by
 an identifier a record claims, because a record this version cannot read can
 claim one another record already holds.
 
-They are found by the alias they were filed under and by what each record
-declared it opened on, because settings can drop an alias and register the
-same checkout under another name. A blocker filed under the old alias still
-names a unit on that working tree, and the new alias would otherwise open a
-second shell on it. A record this version could not read declares nothing, so
-its alias is all it has. So does one whose containment this
+They are found by the alias they were filed under and by the working tree each
+record declared it opened on — its path, host and account — because settings
+can drop an alias and register the same checkout under another name. A blocker
+filed under the old alias still names a unit on that working tree, and the new
+alias would otherwise open a second shell on it. A machine alias is the label
+RCP gives a host rather than part of what makes two things one tree, so
+renaming it changes no blocker's reach. A record this version could not read
+declares nothing, so its alias is all it has. So does one whose containment this
 version does not recognise, and one whose session identifier is not the name of
 the file holding it, because nothing here can confirm what any of them left
 running. Every record this application writes is named for the session in it,
