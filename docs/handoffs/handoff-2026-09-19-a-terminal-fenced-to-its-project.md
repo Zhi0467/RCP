@@ -1,8 +1,9 @@
 # A terminal in a project, fenced to its repositories
 
 Date: 2026-09-19
-Status: design proposed, not yet confirmed by a human. Nothing is implemented.
-The open questions at the end are unanswered and block the plan.
+Status: REFUTED as written. A gpt-6-astra review on 2026-09-19 broke the
+containment mechanism; two of its findings were reverified directly. Nothing is
+implemented, and one blocking question must be answered before a redesign.
 
 Close this handoff when a project member can open an interactive shell on a
 registered repository from the project UI, that shell runs every ordinary Git
@@ -48,8 +49,8 @@ shell as that account reads and writes:
 - `rcp-server/projects` — every project's checkout, including projects the
   member does not belong to, and their `.research` history. Invariants 1, 2,
   and 6 are bypassed by writing the files directly.
-- `rcp-server/credentials` — every project's Git deploy key, and the Claude
-  setup token.
+- `rcp-server/credentials` — every project's Git deploy key (the Claude
+  setup token lives under the data directory; see the correction below).
 - `/home/rcp/.codex` and `/home/rcp/.claude` — provider logins, usable off the
   machine.
 - `/home/rcp/.ssh` — the machine's outbound identities, including configured
@@ -66,83 +67,86 @@ puzzle, and it only has to be solved once.
 
 A mount namespace is not a puzzle. The paths are absent.
 
-## The shape
+## What the first design got wrong
 
-One interactive shell, per registered repository, opened from the project UI by
-a project member, running inside a namespace whose writable set is that one
-repository root.
+A `gpt-6-astra` review on 2026-09-19 refuted the mechanism this handoff
+originally proposed: a shell still running as `rcp`, fenced by `systemd-run`
+with `ProtectHome=yes` and a `ReadWritePaths` entry per repository root. Three
+findings are load-bearing, and the first two were reverified directly.
 
-Containment reuses the primitive the compute backend already runs:
-[`systemd_user.py`](../../src/rcp/compute_jobs/backends/systemd_user.py) starts
-jobs under `systemd-run` with `PrivateUsers=yes`, `ProtectSystem=strict`,
-`ProtectHome=read-only`, an explicit `ReadWritePaths` per writable root, and
-`ReadOnlyPaths` for protected paths. `rcp server compute probe` already verifies
-cgroup separation for it.
+**The service UID is itself machine authority.** The installed control socket is
+`/run/rcp/control.sock` ([`layout.py`](../../src/rcp/server_ops/layout.py)), not
+a path under the data directory, so no `ProtectHome` setting hides it. Its
+handler admits any peer whose uid is root *or the owning service uid*
+([`control.py`](../../src/rcp/server_ops/control.py)), which is exactly the
+proposed shell's identity; `PrivateUsers=yes` does not change the host uid.
+Member removal is reachable there, and the instance id the socket wants is
+published by `/api/health`. Hiding credential *files* while keeping the service
+*identity* is not containment.
 
-The terminal's profile differs from the compute profile in one deliberate way,
-and this is the decision the whole design rests on.
+**`.research` is inside a registered repository, not outside it.** The manifest
+requires `state.repository` to name a registered repository
+([`config.py`](../../src/rcp/config.py)) and canonical state is written to
+`<that repository>/.research/manifest.toml`
+([`setup.py`](../../src/rcp/setup.py)). A writable root therefore contains the
+canonical history, its projections, and its advisory lock namespace. The claim
+that `.research` was structurally excluded was simply false.
+[`agents/write_scope.py`](../../src/rcp/agents/write_scope.py) already builds
+explicit protected `.research` paths, including canonicalized ones; the original
+design ignored machinery that exists precisely for this.
 
-**`ProtectHome=yes`, not `read-only`.** Read-only still means readable, and the
-provider credentials are under `/home/rcp`. A compute job is RCP's own work; a
-member shell is a human with a keyboard. The repository root is re-exposed
-through its `ReadWritePaths` entry, which takes precedence over `ProtectHome`.
-The deploy key is re-exposed through `ReadOnlyPaths`, and nothing else under
-`/home/rcp` is visible at all.
+**`ProtectHome=yes` cannot be reopened.** It makes `/home`, `/root`, and
+`/run/user` inaccessible, and systemd drops mounts beneath an inaccessible
+entry, so nested `ReadWritePaths` exceptions do not re-expose a repository under
+`/home/rcp`. Selective exposure is `ProtectHome=tmpfs` with `BindPaths`. Not
+retested here — this checkout is macOS — but it is documented systemd behavior.
 
-Network stays on. `PrivateNetwork` is not set, because `git push` is the point.
+The review also corrected three smaller claims. The compute backend applies
+those properties only for `mirrored` containment and also admits `job_root`; its
+probe can succeed in cooperative-only mode, and
+[`compute-jobs.md`](../specs/compute-jobs.md) explicitly disclaims hostile
+same-account isolation, so a compute readiness result cannot authorize this
+feature. A readable deploy key is a *write* credential that survives being
+copied, so exposing it read-only is possession, not containment. And the Claude
+setup token lives under `<data_dir>/providers/...`, not in `rcp-server/credentials`
+as stated above.
 
-`.research` is never in the writable set. It is not excluded by a rule that
-someone could forget to apply; it is excluded because the writable set is built
-from the repository roots in the project manifest and `.research` is not one of
-them.
+## Where this leaves the design
 
-## Transport
+The expensive part was never PTY transport. It is separating member-controlled
+execution from RCP's machine authority. Any workable version needs a distinct
+execution identity that is not the service account, an independent clone rather
+than a linked worktree sharing `.git`, no reachable control or agent socket, and
+Git authentication that does not hand over the central deploy key.
 
-This is the expensive half. The repository has no websocket and no
-server-sent-events endpoint — `grep` over `src/rcp` and `web/src` finds neither.
-Every existing stream is polled. An interactive PTY needs:
+That is a materially larger feature than this handoff described, and its shape
+depends entirely on the question below.
 
-- a PTY allocated inside the fenced unit;
-- a bidirectional byte channel from the browser to that PTY;
-- a session lifecycle, so a closed tab does not leak a shell;
-- an idle timeout in [`limits.py`](../../src/rcp/limits.py);
-- a terminal emulator in the Web app.
+## The question that precedes the others
 
-A `RepositoryConfig` is `(alias, machine, path)` and a `MachineConfig` carries a
-`host` that is empty for the local machine
-([`config.py`](../../src/rcp/config.py)). So the target may be the server itself
-or a remote execution account over SSH, and the remote case reuses the existing
-pattern of shipping a module's source to the host, as
-[`transport/`](../../src/rcp/transport/) already does throughout.
+**What authority may member-controlled code hold on the server?**
 
-## What this is not
+RCP's existing provider containment assumes cooperative inputs
+([`providers-and-containment.md`](../specs/providers-and-containment.md)). A
+member terminal either keeps that assumption — convenience for colleagues who
+could already ask an agent to run anything — or breaks it, and then needs
+hostile-code isolation, credential delegation with revocation, and adversarial
+verification of its own.
 
-- Not a machine console. The fence is per repository, not per server.
-- Not a graph channel. `patch.json` in the task stage remains the only way a
-  graph changes (invariant 4b). A terminal writes files and nothing else.
-- Not an administrator role. It grants no capability over projects the member is
-  not a member of.
-- Not a replacement for the operator's own SSH access. Installation, backup,
-  restore, and release update stay where they are.
+Answer that and the remaining questions resolve:
 
-## Open questions
+1. **Execution identity.** Separate account, container, or VM.
+2. **Git credential.** Member credentials, a scoped auth broker, or none.
+3. **Repository ownership.** Independent clone versus shared `.git`, and what
+   happens to refs, config, and hooks a later service-account operation runs.
+4. **What survives membership loss.** A copied key does not expire.
+5. **Audit.** Session metadata — member, target, profile, termination — is
+   available without recording terminal bytes.
 
-1. **Remote machines.** `systemd-run --user` is Linux-only, and the compute
-   backend already treats macOS as a separate ownership case. A repository on a
-   remote machine with no comparable fence can be refused, or offered unfenced
-   with the difference stated. Refusing is the safer default and the less useful
-   product.
-2. **Concurrency with agent work.** A member editing the working tree while a
-   Work turn runs in the same checkout will collide. The conversation-worktree
-   machinery already exists; whether the terminal gets its own worktree or
-   shares the checkout changes the design materially.
-3. **Audit.** Whether a session records anything durable, and if so what. A
-   transcript is a credential-leak surface; no record at all means a
-   corrupted working tree has no history.
+Remote execution machines stay out of scope until the local case is settled.
 
 ## Closure condition
 
-A member opens a terminal on a registered repository from the project UI,
-completes a real conflicted `git rebase -i` in it, and a check proves that the
-same shell cannot read `rcp-server/data`, another project's checkout, or
-`/home/rcp/.claude`.
+Deliberately not yet written. The previous one tested three reads and a rebase,
+and would have passed a shell that could still reach `/run/rcp/control.sock` and
+rewrite `.research`.
