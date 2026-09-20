@@ -200,6 +200,16 @@ def remote_project_deploy_key_path(
     )
 
 
+def remote_project_deploy_key_relative_path(project_id: str, alias: str) -> PurePosixPath:
+    """The deploy key's path relative to the remote account's home.
+
+    Only the far side knows its own home, so a launch sends this and the remote
+    joins it. Deriving it from the absolute form keeps one owner for the layout.
+    """
+    home = PurePosixPath("/home")
+    return remote_project_deploy_key_path(str(home), project_id, alias).relative_to(home)
+
+
 def server_service_unit_text() -> str:
     return (
         importlib.resources.files("rcp.server_ops")
@@ -223,6 +233,7 @@ __all__ = [
     "DEFAULT_SERVER_LAYOUT",
     "ServerLayout",
     "project_deploy_key_relative_path",
+    "remote_project_deploy_key_relative_path",
     "remote_credentials_root",
     "remote_projects_root",
     "remote_project_deploy_key_path",

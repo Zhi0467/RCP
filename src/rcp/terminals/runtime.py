@@ -13,7 +13,12 @@ from rcp.limits import (
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
 from rcp.terminals import launch, remote
-from rcp.terminals.models import TerminalRuntime, TerminalSession, TerminalUnavailable
+from rcp.terminals.models import (
+    DETACHED,
+    TerminalRuntime,
+    TerminalSession,
+    TerminalUnavailable,
+)
 from rcp.terminals.utilities import save_metadata, timestamp
 
 if TYPE_CHECKING:
@@ -51,7 +56,10 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
         # neither can be confirmed from here.
         if runtime.process.poll() is None:
             runtime.process.terminate()
-            stopped = await _confirm_remote_stop(manager, session)
+            # Only a mirrored session has a unit. A cooperative supervisor owns
+            # a plain PTY, and its machine may have no systemctl to ask.
+            if session.containment == "mirrored":
+                stopped = await _confirm_remote_stop(manager, session)
     elif session.containment == "mirrored":
         await asyncio.to_thread(launch.stop_unit, session.unit)
     else:
@@ -124,10 +132,11 @@ def read_ready(runtime: TerminalRuntime) -> bool:
     # leak its shell forever. Only the member's input renews the lifetime.
     for queue in list(runtime.subscribers):
         if queue.full():
+            # This viewer cannot keep up. Detaching it is not an ending.
             runtime.subscribers.remove(queue)
             while not queue.empty():
                 queue.get_nowait()
-            queue.put_nowait(None)
+            queue.put_nowait(DETACHED)
         else:
             queue.put_nowait(chunk)
     if not runtime.subscribers:

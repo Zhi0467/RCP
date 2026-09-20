@@ -13,6 +13,18 @@ class TerminalUnavailable(RuntimeError):
     """The required terminal launch or cleanup could not be completed."""
 
 
+class SubscriberDetached:
+    """One viewer fell behind its own output; the session is unaffected.
+
+    Ending a session uses ``None``. Reusing that sentinel here would report a
+    live shell as terminated to whoever was merely slow.
+    """
+
+
+DETACHED = SubscriberDetached()
+TerminalFrame = bytes | None | SubscriberDetached
+
+
 @dataclass
 class TerminalSession:
     session_id: str
@@ -37,5 +49,5 @@ class TerminalRuntime:
     master_fd: int
     last_activity: float
     replay: bytearray = field(default_factory=bytearray)
-    subscribers: set[asyncio.Queue[bytes | None]] = field(default_factory=set)
+    subscribers: set[asyncio.Queue[TerminalFrame]] = field(default_factory=set)
     completion: CompletionParser | None = None

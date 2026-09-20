@@ -1,15 +1,28 @@
 # A terminal in a project, fenced to its repositories
 
 Date: 2026-09-19
-Status: design confirmed by the human on 2026-09-19, after a gpt-6-astra review
-refuted the original containment mechanism and two of its findings were
-reverified directly. The trust model and the collision behavior are settled.
-Nothing is implemented; this handoff is awaiting a start.
+Status: implemented and under review on the branch. The design was confirmed on
+2026-09-19 after a gpt-6-astra review refuted the original containment
+mechanism and two of its findings were reverified directly. The trust model and
+the collision behavior are settled.
+
+Implemented: the Terminals destination, local and remote backends, the mirrored
+mount profile and its preflight, the capability probe, the session lifetime and
+its cleanup, and Git access including a remote team checkout's deploy key. A
+live run against a real Linux execution machine opened a shell on every
+registered repository and returned real `git status` output.
+
+Remaining: the merge qualification below — one run on a real Linux machine
+covering mounts, interactive Git with a deploy key, PTY resize, orphan cleanup,
+and a restart while an unfinished record names an unreachable host.
 
 Close this handoff when a project member can open an interactive shell on a
 registered repository from the project UI, that shell runs every ordinary Git
-command including the interactive ones, and the kernel — not a command filter —
-keeps it out of the control plane, other projects, and provider credentials.
+command including the interactive ones, and the mount profile gives the member
+accident resistance against the control plane, other projects, and provider
+credentials — which is the honest claim the
+[decision](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md)
+settles, not isolation from a deliberate member.
 
 ## The problem
 
@@ -210,13 +223,16 @@ A running Work turn is marked twice: a strip above the active terminal and a
 mark on that session's rail row, so it is visible from a session the member is
 not looking at.
 
-*Remaining sub-decision:* whether the Terminals tab appears for a project whose
-repositories are all remote. Hiding it is cleaner; always showing it is more
-predictable. Either is defensible, and the mockup cannot settle it.
+The Terminals tab always appears for a project with registered repositories,
+including one whose repositories are all remote and whose probes are still
+pending or have failed. Predictability won: a tab that comes and goes with a
+probe result is harder to trust than one that explains itself.
 
-**Scope.** Repositories on the server itself. A repository on a remote execution
-machine shows why the terminal is unavailable there rather than offering a
-weaker one. Remote support is a later handoff, not a later commit.
+**Scope.** Repositories on the server itself and on remote execution machines.
+Remote arrived in this work rather than a later handoff, because every
+repository in the requesting human's projects is remote and a server-only
+terminal would not have been usable by the person who asked for it. A machine
+that cannot host a terminal says why instead of offering a weaker one.
 
 ## What this is not
 

@@ -162,14 +162,40 @@ removal ends the shell, including detached sessions. A viewing member who loses
 access is disconnected independently. A deleted or retired project's sessions
 also lose membership and end.
 
+A viewer that cannot keep up with its own output is detached, not ended: the
+shell keeps running and the view offers a reconnect. Reusing the session-end
+signal there would report a live shell as terminated.
+
 Sessions outlive the Terminals view and disconnected browsers. Only terminal
 input renews the 30-minute idle lifetime in `limits.py`; output and passive
 attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
 membership, process exit, and idle expiry every five seconds. Clean server
 shutdown and maintenance end sessions. For mirrored sessions, startup stops
 orphan systemd units named in this application's metadata before admitting new
-sessions, including launch intents persisted before a crash. Failure to stop a
-unit remains visible and retryable.
+sessions, including launch intents persisted before a crash.
+
+A session record is finished only when its unit is known to be gone. Ending a
+mirrored remote session confirms the stop explicitly rather than trusting the
+far side's hangup handler, and a stop that cannot be confirmed leaves the
+record unfinished, because an unfinished record is what the next startup
+reconciles. A session whose SSH has already exited is not confirmed: a dead
+link cannot be reached, and a supervisor that exited has run its own cleanup.
+Server shutdown leaves the same unfinished record rather than waiting on the
+network for every live session.
+
+Startup reconciliation is best effort per record and never refuses the server a
+boot. An unreadable record is left alone, a record naming a unit this data
+directory does not own is retired as a unit-identity mismatch without a stop
+attempt, and a unit that cannot be stopped keeps its unfinished record for a
+later startup. A launch that fails finishes its own record instead, so a
+failure leaves no intent for startup to chase. Failure to stop a unit remains
+visible and retryable.
+
+Opening a session holds the manager lock only to admit the request and to
+publish the result. The capability probe, remote repository resolution, and the
+launch run outside it, so one unreachable machine cannot stall another member's
+open, end, or the lifecycle sweep. A second open for a repository already
+opening is refused rather than queued behind it.
 
 A cooperative session is a server-owned PTY with a plain shell in the repository,
 using the scrubbed environment and no mount profile. Normal termination hangs
@@ -186,7 +212,8 @@ machine's source-shipped capability probe supplies its OS, its prerequisites,
 and its systemd version. It does not require lingering for the execution
 account, because a terminal's manager need only outlive its own session.
 `TerminalManager` caches one probe per machine for its lifetime, including failed
-results. A cache miss schedules background work and projects pending without
+results, and caches the local machine's capability the same way rather than
+spawning its probe processes on every repositories poll. A cache miss schedules background work and projects pending without
 blocking the route. Changed machine metadata invalidates the matching result;
 the explicit terminal Refresh action invalidates the project's machine results.
 An older in-flight result cannot replace a newer probe.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -266,6 +268,165 @@ async def test_restart_cleans_only_own_unfinished_metadata(tmp_path, process_fac
         recorded = json.loads((manager.directory / "test.json").read_text())
         assert recorded["termination_reason"] == "server_restart"
         assert recorded["ended_at"]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_survives_a_record_whose_unit_cannot_be_stopped(
+    tmp_path, monkeypatch, caplog
+):
+    """`terminals.start()` is the first startup owner, so raising out of it
+    refuses the server a boot until someone hand-deletes a JSON record.
+    """
+    from rcp.terminals import remote
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    session = TerminalSession(
+        session_id="stranded",
+        project_id="project",
+        member_id="member",
+        repository_id="repo",
+        path="/checkout",
+        started_at="start",
+        last_activity_at="start",
+        unit=f"{manager._unit_prefix}-stranded",
+        containment="mirrored",
+        execution_host="worker.invalid",
+    )
+    save_metadata(manager.directory, session)
+
+    def unreachable(*args):
+        raise TerminalUnavailable("The execution machine is unreachable.")
+
+    monkeypatch.setattr(remote, "stop_remote_unit", unreachable)
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        recorded = json.loads((manager.directory / "stranded.json").read_text())
+        # Retained unfinished: the record is the retry.
+        assert recorded["ended_at"] is None
+        assert any("stranded" in message or "retries" in message for message in caplog.messages)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_retires_a_record_belonging_to_another_data_directory(tmp_path, monkeypatch):
+    """The unit prefix hashes the data directory, so moving it makes every
+    unfinished record foreign. That must not be a permanent startup failure.
+    """
+    from rcp.terminals import remote
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    session = TerminalSession(
+        session_id="foreign",
+        project_id="project",
+        member_id="member",
+        repository_id="repo",
+        path="/checkout",
+        started_at="start",
+        last_activity_at="start",
+        unit="rcp-terminal-000000000000-foreign",
+        containment="mirrored",
+    )
+    save_metadata(manager.directory, session)
+    monkeypatch.setattr(
+        remote,
+        "stop_remote_unit",
+        lambda *args: pytest.fail("A unit this directory does not own is not ours to stop"),
+    )
+    monkeypatch.setattr(
+        launch, "stop_unit", lambda *args: pytest.fail("A foreign unit is not ours to stop")
+    )
+    await manager.start()
+    try:
+        recorded = json.loads((manager.directory / "foreign.json").read_text())
+        assert recorded["ended_at"]
+        assert recorded["termination_reason"] == "unit_identity_mismatch"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_one_blocked_launch_does_not_stall_another_repository(
+    manifest, tmp_path, monkeypatch
+):
+    """Probe and launch run outside the manager lock. One unreachable machine
+    otherwise stalls every other member's open, end and sweep behind it.
+    """
+    released = threading.Event()
+    started = threading.Event()
+    slaves = []
+    blocking = True
+
+    def start(command, unit, **kwargs):
+        nonlocal blocking
+        if blocking:
+            blocking = False
+            started.set()
+            # Hold the worker thread the way an unreachable SSH handshake does.
+            released.wait(timeout=10)
+        master, slave = os.openpty()
+        tty.setraw(slave)
+        os.set_blocking(master, False)
+        slaves.append(slave)
+        return FakeProcess(), master
+
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
+    monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
+    monkeypatch.setattr(launch, "launch", start)
+    monkeypatch.setattr(launch, "stop_unit", lambda *args: None)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        blocked = asyncio.create_task(manager.open(**arguments(manifest)))
+        assert await asyncio.to_thread(started.wait, 5)
+        second = dict(arguments(manifest), repository_alias="repo-b")
+        # The first launch still holds its worker thread here.
+        await asyncio.wait_for(manager.open(**second), timeout=5)
+        assert [session.repository_id for session in manager.list("project")] == ["repo-b"]
+        released.set()
+        await asyncio.wait_for(blocked, timeout=10)
+        assert {session.repository_id for session in manager.list("project")} == {
+            "repo-a",
+            "repo-b",
+        }
+    finally:
+        released.set()
+        await manager.close()
+        for descriptor in slaves:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_that_falls_behind_is_detached_not_ended(
+    manifest, tmp_path, process_factory
+):
+    """A full subscriber queue must not reuse the session-end sentinel, or a
+    slow connection reports a running shell as terminated.
+    """
+    from rcp.terminals.models import DETACHED
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        runtime = manager.sessions[session.session_id]
+        queue = manager.attach("project", session.session_id)
+        while not queue.full():
+            queue.put_nowait(b"backlog")
+        os.write(process_factory[0][0], b"one more chunk")
+        while read_ready(runtime):
+            pass
+        assert queue.get_nowait() is DETACHED
+        assert queue not in runtime.subscribers
+        # The shell itself is untouched.
+        assert manager.list("project") == [session]
+        assert session.ended_at is None
     finally:
         await manager.close()
 
@@ -625,6 +786,10 @@ async def test_mirrored_launch_failure_never_creates_cooperative_session(
         assert manager.list("project") == []
         receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
         assert receipt["containment"] == "mirrored"
+        # The intent is persisted before the launch. A launch that produced no
+        # unit must finish its own record, or the next startup tries to stop one.
+        assert receipt["ended_at"]
+        assert receipt["termination_reason"] == "launch_failed"
     finally:
         await manager.close()
 

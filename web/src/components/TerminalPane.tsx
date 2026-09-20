@@ -54,7 +54,7 @@ export function TerminalPane({
     socket.binaryType = "arraybuffer";
     setStatus("Connecting…");
     setSessionEnded(false);
-    let ended = false;
+    let reported = false;
     const resize = () => {
       if (!element.clientWidth || !element.clientHeight) return;
       fit.fit();
@@ -88,8 +88,15 @@ export function TerminalPane({
         terminal.write(new Uint8Array(event.data));
       } else {
         const message = JSON.parse(event.data) as { type: string; reason?: string };
+        if (message.type === "detached") {
+          // The shell is still running; this viewer fell behind its own
+          // output. Keep the session in the rail and offer Reconnect.
+          reported = true;
+          setStatus(message.reason || "Output fell behind; reconnect to keep watching.");
+          return;
+        }
         if (message.type === "ended") {
-          ended = true;
+          reported = true;
           const reason = message.reason || "Session ended";
           setStatus(reason);
           setSessionEnded(true);
@@ -98,10 +105,10 @@ export function TerminalPane({
       }
     };
     socket.onerror = () => {
-      if (!ended) setStatus("Terminal connection failed");
+      if (!reported) setStatus("Terminal connection failed");
     };
     socket.onclose = (event) => {
-      if (!ended) setStatus(event.reason || "Terminal disconnected");
+      if (!reported) setStatus(event.reason || "Terminal disconnected");
     };
     return () => {
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;

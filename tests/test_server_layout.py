@@ -406,3 +406,20 @@ def test_systemd_asset_uses_the_fixed_non_reloading_service_boundary() -> None:
     assert "--reload" not in unit
     assert "0.0.0.0" not in unit
     assert "ProtectHome=true" not in unit
+
+
+def test_remote_deploy_key_relative_path_matches_the_absolute_layout():
+    """A terminal launch sends this relative path because only the far side
+    knows its home. It must stay the absolute layout with the home removed.
+    """
+    from rcp.server_ops.layout import (
+        remote_project_deploy_key_path,
+        remote_project_deploy_key_relative_path,
+    )
+
+    home = "/home/someone-else"
+    relative = remote_project_deploy_key_relative_path(PROJECT_ID, "repo-a")
+    assert PurePosixPath(home) / relative == remote_project_deploy_key_path(
+        home, PROJECT_ID, "repo-a"
+    )
+    assert not relative.is_absolute()

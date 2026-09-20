@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from pathlib import PurePosixPath
 from typing import Literal
 
 import anyio
@@ -24,12 +23,16 @@ from rcp.limits import (
     TERMINAL_MAX_DIMENSION,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
-from rcp.server_ops.layout import project_deploy_key_relative_path
-from rcp.terminals.backends import machine_capability
+from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
+from rcp.terminals.models import DETACHED
 
 router = APIRouter()
-_http_membership = [Depends(require_project_membership)]
+# 403 and 503 collide under any modulo of the status, so name them.
+_SOCKET_CLOSE_CODES = {401: 4401, 403: 4403, 404: 4404, 409: 4409, 503: 4503}
+# Taken as a value, not a bare dependency: it returns the canonical project id,
+# and a legacy URL alias must never reach membership checks or credential paths.
+_member = Depends(require_project_membership)
 
 
 class OpenTerminalRequest(BaseModel):
@@ -50,15 +53,15 @@ class TerminalResize(BaseModel):
     rows: int = Field(ge=1, le=TERMINAL_MAX_DIMENSION)
 
 
-@router.get("/api/projects/{project_id}/terminals/repositories", dependencies=_http_membership)
-async def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
+@router.get("/api/projects/{project_id}/terminals/repositories")
+async def repositories(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     work = running_repository_work(services.store, project_id, manifest)
     capabilities = {}
     for machine in manifest.machines:
         probe = services.terminals.probes.get(machine) if machine.host else None
-        capabilities[machine.alias] = await asyncio.to_thread(machine_capability, machine, probe)
+        capabilities[machine.alias] = await services.terminals.capability(machine, probe)
     result = []
     for repository in manifest.repositories:
         capability = capabilities[repository.machine]
@@ -84,18 +87,21 @@ async def repositories(project_id: str, request: Request) -> list[dict[str, obje
     return result
 
 
-@router.post("/api/projects/{project_id}/terminals/probe", dependencies=_http_membership)
-async def refresh_probes(project_id: str, request: Request) -> list[dict[str, object]]:
+@router.post("/api/projects/{project_id}/terminals/probe")
+async def refresh_probes(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     for machine in manifest.machines:
         if machine.host:
             services.terminals.probes.invalidate(machine)
-    return await repositories(project_id, request)
+    # Refresh is the one place a member asks for a fresh answer, so the
+    # local capability is re-read here too rather than on every poll.
+    services.terminals.invalidate_local_capability()
+    return await repositories(request, project_id)
 
 
-@router.get("/api/projects/{project_id}/terminals", dependencies=_http_membership)
-def sessions(project_id: str, request: Request) -> list[dict[str, object]]:
+@router.get("/api/projects/{project_id}/terminals")
+def sessions(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     work = running_repository_work(services.store, project_id, manifest)
@@ -106,13 +112,10 @@ def sessions(project_id: str, request: Request) -> list[dict[str, object]]:
 
 @router.post(
     "/api/projects/{project_id}/terminals",
-    dependencies=[
-        *_http_membership,
-        Depends(require_project_write_admission),
-    ],
+    dependencies=[Depends(require_project_membership), Depends(require_project_write_admission)],
 )
 async def open_session(
-    project_id: str, body: OpenTerminalRequest, request: Request
+    body: OpenTerminalRequest, request: Request, project_id: str = _member
 ) -> dict[str, object]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
@@ -122,7 +125,7 @@ async def open_session(
     repository = manifest.repository_map[body.repository_id]
     machine = manifest.machine_map[repository.machine]
     probe = await services.terminals.probes.ensure(machine) if machine.host else None
-    capability = await asyncio.to_thread(machine_capability, machine, probe)
+    capability = await services.terminals.capability(machine, probe)
     if capability.backend is None:
         raise HTTPException(409, capability.reason)
     try:
@@ -142,10 +145,7 @@ async def open_session(
         # which lives under the far account's home. Only that side knows the
         # home, so send the path relative to it.
         remote_key_relative = (
-            str(
-                PurePosixPath(".local/share/rcp/credentials")
-                / project_deploy_key_relative_path(project_id, body.repository_id)
-            )
+            str(remote_project_deploy_key_relative_path(project_id, body.repository_id))
             if machine.host and services.store.space_kind == "team"
             else None
         )
@@ -159,6 +159,10 @@ async def open_session(
             git_environment=environment,
             remote_git_key_relative=remote_key_relative,
         )
+    except PermissionError as exc:
+        # PermissionError is an OSError; catching it second would report a
+        # lost membership as a server fault instead of an unknown project.
+        raise HTTPException(404, "Project not found") from exc
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(503, str(exc)) from exc
     return terminal_session_payload(
@@ -166,8 +170,10 @@ async def open_session(
     )
 
 
-@router.delete("/api/projects/{project_id}/terminals/{session_id}", dependencies=_http_membership)
-async def end_session(project_id: str, session_id: str, request: Request) -> dict[str, bool]:
+@router.delete("/api/projects/{project_id}/terminals/{session_id}")
+async def end_session(
+    session_id: str, request: Request, project_id: str = _member
+) -> dict[str, bool]:
     try:
         await _api_services(request).terminals.end(project_id, session_id)
     except KeyError as exc:
@@ -209,7 +215,7 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
         project_id = _admit_socket(websocket, project_id)
         session = manager.get(project_id, session_id)
     except HTTPException as exc:
-        await websocket.close(code=4400 + exc.status_code % 100)
+        await websocket.close(code=_SOCKET_CLOSE_CODES.get(exc.status_code, 4400))
         return
     except KeyError:
         await websocket.close(code=4404)
@@ -235,7 +241,18 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
     async def send_output() -> None:
         while True:
             data = await queue.get()
-            _admit_socket(websocket, project_id)
+            # Admission is not rechecked per chunk: that is a synchronous store
+            # read on the event loop at full PTY throughput. `watch_admission`
+            # rechecks on the sweep interval and `receive_input` before every
+            # write, which is the direction that has to fail closed.
+            if data is DETACHED:
+                await websocket.send_json(
+                    {
+                        "type": "detached",
+                        "reason": "Output fell behind; reconnect to keep watching.",
+                    }
+                )
+                return
             if data is None:
                 await websocket.send_json(
                     {
@@ -264,7 +281,7 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
         for task in completed:
             task.result()
     except HTTPException as exc:
-        close_code = 4400 + exc.status_code % 100
+        close_code = _SOCKET_CLOSE_CODES.get(exc.status_code, 4400)
     except (ValueError, ValidationError, KeyError, OSError):
         close_code = 1008
     except (WebSocketDisconnect, asyncio.CancelledError):
