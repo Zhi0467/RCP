@@ -423,6 +423,39 @@ async def test_a_retained_record_refuses_a_reopen_until_its_unit_is_gone(
 
 
 @pytest.mark.asyncio
+async def test_startup_survives_a_record_whose_field_types_are_wrong(tmp_path, caplog):
+    """A dataclass enforces no types, so a record can carry a value that breaks
+    reconciliation itself rather than its construction: an unhashable project
+    id cannot become the key that blocks its repository.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "typed.json").write_text(
+        json.dumps(
+            {
+                "session_id": "typed",
+                "project_id": [],
+                "member_id": "member",
+                "repository_id": "repo",
+                "path": "/checkout",
+                "started_at": "start",
+                "last_activity_at": "start",
+                "unit": f"{manager._unit_prefix}-typed",
+                "containment": "a-containment-from-another-version",
+            }
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        # Left exactly as found, and the boot completed.
+        assert json.loads((manager.directory / "typed.json").read_text())["project_id"] == []
+        assert any("could not be reconciled" in message for message in caplog.messages)
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_startup_leaves_a_record_whose_containment_it_does_not_know(
     manifest, tmp_path, monkeypatch, caplog
 ):

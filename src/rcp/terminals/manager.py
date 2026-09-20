@@ -134,6 +134,70 @@ class TerminalManager:
     def invalidate_local_capability(self) -> None:
         self._local_capability = None
 
+    async def _reconcile_record(self, path: Path) -> None:
+        """Retire, retain or block one persisted record. Never raise past start()."""
+        try:
+            session = TerminalSession(**json.loads(path.read_text()))
+        except (OSError, TypeError, ValueError) as exc:
+            # TerminalSession is a dataclass, so a record written by another
+            # version raises TypeError rather than a validation error.
+            logger.warning("Terminal record %s is unreadable; leaving it: %s", path.name, exc)
+            return
+        if session.ended_at:
+            return
+        if session.containment not in {"mirrored", "cooperative"}:
+            # A dataclass does not enforce its Literal, so a version-skewed
+            # value would otherwise skip the unit stop and then be retired,
+            # hiding a possible mirrored shell from every later startup.
+            logger.warning(
+                "Terminal record %s has containment %r this version does not know; leaving it.",
+                session.session_id,
+                session.containment,
+            )
+            # It may name a running unit, so it also blocks its repository.
+            self.mark_unresolved(session)
+            return
+        if session.unit != f"{self._unit_prefix}-{session.session_id}":
+            # Another data directory wrote this record. Its unit is not ours
+            # to stop, and refusing to boot would need a hand deletion.
+            logger.warning(
+                "Terminal record %s names unit %s, which this data directory does not own.",
+                session.session_id,
+                session.unit,
+            )
+            session.ended_at = timestamp()
+            session.termination_reason = "unit_identity_mismatch"
+            save_metadata(self.directory, session)
+            return
+        if session.containment == "mirrored":
+            try:
+                if session.execution_host:
+                    await asyncio.to_thread(
+                        remote.stop_remote_unit,
+                        session.execution_host,
+                        session.unit,
+                        session.declared_account,
+                    )
+                else:
+                    await asyncio.to_thread(launch.stop_unit, session.unit)
+            except (
+                TerminalUnavailable,
+                OSError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as exc:
+                # The unfinished record is itself the retry. Keep it.
+                logger.warning(
+                    "Could not stop terminal unit %s; a later startup retries it: %s",
+                    session.unit,
+                    exc,
+                )
+                self.mark_unresolved(session)
+                return
+        session.ended_at = timestamp()
+        session.termination_reason = "server_restart"
+        save_metadata(self.directory, session)
+
     async def start(self) -> None:
         if self._started:
             return
@@ -146,66 +210,19 @@ class TerminalManager:
         # unreachable machine must never be able to refuse the server a boot.
         for path in self.directory.glob("*.json"):
             try:
-                session = TerminalSession(**json.loads(path.read_text()))
-            except (OSError, TypeError, ValueError) as exc:
-                # TerminalSession is a dataclass, so a record written by another
-                # version raises TypeError rather than a validation error.
-                logger.warning("Terminal record %s is unreadable; leaving it: %s", path.name, exc)
-                continue
-            if session.ended_at:
-                continue
-            if session.containment not in {"mirrored", "cooperative"}:
-                # A dataclass does not enforce its Literal, so a version-skewed
-                # value would otherwise skip the unit stop and then be retired,
-                # hiding a possible mirrored shell from every later startup.
+                await self._reconcile_record(path)
+            except Exception as exc:
+                # Startup runs before every other owner, and nothing here is
+                # worth a boot. A record can be truncated, carry fields this
+                # version does not know, or carry values of the wrong type
+                # entirely; a dataclass enforces none of that. Guarding the
+                # whole record ends that class rather than naming each way
+                # one can be malformed. An unreconciled record stays put.
                 logger.warning(
-                    "Terminal record %s has containment %r this version does not know; leaving it.",
-                    session.session_id,
-                    session.containment,
+                    "Terminal record %s could not be reconciled; leaving it: %s",
+                    path.name,
+                    exc,
                 )
-                # It may name a running unit, so it also blocks its repository.
-                self.mark_unresolved(session)
-                continue
-            if session.unit != f"{self._unit_prefix}-{session.session_id}":
-                # Another data directory wrote this record. Its unit is not ours
-                # to stop, and refusing to boot would need a hand deletion.
-                logger.warning(
-                    "Terminal record %s names unit %s, which this data directory does not own.",
-                    session.session_id,
-                    session.unit,
-                )
-                session.ended_at = timestamp()
-                session.termination_reason = "unit_identity_mismatch"
-                save_metadata(self.directory, session)
-                continue
-            if session.containment == "mirrored":
-                try:
-                    if session.execution_host:
-                        await asyncio.to_thread(
-                            remote.stop_remote_unit,
-                            session.execution_host,
-                            session.unit,
-                            session.declared_account,
-                        )
-                    else:
-                        await asyncio.to_thread(launch.stop_unit, session.unit)
-                except (
-                    TerminalUnavailable,
-                    OSError,
-                    RuntimeError,
-                    subprocess.SubprocessError,
-                ) as exc:
-                    # The unfinished record is itself the retry. Keep it.
-                    logger.warning(
-                        "Could not stop terminal unit %s; a later startup retries it: %s",
-                        session.unit,
-                        exc,
-                    )
-                    self.mark_unresolved(session)
-                    continue
-            session.ended_at = timestamp()
-            session.termination_reason = "server_restart"
-            save_metadata(self.directory, session)
         self._started = True
         self._sweeper = asyncio.create_task(sweep_loop(self))
 

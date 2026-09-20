@@ -184,7 +184,10 @@ Server shutdown leaves the same unfinished record rather than waiting on the
 network for every live session.
 
 Startup reconciliation is best effort per record and never refuses the server a
-boot. An unreadable record is left alone, as is one whose containment this
+boot. Each record is reconciled under its own guard, so no way of being
+malformed — truncated, carrying fields this version does not know, or carrying
+values of the wrong type — can abort startup; an unreconciled record stays as
+it was found. An unreadable record is left alone, as is one whose containment this
 version does not recognise, because retiring it would skip a unit stop it
 cannot reason about; that record also blocks its repository, since nothing
 here can confirm what it left running. A record naming a unit this data directory does not own is
