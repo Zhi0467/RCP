@@ -56,7 +56,9 @@ backend pattern. Selection is per machine and independent of space kind:
 - `--expand-environment=no` exists only from systemd 254. A probe reports the
   manager's version and a launch passes the option only where it exists; below
   it, the launch refuses any path or value containing `$` rather than running
-  under an expansion it cannot disable.
+  under an expansion it cannot disable. The shipped preflight also sets a value
+  and reads it back, so a manager that rewrote the command line is caught
+  whatever version it reports.
 - Other operating systems, including macOS, report `cooperative` and use a
   plain PTY in the registered repository. Canonical-state protection is
   unavailable on that machine: there is no canonical-state fence.
@@ -81,6 +83,14 @@ so declared paths and remote symlink targets receive the same refusal checks.
 An explicit shell completion marker distinguishes a shell exiting 255 from an
 SSH connection failure; exit 255 without completion reports the lost link and
 ends the session. RCP never reconnects into a replacement shell.
+
+Hanging up a live remote session also confirms that its unit stopped, through
+one explicit remote stop. A stop that cannot be confirmed leaves the session
+record unfinished, so the next startup reconciles that unit instead of skipping
+it. A session whose SSH has already exited is never confirmed: a dead link
+cannot be reached, and a supervisor that exited has already run its own
+cleanup. Server shutdown skips the round trip and leaves the same unfinished
+record rather than waiting on the network.
 
 The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
 with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and

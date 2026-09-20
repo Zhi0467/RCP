@@ -12,8 +12,8 @@ from rcp.limits import (
     TERMINAL_STOP_TIMEOUT_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
-from rcp.terminals import launch
-from rcp.terminals.models import TerminalRuntime
+from rcp.terminals import launch, remote
+from rcp.terminals.models import TerminalRuntime, TerminalSession, TerminalUnavailable
 from rcp.terminals.utilities import save_metadata, timestamp
 
 if TYPE_CHECKING:
@@ -42,11 +42,16 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
 
 async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
     session = runtime.session
+    stopped = True
     if session.execution_host:
-        # Closing this exact SSH PTY hangs up its remote supervisor. A lost link
-        # must retire locally even when no further SSH cleanup can be reached.
+        # Closing this exact SSH PTY hangs up its remote supervisor, which stops
+        # the unit. That hangup is never acknowledged, so when this server is the
+        # one hanging up a live session, confirm the stop. An SSH that has already
+        # exited is a dead link or a supervisor that has run its own cleanup, and
+        # neither can be confirmed from here.
         if runtime.process.poll() is None:
             runtime.process.terminate()
+            stopped = await _confirm_remote_stop(manager, session)
     elif session.containment == "mirrored":
         await asyncio.to_thread(launch.stop_unit, session.unit)
     else:
@@ -69,9 +74,31 @@ async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason
         queue.put_nowait(None)
     runtime.replay.clear()
     session.state = "idle"
-    session.ended_at = timestamp()
     session.termination_reason = reason
+    if stopped:
+        session.ended_at = timestamp()
     save_metadata(manager.directory, session)
+
+
+async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSession) -> bool:
+    """Report whether the remote unit is known to be gone.
+
+    An unfinished persisted intent is what makes the next startup reconcile a
+    unit, so a stop this server cannot confirm must leave one behind.
+    """
+    if not manager._started:
+        # Shutdown must not wait on the network for every live session.
+        return False
+    try:
+        await asyncio.to_thread(remote.stop_remote_unit, session.execution_host, session.unit)
+    except TerminalUnavailable as exc:
+        logger.warning(
+            "Terminal unit %s may survive on its execution machine; startup will retry: %s",
+            session.unit,
+            exc,
+        )
+        return False
+    return True
 
 
 def read_ready(runtime: TerminalRuntime) -> bool:

@@ -444,7 +444,15 @@ def test_collected_unit_cleanup_accepts_explicit_not_found(monkeypatch):
             subprocess.CompletedProcess([], 4, "not-found\n", ""),
         ]
     )
-    monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
+    # Stopping needs systemctl alone, so the launch prerequisites are absent here.
+    monkeypatch.setattr(
+        launch.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None
+    )
+    monkeypatch.setattr(
+        launch,
+        "availability_diagnostic",
+        lambda: pytest.fail("Retiring a running unit must not recheck launch prerequisites"),
+    )
     monkeypatch.setattr(launch.subprocess, "run", lambda *args, **kwargs: next(responses))
     launch.stop_unit("already-collected")
 
@@ -840,6 +848,52 @@ async def test_remote_255_retires_session_with_completion_evidence(
         assert bytes(visible) == (b"last output" if completed else b"")
         receipt = json.loads((manager.directory / f"{session.session_id}.json").read_text())
         assert receipt["termination_reason"] == session.termination_reason
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
+    manifest, tmp_path, monkeypatch, process_factory, confirmed
+):
+    """Hanging up the SSH PTY asks the remote supervisor to stop its unit, but
+    nothing acknowledges that. An unconfirmed stop must leave the intent
+    unfinished so the next startup reconciles the unit instead of skipping it.
+    """
+    from rcp.terminals import remote
+    from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+
+    from .test_write_scope import _remote_manifest, _RemoteScopeStage
+
+    manifest = _remote_manifest(manifest)
+    manager = TerminalManager(tmp_path / "data", lambda *args: True)
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "reachable", "Ready.")
+    )
+    monkeypatch.setattr(
+        "rcp.terminals.manager.RemoteRunStage", lambda host: _RemoteScopeStage(host=host)
+    )
+    monkeypatch.setattr(
+        remote, "start_remote", lambda host, **kwargs: launch.launch(["ssh-double"], None)
+    )
+    stops = []
+
+    def stop(host, unit):
+        stops.append((host, unit))
+        if not confirmed:
+            raise TerminalUnavailable("The execution machine is unreachable.")
+
+    monkeypatch.setattr(remote, "stop_remote_unit", stop)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        await manager.end("project", session.session_id)
+        assert stops == [(session.execution_host, session.unit)]
+        assert manager.list("project") == []
+        receipt = json.loads((manager.directory / f"{session.session_id}.json").read_text())
+        assert bool(receipt["ended_at"]) is confirmed
+        assert receipt["termination_reason"] == "ended"
     finally:
         await manager.close()
 

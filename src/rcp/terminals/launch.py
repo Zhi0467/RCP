@@ -190,9 +190,13 @@ def launch(
 
 
 def stop_unit(unit: str) -> None:
-    diagnostic = availability_diagnostic()
-    if diagnostic:
-        raise TerminalUnavailable(diagnostic)
+    # Retiring a running unit needs systemctl alone. Demanding the launch
+    # prerequisites would strand a live unit, and its shell, whenever
+    # systemd-run or findmnt stopped being available after it started.
+    if shutil.which("systemctl") is None:
+        raise TerminalUnavailable(
+            "Stopping a terminal unit requires usable systemctl; not installed."
+        )
     try:
         result = subprocess.run(
             ["systemctl", "--user", "stop", unit],
