@@ -204,21 +204,14 @@ class TerminalManager:
                     stale.append((runtime, reason))
             if not stale:
                 return
-            outcomes = await asyncio.gather(
-                *(end_runtime(self, runtime, reason) for runtime, reason in stale),
-                return_exceptions=True,
+            failures = await self._end_each(stale)
+        for runtime, failure in failures:
+            logger.warning(
+                "Terminal session for repository %s could not be retired after its "
+                "registration changed; it is retried: %s",
+                runtime.session.repository_id,
+                failure,
             )
-        for (runtime, _), outcome in zip(stale, outcomes, strict=True):
-            # `gather` returns a cancellation rather than raising it.
-            if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
-                raise outcome
-            if isinstance(outcome, Exception):
-                logger.warning(
-                    "Terminal session for repository %s could not be retired after its "
-                    "registration changed; it is retried: %s",
-                    runtime.session.repository_id,
-                    outcome,
-                )
 
     async def _record_launch_failure(
         self, session: TerminalSession, reason: str = "launch_failed"
@@ -584,38 +577,50 @@ class TerminalManager:
                 await self._sweeper
             self._sweeper = None
         async with self._lock:
-            errors = await self._end_each(list(self.sessions.values()), "server_shutdown")
+            failures = await self._end_each(
+                [(runtime, "server_shutdown") for runtime in self.sessions.values()]
+            )
+        errors = [str(failure) for _, failure in failures]
         self._started = False
         await self.probes.close()
         if errors:
             raise TerminalUnavailable("; ".join(errors))
 
-    async def _end_each(self, runtimes: list[TerminalRuntime], reason: str) -> list[str]:
+    async def _end_each(
+        self, endings: list[tuple[TerminalRuntime, str]]
+    ) -> list[tuple[TerminalRuntime, Exception]]:
         """End these sessions at once rather than one timeout after another.
 
-        Shutdown and the update boundary both hold the instance lock until
-        their caller returns, and a replacement server waits only
-        `SERVER_SHUTDOWN_TIMEOUT_SECONDS` for the old one to go. A single stop
-        can spend its own timeout against a machine that has become
-        unreachable, so ending a project's worth of shells in turn outlasts
-        that window and the update reports that the old server never stopped.
-        Each one touches only its own runtime, and the two manager dictionaries
-        they write are keyed per session, so they can run together.
+        A single stop can spend its own timeout against a machine that has
+        become unreachable, and every caller here has something waiting behind
+        it. Shutdown and the update boundary hold the instance lock until they
+        return, and a replacement server waits only
+        `SERVER_SHUTDOWN_TIMEOUT_SECONDS` for the old one to go; a member is
+        waiting on the listing, open or attach that settles registrations; and
+        the lifecycle sweep cannot look at the next expired shell until this
+        one is dealt with, so one unreachable machine would hold back retiring
+        every other. Each ending touches only its own runtime, and the two
+        manager dictionaries they write are keyed per session, so they can run
+        together.
 
         Callers hold the manager lock; ending concurrently does not widen what
-        else may run. The idle sweep stays serial because nothing waits on it.
+        else may run. Each ending is reported against its own runtime, because
+        the caller names the failure by what it was ending.
         """
         outcomes = await asyncio.gather(
-            *(end_runtime(self, runtime, reason) for runtime in runtimes),
+            *(end_runtime(self, runtime, reason) for runtime, reason in endings),
             return_exceptions=True,
         )
-        for outcome in outcomes:
+        failures = []
+        for (runtime, _), outcome in zip(endings, outcomes, strict=True):
             # `gather` returns a cancellation rather than raising it. Only the
             # ordinary failures are collected here, as a serial loop's
             # `except Exception` did.
             if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
                 raise outcome
-        return [str(outcome) for outcome in outcomes if isinstance(outcome, Exception)]
+            if isinstance(outcome, Exception):
+                failures.append((runtime, outcome))
+        return failures
 
     async def open(
         self,
@@ -830,9 +835,11 @@ class TerminalManager:
 
     async def end_all(self, reason: str = "server_maintenance") -> None:
         async with self._lock:
-            errors = await self._end_each(list(self.sessions.values()), reason)
-        if errors:
-            raise TerminalUnavailable("; ".join(errors))
+            failures = await self._end_each(
+                [(runtime, reason) for runtime in self.sessions.values()]
+            )
+        if failures:
+            raise TerminalUnavailable("; ".join(str(failure) for _, failure in failures))
 
     def list(self, project_id: str) -> list[TerminalSession]:
         return [
@@ -887,33 +894,59 @@ class TerminalManager:
         # the controlling terminal after start_new_session, so notify explicitly.
         runtime.process.send_signal(signal.SIGWINCH)
 
+    def _expiry_reason(self, runtime: TerminalRuntime) -> str | None:
+        """Why this session must end now, or None while it may keep running.
+
+        Deciding this touches only local state: the membership store, the
+        child's exit status and the clock. Nothing here waits on a machine, so
+        every live session can be classified before the first stop begins.
+        """
+        session = runtime.session
+        if not self.membership_check(session.project_id, session.member_id):
+            return "membership_lost"
+        if runtime.process.poll() is not None:
+            # Drain completion evidence before classifying SSH's ambiguous 255.
+            while read_ready(runtime):
+                pass
+            return (
+                "link_dropped"
+                if session.execution_host
+                and runtime.process.poll() == 255
+                and runtime.completion.exit_code is None
+                else "shell_exited"
+            )
+        if time.monotonic() - runtime.last_activity >= TERMINAL_IDLE_TIMEOUT_SECONDS:
+            return "idle_timeout"
+        return None
+
     async def sweep(self) -> None:
+        """Retire every session whose lifetime has ended, in one pass.
+
+        Classification comes first and stops come second. An expired session
+        on a machine that has gone costs a stop timeout, so deciding and
+        stopping one at a time let that one shell delay even the membership
+        check for every session behind it, and `sweep_loop` sleeps again only
+        once the whole pass returns.
+        """
         errors = []
+        expired = []
         for runtime in list(self.sessions.values()):
-            session = runtime.session
             try:
-                if not self.membership_check(session.project_id, session.member_id):
-                    reason = "membership_lost"
-                elif runtime.process.poll() is not None:
-                    # Drain completion evidence before classifying SSH's ambiguous 255.
-                    while read_ready(runtime):
-                        pass
-                    reason = (
-                        "link_dropped"
-                        if session.execution_host
-                        and runtime.process.poll() == 255
-                        and runtime.completion.exit_code is None
-                        else "shell_exited"
-                    )
-                elif time.monotonic() - runtime.last_activity >= TERMINAL_IDLE_TIMEOUT_SECONDS:
-                    reason = "idle_timeout"
-                else:
-                    continue
-                # A route may end this session while an earlier stop yields.
-                async with self._lock:
-                    if self.sessions.get(session.session_id) is runtime:
-                        await end_runtime(self, runtime, reason)
+                reason = self._expiry_reason(runtime)
             except Exception as exc:
                 errors.append(str(exc))
+                continue
+            if reason is not None:
+                expired.append((runtime, reason))
+        if expired:
+            async with self._lock:
+                # A route may have ended one of these while this waited.
+                live = [
+                    (runtime, reason)
+                    for runtime, reason in expired
+                    if self.sessions.get(runtime.session.session_id) is runtime
+                ]
+                failures = await self._end_each(live)
+            errors.extend(str(failure) for _, failure in failures)
         if errors:
             raise TerminalUnavailable("; ".join(errors))

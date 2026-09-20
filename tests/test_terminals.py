@@ -1540,6 +1540,50 @@ async def test_stale_aliases_are_retired_together(manifest, tmp_path, process_fa
 
 
 @pytest.mark.asyncio
+async def test_expired_sessions_are_classified_before_any_stop(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """A stop can spend its timeout against a machine that has gone. Deciding
+    and stopping one session at a time let that one shell delay even the
+    membership check for every session behind it, and the loop sleeps again
+    only once the whole pass returns. An event proves the order without
+    timing anything.
+    """
+    revoked = False
+    classified = []
+    classified_before_each_stop = []
+
+    def membership(project, member):
+        if revoked:
+            classified.append(member)
+        return not revoked
+
+    def stop(unit):
+        classified_before_each_stop.append(len(classified))
+
+    manager = TerminalManager(tmp_path / "data", membership)
+    await manager.start()
+    try:
+        # The background sweeper would classify on its own schedule; this
+        # test drives the one pass it is making a claim about.
+        manager._sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await manager._sweeper
+        for alias in ("repo-a", "repo-b"):
+            await manager.open(**{**arguments(manifest), "repository_alias": alias})
+        assert len(manager.sessions) == 2
+        monkeypatch.setattr(launch, "stop_unit", stop)
+        revoked = True
+        await manager.sweep()
+        assert manager.list("project") == []
+        # Both shells were decided on before either stop began, so an
+        # unreachable machine cannot delay the decision about the other.
+        assert classified_before_each_stop == [2, 2]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_repointing_a_repository_does_not_hand_back_the_old_checkout(
     manifest, tmp_path, process_factory
 ):

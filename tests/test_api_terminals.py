@@ -437,14 +437,55 @@ def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
         # No POST is issued: the UI could not offer one.
         assert client.get(path).json() == []
         with (
-            pytest.raises(WebSocketDisconnect),
-            client.websocket_connect(f"{path}/{session_id}/ws"),
+            pytest.raises(WebSocketDisconnect) as refused,
+            client.websocket_connect(
+                f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
+            ),
         ):
-            pass
+            pytest.fail("A stale alias was attached to")
+        assert refused.value.code == 4404
         receipt = json.loads(
             (app.state.services.terminals.directory / f"{session_id}.json").read_text()
         )
         assert receipt["termination_reason"] == f"repository_{change}"
+
+
+def test_a_repoint_during_an_open_is_settled_by_the_socket_itself(tmp_path, terminal_pty):
+    """A POST reads the manifest once, and the probe and launch behind it can
+    outlast a repoint, so the session it answers with may already name a
+    checkout the project has stopped naming. The socket the UI attaches
+    through is reached by id, so it settles the registration itself rather
+    than trusting that a poll already has: the stale shell is retired instead
+    of handed over.
+    """
+    from rcp.api.dependencies import get_project_service
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+        session_id = opened.json()["session_id"]
+        moved = tmp_path / "moved-checkout"
+        (moved / ".research").mkdir(parents=True)
+        manifest = get_project_service(app.state.services.catalog, project_id).manifest
+        manifest.repository_map["paper-repo"].path = str(moved)
+
+        # No listing intervenes: the socket is the first thing to look.
+        with (
+            pytest.raises(WebSocketDisconnect) as refused,
+            client.websocket_connect(
+                f"{path}/{session_id}/ws", headers={"Origin": "http://testserver"}
+            ),
+        ):
+            pytest.fail("A shell on the checkout the alias left was handed over")
+        assert refused.value.code == 4404
+        receipt = json.loads(
+            (app.state.services.terminals.directory / f"{session_id}.json").read_text()
+        )
+        assert receipt["termination_reason"] == "repository_repointed"
+        assert receipt["declared_path"] != str(moved)
 
 
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
