@@ -129,8 +129,13 @@ async def open_session(
     # to what the alias names now, and any of them answering first would leave
     # a shell listed and attachable on the checkout it has stopped naming.
     # Only this alias: the answer is about it, and the polling list settles
-    # the rest without making this request wait on their machines.
-    await services.terminals.retire_repointed(project_id, manifest, body.repository_id)
+    # the rest without making this request wait on their machines. A stop that
+    # fails retains the session for retry, which is an operational failure and
+    # not a fault in this request.
+    try:
+        await services.terminals.retire_repointed(project_id, manifest, body.repository_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(503, str(exc)) from exc
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
     work = running_repository_work(services.store, project_id, manifest)

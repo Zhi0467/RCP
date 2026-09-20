@@ -705,7 +705,139 @@ async def test_startup_survives_a_record_whose_field_types_are_wrong(tmp_path, c
     try:
         # Left exactly as found, and the boot completed.
         assert json.loads((manager.directory / "typed.json").read_text())["project_id"] == []
-        assert any("could not be reconciled" in message for message in caplog.messages)
+        assert any("wrong kind" in message for message in caplog.messages)
+        # Nothing here names a repository, so nothing can be blocked for one.
+        assert manager._unresolved == {}
+    finally:
+        await manager.close()
+
+
+def test_every_terminal_record_field_holds_a_string():
+    """`_record_values_are_well_typed` assumes this, and refuses valid records
+    if it stops being true. A field of any other type has to be added to it
+    deliberately rather than discovered as a rejected record.
+    """
+    from dataclasses import fields
+    from typing import get_type_hints
+
+    from rcp.terminals.manager import _NULLABLE_RECORD_FIELDS
+
+    hints = get_type_hints(TerminalSession)
+    for field in fields(TerminalSession):
+        expected = str | None if field.name in _NULLABLE_RECORD_FIELDS else str
+        annotation = hints[field.name]
+        # A Literal of strings is still a string field.
+        if getattr(annotation, "__origin__", None) is not None and not isinstance(
+            annotation, type(str | None)
+        ):
+            annotation = str
+        assert annotation == expected, field.name
+
+
+@pytest.mark.asyncio
+async def test_every_unresolved_record_has_to_be_accounted_for(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """One repository can be spoken for by more than one retained record: a
+    unit that outlived a restart, and a record this version cannot read. If
+    only the last one tracked were kept, confirming it gone would unblock the
+    repository while the other may still be running.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    common = {
+        "project_id": "project",
+        "member_id": "member",
+        "repository_id": "repo-a",
+        "path": "/checkout",
+        "started_at": "start",
+        "last_activity_at": "start",
+    }
+    # A real unit this startup cannot stop, so its record is retained.
+    (manager.directory / "stranded.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "session_id": "stranded",
+                "unit": f"{manager._unit_prefix}-stranded",
+                "containment": "mirrored",
+            }
+        )
+    )
+    # A second record for the same repository that this version cannot read.
+    (manager.directory / "newer.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "session_id": "newer",
+                "unit": f"{manager._unit_prefix}-newer",
+                "containment": "mirrored",
+                "a_field_from_another_version": True,
+            }
+        )
+    )
+
+    stoppable = {"value": False}
+
+    def stop(unit):
+        if not stoppable["value"]:
+            raise TerminalUnavailable("systemctl user manager unavailable")
+
+    monkeypatch.setattr(launch, "stop_unit", stop)
+    await manager.start()
+    try:
+        assert len(manager._unresolved[("project", "repo-a")]) == 2
+        # The stoppable one is now confirmed gone, and the unreadable one is
+        # not; the repository stays refused on the strength of the second.
+        stoppable["value"] = True
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
+        assert [session.session_id for session in manager._unresolved[("project", "repo-a")]] == [
+            "newer"
+        ]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_remote_record_is_never_cleaned_up_as_a_local_one(tmp_path, caplog, monkeypatch):
+    """A wrong type that happens to be falsey reads as an ordinary empty
+    value. An `execution_host` of `[]` would send a remote record down the
+    local stop, which reports success against a unit that was never there and
+    retires the record while its remote unit may still be running.
+    """
+    from rcp.terminals import remote
+
+    monkeypatch.setattr(
+        launch, "stop_unit", lambda unit: pytest.fail("A remote record has no local unit")
+    )
+    monkeypatch.setattr(
+        remote, "stop_remote_unit", lambda *args: pytest.fail("This record cannot be trusted")
+    )
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "mistyped.json").write_text(
+        json.dumps(
+            {
+                "session_id": "mistyped",
+                "project_id": "project",
+                "member_id": "member",
+                "repository_id": "repo-a",
+                "path": "/checkout",
+                "started_at": "start",
+                "last_activity_at": "start",
+                "unit": f"{manager._unit_prefix}-mistyped",
+                "containment": "mirrored",
+                "execution_host": [],
+            }
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        # Left exactly as written: never retired, never rewritten.
+        assert "ended_at" not in json.loads((manager.directory / "mistyped.json").read_text())
+        assert ("project", "repo-a") in manager._unresolved
     finally:
         await manager.close()
 

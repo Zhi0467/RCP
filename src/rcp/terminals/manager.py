@@ -55,6 +55,24 @@ def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[st
     return (repository.path, repository.machine, machine.host, machine.os_account)
 
 
+# Every field of `TerminalSession` holds a string; two of them may be null
+# instead. `test_every_terminal_record_field_holds_a_string` fails if that
+# stops being true, because this check would then refuse valid records.
+_NULLABLE_RECORD_FIELDS = {"ended_at", "termination_reason"}
+
+
+def _record_values_are_well_typed(payload: object) -> bool:
+    """Whether a persisted record's values are the kind its fields declare."""
+    if not isinstance(payload, dict):
+        return False
+    for name, value in payload.items():
+        if value is None and name in _NULLABLE_RECORD_FIELDS:
+            continue
+        if not isinstance(value, str):
+            return False
+    return True
+
+
 def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
     """Why this session's alias no longer names it, or None while it still does."""
     if session.repository_id not in manifest.repository_map:
@@ -83,7 +101,7 @@ class TerminalManager:
         self.sessions: dict[str, TerminalRuntime] = {}
         self._opening: set[tuple[str, str]] = set()
         # Records left unfinished because a unit could not be confirmed gone.
-        self._unresolved: dict[tuple[str, str], TerminalSession] = {}
+        self._unresolved: dict[tuple[str, str], list[TerminalSession]] = {}
         self._local_capability: TerminalCapability | None = None
         self._lock = asyncio.Lock()
         self._sweeper: asyncio.Task[None] | None = None
@@ -187,8 +205,19 @@ class TerminalManager:
         save_metadata(self.directory, session)
 
     def mark_unresolved(self, session: TerminalSession) -> None:
-        """Remember that this repository may still have a shell on it."""
-        self._unresolved[(session.project_id, session.repository_id)] = session
+        """Remember that this repository may still have a shell on it.
+
+        A repository can be spoken for by more than one record: a unit that
+        outlived a restart and a record this version cannot read both claim
+        it, and keeping only the last would unblock the repository as soon as
+        that one was confirmed gone, while the other may still be running.
+        """
+        retained = self._unresolved.setdefault((session.project_id, session.repository_id), [])
+        for index, existing in enumerate(retained):
+            if existing.session_id == session.session_id:
+                retained[index] = session
+                return
+        retained.append(session)
 
     async def _resolve_unfinished(self, project_id: str, repository_alias: str) -> None:
         """Retry a retained record's stop before opening this repository again.
@@ -197,22 +226,38 @@ class TerminalManager:
         second shell there would let two of them write one working tree, which
         the one-session-per-repository rule exists to prevent.
         """
-        session = self._unresolved.get((project_id, repository_alias))
-        if session is None:
+        key = (project_id, repository_alias)
+        retained = self._unresolved.get(key)
+        if not retained:
             return
-        if not await self.unit_confirmed_gone(session):
+        # Confirmed together: this is a member waiting to open, and a record
+        # whose machine has gone costs a stop timeout apiece.
+        confirmed = await asyncio.gather(
+            *(self.unit_confirmed_gone(session) for session in retained)
+        )
+        unresolved = [
+            session for session, gone in zip(retained, confirmed, strict=True) if not gone
+        ]
+        for session, gone in zip(retained, confirmed, strict=True):
+            if not gone:
+                continue
+            session.ended_at = timestamp()
+            # A record retained by startup carries no reason yet, and one
+            # retained by a failed launch already carries its own. Finishing
+            # late must leave the same durable reason as finishing on the
+            # first attempt would have.
+            session.termination_reason = session.termination_reason or "server_restart"
+            save_metadata(self.directory, session)
+        if unresolved:
+            # Every record for this repository has to be accounted for; one
+            # still speaking for it is enough to refuse.
+            self._unresolved[key] = unresolved
             raise TerminalUnavailable(
                 "An earlier terminal for this repository could not be stopped on its "
                 "execution machine, so its shell may still be running. Opening another "
                 "is refused until that one is gone."
             )
-        session.ended_at = timestamp()
-        # A record retained by startup carries no reason yet, and one retained
-        # by a failed launch already carries its own. Finishing late must leave
-        # the same durable reason as finishing on the first attempt would have.
-        session.termination_reason = session.termination_reason or "server_restart"
-        save_metadata(self.directory, session)
-        self._unresolved.pop((project_id, repository_alias), None)
+        self._unresolved.pop(key, None)
 
     async def capability(
         self, machine: MachineConfig, probe: TerminalProbe | None
@@ -268,16 +313,18 @@ class TerminalManager:
         if not (isinstance(repository_id, str) and repository_id):
             return
         session_id = payload.get("session_id")
-        self._unresolved[(project_id, repository_id)] = TerminalSession(
-            session_id=session_id if isinstance(session_id, str) else "",
-            project_id=project_id,
-            member_id="",
-            repository_id=repository_id,
-            path="",
-            started_at="",
-            last_activity_at="",
-            unit="",
-            containment="",  # type: ignore[arg-type]
+        self.mark_unresolved(
+            TerminalSession(
+                session_id=session_id if isinstance(session_id, str) else "",
+                project_id=project_id,
+                member_id="",
+                repository_id=repository_id,
+                path="",
+                started_at="",
+                last_activity_at="",
+                unit="",
+                containment="",  # type: ignore[arg-type]
+            )
         )
 
     async def _reconcile_record(self, path: Path) -> None:
@@ -287,6 +334,21 @@ class TerminalManager:
         except (OSError, ValueError) as exc:
             # Nothing here names a repository, so there is nothing to block.
             logger.warning("Terminal record %s cannot be read; leaving it: %s", path.name, exc)
+            return
+        if not _record_values_are_well_typed(payload):
+            # A dataclass enforces no field's type, and a wrong type that
+            # happens to be falsey reads as an ordinary empty value rather
+            # than raising — an `execution_host` of `[]` makes a remote
+            # record look local and get cleaned up against a local unit that
+            # was never there. Nothing below can tell the difference, and the
+            # per-record guard only catches records that raise, so the
+            # mistyped ones are refused here.
+            logger.warning(
+                "Terminal record %s holds values of the wrong kind; leaving it and "
+                "blocking its repository.",
+                path.name,
+            )
+            self._block_unreadable_repository(payload)
             return
         try:
             session = TerminalSession(**payload)

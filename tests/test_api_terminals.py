@@ -369,6 +369,39 @@ def test_a_repointed_alias_retires_its_shell_even_when_the_new_machine_fails(
         assert [session["session_id"] for session in listed.json()] == []
 
 
+def test_a_stale_session_that_cannot_be_stopped_is_an_operational_failure(
+    tmp_path, terminal_pty, monkeypatch
+):
+    """Retiring a repointed session happens before the route's own error
+    mapping, so a stop that fails has to be mapped where it is raised. The
+    session is correctly kept for retry either way; what is at stake is
+    whether the member is told the machine is busy or that RCP broke.
+    """
+    from rcp.terminals import launch
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+
+        from rcp.api.dependencies import get_project_service
+
+        moved = tmp_path / "moved-checkout"
+        (moved / ".research").mkdir(parents=True)
+        manifest = get_project_service(app.state.services.catalog, project_id).manifest
+        manifest.repository_map["paper-repo"].path = str(moved)
+
+        def unstoppable(unit):
+            raise RuntimeError("systemctl user manager unavailable")
+
+        monkeypatch.setattr(launch, "stop_unit", unstoppable)
+        refused = client.post(path, json={"repository_id": "paper-repo"})
+        assert refused.status_code == 503, refused.text
+        assert "systemctl" in refused.json()["detail"]
+
+
 @pytest.mark.parametrize("change", ["repointed", "unregistered"])
 def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
     tmp_path, terminal_pty, change

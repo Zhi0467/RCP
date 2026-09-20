@@ -196,7 +196,15 @@ owner runs.
 
 Being unable to read a record is not evidence that its shell is gone. A record
 this version cannot construct is left on disk, and if it still names a project
-and repository it blocks that repository. So does one whose containment this
+and repository it blocks that repository. So is one holding a value of the
+wrong kind, because a dataclass enforces no field's type and a wrong type that
+happens to be empty reads as an ordinary empty value: a remote record would be
+cleaned up against a local unit that was never there, report success, and
+retire while its own unit still ran.
+
+A repository can be spoken for by more than one retained record. Every one of
+them has to be confirmed gone before it opens again; one still speaking for it
+is enough to refuse. So does one whose containment this
 version does not recognise, and one whose session identifier is not the name of
 the file holding it, because nothing here can confirm what any of them left
 running. Every record this application writes is named for the session in it,
