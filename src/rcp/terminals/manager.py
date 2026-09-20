@@ -55,6 +55,15 @@ def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[st
     return (repository.path, repository.machine, machine.host, machine.os_account)
 
 
+def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
+    """Why this session's alias no longer names it, or None while it still does."""
+    if session.repository_id not in manifest.repository_map:
+        return "repository_unregistered"
+    if session_registration(session) != manifest_registration(manifest, session.repository_id):
+        return "repository_repointed"
+    return None
+
+
 def session_registration(session: TerminalSession) -> tuple[str, str, str, str]:
     """What the alias named when this session started."""
     return (
@@ -97,15 +106,24 @@ class TerminalManager:
             session = runtime.session
             if session.project_id != project_id or session.repository_id != repository_alias:
                 continue
-            if repository_alias not in manifest.repository_map:
-                # The project no longer claims this checkout at all.
-                await end_runtime(self, runtime, "repository_unregistered")
-                return None
-            if session_registration(session) == manifest_registration(manifest, repository_alias):
+            reason = registration_lapse(manifest, session)
+            if reason is None:
                 return session
-            await end_runtime(self, runtime, "repository_repointed")
+            await end_runtime(self, runtime, reason)
             return None
         return None
+
+    async def retire_repointed(
+        self, project_id: str, manifest: Manifest, repository_alias: str
+    ) -> None:
+        """Settle one alias, for a caller whose answer is about that alias.
+
+        An open request uses this rather than settling the whole project: it
+        must not make a member wait on the machines of aliases its answer does
+        not mention. The polling list settles those.
+        """
+        async with self._lock:
+            await self._settle_registration(project_id, manifest, repository_alias)
 
     async def reconcile_registrations(self, project_id: str, manifest: Manifest) -> None:
         """Retire this project's sessions whose alias has stopped naming them.
@@ -116,39 +134,38 @@ class TerminalManager:
         session is exactly what hides the control that would replace it. So
         the projections a member reaches a session through settle it instead.
 
-        One alias that cannot be retired must not cost the others their
-        reconciliation or the caller its listing, so each is guarded. A stop
-        that failed leaves its session live and listed, and the next call
-        retries it, which is what a failed stop does everywhere here.
+        They are retired together. Every caller here is a member waiting on a
+        listing, an open or an attach, and a stale alias whose machine has
+        gone costs a stop timeout, so retiring them in turn would spend one
+        per alias before answering. One that cannot be stopped keeps its
+        session and is retried by the next call, which is what a failed stop
+        does everywhere here.
         """
-        aliases = {
-            runtime.session.repository_id
-            for runtime in list(self.sessions.values())
-            if runtime.session.project_id == project_id
-        }
-        for alias in aliases:
-            try:
-                await self.retire_repointed(project_id, manifest, alias)
-            except Exception as exc:
+        async with self._lock:
+            stale = []
+            for runtime in list(self.sessions.values()):
+                if runtime.session.project_id != project_id:
+                    continue
+                reason = registration_lapse(manifest, runtime.session)
+                if reason is not None:
+                    stale.append((runtime, reason))
+            if not stale:
+                return
+            outcomes = await asyncio.gather(
+                *(end_runtime(self, runtime, reason) for runtime, reason in stale),
+                return_exceptions=True,
+            )
+        for (runtime, _), outcome in zip(stale, outcomes, strict=True):
+            # `gather` returns a cancellation rather than raising it.
+            if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
+                raise outcome
+            if isinstance(outcome, Exception):
                 logger.warning(
                     "Terminal session for repository %s could not be retired after its "
                     "registration changed; it is retried: %s",
-                    alias,
-                    exc,
+                    runtime.session.repository_id,
+                    outcome,
                 )
-
-    async def retire_repointed(
-        self, project_id: str, manifest: Manifest, repository_alias: str
-    ) -> None:
-        """Retire a repointed session without opening anything in its place.
-
-        A caller that has detected the mismatch itself uses this before it
-        evaluates what the *new* registration needs, because those are
-        prerequisites for launching and one of them failing must not leave a
-        shell attachable on the checkout the alias has stopped naming.
-        """
-        async with self._lock:
-            await self._settle_registration(project_id, manifest, repository_alias)
 
     async def _record_launch_failure(
         self, session: TerminalSession, reason: str = "launch_failed"

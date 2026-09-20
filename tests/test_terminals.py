@@ -1089,6 +1089,37 @@ async def test_a_cancelled_open_whose_launch_then_fails_still_tracks_its_unit(
 
 
 @pytest.mark.asyncio
+async def test_stale_aliases_are_retired_together(manifest, tmp_path, process_factory, monkeypatch):
+    """Every caller of this is a member waiting on a listing, an open or an
+    attach. A stale alias whose machine has gone costs a stop timeout, so
+    retiring them in turn would spend one per alias before answering. A
+    barrier proves the overlap without timing anything.
+    """
+    meeting = threading.Barrier(2)
+
+    def stop(unit):
+        meeting.wait(timeout=5)
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        for alias in ("repo-a", "repo-b"):
+            await manager.open(**{**arguments(manifest), "repository_alias": alias})
+        assert len(manager.sessions) == 2
+        # Both aliases stop naming what their shells opened on.
+        for alias in ("repo-a", "repo-b"):
+            moved = tmp_path / f"moved-{alias}"
+            (moved / ".research").mkdir(parents=True)
+            manifest.repository_map[alias].path = str(moved)
+        monkeypatch.setattr(launch, "stop_unit", stop)
+        await manager.reconcile_registrations("project", manifest)
+        assert manager.list("project") == []
+    finally:
+        meeting.abort()
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_repointing_a_repository_does_not_hand_back_the_old_checkout(
     manifest, tmp_path, process_factory
 ):

@@ -128,7 +128,9 @@ async def open_session(
     # Before the 404 and before every launch prerequisite: all of them belong
     # to what the alias names now, and any of them answering first would leave
     # a shell listed and attachable on the checkout it has stopped naming.
-    await services.terminals.reconcile_registrations(project_id, manifest)
+    # Only this alias: the answer is about it, and the polling list settles
+    # the rest without making this request wait on their machines.
+    await services.terminals.retire_repointed(project_id, manifest, body.repository_id)
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
     work = running_repository_work(services.store, project_id, manifest)

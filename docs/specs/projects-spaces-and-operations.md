@@ -241,7 +241,11 @@ the polling session list, the open request before its 404 and before every
 launch prerequisite, and the socket, which is reached by id rather than through
 the list. A session whose alias has stopped naming it is retired there, so it
 stops being listed and stops being attachable without anyone opening anything.
-An alias whose retirement fails keeps its session, and the next call retries.
+Stale aliases are retired together rather than in turn, because every one of
+those callers is a member waiting on an answer and an alias whose machine has
+gone costs a stop timeout. An open request settles only the alias its answer is
+about, so it never waits on the machines of aliases it does not mention. An
+alias whose retirement fails keeps its session, and the next call retries.
 
 Opening a session holds the manager lock only to admit the request and to
 publish the result. The capability probe, remote repository resolution, and the
