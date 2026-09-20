@@ -7,6 +7,12 @@ from pathlib import Path
 
 _READY_MARKER = b"\x1ercp-terminal-ready\x1f"
 _SHELL_PREFLIGHT = r"""
+rcp_expansion_probe=intact
+case "$rcp_expansion_probe" in
+    intact) ;;
+    *) printf '%s\n' 'Terminal launch refused: this service manager rewrote the containment preflight.' >&2
+       exit 1 ;;
+esac
 if ! test -w "$PWD"; then
     printf '%s\n' 'Terminal repository is not writable under the required mount profile.' >&2
     exit 1
@@ -47,7 +53,9 @@ def launch_command(
     rejects the option outright, so a launch there omits it and instead
     refuses any path or value carrying ``$``, which that manager would expand.
     Refusing is the fail-closed half: never launch with an expansion we cannot
-    turn off.
+    turn off. The screen covers values this process chooses; the preflight's
+    own first lines catch a manager that expands the script itself, whatever
+    version reports it.
     """
     if not expand_environment_option:
         expandable = [

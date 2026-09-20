@@ -476,6 +476,25 @@ def test_transient_arguments_escape_percent_and_preserve_dollar_and_space_paths(
     assert launch._SHELL_PREFLIGHT in argv
 
 
+def test_preflight_refuses_a_service_manager_that_expanded_its_own_variables(tmp_path):
+    import re
+    import subprocess
+
+    # A manager older than 254 rejects `--expand-environment=no`, so a launch
+    # there omits it. If such a manager does expand the command line, every
+    # `$name` it does not know is emptied before bash reads the script. The
+    # preflight must say so rather than verify emptied paths.
+    expanded = re.sub(r"\$\{?(\w+)\}?", "", launch._SHELL_PREFLIGHT)
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-c", expanded, "rcp-terminal", str(tmp_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "rewrote the containment preflight" in result.stderr
+
+
 def test_preflight_refuses_a_writable_mount_even_when_directory_permissions_deny_write(tmp_path):
     import subprocess
 

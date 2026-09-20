@@ -276,6 +276,10 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
         os.write(master, b"sleep 30\n")
         read_until(b"sleep 30\r\n")
         os.write(master, b"\x03")
+        # A tty flushes its input queue while processing INTR, so the next
+        # command may only be sent once the interrupt's own echo proves that
+        # flush is already behind us.
+        read_until(b"^C")
         os.write(master, b"printf 'job-%s\\n' control\n")
         read_until(b"job-control\r\n")
         assert b"no job control" not in output
