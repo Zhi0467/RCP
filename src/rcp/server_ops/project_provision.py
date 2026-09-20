@@ -29,6 +29,7 @@ from rcp.server_ops.git_credentials import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     ExternalAction,
     ExternalServiceTarget,
     MachineTarget,
@@ -962,6 +963,7 @@ class ProjectProvisionCoordinator:
                     if field is not None
                 ),
                 "resume_argv": resume,
+                "resume_execution": OPERATOR_SHELL,
             }
         )
 
@@ -1017,6 +1019,7 @@ class ProjectProvisionCoordinator:
                 ),
                 "fields": fields,
                 "resume_argv": resume,
+                "resume_execution": OPERATOR_SHELL,
             }
         )
 
@@ -1068,6 +1071,7 @@ class ProjectProvisionCoordinator:
                 "actions": (ExternalAction(instruction=instruction),),
                 "fields": (() if material is None else self._key_fields(material)),
                 "resume_argv": self._resume_argv(request.request_id),
+                "resume_execution": OPERATOR_SHELL,
             }
         )
         repository = request.repositories[repository_index]
@@ -1113,6 +1117,7 @@ class ProjectProvisionCoordinator:
                 "actions": actions,
                 "fields": fields,
                 "resume_argv": self._resume_argv(request.request_id),
+                "resume_execution": OPERATOR_SHELL,
             }
         )
         self._transition(
@@ -1232,10 +1237,15 @@ class ProjectProvisionCoordinator:
             update={
                 "state": "operator_action_needed",
                 "performed_by": source.performed_by,
+                # The human reads this card while the work is theirs, so it is
+                # named for their task rather than for the check it interrupted.
+                "title": source.title,
+                "purpose": source.purpose,
                 "message": source.message,
                 "actions": source.actions,
                 "fields": source.fields,
                 "resume_argv": source.resume_argv,
+                "resume_execution": source.resume_execution,
             }
         )
 

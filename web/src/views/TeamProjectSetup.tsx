@@ -49,13 +49,14 @@ import {
   invalidProjectProvisioningHash,
   projectProvisioningHash,
   projectProvisioningRequestId,
+  routeProvedBy,
 } from "../projectSetup";
+import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProviderReadiness,
-  ServerStep,
   SetupAgentProfile,
   SetupAgents,
 } from "../types";
@@ -1375,7 +1376,14 @@ export function ProvisioningStatus({
         </section>
       )}
 
-      {request.operator_action && <OperatorAction step={request.operator_action} />}
+      {request.operator_action && (
+        <OperatorActionPanel
+          step={request.operator_action}
+          route={connection?.operator_route ?? null}
+          routeProved={routeProvedBy(probe, connection?.connection_id, connection?.operator_route)}
+          onRefresh={onRefresh}
+        />
+      )}
 
       <section className="provisioning-ledger">
         <h2>Machines</h2>
@@ -1505,64 +1513,6 @@ export function ProvisioningStatus({
         </section>
       )}
     </div>
-  );
-}
-
-function OperatorAction({ step }: { step: ServerStep }) {
-  const target =
-    step.target.kind === "machine"
-      ? `${step.target.os_account}@${step.target.host}`
-      : `${step.target.service} · ${step.target.resource} · ${step.target.required_authority_role}`;
-  return (
-    <section className="provisioning-operator-action">
-      <span className="eyebrow">Human action required</span>
-      <h2>{step.title}</h2>
-      <p>{step.message}</p>
-      <dl>
-        <div>
-          <dt>Responsible</dt>
-          <dd>{step.performed_by}</dd>
-        </div>
-        <div>
-          <dt>Target</dt>
-          <dd>{target}</dd>
-        </div>
-        <div>
-          <dt>Expected success</dt>
-          <dd>{step.expected_success}</dd>
-        </div>
-        <div>
-          <dt>Purpose</dt>
-          <dd>{step.purpose}</dd>
-        </div>
-      </dl>
-      {step.target.kind === "external_service" && (
-        <a href={step.target.destination_url} target="_blank" rel="noreferrer">
-          Open {step.target.service}
-        </a>
-      )}
-      {step.actions.map((action, index) => (
-        <div className="operator-action-line" key={index}>
-          {action.kind === "command" ? (
-            <code>{formatCommandArgv(action.argv)}</code>
-          ) : (
-            <span>{action.instruction}</span>
-          )}
-        </div>
-      ))}
-      {step.fields.map((field) => (
-        <div className="operator-action-line" key={field.name}>
-          <strong>{field.name}</strong>
-          <code>{String(field.value)}</code>
-        </div>
-      ))}
-      {step.resume_argv.length > 0 && (
-        <div className="operator-action-line">
-          <strong>Resume</strong>
-          <code>{formatCommandArgv(step.resume_argv)}</code>
-        </div>
-      )}
-    </section>
   );
 }
 

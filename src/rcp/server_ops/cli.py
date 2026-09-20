@@ -30,6 +30,7 @@ from rcp.server_ops.config import (
 )
 from rcp.server_ops.models import (
     SERVER_CLI_MAX_EXECUTION_BYTES,
+    ExecutionContext,
     MachineTarget,
     NonsecretField,
     ServerCommandExecution,
@@ -545,7 +546,7 @@ def _continue_interactive_wizard(
     if not isinstance(final, ServerStepEvent):  # pragma: no cover - execution owns this
         return execution.exit_code
     step = final.step
-    commands = [action.argv for action in step.actions if action.kind == "command"]
+    commands = [action for action in step.actions if action.kind == "command"]
     if step.phase == "supervisor_restore" and len(commands) > 1:
         print(
             "Restore lists mutually exclusive authority choices. Run exactly one displayed confirmation command; the wizard will not execute both.",
@@ -563,10 +564,13 @@ def _continue_interactive_wizard(
         return execution.exit_code
     resume = step.resume_argv
     if step.phase == "supervisor_restore" and len(commands) == 1:
-        return runner(_wizard_command_for_identity(commands[0], identity))
+        return runner(_wizard_command_for_identity(commands[0].argv, identity))
     for command in commands:
-        if command != resume:
-            runner(_wizard_command_for_identity(command, identity))
+        # The same argv in a different shell is a different command, and the
+        # renderer shows it as one. Running only the resume would silently skip
+        # what the operator was just told to do.
+        if (command.argv, command.execution) != (resume, step.resume_execution):
+            runner(_wizard_command_for_identity(command.argv, identity))
     if step.phase == "team_space_init" and commands:
         output_stream.write("Save the one-time enrollment code, then press Enter to continue: ")
         output_stream.flush()
@@ -833,6 +837,11 @@ class ServerEventEmitter:
                 "actions": (),
                 "fields": (),
                 "resume_argv": (),
+                # Clearing the command clears the shell it named. No reachable
+                # path carries one here today, because a step that may hold a
+                # resume contract is already terminal, but a half-cleared stop
+                # would be refused on emit rather than rendered.
+                "resume_execution": None,
             }
         )
         self.emit_step(failed)
@@ -984,7 +993,10 @@ class _InteractiveServerRenderer:
         print(file=self.stream)
         shown = fields[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
         for field in shown:
-            print(f"  {field.name.replace('_', ' ')}: {field.value}", file=self.stream)
+            # A value the operator pastes somewhere and one they only compare
+            # read alike in a terminal; the panel separates them visually.
+            compare = " (compare only)" if field.role == "evidence" else ""
+            print(f"  {field.name.replace('_', ' ')}: {field.value}{compare}", file=self.stream)
         hidden = len(fields) - len(shown)
         if hidden:
             print(
@@ -993,25 +1005,55 @@ class _InteractiveServerRenderer:
             )
 
     def _render_actions(self, step: ServerStep) -> None:
-        if step.actions:
+        # A stop may list its resume command among its actions; it is one step,
+        # not two. Drop it before numbering so the wizard and the panel number
+        # the same list, and so a stop left with nothing prints no heading.
+        actions = tuple(
+            action
+            for action in step.actions
+            if action.kind != "command"
+            or (action.argv, action.execution) != (step.resume_argv, step.resume_execution)
+        )
+        if actions:
             print(file=self.stream)
             print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
-            for index, action in enumerate(step.actions, start=1):
+            for index, action in enumerate(actions, start=1):
+                if action.title:
+                    print(f"  {index}. {action.title}", file=self.stream)
+                lead = f"  {index}. " if not action.title else "     "
                 if action.kind == "command":
-                    if action.argv == step.resume_argv:
-                        continue
-                    print(f"  {index}. $ {shlex.join(action.argv)}", file=self.stream)
+                    shell = _execution_prefix(action.execution)
+                    print(f"{lead}{shell}$ {shlex.join(action.argv)}", file=self.stream)
                 else:
                     _print_wrapped(
                         action.instruction,
                         self.stream,
-                        indent=f"  {index}. ",
+                        indent=lead,
                         subsequent_indent="     ",
                     )
+                    if action.requirement:
+                        print(f"     Required: {action.requirement}", file=self.stream)
         if step.resume_argv:
             print(file=self.stream)
             print("Continue:", file=self.stream)
-            print(f"  $ {shlex.join(step.resume_argv)}", file=self.stream)
+            shell = _execution_prefix(step.resume_execution)
+            print(f"  {shell}$ {shlex.join(step.resume_argv)}", file=self.stream)
+
+
+def _execution_prefix(execution: ExecutionContext | None) -> str:
+    """Name the shell a command needs, in the words the panel uses for it.
+
+    Silence is reserved for a step that never said. A stop that did say names
+    the server even when the account is the operator's own login, because the
+    wizard has been reaching the server on the operator's behalf and this
+    command is theirs to run.
+    """
+
+    if execution is None:
+        return ""
+    if execution.shell_account is None:
+        return "on the server: "
+    return f"on the server as {execution.shell_account}: "
 
 
 def _supports_live_updates(stream: TextIO) -> bool:

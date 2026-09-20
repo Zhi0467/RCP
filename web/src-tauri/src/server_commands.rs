@@ -683,7 +683,17 @@ fn validate_event_prefix_inner(
         }
         validate_step(step, number, state)?;
         let planned = &steps[number - 1];
-        for field in ["title", "purpose", "target", "phase", "expected_success"] {
+        // A pause is named for the human's task, not for the machine check it
+        // interrupted, so only a human operator action may retitle its step.
+        // Everything that identifies the step stays pinned.
+        let renames = state == "operator_action_needed"
+            && step.get("performed_by").and_then(Value::as_str) == Some("human");
+        let pinned: &[&str] = if renames {
+            &["target", "phase", "expected_success"]
+        } else {
+            &["title", "purpose", "target", "phase", "expected_success"]
+        };
+        for field in pinned {
             if step.get(field) != planned.get(field) {
                 return Err(format!("the server command changed its planned {field}"));
             }
@@ -1270,6 +1280,46 @@ mod tests {
         let mut wrong = events[0].clone();
         wrong["command"] = Value::String(PROVISION_COMMAND.into());
         assert!(validate_transfer_event_prefix(&[wrong]).is_err());
+    }
+
+    #[test]
+    fn only_a_human_pause_may_rename_its_planned_step() {
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": "server project provision",
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let event = |state| {
+            serde_json::json!({
+                "version": 1,
+                "event": "step",
+                "command": "server project provision",
+                "timestamp": "2026-08-30T00:00:01Z",
+                "step": step(1, state),
+            })
+        };
+
+        // A pause is named for the human's task, not the check it interrupted.
+        let mut paused = event("operator_action_needed");
+        paused["step"]["title"] = Value::String("Add a deploy key on GitHub".into());
+        paused["step"]["purpose"] = Value::String("Give the checkout its write identity.".into());
+        validate_event_prefix(&[plan.clone(), paused.clone()]).unwrap();
+
+        // Nothing else may rename a step, and a pause may still not become a
+        // different step.
+        let mut renamed_while_running = event("running");
+        renamed_while_running["step"]["title"] = Value::String("Something else".into());
+        assert!(validate_event_prefix(&[plan.clone(), renamed_while_running]).is_err());
+
+        let mut retargeted = paused.clone();
+        retargeted["step"]["target"]["host"] = Value::String("other".into());
+        assert!(validate_event_prefix(&[plan.clone(), retargeted]).is_err());
+
+        let mut rephased = paused;
+        rephased["step"]["phase"] = Value::String("other".into());
+        assert!(validate_event_prefix(&[plan, rephased]).is_err());
     }
 
     #[test]

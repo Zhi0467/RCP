@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.core.transition_models import GraphHeadRef
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.restore import detach_restore_database
 from rcp.storage import AppStore, ProjectTransferPhase, ProjectTransferRequestRecord
 from tests.test_project_transfer_request_storage import (
@@ -304,6 +305,29 @@ def test_restore_reentry_revalidates_and_issues_only_a_fresh_upload_lease(
         expected_final_review_digest=provisioning.final_review_digest,
         confirmed_by=confirmer,
     ) == (resumed, replacement)
+
+
+def test_restore_reentry_stop_names_the_shell_its_bare_wrapper_needs(
+    tmp_path: Path,
+    restored_at: datetime,
+) -> None:
+    """The re-entry resume is the bare wrapper, not a `sudo -u` line, so it only
+    works from a shell that already belongs to the service account."""
+
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    detach_restore_database(
+        target.path,
+        confirmed_by="root@lab uid=0",
+        detached_at=restored_at,
+    )
+    provisioning = target.project_provisioning_request(target_request.request_id)
+    assert provisioning is not None
+    stop = provisioning.operator_action
+    assert stop is not None and stop.phase == "restore_reentry"
+    assert stop.resume_execution is not None
+    assert stop.resume_execution.shell_account == DEFAULT_SERVER_LAYOUT.service_account
+    command = next(action for action in stop.actions if action.kind == "command")
+    assert command.execution == stop.resume_execution
 
 
 def test_restore_reentry_guards_leave_the_invalidated_boundary_unchanged(

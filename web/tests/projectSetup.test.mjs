@@ -17,6 +17,7 @@ import {
   projectProvisioningHash,
   projectProvisioningRequestId,
   repositoryPickerPresentation,
+  routeProvedBy,
   selectedProjectCreationIntent,
   sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
@@ -982,4 +983,27 @@ test("the provisioning view renders backend answers and hides native actions in 
   );
   assert.doesNotMatch(source, /request\.status\b/);
   assert.match(source, /role="log"[\s\S]*aria-live="polite"[\s\S]*aria-relevant="additions"/);
+});
+
+test("route proof describes one connection and one route, not whichever is on screen", () => {
+  const route = { ssh_target: "operator@server.example", mode: "sudo_rcp" };
+  const proved = { connection_id: "c1", available: true, route, diagnostic: null };
+
+  assert.equal(routeProvedBy(proved, "c1", route), true);
+
+  // Switching connection re-renders the new route before the effect that
+  // refreshes the probe runs. The old proof must not carry over for that frame.
+  assert.equal(
+    routeProvedBy(proved, "c2", { ssh_target: "operator@other.example", mode: "sudo_rcp" }),
+    false,
+  );
+  // Same connection, a route just saved over the probed one.
+  assert.equal(
+    routeProvedBy(proved, "c1", { ssh_target: "rcp@server.example", mode: "direct_rcp" }),
+    false,
+  );
+  // A probe that ran and failed proves nothing, and neither does no probe.
+  assert.equal(routeProvedBy({ ...proved, available: false }, "c1", route), false);
+  assert.equal(routeProvedBy(null, "c1", route), false);
+  assert.equal(routeProvedBy(proved, "c1", null), false);
 });

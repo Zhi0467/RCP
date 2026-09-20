@@ -24,6 +24,7 @@ from rcp.server_ops.control import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     CommandAction,
     ExternalAction,
     MachineTarget,
@@ -667,7 +668,8 @@ class ProviderReadinessCoordinator:
                         "ssh",
                         target.host,
                         "id -un",
-                    )
+                    ),
+                    execution=OPERATOR_SHELL,
                 ),
             )
         return (
@@ -703,6 +705,7 @@ class ProviderReadinessCoordinator:
                     NonsecretField(name="execution_account", value=target.os_account),
                 ),
                 "resume_argv": resume_argv or self._resume_argv(selector_kind, selector_id),
+                "resume_execution": OPERATOR_SHELL,
             }
         )
 

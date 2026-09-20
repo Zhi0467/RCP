@@ -25,6 +25,7 @@ import {
   loadDesktopProjectTransfer,
   openDesktopProjectTransferTerminal,
   prepareDesktopProjectTransfer,
+  probeDesktopServerOperator,
   readDesktopTargetProjectProvisioningOptions,
   runDesktopIncomingProjectProvision,
   selectDesktopProjectTransferExport,
@@ -34,6 +35,7 @@ import {
   type ProjectTransferProviderIntent,
   type ProjectTransferRunResult,
   type ServerCommandEvent,
+  type ServerOperatorProbe,
   type TargetProviderSetupProjection,
   type TeamConnectionMetadata,
 } from "../desktopRuntime";
@@ -45,7 +47,13 @@ import {
   reasoningOptions,
   runtimeOptions,
 } from "../providers";
-import { formatCommandArgv, projectMoveSetupHash, type ProjectSetupRoute } from "../projectSetup";
+import {
+  formatCommandArgv,
+  projectMoveSetupHash,
+  routeProvedBy,
+  type ProjectSetupRoute,
+} from "../projectSetup";
+import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
   AgentTask,
@@ -252,6 +260,8 @@ export function TransferProjectSetup({
   const [source, setSource] = useState<TransferSourceData | null>(null);
   const [connections, setConnections] = useState<TeamConnectionMetadata[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [operatorProbe, setOperatorProbe] = useState<ServerOperatorProbe | null>(null);
+  const [probeAttempt, setProbeAttempt] = useState(0);
   const [targetProviders, setTargetProviders] = useState<TargetProviderSetupProjection[]>([]);
   const [targetName, setTargetName] = useState("");
   const [targetCeiling, setTargetCeiling] = useState(10);
@@ -377,6 +387,44 @@ export function TransferProjectSetup({
     [connections, selectedConnectionId],
   );
   const targetReady = transferTargetIsReady(selectedConnection);
+
+  // A saved route is stored before anything proves it can run these commands,
+  // and the panel only offers one it trusts. Probe the selected connection the
+  // same way the team setup view does; `routeProvedBy` decides whether the
+  // answer still describes what is on screen, so this effect never has to win
+  // a race with the render that changed the selection.
+  //
+  // Only when a stop is actually waiting: the probe is an SSH round trip, and
+  // selecting a connection is not by itself a reason to reach the server.
+  //
+  // Refresh counts as a reason to ask again. A probe that failed while the
+  // server was briefly unreachable leaves nothing for the panel to offer, and
+  // the stop it belongs to does not change when connectivity comes back, so
+  // without this the sign-in line would stay hidden until a page reload.
+  const operatorTarget = selectedConnection?.operator_route?.ssh_target ?? null;
+  const operatorMode = selectedConnection?.operator_route?.mode ?? null;
+  const awaitingOperator = bundle?.incoming_provisioning.operator_action != null;
+  useEffect(() => {
+    const connectionId = selectedConnection?.connection_id;
+    if (!connectionId || !operatorTarget || !awaitingOperator) return;
+    let stopped = false;
+    probeDesktopServerOperator(connectionId)
+      .then((checked) => {
+        if (!stopped) setOperatorProbe(checked);
+      })
+      .catch(() => {
+        if (!stopped) setOperatorProbe(null);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [
+    selectedConnection?.connection_id,
+    operatorTarget,
+    operatorMode,
+    awaitingOperator,
+    probeAttempt,
+  ]);
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
@@ -491,6 +539,7 @@ export function TransferProjectSetup({
   async function refreshTransfer(): Promise<void> {
     const sourceRequestId = bundle?.source.request_id ?? route.sourceRequestId;
     if (!sourceRequestId) return;
+    setProbeAttempt((attempt) => attempt + 1);
     setBusy("refresh");
     setError(null);
     try {
@@ -1150,17 +1199,16 @@ export function TransferProjectSetup({
               </div>
             </section>
             {bundle.incoming_provisioning.operator_action && (
-              <section className="operator-route-card">
-                <header>
-                  <strong>{bundle.incoming_provisioning.operator_action.title}</strong>
-                  <span>{bundle.incoming_provisioning.operator_action.performed_by}</span>
-                </header>
-                <p>{bundle.incoming_provisioning.operator_action.message}</p>
-                <p>
-                  <strong>Success:</strong>{" "}
-                  {bundle.incoming_provisioning.operator_action.expected_success}
-                </p>
-              </section>
+              <OperatorActionPanel
+                step={bundle.incoming_provisioning.operator_action}
+                route={selectedConnection?.operator_route ?? null}
+                routeProved={routeProvedBy(
+                  operatorProbe,
+                  selectedConnection?.connection_id,
+                  selectedConnection?.operator_route,
+                )}
+                onRefresh={() => void refreshTransfer()}
+              />
             )}
             {bundle.can_manual_relay && (
               <section className="operator-route-card">

@@ -29,7 +29,7 @@ from rcp.server_ops.cli import (
 from rcp.server_ops.control import ServerControlClient, ServerControlError
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
-from rcp.server_ops.models import CommandAction, ExternalAction
+from rcp.server_ops.models import OPERATOR_SHELL, CommandAction, ExternalAction
 from rcp.server_ops.provider_readiness import (
     ProviderReadinessCoordinator,
     ProviderReadinessRefused,
@@ -292,8 +292,10 @@ def test_wrong_remote_account_stops_before_provider_probe(tmp_path: Path) -> Non
     assert "reached bob" in checked.step.message
     assert launcher.readiness_calls == []
     assert checked.step.actions[-1] == CommandAction(
-        argv=("sudo", "-u", "rcp", "-H", "ssh", "gpu.example", "id -un")
+        argv=("sudo", "-u", "rcp", "-H", "ssh", "gpu.example", "id -un"),
+        execution=OPERATOR_SHELL,
     )
+    assert checked.step.resume_execution == OPERATOR_SHELL
 
 
 def test_unsupported_saved_model_requires_configuration_not_login(tmp_path: Path) -> None:

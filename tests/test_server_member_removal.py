@@ -111,6 +111,14 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     assert final.resume_argv[-2] == "--confirm-boundary"
     assert final.resume_argv[-1] == coordinator.plan(bob.user_id).snapshot.boundary_sha256
     assert final.actions[0].argv[:2] == ("/usr/local/bin/rcp", "server")
+    # Two spellings of one removal: the direct route needs a service-account
+    # shell, the elevated one starts from the operator's own login.
+    assert final.actions[0].execution is not None
+    assert final.actions[0].execution.shell_account == "rcp"
+    assert final.actions[1].argv[0] == "sudo"
+    assert final.actions[1].execution is not None
+    assert final.actions[1].execution.shell_account is None
+    assert final.resume_execution == final.actions[1].execution
     assert control.advances == 0
     assert store.space_user(bob.user_id).removal_started_at is None
     # The console names the state it is about to change, so each state is pinned.

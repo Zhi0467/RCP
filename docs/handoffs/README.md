@@ -2,6 +2,16 @@
 
 Active:
 
+- [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
+  — design confirmed 2026-09-19 against a rendered mockup and implemented the
+  same day. A command action names the shell it runs in, a pause is titled for
+  the human's task, and the stop renders as an ordered list of single actions
+  with copy controls in the desktop and transfer panels and a matching label in
+  the CLI wizard. Python, web, browser, and native checks pass against a stop
+  from the real builder, and a step now declares each action's name, its one
+  requirement, and whether a value is pasted or only compared. Driving the
+  panel from the desktop app, so the sign-in line comes from a real saved
+  operator route rather than its fixture, remains.
 - [A terminal in a project, fenced to its repositories](handoff-2026-09-19-a-terminal-fenced-to-its-project.md)
   — design confirmed 2026-09-19; the manager, routes, WebSocket, Terminals
   destination, per-machine capability, PTY-over-SSH, and their tests are

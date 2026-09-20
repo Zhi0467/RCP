@@ -1,3 +1,4 @@
+import type { ServerOperatorProbe, ServerOperatorRoute } from "./desktopRuntime";
 import type {
   ProjectCreationControl,
   ProjectCreationIntent,
@@ -257,4 +258,25 @@ export function buildTeamProvisioningRequest({
     repositories: repositories.map(({ default_read: _defaultRead, ...repository }) => repository),
     provider_checks: providerChecks,
   };
+}
+
+/**
+ * Whether a probe proves the route the panel is about to draw.
+ *
+ * A probe carries the connection and route it actually ran against. Comparing
+ * those with what is on screen keeps proof bound to one route through the
+ * render where a selection or a saved route has already changed but the effect
+ * that refreshes the probe has not run yet.
+ */
+export function routeProvedBy(
+  probe: ServerOperatorProbe | null | undefined,
+  connectionId: string | null | undefined,
+  route: ServerOperatorRoute | null | undefined,
+): boolean {
+  if (!probe?.available || !connectionId || !route) return false;
+  return (
+    probe.connection_id === connectionId &&
+    probe.route.ssh_target === route.ssh_target &&
+    probe.route.mode === route.mode
+  );
 }

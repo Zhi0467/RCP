@@ -2,6 +2,7 @@
 
 from rcp.server_ops.models import (
     CommandAction,
+    ExecutionContext,
     ExternalAction,
     ExternalServiceTarget,
     MachineTarget,
@@ -15,6 +16,7 @@ from rcp.server_ops.models import (
 
 __all__ = [
     "CommandAction",
+    "ExecutionContext",
     "ExternalAction",
     "ExternalServiceTarget",
     "MachineTarget",

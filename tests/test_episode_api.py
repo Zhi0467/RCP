@@ -933,10 +933,18 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
     def delivery_is_temporarily_unavailable(*_args, **_kwargs):
         raise RuntimeError("delivery transport is unavailable")
 
-    monkeypatch.setattr(
+    # The transport is down for everyone, not only for the route. The route
+    # imported this helper and so holds its own binding, but the reconcile
+    # sweeps that run after task settlement resolve it from its defining
+    # module on background threads. Patching one name left those sweeps
+    # delivering the message for real -- correct behaviour for durable mail,
+    # and exactly why "still pending" would otherwise depend on which thread
+    # reached the record first.
+    for binding in (
         "rcp.api.episode_routes.deliver_pending_auto_research_mail",
-        delivery_is_temporarily_unavailable,
-    )
+        "rcp.runs.auto_research_delivery.deliver_pending_auto_research_mail",
+    ):
+        monkeypatch.setattr(binding, delivery_is_temporarily_unavailable)
 
     with TestClient(app) as client:
         started = client.post(

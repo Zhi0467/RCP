@@ -530,6 +530,10 @@ def test_legacy_request_without_project_configuration_pauses_before_machine_work
     assert result.step.state == "operator_action_needed"
     assert "legacy request" in result.step.message
     assert result.step.resume_argv[-1] == request.request_id
+    # A stop that stays silent about its shell renders without one, so every
+    # pause the coordinator builds has to state it.
+    assert result.step.resume_execution is not None
+    assert result.step.resume_execution.shell_account is None
     assert credentials.prepare_calls == 0
     assert checkouts.calls == 0
     paused = store.project_provisioning_request(request.request_id)
@@ -654,6 +658,15 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     assert paused is not None and paused.status == "operator_action_needed"
     assert paused.operator_action is not None
     assert "PRIVATE KEY" not in paused.operator_action.model_dump_json()
+    # The stop the human reads is named for their task, not for the machine
+    # check it interrupted, and every command in it survives the store round
+    # trip still naming the shell the human has to type it into.
+    assert paused.operator_action.title == "Add a deploy key on GitHub"
+    assert events[-1]["step"]["title"] == "Add a deploy key on GitHub"
+    assert paused.operator_action.resume_execution is not None
+    assert paused.operator_action.resume_execution.shell_account is None
+    commands = [action for action in paused.operator_action.actions if action.kind == "command"]
+    assert commands and all(action.execution is not None for action in commands)
 
     credentials.probe_status = "ready"
     _advance_all(coordinator, request.request_id)
