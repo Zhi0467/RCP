@@ -25,6 +25,7 @@ from rcp.limits import (
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
 from rcp.terminals import launch
+from rcp.terminals.backends import machine_capability
 from rcp.terminals.models import TerminalRuntime, TerminalSession, TerminalUnavailable
 from rcp.terminals.runtime import end_runtime, get_runtime, read_ready, sweep_loop
 from rcp.terminals.utilities import resolve_repository, save_metadata, timestamp
@@ -56,7 +57,8 @@ class TerminalManager:
                 continue
             if session.unit != f"{self._unit_prefix}-{session.session_id}":
                 raise TerminalUnavailable("Terminal cleanup found an unexpected unit identity.")
-            await asyncio.to_thread(launch.stop_unit, session.unit)
+            if session.containment == "mirrored":
+                await asyncio.to_thread(launch.stop_unit, session.unit)
             session.ended_at = timestamp()
             session.termination_reason = "server_restart"
             save_metadata(self.directory, session)
@@ -102,6 +104,12 @@ class TerminalManager:
                 session = runtime.session
                 if session.project_id == project_id and session.repository_id == repository_alias:
                     return session
+            repository = manifest.repository_map[repository_alias]
+            capability = await asyncio.to_thread(
+                machine_capability, manifest.machine_map[repository.machine]
+            )
+            if capability.backend is None:
+                raise TerminalUnavailable(capability.reason)
             root, protected = resolve_repository(
                 manifest=manifest,
                 project_id=project_id,
@@ -109,9 +117,6 @@ class TerminalManager:
                 inventory=repository_inventory,
                 data_dir=self.data_dir,
             )
-            diagnostic = launch.availability_diagnostic()
-            if diagnostic:
-                raise TerminalUnavailable(diagnostic)
             session_id = uuid.uuid4().hex
             session = TerminalSession(
                 session_id=session_id,
@@ -122,17 +127,20 @@ class TerminalManager:
                 started_at=timestamp(),
                 last_activity_at=timestamp(),
                 unit=f"{self._unit_prefix}-{session_id}",
-            )
-            command = launch.launch_command(
-                unit=session.unit,
-                repository=root,
-                protected_paths=protected,
-                git_read_paths=git_read_paths,
-                git_environment=git_environment or {},
-                empty_directory=self.directory / "empty",
+                containment=capability.backend.containment,
             )
             save_metadata(self.directory, session)
-            pending = asyncio.create_task(asyncio.to_thread(launch.launch, command, session.unit))
+            pending = asyncio.create_task(
+                asyncio.to_thread(
+                    capability.backend.start,
+                    unit=session.unit,
+                    repository=root,
+                    protected_paths=protected,
+                    git_read_paths=git_read_paths,
+                    git_environment=git_environment or {},
+                    empty_directory=self.directory / "empty",
+                )
+            )
             try:
                 process, master_fd = await asyncio.shield(pending)
             except asyncio.CancelledError:

@@ -20,6 +20,7 @@ class TerminalSession:
     started_at: str
     last_activity_at: str
     unit: str
+    containment: Literal["mirrored", "cooperative"] = "mirrored"
     state: Literal["live", "idle"] = "idle"
     ended_at: str | None = None
     termination_reason: str | None = None

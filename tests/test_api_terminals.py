@@ -125,12 +125,12 @@ def test_remote_repository_is_projected_as_unavailable_without_launch(tmp_path):
     remote = repositories["remote-repo"]
     assert remote["eligible"] is False
     assert remote["path"] == "/srv/repo"
-    assert "remote" in remote["unavailable_reason"].lower()
+    assert remote["unavailable_reason"] == "PTY-over-SSH transport is not built."
     refused = client.post(
         f"/api/projects/{project_id}/terminals", json={"repository_id": "remote-repo"}
     )
     assert refused.status_code == 409
-    assert "remote" in str(refused.json()).lower()
+    assert refused.json()["detail"] == remote["unavailable_reason"]
     assert client.get(f"/api/projects/{project_id}/terminals").json() == []
 
 
@@ -150,6 +150,7 @@ def terminal_pty(monkeypatch):
         process.terminate.side_effect = lambda: setattr(process.poll, "return_value", 0)
         return process, master
 
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
     monkeypatch.setattr(launch, "launch", start)
     monkeypatch.setattr(launch, "stop_unit", lambda _unit: None)
@@ -226,13 +227,17 @@ def test_live_membership_loss_closes_socket_before_more_input(tmp_path, terminal
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch.shutil, "which", lambda _name: None)
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
         response = client.post(path, json={"repository_id": "paper-repo"})
-        assert response.status_code == 503
+        assert response.status_code == 409
+        projected = client.get(f"{path}/repositories").json()[0]
+        assert projected["eligible"] is False
+        assert projected["reason"] == response.json()["detail"]
         assert "systemd-run" in response.json()["detail"]
         assert "not installed" in response.json()["detail"]
         assert client.get(path).json() == []
@@ -300,3 +305,61 @@ def test_running_work_is_visible_and_does_not_block_open(tmp_path, terminal_pty,
         assert client.get(path).json()[0]["running_work"] == []
         receipt.payload["canonical_repository_roots"] = [str((tmp_path / "repo").resolve())]
         assert client.get(path).json()[0]["running_work"] == expected
+
+
+@pytest.mark.parametrize("os_name,expected", [("Linux", "mirrored"), ("Darwin", "cooperative")])
+@pytest.mark.parametrize("space_kind", ["personal", "team"])
+def test_projection_reports_machine_capability_independent_of_space(
+    tmp_path, manifest, monkeypatch, os_name, expected, space_kind
+):
+    from rcp.terminals import launch
+
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: os_name)
+    monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
+    if space_kind == "team":
+        app, client, _store, _people, _acting = _team_app(tmp_path)
+        project_id = _create_project(client, tmp_path / "repo")
+    else:
+        app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
+        client = TestClient(app)
+        project_id = app.state.default_project_id
+    current = app.state.catalog.open(project_id).manifest
+    current.machines.append(MachineConfig(alias="ssh", host="worker.invalid"))
+    current.repositories.append(RepositoryConfig(alias="ssh-repo", machine="ssh", path="/repo"))
+    repositories = client.get(f"/api/projects/{project_id}/terminals/repositories").json()
+    local = repositories[0]
+    assert local["eligible"] is True
+    assert local["containment"] == expected
+    assert local["backend_id"] == ("systemd_user" if expected == "mirrored" else "pty")
+    assert local["backend_name"]
+    assert local["machine_id"] == current.repositories[0].machine
+    assert local["unavailable_reason"] is None
+    if expected == "cooperative":
+        assert "protection is unavailable" in local["reason"]
+        assert "no filesystem fence" in local["reason"]
+    else:
+        assert "read-only mounts" in local["reason"]
+        assert "accident resistance" in local["reason"]
+    remote = repositories[-1]
+    assert remote["eligible"] is False
+    assert remote["containment"] is None
+    assert remote["backend_id"] is None
+    assert (
+        remote["reason"] == remote["unavailable_reason"] == "PTY-over-SSH transport is not built."
+    )
+
+
+def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatch):
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        response = client.post(path, json={"repository_id": "paper-repo"})
+        assert response.status_code == 200, response.text
+        session = response.json()
+        assert session["containment"] == "cooperative"
+        assert "protection is unavailable" in session["protection_notice"]
+        assert "no filesystem fence" in session["protection_notice"]
+        assert client.get(path).json()[0]["protection_notice"] == session["protection_notice"]
+        assert client.delete(f"{path}/{session['session_id']}").status_code == 200

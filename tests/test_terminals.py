@@ -13,6 +13,7 @@ import pytest
 from rcp.agents.write_scope import protected_repository_paths, registered_repository_roots
 from rcp.limits import TERMINAL_IDLE_TIMEOUT_SECONDS, TERMINAL_OUTPUT_BUFFER_BYTES
 from rcp.terminals import TerminalManager, TerminalSession, TerminalUnavailable, launch
+from rcp.terminals.backends import TERMINAL_BACKENDS, machine_capability, resolve_backend
 from rcp.terminals.runtime import read_ready
 from rcp.terminals.utilities import resolve_repository, save_metadata
 
@@ -51,6 +52,7 @@ def process_factory(monkeypatch):
         commands.append(command)
         return FakeProcess(), master
 
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch, "availability_diagnostic", lambda: None)
     monkeypatch.setattr(launch, "launch", start)
     monkeypatch.setattr(launch, "stop_unit", stopped.append)
@@ -141,7 +143,7 @@ def test_canonical_state_cannot_be_a_terminal_root(manifest, tmp_path):
 
 def test_remote_repository_never_reaches_launcher(manifest, tmp_path):
     manifest.machine_map["laptop"].host = "worker.invalid"
-    with pytest.raises(TerminalUnavailable, match="remote repositories"):
+    with pytest.raises(TerminalUnavailable, match="PTY-over-SSH transport"):
         resolve_repository(
             manifest=manifest,
             project_id="project",
@@ -153,6 +155,7 @@ def test_remote_repository_never_reaches_launcher(manifest, tmp_path):
 
 @pytest.mark.asyncio
 async def test_missing_systemd_fails_closed(manifest, tmp_path, monkeypatch):
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch.shutil, "which", lambda name: None)
     manager = TerminalManager(tmp_path / "data", lambda project, member: True)
     await manager.start()
@@ -525,3 +528,170 @@ async def test_one_failed_stop_does_not_starve_other_sessions(
     finally:
         monkeypatch.setattr(launch, "stop_unit", original)
         await manager.close()
+
+
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin", "macOS", "FreeBSD"])
+@pytest.mark.parametrize("is_remote", [False, True])
+def test_backend_selection_belongs_to_machine(os_name, is_remote):
+    backend = resolve_backend(os_name, is_remote)
+    if is_remote:
+        assert backend is None
+    else:
+        expected = "systemd_user" if os_name == "Linux" else "pty"
+        assert backend is TERMINAL_BACKENDS[expected]
+        assert backend.supports(os_name, is_remote)
+        assert backend.display_name
+
+
+@pytest.mark.parametrize("missing", ["systemd-run", "systemctl", "findmnt"])
+def test_linux_missing_prerequisite_is_unavailable(manifest, monkeypatch, missing):
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
+    monkeypatch.setattr(launch.shutil, "which", lambda name: None if name == missing else name)
+    capability = machine_capability(manifest.machine_map["laptop"])
+    assert capability.backend is None
+    assert missing in capability.reason
+
+
+def test_linux_unreachable_manager_is_unavailable(manifest, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
+    monkeypatch.setattr(launch.sys, "platform", "linux")
+    monkeypatch.setattr(launch.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        launch.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1 if command[0] == "systemctl" else 0, "", "Cannot connect to user bus"
+        ),
+    )
+    capability = machine_capability(manifest.machine_map["laptop"])
+    assert capability.backend is None
+    assert "systemctl" in capability.reason
+    assert "Cannot connect to user bus" in capability.reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic", ["mount profile rejected", "findmnt verification failed"])
+async def test_mirrored_launch_failure_never_creates_cooperative_session(
+    manifest, tmp_path, process_factory, monkeypatch, diagnostic
+):
+    commands = []
+
+    def fail(command, unit, **kwargs):
+        commands.append(command)
+        raise TerminalUnavailable(diagnostic)
+
+    monkeypatch.setattr(launch, "launch", fail)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        with pytest.raises(TerminalUnavailable, match=diagnostic):
+            await manager.open(**arguments(manifest))
+        assert len(commands) == 1
+        assert commands[0][0] == "systemd-run"
+        assert manager.list("project") == []
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["containment"] == "mirrored"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.api.terminal_projection import terminal_session_payload
+
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
+    monkeypatch.setenv("RCP_TEST_SECRET", "must-not-inherit")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("A cooperative PTY must not probe or stop systemd")
+
+    monkeypatch.setattr(launch, "availability_diagnostic", unexpected)
+    monkeypatch.setattr(launch, "stop_unit", unexpected)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        session = await manager.open(**arguments(manifest))
+        payload = terminal_session_payload(session, {})
+        assert payload["containment"] == "cooperative"
+        assert "protection is unavailable" in payload["protection_notice"]
+        assert "no filesystem fence" in payload["protection_notice"]
+        queue = manager.attach("project", session.session_id)
+        # Disable input echo so only evaluated output can satisfy the assertions.
+        await manager.write("project", session.session_id, b"stty -echo\n")
+        await manager.write(
+            "project",
+            session.session_id,
+            b'printf \'cwd=%s secret=%s job=%s\\n\' "$PWD" "${RCP_TEST_SECRET-unset}" "$-"\n',
+        )
+        output = bytearray()
+        async with asyncio.timeout(5):
+            while b"secret=unset job=" not in output:
+                output.extend(await queue.get())
+        assert f"cwd={session.path} secret=unset".encode() in output
+        # Bash's monitor flag proves the shell has working interactive job control.
+        assert b"m" in output.split(b"secret=unset job=")[-1].splitlines()[0]
+        process = manager.sessions[session.session_id].process
+        await manager.end("project", session.session_id)
+        assert process.poll() is not None
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["containment"] == "cooperative"
+        assert receipt["termination_reason"] == "ended"
+    finally:
+        await manager.close()
+
+
+def test_cooperative_shell_hangs_up_when_server_pty_closes(tmp_path):
+    command = launch.cooperative_command({})
+    assert command[:2] == ["/usr/bin/env", "-i"]
+    assert "systemd-run" not in command
+    assert launch._SHELL_PREFLIGHT not in command
+    process, master = launch.launch(command, None, cwd=tmp_path)
+    try:
+        os.close(master)
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            launch.stop_cooperative(process)
+
+
+@pytest.mark.asyncio
+async def test_restart_retires_cooperative_metadata_without_systemd(tmp_path, monkeypatch):
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    session = TerminalSession(
+        session_id="test",
+        project_id="project",
+        member_id="member",
+        repository_id="repo",
+        path="/checkout",
+        started_at="start",
+        last_activity_at="start",
+        unit=f"{manager._unit_prefix}-test",
+        containment="cooperative",
+    )
+    save_metadata(manager.directory, session)
+    monkeypatch.setattr(launch, "stop_unit", lambda unit: pytest.fail("No cooperative unit exists"))
+    await manager.start()
+    try:
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["termination_reason"] == "server_restart"
+    finally:
+        await manager.close()
+
+
+def test_cooperative_shell_entry_point_works_in_packaged_backend(monkeypatch):
+    from rcp import __main__
+    from rcp.terminals import pty_shell
+
+    monkeypatch.setattr(launch.sys, "frozen", True, raising=False)
+    command = launch.cooperative_command({})
+    assert command[-2:] == [launch.sys.executable, "_terminal-shell"]
+    called = []
+    monkeypatch.setattr(pty_shell, "main", lambda: called.append("shell"))
+    monkeypatch.setattr(launch.sys, "argv", command[-2:])
+    __main__.main()
+    assert called == ["shell"]

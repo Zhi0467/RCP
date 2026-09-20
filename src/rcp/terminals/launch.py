@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import pty
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 from rcp.limits import (
@@ -48,9 +50,29 @@ def availability_diagnostic() -> str | None:
         name for name in ("systemd-run", "systemctl", "findmnt") if shutil.which(name) is None
     ]
     if missing:
-        return f"Member terminals require Linux and usable {', '.join(missing)}; not installed."
+        return f"Mirrored terminal launches require usable {', '.join(missing)}; not installed."
     if sys.platform != "linux":
-        return "Member terminals require Linux systemd-run with mount namespace support."
+        return (
+            "The mirrored terminal backend requires Linux systemd-run with mount namespace support."
+        )
+    for command in (
+        ["systemd-run", "--version"],
+        ["findmnt", "--version"],
+        ["systemctl", "--user", "show-environment"],
+    ):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=_manager_environment(),
+                timeout=TERMINAL_LAUNCH_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"Terminal prerequisite {command[0]} is unusable: {exc}"
+        if result.returncode:
+            detail = result.stderr.strip() or f"exit {result.returncode}"
+            return f"Terminal prerequisite {command[0]} is unusable: {detail}"
     return None
 
 
@@ -63,7 +85,7 @@ def launch_command(
     git_environment: dict[str, str],
     empty_directory: Path,
 ) -> list[str]:
-    """Build the required profile; failed properties never select a weaker shell."""
+    """Build the required profile; failed properties refuse launch."""
     properties = [
         "PrivateUsers=yes",
         "PrivateTmp=yes",
@@ -100,20 +122,7 @@ def launch_command(
     ]
     for property_value in properties:
         command.extend(["--property", property_value])
-    # Discard the user manager's ambient environment, which can contain provider
-    # secrets. Git receives only its concrete repository access settings.
-    environment = {
-        "HOME": str(Path.home()),
-        "USER": os.environ.get("USER", "rcp"),
-        "LOGNAME": os.environ.get("LOGNAME", "rcp"),
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "TERM": "xterm-256color",
-        "LANG": "C.UTF-8",
-        "HISTFILE": "/dev/null",
-        **git_environment,
-    }
-    command.extend(["--", "/usr/bin/env", "-i"])
-    command.extend(f"{name}={value}" for name, value in environment.items())
+    command.extend(["--", *shell_environment(git_environment)])
     command.extend(
         [
             "/bin/bash",
@@ -128,10 +137,38 @@ def launch_command(
     return command
 
 
-def launch(command: list[str], unit: str) -> tuple[subprocess.Popen[bytes], int]:
-    diagnostic = availability_diagnostic()
-    if diagnostic:
-        raise TerminalUnavailable(diagnostic)
+def shell_environment(git_environment: dict[str, str]) -> list[str]:
+    # Discard ambient provider secrets for either backend. Git receives only
+    # its concrete repository access settings.
+    environment = {
+        "HOME": str(Path.home()),
+        "USER": os.environ.get("USER", "rcp"),
+        "LOGNAME": os.environ.get("LOGNAME", "rcp"),
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "TERM": "xterm-256color",
+        "LANG": "C.UTF-8",
+        "HISTFILE": "/dev/null",
+        **git_environment,
+    }
+    return ["/usr/bin/env", "-i", *(f"{name}={value}" for name, value in environment.items())]
+
+
+def cooperative_command(git_environment: dict[str, str]) -> list[str]:
+    return [
+        *shell_environment(git_environment),
+        sys.executable,
+        *([] if getattr(sys, "frozen", False) else ["-m", "rcp"]),
+        "_terminal-shell",
+    ]
+
+
+def launch(
+    command: list[str], unit: str | None, *, cwd: Path | None = None
+) -> tuple[subprocess.Popen[bytes], int]:
+    if unit is not None:
+        diagnostic = availability_diagnostic()
+        if diagnostic:
+            raise TerminalUnavailable(diagnostic)
     master, slave = pty.openpty()
     process: subprocess.Popen[bytes] | None = None
     try:
@@ -142,6 +179,7 @@ def launch(command: list[str], unit: str) -> tuple[subprocess.Popen[bytes], int]
             stderr=slave,
             env=_manager_environment(),
             start_new_session=True,
+            cwd=cwd,
         )
         os.close(slave)
         slave = -1
@@ -163,7 +201,11 @@ def launch(command: list[str], unit: str) -> tuple[subprocess.Popen[bytes], int]
             if not chunk:
                 detail = output.decode(errors="replace").strip()
                 raise TerminalUnavailable(
-                    "systemd-run could not start the required terminal mount profile: "
+                    (
+                        "systemd-run could not start the required terminal mount profile: "
+                        if unit is not None
+                        else "Local PTY could not start: "
+                    )
                     + (detail or f"exit {process.poll()}")
                 )
             output.extend(chunk)
@@ -175,17 +217,20 @@ def launch(command: list[str], unit: str) -> tuple[subprocess.Popen[bytes], int]
                 )
         raise TerminalUnavailable(
             "systemd-run did not confirm the required terminal profile in time."
+            if unit is not None
+            else "Local PTY did not confirm shell startup in time."
         )
     except BaseException as exc:
         try:
-            stop_unit(unit)
+            if unit is not None:
+                stop_unit(unit)
         finally:
             if process is not None and process.poll() is None:
                 process.kill()
                 process.wait(timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
             os.close(master)
         if isinstance(exc, Exception) and not isinstance(exc, TerminalUnavailable):
-            raise TerminalUnavailable(f"systemd-run terminal launch failed: {exc}") from exc
+            raise TerminalUnavailable(f"Terminal launch failed: {exc}") from exc
         raise
     finally:
         if slave >= 0:
@@ -229,3 +274,19 @@ def _path(value: str) -> str:
 
 def _manager_environment() -> dict[str, str]:
     return {**os.environ, "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"}
+
+
+def stop_cooperative(process: subprocess.Popen[bytes]) -> None:
+    """Hang up the interactive shell so it also hangs up its ordinary jobs."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGHUP)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=TERMINAL_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=TERMINAL_STOP_TIMEOUT_SECONDS)

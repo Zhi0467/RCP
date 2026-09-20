@@ -7,6 +7,7 @@ from pathlib import Path
 from rcp.config import Manifest
 from rcp.storage import AppStore
 from rcp.terminals import TerminalSession
+from rcp.terminals.backends import COOPERATIVE_NOTICE
 
 
 def running_repository_work(
@@ -59,5 +60,7 @@ def terminal_session_payload(
         "member_id": session.member_id,
         "started_at": session.started_at,
         "state": session.state,
+        "containment": session.containment,
+        "protection_notice": COOPERATIVE_NOTICE if session.containment == "cooperative" else None,
         "running_work": work.get(session.repository_id, []),
     }

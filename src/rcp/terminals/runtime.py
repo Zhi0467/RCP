@@ -42,7 +42,10 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
 
 async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
     session = runtime.session
-    await asyncio.to_thread(launch.stop_unit, session.unit)
+    if session.containment == "mirrored":
+        await asyncio.to_thread(launch.stop_unit, session.unit)
+    else:
+        await asyncio.to_thread(launch.stop_cooperative, runtime.process)
     # Retire once before any subsequent cleanup/audit operation can fail. The
     # unfinished persisted intent still causes startup to retry the unit stop.
     manager.sessions.pop(session.session_id, None)

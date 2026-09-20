@@ -1,0 +1,97 @@
+"""Machine capabilities for member PTYs; mount profiles resist accidents only."""
+
+from __future__ import annotations
+
+import platform
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from rcp.config import MachineConfig
+from rcp.terminals import launch
+
+Containment = Literal["mirrored", "cooperative"]
+COOPERATIVE_NOTICE = (
+    "Canonical-state protection is unavailable on this machine. "
+    "There is no filesystem fence around canonical state."
+)
+REMOTE_REASON = "PTY-over-SSH transport is not built."
+
+
+@dataclass(frozen=True)
+class TerminalBackend:
+    id: str
+    display_name: str
+    containment: Containment
+
+    def supports(self, os_name: str, is_remote: bool) -> bool:
+        if is_remote:
+            return False
+        if self.containment == "mirrored":
+            return os_name.casefold() == "linux"
+        return os_name.casefold() != "linux"
+
+    def start(
+        self,
+        *,
+        unit: str,
+        repository: Path,
+        protected_paths: list[str],
+        git_read_paths: tuple[str, ...],
+        git_environment: dict[str, str],
+        empty_directory: Path,
+    ) -> tuple[subprocess.Popen[bytes], int]:
+        if self.containment == "cooperative":
+            return launch.launch(launch.cooperative_command(git_environment), None, cwd=repository)
+        command = launch.launch_command(
+            unit=unit,
+            repository=repository,
+            protected_paths=protected_paths,
+            git_read_paths=git_read_paths,
+            git_environment=git_environment,
+            empty_directory=empty_directory,
+        )
+        return launch.launch(command, unit)
+
+
+TERMINAL_BACKENDS = {
+    backend.id: backend
+    for backend in (
+        TerminalBackend("systemd_user", "systemd user manager", "mirrored"),
+        TerminalBackend("pty", "Local PTY", "cooperative"),
+    )
+}
+
+
+@dataclass(frozen=True)
+class TerminalCapability:
+    backend: TerminalBackend | None
+    reason: str
+
+    @property
+    def containment(self) -> Containment | None:
+        return self.backend.containment if self.backend else None
+
+
+def resolve_backend(os_name: str, is_remote: bool) -> TerminalBackend | None:
+    return next(
+        (backend for backend in TERMINAL_BACKENDS.values() if backend.supports(os_name, is_remote)),
+        None,
+    )
+
+
+def machine_capability(machine: MachineConfig) -> TerminalCapability:
+    backend = resolve_backend(platform.system(), bool(machine.host))
+    if backend is None:
+        return TerminalCapability(None, REMOTE_REASON)
+    if backend.containment == "mirrored":
+        diagnostic = launch.availability_diagnostic()
+        if diagnostic:
+            return TerminalCapability(None, diagnostic)
+        return TerminalCapability(
+            backend,
+            "Canonical paths require verified read-only mounts for accident resistance; "
+            "the shell retains the account's authority.",
+        )
+    return TerminalCapability(backend, COOPERATIVE_NOTICE)

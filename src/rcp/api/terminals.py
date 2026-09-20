@@ -23,6 +23,7 @@ from rcp.limits import (
     TERMINAL_MAX_DIMENSION,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
+from rcp.terminals.backends import machine_capability
 from rcp.terminals.git_access import terminal_git_access
 
 router = APIRouter()
@@ -52,20 +53,26 @@ def repositories(project_id: str, request: Request) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
     work = running_repository_work(services.store, project_id, manifest)
-    return [
-        {
-            "repository_id": repository.alias,
-            "path": repository.path,
-            "eligible": not bool(manifest.machine_map[repository.machine].host),
-            "unavailable_reason": (
-                "Terminals are unavailable for repositories on a remote machine."
-                if manifest.machine_map[repository.machine].host
-                else None
-            ),
-            "running_work": work[repository.alias],
-        }
-        for repository in manifest.repositories
-    ]
+    capabilities = {machine.alias: machine_capability(machine) for machine in manifest.machines}
+    result = []
+    for repository in manifest.repositories:
+        capability = capabilities[repository.machine]
+        backend = capability.backend
+        result.append(
+            {
+                "repository_id": repository.alias,
+                "machine_id": repository.machine,
+                "path": repository.path,
+                "eligible": backend is not None,
+                "backend_id": backend.id if backend else None,
+                "backend_name": backend.display_name if backend else None,
+                "containment": capability.containment,
+                "reason": capability.reason,
+                "unavailable_reason": capability.reason if backend is None else None,
+                "running_work": work[repository.alias],
+            }
+        )
+    return result
 
 
 @router.get("/api/projects/{project_id}/terminals", dependencies=_http_membership)
@@ -94,8 +101,11 @@ async def open_session(
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
     repository = manifest.repository_map[body.repository_id]
-    if manifest.machine_map[repository.machine].host:
-        raise HTTPException(409, "Terminals are unavailable for repositories on a remote machine.")
+    capability = await asyncio.to_thread(
+        machine_capability, manifest.machine_map[repository.machine]
+    )
+    if capability.backend is None:
+        raise HTTPException(409, capability.reason)
     try:
         try:
             inventory = await asyncio.to_thread(services.catalog.repository_ownership_inventory)

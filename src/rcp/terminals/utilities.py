@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rcp.agents.write_scope import RegisteredRepositoryRoot, protected_repository_paths
 from rcp.config import Manifest
+from rcp.terminals.backends import REMOTE_REASON
 from rcp.terminals.models import TerminalSession, TerminalUnavailable
 
 
@@ -24,7 +25,7 @@ def resolve_repository(
     if repository is None:
         raise ValueError("Repository is not registered to this project.")
     if manifest.machine_map[repository.machine].host:
-        raise TerminalUnavailable("Member terminals are unavailable for remote repositories.")
+        raise TerminalUnavailable(REMOTE_REASON)
     root = Path(repository.path).expanduser().resolve(strict=True)
     if not root.is_dir():
         raise TerminalUnavailable("The registered repository is not a directory.")
