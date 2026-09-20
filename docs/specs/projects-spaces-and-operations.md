@@ -157,7 +157,10 @@ still has whatever read visibility its host operating-system account permits.
 
 `TerminalManager` owns one session per repository per project, and underneath
 that one shell per working tree: a request is refused when any session — under
-another alias, or in another project — is already open on the tree it names.
+another alias, or in another project — is already open on the tree it names, or
+is still opening on it. An open reserves the tree it resolved, not the alias it
+was asked for, because a registration can be renamed or moved while that open
+is still probing or launching.
 Registrations can be renamed and moved between projects, and two shells writing
 one tree is what the rule exists to prevent. Project members may attach to the
 existing session of their own project's alias, or end it. The starting member remains its

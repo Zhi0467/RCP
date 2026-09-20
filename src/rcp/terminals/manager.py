@@ -16,7 +16,7 @@ import subprocess
 import termios
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from rcp.agents.write_scope import RegisteredRepositoryRoot
@@ -184,6 +184,9 @@ class TerminalManager:
         self.membership_check = membership_check
         self.sessions: dict[str, TerminalRuntime] = {}
         self._opening: set[tuple[str, str]] = set()
+        # Working trees an in-flight open has resolved, which is what one
+        # shell per tree has to be reserved by; an alias is only its name.
+        self._opening_trees: set[tuple[str, str, str]] = set()
         # Records left unfinished because a unit could not be confirmed gone.
         self._unresolved: dict[tuple[str, str], list[TerminalSession]] = {}
         self._local_capability: TerminalCapability | None = None
@@ -737,6 +740,39 @@ class TerminalManager:
         finally:
             self._opening.discard(key)
 
+    @contextlib.asynccontextmanager
+    async def _reserved_checkout(self, session: TerminalSession) -> AsyncIterator[None]:
+        """Hold this working tree for one open, from resolution to publication.
+
+        `_opening` reserves the alias asked for, and a registration can be
+        renamed or moved to another project while this open is still probing
+        or launching. A request arriving under the new name carries a
+        different alias, so it passes that guard, and neither shell is in
+        `sessions` yet for the other's admission check to find. Both would
+        then launch on one working tree.
+
+        A session published since admission is refused here too: the open that
+        published it has already given its own reservation back.
+        """
+        checkout = session_checkout(session)
+        async with self._lock:
+            if checkout in self._opening_trees:
+                raise TerminalUnavailable(
+                    "Another terminal is already opening on this working tree."
+                )
+            if any(
+                session_checkout(runtime.session) == checkout for runtime in self.sessions.values()
+            ):
+                raise TerminalUnavailable(
+                    "Another terminal is already open on this working tree. "
+                    "End it before opening one here."
+                )
+            self._opening_trees.add(checkout)
+        try:
+            yield
+        finally:
+            self._opening_trees.discard(checkout)
+
     async def _open(
         self,
         *,
@@ -787,79 +823,80 @@ class TerminalManager:
             containment=capability.backend.containment,
             execution_host=machine.host,
         )
-        save_metadata(self.directory, session)
-        if machine.host:
-            start = asyncio.to_thread(
-                remote.start_remote,
-                machine.host,
-                unit=session.unit,
-                repository=root,
-                protected_paths=protected,
-                containment=session.containment,
-                expand_environment_option=(probe.expand_environment_option if probe else True),
-                git_key_relative=remote_git_key_relative,
-                os_account=machine.os_account,
-            )
-        else:
-            start = asyncio.to_thread(
-                capability.backend.start,
-                unit=session.unit,
-                repository=root,
-                protected_paths=protected,
-                git_read_paths=git_read_paths,
-                git_environment=git_environment or {},
-                empty_directory=self.directory / "empty",
-            )
-        pending = asyncio.create_task(start)
-        try:
-            process, master_fd = await asyncio.shield(pending)
-        except asyncio.CancelledError as cancelled:
-            # A disconnected request cannot abandon a launch still running
-            # in its worker thread. Finish admission, then stop its unit.
+        async with self._reserved_checkout(session):
+            save_metadata(self.directory, session)
+            if machine.host:
+                start = asyncio.to_thread(
+                    remote.start_remote,
+                    machine.host,
+                    unit=session.unit,
+                    repository=root,
+                    protected_paths=protected,
+                    containment=session.containment,
+                    expand_environment_option=(probe.expand_environment_option if probe else True),
+                    git_key_relative=remote_git_key_relative,
+                    os_account=machine.os_account,
+                )
+            else:
+                start = asyncio.to_thread(
+                    capability.backend.start,
+                    unit=session.unit,
+                    repository=root,
+                    protected_paths=protected,
+                    git_read_paths=git_read_paths,
+                    git_environment=git_environment or {},
+                    empty_directory=self.directory / "empty",
+                )
+            pending = asyncio.create_task(start)
             try:
-                process, master_fd = await pending
+                process, master_fd = await asyncio.shield(pending)
+            except asyncio.CancelledError as cancelled:
+                # A disconnected request cannot abandon a launch still running
+                # in its worker thread. Finish admission, then stop its unit.
+                try:
+                    process, master_fd = await pending
+                except Exception:
+                    # It failed after all. This raises inside the cancellation
+                    # handler and so cannot reach the launch-failure branch below,
+                    # which would leave its record untracked while `_opening` is
+                    # cleared — enough for the next attempt to start a second
+                    # shell. Clean up here and let the cancellation stand.
+                    await self._record_launch_failure(session)
+                    raise cancelled from None
+                await self._abandon_opening(
+                    TerminalRuntime(session, process, master_fd, time.monotonic())
+                )
+                raise
             except Exception:
-                # It failed after all. This raises inside the cancellation
-                # handler and so cannot reach the launch-failure branch below,
-                # which would leave its record untracked while `_opening` is
-                # cleared — enough for the next attempt to start a second
-                # shell. Clean up here and let the cancellation stand.
                 await self._record_launch_failure(session)
-                raise cancelled from None
-            await self._abandon_opening(
-                TerminalRuntime(session, process, master_fd, time.monotonic())
-            )
-            raise
-        except Exception:
-            await self._record_launch_failure(session)
-            raise
-        runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
-        if machine.host:
-            runtime.completion = remote.CompletionParser()
-        try:
-            async with self._lock:
-                self.sessions[session_id] = runtime
-                asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
-                if not self.membership_check(project_id, member_id):
-                    await end_runtime(self, runtime, "membership_lost")
-                    raise PermissionError(
-                        "Project membership ended while the terminal was opening."
-                    )
-        except asyncio.CancelledError:
-            # The shell is already running, and this waits for a lock another
-            # end may hold across a `systemctl` call. A requester that leaves
-            # during that wait publishes nothing, so without this the shell
-            # and its record are both abandoned while `_opening` is cleared,
-            # and the next attempt opens a second one on the same checkout.
-            if runtime.session.termination_reason is None:
-                # Unless the membership end above already finished: `end_runtime`
-                # completes its cleanup before re-raising a cancellation, so
-                # the record is written and the descriptor given back. Ending
-                # again would overwrite why this session ended and act on a
-                # descriptor another launch may already have been handed.
-                await self._abandon_opening(runtime)
-            raise
-        return session
+                raise
+            runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
+            if machine.host:
+                runtime.completion = remote.CompletionParser()
+            try:
+                async with self._lock:
+                    self.sessions[session_id] = runtime
+                    asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
+                    if not self.membership_check(project_id, member_id):
+                        await end_runtime(self, runtime, "membership_lost")
+                        raise PermissionError(
+                            "Project membership ended while the terminal was opening."
+                        )
+            except asyncio.CancelledError:
+                # The shell is already running, and this waits for a lock another
+                # end may hold across a `systemctl` call. A requester that leaves
+                # during that wait publishes nothing, so without this the shell
+                # and its record are both abandoned while `_opening` is cleared,
+                # and the next attempt opens a second one on the same checkout.
+                if runtime.session.termination_reason is None:
+                    # Unless the membership end above already finished: `end_runtime`
+                    # completes its cleanup before re-raising a cancellation, so
+                    # the record is written and the descriptor given back. Ending
+                    # again would overwrite why this session ended and act on a
+                    # descriptor another launch may already have been handed.
+                    await self._abandon_opening(runtime)
+                raise
+            return session
 
     async def _abandon_opening(self, runtime: TerminalRuntime) -> None:
         """Stop, retain and release a session its requester no longer wants.

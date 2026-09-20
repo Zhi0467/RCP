@@ -1719,6 +1719,54 @@ async def test_a_failed_retirement_drops_the_output_still_queued(
 
 
 @pytest.mark.asyncio
+async def test_a_rename_during_an_open_cannot_start_a_second_shell_on_the_tree(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """`_opening` reserves the alias, which is only the tree's name. Renaming
+    the registration while an open is still launching lets the next request
+    arrive under a different alias, and neither shell is in `sessions` yet for
+    the other's admission check to find. Two aliases registered at once are
+    caught at resolution instead, as an overlap.
+    """
+    launching = threading.Event()
+    release = threading.Event()
+    launched = []
+    original = launch.launch
+
+    def slow(command, unit):
+        launched.append(unit)
+        if len(launched) == 1:
+            launching.set()
+            assert release.wait(5)
+        return original(command, unit)
+
+    repository = manifest.repository_map["repo-b"]
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    opening = None
+    try:
+        monkeypatch.setattr(launch, "launch", slow)
+        opening = asyncio.create_task(
+            manager.open(**{**arguments(manifest), "repository_alias": "repo-b"})
+        )
+        assert await asyncio.to_thread(launching.wait, 5)
+        # The registration is renamed while that open is still launching, so
+        # only the new name is registered when the next request resolves.
+        manifest.repositories = [
+            item for item in manifest.repositories if item.alias != "repo-b"
+        ] + [repository.model_copy(update={"alias": "repo-b-again"})]
+        with pytest.raises(TerminalUnavailable, match="already opening on this working tree"):
+            await manager.open(**{**arguments(manifest), "repository_alias": "repo-b-again"})
+        assert launched == [launched[0]]
+    finally:
+        release.set()
+        if opening is not None:
+            with contextlib.suppress(Exception):
+                await opening
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_one_working_tree_holds_one_shell_across_projects(
     manifest, tmp_path, process_factory
 ):
