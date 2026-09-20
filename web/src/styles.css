@@ -261,6 +261,10 @@ button:disabled {
 .button.secondary {
   background: var(--surface);
 }
+.button.tiny {
+  font-size: 9px;
+  padding: 5px 9px;
+}
 .button.ghost {
   background: transparent;
   border-color: transparent;
@@ -3042,16 +3046,14 @@ button:disabled {
   display: grid;
   gap: 8px;
 }
-.provisioning-events > div,
-.operator-action-line {
+.provisioning-events > div {
   display: grid;
   font-size: 9px;
   gap: 6px;
   grid-template-columns: minmax(90px, 0.28fr) minmax(0, 1fr);
 }
 .provisioning-events span,
-.provisioning-operator-action p,
-.operator-action-line span {
+.provisioning-operator-action p {
   color: var(--ink-soft);
   line-height: 1.45;
 }
@@ -3070,15 +3072,156 @@ button:disabled {
   font-weight: 700;
   margin-bottom: 10px;
 }
-.operator-action-line {
-  border-top: 1px solid var(--line);
-  padding: 9px 0;
-}
-.operator-action-line code,
 .provisioning-ledger code,
 .provisioning-final-review code {
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+/* A human stop: an ordered list of single actions. Commands and instructions
+ * span the card, because the two-column grid above is for labelled rows only
+ * and a lone child in it wraps down a quarter-width ribbon. */
+.provisioning-operator-action > p {
+  font-size: 10px;
+  margin: 0 0 12px;
+  max-width: 62ch;
+}
+.operator-where {
+  align-items: baseline;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 9px;
+  gap: 6px 14px;
+  margin-bottom: 14px;
+  padding: 9px 11px;
+}
+.operator-where b {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.operator-details {
+  margin: 0 0 14px;
+}
+.operator-details > summary {
+  color: var(--cobalt-dark);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+.operator-details dl {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 10px 0 0;
+}
+.provisioning-operator-action > .operator-destination {
+  margin-bottom: 14px;
+}
+.operator-values {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.operator-value-name {
+  color: var(--muted);
+  display: block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+.operator-copy-row {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.operator-value {
+  background: var(--surface-cool);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: block;
+  font-size: 9.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}
+.operator-steps {
+  counter-reset: operator-step;
+  display: grid;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.operator-steps > li {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px 10px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  padding: 14px 0;
+}
+/* The number is the marker for the whole step, so every child sits in the
+ * second column whether or not the step has a name of its own. */
+.operator-steps > li > * {
+  grid-column: 2;
+}
+.operator-steps > li::before {
+  background: var(--surface-cool);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--ink-soft);
+  content: counter(operator-step);
+  counter-increment: operator-step;
+  font-size: 9px;
+  font-weight: 700;
+  grid-column: 1;
+  grid-row: 1;
+  height: 20px;
+  line-height: 19px;
+  text-align: center;
+  width: 20px;
+}
+.operator-steps > li > header {
+  margin: 0;
+}
+.operator-steps > li > header > span {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+}
+.operator-run-on {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.operator-run-on .tag {
+  background: var(--cobalt-soft);
+  border-radius: 5px;
+  color: var(--cobalt-dark);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+.operator-run-on code {
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+.operator-note {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 0;
 }
 .provisioning-ledger {
   display: grid;

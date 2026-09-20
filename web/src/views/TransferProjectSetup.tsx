@@ -46,6 +46,7 @@ import {
   runtimeOptions,
 } from "../providers";
 import { formatCommandArgv, projectMoveSetupHash, type ProjectSetupRoute } from "../projectSetup";
+import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
   AgentTask,
@@ -1150,17 +1151,11 @@ export function TransferProjectSetup({
               </div>
             </section>
             {bundle.incoming_provisioning.operator_action && (
-              <section className="operator-route-card">
-                <header>
-                  <strong>{bundle.incoming_provisioning.operator_action.title}</strong>
-                  <span>{bundle.incoming_provisioning.operator_action.performed_by}</span>
-                </header>
-                <p>{bundle.incoming_provisioning.operator_action.message}</p>
-                <p>
-                  <strong>Success:</strong>{" "}
-                  {bundle.incoming_provisioning.operator_action.expected_success}
-                </p>
-              </section>
+              <OperatorActionPanel
+                step={bundle.incoming_provisioning.operator_action}
+                sshTarget={selectedConnection?.operator_route?.ssh_target ?? null}
+                onRefresh={() => void refreshTransfer()}
+              />
             )}
             {bundle.can_manual_relay && (
               <section className="operator-route-card">

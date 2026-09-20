@@ -662,13 +662,14 @@ def _validate_event_sequence(
             if any(latest.get(number) != "succeeded" for number in range(1, event.step.number)):
                 raise ValueError("a step cannot begin before every earlier step succeeds")
             last_number = event.step.number
-        for field in (
-            "title",
-            "purpose",
-            "target",
-            "phase",
-            "expected_success",
-        ):
+        # A pause is named for the human's task, not for the machine check it
+        # interrupted, so only a human operator action may retitle its step.
+        # Everything that identifies the step stays pinned.
+        renames = (
+            event.step.state == "operator_action_needed" and event.step.performed_by == "human"
+        )
+        pinned = ("target", "phase", "expected_success")
+        for field in pinned if renames else ("title", "purpose", *pinned):
             if getattr(event.step, field) != getattr(expected, field):
                 raise ValueError(f"step events cannot change planned {field}")
         if event.step.performed_by != expected.performed_by and not (

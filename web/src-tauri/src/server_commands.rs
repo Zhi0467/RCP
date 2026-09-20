@@ -683,7 +683,17 @@ fn validate_event_prefix_inner(
         }
         validate_step(step, number, state)?;
         let planned = &steps[number - 1];
-        for field in ["title", "purpose", "target", "phase", "expected_success"] {
+        // A pause is named for the human's task, not for the machine check it
+        // interrupted, so only a human operator action may retitle its step.
+        // Everything that identifies the step stays pinned.
+        let renames = state == "operator_action_needed"
+            && step.get("performed_by").and_then(Value::as_str) == Some("human");
+        let pinned: &[&str] = if renames {
+            &["target", "phase", "expected_success"]
+        } else {
+            &["title", "purpose", "target", "phase", "expected_success"]
+        };
+        for field in pinned {
             if step.get(field) != planned.get(field) {
                 return Err(format!("the server command changed its planned {field}"));
             }

@@ -2,9 +2,17 @@
 
 Date: 2026-09-19
 Status: design confirmed by the human on 2026-09-19 against a rendered mockup of
-the redesigned panel, then revised the same day after an xhigh design review
-whose findings were verified against the code. Nothing is implemented. The
-decisions below are settled and the review's answers are folded into them.
+the redesigned panel, revised the same day after an xhigh design review whose
+findings were verified against the code, then implemented. All four slices have
+landed: the execution context and its call sites, the operator stop's own title
+with both event validators relaxed, the rebuilt desktop panel reused by the
+transfer view, and the CLI wizard's matching label. Focused Python, web, and
+browser checks pass, and the rebuilt panel was driven and inspected against a
+stop produced by the real builder.
+
+What remains: the served journey against a provisioning request paused on a
+throwaway server, a Tauri rebuild with the affected `docs/desktop.md` checks,
+and a terminal capture of the interactive wizard's Enter-driven continuation.
 
 Close this handoff when a human stop in project provisioning reaches the
 operator as an ordered list of single actions, every command in it names the
@@ -191,6 +199,15 @@ Four slices. The first is the shared contract and lands alone.
 
 ## Open
 
-Nothing. The design review's open question — whether the resume command should
-become an action carrying its own context — is answered in decision 1: it stays
-`resume_argv` with a sibling `resume_context`.
+The design review's open question — whether the resume command should become an
+action carrying its own context — is answered in decision 1: it stays
+`resume_argv` with a sibling `resume_execution`.
+
+Two things were deliberately left alone. The restore reply in
+[`restore.py`](../../src/rcp/server_ops/restore.py) has no title of its own to
+carry, only actions, fields, and a diagnostic, so its retitled twin is inert
+there until that reply grows a title; inventing one would be a new contract for
+a surface this work never touched. And the native test record in
+[`server_commands.rs`](../../web/src-tauri/src/server_commands.rs) builds a
+`kind: "command"` action carrying `instruction` instead of `argv`, which is
+malformed and predates this work.

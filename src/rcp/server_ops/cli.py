@@ -30,6 +30,7 @@ from rcp.server_ops.config import (
 )
 from rcp.server_ops.models import (
     SERVER_CLI_MAX_EXECUTION_BYTES,
+    ExecutionContext,
     MachineTarget,
     NonsecretField,
     ServerCommandExecution,
@@ -998,9 +999,10 @@ class _InteractiveServerRenderer:
             print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
             for index, action in enumerate(step.actions, start=1):
                 if action.kind == "command":
-                    if action.argv == step.resume_argv:
+                    if (action.argv, action.execution) == (step.resume_argv, step.resume_execution):
                         continue
-                    print(f"  {index}. $ {shlex.join(action.argv)}", file=self.stream)
+                    shell = _execution_prefix(action.execution)
+                    print(f"  {index}. {shell}$ {shlex.join(action.argv)}", file=self.stream)
                 else:
                     _print_wrapped(
                         action.instruction,
@@ -1011,7 +1013,20 @@ class _InteractiveServerRenderer:
         if step.resume_argv:
             print(file=self.stream)
             print("Continue:", file=self.stream)
-            print(f"  $ {shlex.join(step.resume_argv)}", file=self.stream)
+            shell = _execution_prefix(step.resume_execution)
+            print(f"  {shell}$ {shlex.join(step.resume_argv)}", file=self.stream)
+
+
+def _execution_prefix(execution: ExecutionContext | None) -> str:
+    """Name the shell a command needs, when it is not the one already open.
+
+    A terminal operator is already in their own login, so only a command that
+    needs a different account has anything to add here.
+    """
+
+    if execution is None or execution.shell_account is None:
+        return ""
+    return f"in a shell as {execution.shell_account}: "
 
 
 def _supports_live_updates(stream: TextIO) -> bool:

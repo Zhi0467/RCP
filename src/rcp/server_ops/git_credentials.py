@@ -925,7 +925,7 @@ def deploy_key_operator_step(
     )
     return ServerStep(
         number=number,
-        title="Grant repository write access",
+        title="Add a deploy key on GitHub",
         purpose="Give one central checkout its repository-scoped GitHub write identity.",
         performed_by="human",
         target=ExternalServiceTarget(
@@ -987,7 +987,7 @@ def restore_deploy_key_operator_step(
     )
     return ServerStep(
         number=number,
-        title="Grant the fresh restore deploy key",
+        title="Add the replacement deploy key on GitHub",
         purpose=(
             "Give the reconstructed central checkout a new repository-scoped GitHub identity."
         ),

@@ -1236,6 +1236,10 @@ class ProjectProvisionCoordinator:
             update={
                 "state": "operator_action_needed",
                 "performed_by": source.performed_by,
+                # The human reads this card while the work is theirs, so it is
+                # named for their task rather than for the check it interrupted.
+                "title": source.title,
+                "purpose": source.purpose,
                 "message": source.message,
                 "actions": source.actions,
                 "fields": source.fields,
