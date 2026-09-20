@@ -166,9 +166,26 @@ Sessions outlive the Terminals view and disconnected browsers. Only terminal
 input renews the 30-minute idle lifetime in `limits.py`; output and passive
 attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
 membership, process exit, and idle expiry every five seconds. Clean server
-shutdown and maintenance end sessions. Startup stops orphan units named in this
-application's metadata before admitting new sessions, including launch intents
-persisted before a crash. Failure to stop a unit remains visible and retryable.
+shutdown and maintenance end sessions. For mirrored sessions, startup stops
+orphan systemd units named in this application's metadata before admitting new
+sessions, including launch intents persisted before a crash. Failure to stop a
+unit remains visible and retryable.
+
+A cooperative session is a server-owned PTY with a plain shell in the repository,
+using the scrubbed environment and no mount profile. Normal termination hangs
+up the shell and uses a bounded kill if needed. Server exit closes its PTY and
+hangs up the shell; deliberately detached descendants have no cleanup guarantee.
+This is not systemd cgroup ownership. Its session payload reports `cooperative`
+and the missing canonical-state protection: no canonical-state fence exists on
+that machine.
+
+Eligibility belongs to the repository's machine, never its space kind. Local
+Linux selects the mirrored backend only with usable systemd tools, `findmnt`,
+and a user manager; other local operating systems select cooperative. Remote
+machines are unavailable because PTY-over-SSH transport is not built. A mirrored
+profile or verification failure ends the launch with its diagnostic and never
+starts a cooperative session. Backend selection and launch details are owned by
+[Providers and containment](providers-and-containment.md#member-terminals).
 
 The operational metadata under the application data directory records member,
 project, repository, start, end, and termination reason. It contains no PTY byte

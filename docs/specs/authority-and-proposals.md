@@ -30,14 +30,16 @@ member.
 The service account owns its data directory, singleton lock, and private control
 socket. An unrelated operating-system account does not inherit that access.
 A member terminal, however, runs as the service account and inherits the Work
-turn's trust boundary: it is not isolated from that account's authority. The
+turn's trust boundary: it is not isolated from that account's authority. Where supported, the
 mount namespace resists wrong-directory mistakes; it is not a security boundary
 against a deliberate member. Route membership gates which project terminal a
 member may open, not what the service identity could deliberately reach. This
 accepted gap follows the
 [member terminal decision](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md).
-Canonical state is mounted read-only in the terminal's ordinary filesystem view,
-using the shared protected-path construction; a terminal is never a graph-write
+Mirrored sessions mount canonical state read-only in the ordinary filesystem
+view using the shared protected-path construction. Cooperative sessions report
+that canonical-state protection is unavailable on the machine: there is no
+canonical-state filesystem fence. Neither kind of session is a graph-write
 channel.
 
 A running-server CLI command uses the private control socket instead of opening

@@ -38,39 +38,60 @@ they cannot widen or narrow these capabilities.
 
 `terminals/` owns member shell sessions separately from provider tasks. A session
 runs as the service account, in the same registered checkout used by agents,
-with the Work turn's trust boundary. Its mount namespace is resistance to a
-wrong-directory mistake, never isolation from the service account or a security
-boundary against a deliberate member. Read access to a Git deploy key conveys
+with the Work turn's trust boundary. Where supported, its mount namespace provides
+accident resistance to a wrong-directory mistake, never isolation from the
+service account or a security boundary against a deliberate member. Read access to a Git deploy key conveys
 its write authority; exposing the key read-only does not keep it secret.
 
-The Linux launch uses its own `systemd-run --user --pty` profile with
-`ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
+A small terminal backend registry owns an id, display name, and
+`supports(os_name, is_remote)` predicate per backend, following the compute
+backend pattern. Selection is per machine and independent of space kind:
+
+- Local Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
+  user manager reports `mirrored`.
+- Other local operating systems, including macOS, report `cooperative` and use a
+  plain PTY in the registered repository. Canonical-state protection is
+  unavailable on that machine: there is no canonical-state fence.
+- A machine with a non-empty `host` is unavailable because PTY-over-SSH transport
+  is not built, regardless of its OS.
+
+The `containment` field reuses compute's `mirrored` / `cooperative` vocabulary;
+those labels do not make the terminal mount profile a security boundary.
+Linux with missing tools or an unusable user manager is unavailable, with the
+prerequisite diagnostic. Cooperative is selected by OS, never after a mirrored
+launch fails. Terminal capability does not reuse compute readiness.
+
+The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
+with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
 `BindReadOnlyPaths` plus `ReadOnlyPaths` for existing Git configuration and
-credentials. It does not reuse compute readiness. `ProtectSystem=strict` and a
-private temporary directory resist writes in the wrong place; they make no
-service-account isolation claim. The shell starts without startup scripts or
-history persistence. Missing systemd tools, an unusable user manager, unsupported
-mount properties, or failure to confirm launch refuse the session with a real
-diagnostic. Before the interactive shell starts, the same launched profile
+credentials. `ProtectSystem=strict` and a private temporary directory provide
+accident resistance to writes in the wrong place, not isolation from the
+service account. Before the interactive shell starts, the same launched profile
 checks that the checkout is writable and that every protected path exists,
 rejects writes, and reports a read-only effective mount through `findmnt`.
 The PTY owner requires this check's readiness marker; an active unit alone does
-not admit a session. Missing `findmnt` or failed verification also refuses
-launch. There is no plain-shell fallback.
+not admit a session. Unsupported mount properties or failed verification refuse
+launch with the real diagnostic. There is no cooperative retry or downgrade.
 
-Canonical state is refused through `agents/write_scope.py`'s shared
-`protected_repository_paths` construction, including declared and canonicalized
-`.research` paths for registered local repositories. These paths receive
-read-only mounts even beneath the writable checkout. Absent protected directories
-receive read-only empty mounts so absence cannot turn a deny into write access.
-An overlapping or canonical-state repository root is refused. These enforced
-filesystem-view restrictions protect against corruption; the retained service
-identity still means this is not hostile-member containment.
+For mirrored sessions, canonical-state writes are refused through
+`agents/write_scope.py`'s shared `protected_repository_paths` construction,
+including declared and canonicalized `.research` paths for registered local
+repositories. These paths receive read-only mounts even beneath the writable
+checkout. Absent protected directories receive read-only empty mounts so absence
+cannot turn a deny into write access. An overlapping or canonical-state
+repository root is refused. These filesystem-view restrictions provide accident
+resistance against corruption; the retained service identity does not prevent
+deliberate action by a member.
 
-Only repositories whose machine has an empty `host` are eligible. A live Work
-turn in the same checkout is projected as a warning with its task identity and
-does not block opening a terminal. Git's index locking remains the ordinary
-collision mechanism. Terminals create no agent task, Patch, or research receipt.
+Both backends preserve the repository working directory, `env -i` environment
+scrubbing, and shells without startup scripts or history persistence. Cooperative
+sessions apply no mount properties or mount preflight and explicitly report the
+missing canonical-state protection in the session payload and terminal view.
+
+A live Work turn in the same checkout is projected as a warning with its task
+identity and does not block opening a terminal. Git's index locking remains the
+ordinary collision mechanism. Terminals create no agent task, Patch, or research
+receipt.
 
 ## Task-engine ownership
 

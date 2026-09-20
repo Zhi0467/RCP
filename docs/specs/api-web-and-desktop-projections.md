@@ -10,7 +10,7 @@ workspace and transition manager.
 The project-scoped terminal routes are:
 
 - `GET /api/projects/{project_id}/terminals/repositories`: repository alias,
-  starting path, eligibility, unavailable reason, and running Work identities.
+  starting path, per-machine capability, and running Work identities.
 - `GET /api/projects/{project_id}/terminals`: open sessions and live/idle state.
 - `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
   the single existing session for that repository and project.
@@ -23,13 +23,28 @@ Every HTTP route checks project membership. The WebSocket performs its own
 identity, project membership, same-origin, and maintenance admission because
 HTTP middleware does not cover upgrades. It rechecks before input/output and
 periodically while connected; cookie revocation and loss of membership close the
-connection. Unknown and nonmember projects remain indistinguishable. The
-Terminals destination stays visible for remote-only projects and renders each
-remote repository's unavailability reason.
+connection. Unknown and nonmember projects remain indistinguishable.
 
-The shell runs as the service account with the Work trust boundary. Its mount
-namespace resists mistakes; it does not isolate a member from that account.
-Canonical-path refusal and Linux launch requirements are owned by
+Repository rows retain `eligible` and `unavailable_reason` and include
+`machine_id`, `backend_id`, `backend_name`, `containment`, and a `reason` for every
+outcome. Available machines report `mirrored` or `cooperative`; unavailable
+machines have null `containment`. The reason names the applicable launch
+capability, missing canonical-state protection, or failed prerequisite. Remote
+machines report that PTY-over-SSH transport is not built. Space kind does not
+participate in eligibility. The projection and open guard use the same
+per-machine capability resolution; a later mirrored launch failure remains a
+hard failure with its real diagnostic, never a cooperative session.
+
+Session payloads carry `containment` and `protection_notice`. A cooperative
+session explicitly reports that canonical-state protection is unavailable on
+this machine. The Terminals destination is hidden when no project machine can
+host a session; otherwise its repository controls show unavailable rows with
+their reasons.
+
+The shell runs as the service account with the Work trust boundary. A mirrored
+session's mount namespace provides accident resistance to mistakes; it does not
+isolate a member from that account.
+Per-machine capability and canonical-path refusal are owned by
 [Providers and containment](providers-and-containment.md#member-terminals);
 session expiry and metadata are owned by
 [Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).

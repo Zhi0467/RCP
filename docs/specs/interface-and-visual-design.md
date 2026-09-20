@@ -238,10 +238,13 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 ## Terminals
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Paper, Settings, and Chats, including for projects with only remote
-repositories. Settings has no terminal control. The empty state consists of
-repository controls showing their starting paths. A remote repository shows its
-unavailability reason and cannot open a terminal.
+Artifacts, Paper, Settings, and Chats when at least one project machine can host
+a session. It is hidden when no machine is eligible, including remote-only
+projects. Settings has no terminal control. The empty state consists of
+repository controls showing their starting paths. Unavailable repositories show
+their capability reason and cannot open a terminal; remote machines name the
+unbuilt PTY-over-SSH transport. Space kind does not affect visibility or
+eligibility.
 
 A left rail lists open sessions with Live or Idle state, selection, and an
 individual End control. One session exists per repository in each project.
@@ -256,10 +259,17 @@ ends it. Theme and mode changes repaint the terminal using the same surface and
 text tokens as the project UI.
 
 The shell runs as the service account and inherits the Work turn's trust
-boundary. Its mount namespace resists wrong-directory mistakes; it is not
-isolation from the service account or a boundary against deliberate action.
-Canonical state writes are refused. Terminal setup failures remain explicit in
-the view; no ordinary-shell fallback is offered.
+boundary. A mirrored session's mount namespace provides accident resistance to
+wrong-directory mistakes; it is not isolation from the service account or a
+boundary against deliberate action.
+Mirrored sessions refuse canonical-state writes in that filesystem view.
+Cooperative sessions show a visible, explicit warning in the terminal pane:
+canonical-state protection is unavailable on this machine, and there is no
+canonical-state fence. This required warning uses semantic warning colors,
+border, and surface tokens, following the Aqua treatment and remaining explicit
+in Classic and Aqua across System, Light, and Dark modes. It is not a smaller,
+muted commentary line beneath a heading. Terminal setup failures remain explicit
+in the view; a failed mirrored launch never offers a cooperative downgrade.
 
 ## Paper
 
