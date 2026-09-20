@@ -148,14 +148,58 @@ class TerminalManager:
     def invalidate_local_capability(self) -> None:
         self._local_capability = None
 
+    def _block_unreadable_repository(self, payload: object) -> None:
+        """Keep a record this version cannot read from yielding a second shell.
+
+        A record naming every field this version knows plus one it does not is
+        still a record of a shell that may be running. Only its identity is
+        trusted here, because the rest is this version reading another
+        version's file. `unit_confirmed_gone` treats a containment outside the
+        two known ones as never confirmable, so the repository stays blocked
+        until the record is resolved by hand or by the version that wrote it.
+        """
+        if not isinstance(payload, dict):
+            return
+        project_id = payload.get("project_id")
+        repository_id = payload.get("repository_id")
+        if not (isinstance(project_id, str) and project_id):
+            return
+        if not (isinstance(repository_id, str) and repository_id):
+            return
+        session_id = payload.get("session_id")
+        self._unresolved[(project_id, repository_id)] = TerminalSession(
+            session_id=session_id if isinstance(session_id, str) else "",
+            project_id=project_id,
+            member_id="",
+            repository_id=repository_id,
+            path="",
+            started_at="",
+            last_activity_at="",
+            unit="",
+            containment="",  # type: ignore[arg-type]
+        )
+
     async def _reconcile_record(self, path: Path) -> None:
         """Retire, retain or block one persisted record. Never raise past start()."""
         try:
-            session = TerminalSession(**json.loads(path.read_text()))
-        except (OSError, TypeError, ValueError) as exc:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            # Nothing here names a repository, so there is nothing to block.
+            logger.warning("Terminal record %s cannot be read; leaving it: %s", path.name, exc)
+            return
+        try:
+            session = TerminalSession(**payload)
+        except TypeError as exc:
             # TerminalSession is a dataclass, so a record written by another
-            # version raises TypeError rather than a validation error.
-            logger.warning("Terminal record %s is unreadable; leaving it: %s", path.name, exc)
+            # version raises TypeError rather than a validation error. It can
+            # still say which repository it belongs to.
+            logger.warning(
+                "Terminal record %s is not this version's; leaving it and blocking "
+                "its repository: %s",
+                path.name,
+                exc,
+            )
+            self._block_unreadable_repository(payload)
             return
         if session.ended_at:
             return
@@ -418,22 +462,9 @@ class TerminalManager:
                 # shell. Clean up here and let the cancellation stand.
                 await self._record_launch_failure(session)
                 raise cancelled from None
-            runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
-            try:
-                async with self._lock:
-                    # This runtime is never published. It has no reader, so a
-                    # reuse would hand back a session whose output never
-                    # arrives, and a stop that fails here would strand it in
-                    # `sessions` where nothing retires or retries it.
-                    await end_runtime(self, runtime, "opening_cancelled")
-            except Exception:
-                # The unit outlived the launch this cancellation stopped. As
-                # with a failed launch, the record is the only thing that can
-                # block a reopen before the next startup reconciles it. The
-                # runtime itself is still given back: the record is what
-                # retains the unit, not this descriptor and process.
-                await self._record_launch_failure(session, "opening_cancelled")
-                await release_runtime(self, runtime)
+            await self._abandon_opening(
+                TerminalRuntime(session, process, master_fd, time.monotonic())
+            )
             raise
         except Exception:
             await self._record_launch_failure(session)
@@ -441,13 +472,47 @@ class TerminalManager:
         runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
         if machine.host:
             runtime.completion = remote.CompletionParser()
-        async with self._lock:
-            self.sessions[session_id] = runtime
-            asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
-            if not self.membership_check(project_id, member_id):
-                await end_runtime(self, runtime, "membership_lost")
-                raise PermissionError("Project membership ended while the terminal was opening.")
+        try:
+            async with self._lock:
+                self.sessions[session_id] = runtime
+                asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
+                if not self.membership_check(project_id, member_id):
+                    await end_runtime(self, runtime, "membership_lost")
+                    raise PermissionError(
+                        "Project membership ended while the terminal was opening."
+                    )
+        except asyncio.CancelledError:
+            # The shell is already running, and this waits for a lock another
+            # end may hold across a `systemctl` call. A requester that leaves
+            # during that wait publishes nothing, so without this the shell
+            # and its record are both abandoned while `_opening` is cleared,
+            # and the next attempt opens a second one on the same checkout.
+            await self._abandon_opening(runtime)
+            raise
         return session
+
+    async def _abandon_opening(self, runtime: TerminalRuntime) -> None:
+        """Stop, retain and release a session its requester no longer wants.
+
+        Reached once the launch has produced a shell: from a cancellation
+        while the launch was still in its worker thread, and from one while
+        publication waited for the manager lock.
+        """
+        try:
+            async with self._lock:
+                # An unpublished runtime has no reader, so reuse would hand
+                # back a session whose output never arrives, and a stop that
+                # fails would strand it in `sessions` where nothing retires
+                # it. `end_runtime` tolerates a runtime that was never added.
+                await end_runtime(self, runtime, "opening_cancelled")
+        except Exception:
+            # The unit outlived the launch this cancellation stopped. As with
+            # a failed launch, the record is the only thing that can block a
+            # reopen before the next startup reconciles it. The runtime is
+            # still given back: the record retains the unit, not this
+            # descriptor and process.
+            await self._record_launch_failure(runtime.session, "opening_cancelled")
+            await release_runtime(self, runtime)
 
     async def unit_confirmed_gone(self, session: TerminalSession) -> bool:
         """Whether this session's record can be finished rather than retained.

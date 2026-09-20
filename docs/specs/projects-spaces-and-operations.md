@@ -189,10 +189,13 @@ Startup reconciliation is best effort per record and never refuses the server a
 boot. Each record is reconciled under its own guard, so no way of being
 malformed — truncated, carrying fields this version does not know, or carrying
 values of the wrong type — can abort startup; an unreconciled record stays as
-it was found. An unreadable record is left alone, as is one whose containment this
-version does not recognise, because retiring it would skip a unit stop it
-cannot reason about; that record also blocks its repository, since nothing
-here can confirm what it left running. A record naming a unit this data directory does not own is
+it was found.
+
+Being unable to read a record is not evidence that its shell is gone. A record
+this version cannot construct is left on disk, and if it still names a project
+and repository it blocks that repository. So does one whose containment this
+version does not recognise, because nothing here can confirm what either left
+running. A record naming a unit this data directory does not own is
 retired as a unit-identity mismatch without a stop attempt, and a unit that
 cannot be stopped keeps its unfinished record for a later startup. A launch that fails finishes its own record on the same
 condition: a cooperative launch has no unit, and a mirrored one is finished

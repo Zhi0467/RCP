@@ -453,7 +453,48 @@ async def test_startup_survives_a_record_written_by_another_version(tmp_path, ca
             "a_field_from_another_version"
         ]
         assert (manager.directory / "unparsable.json").read_text() == "{ not json"
-        assert len([m for m in caplog.messages if "unreadable" in m]) == 2
+        assert len([m for m in caplog.messages if "leaving it" in m]) == 2
+        # Neither names a repository, so neither can block one.
+        assert manager._unresolved == {}
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_record_from_another_version_still_blocks_its_repository(
+    manifest, tmp_path, process_factory, caplog
+):
+    """Being unable to read a record is not evidence that its shell is gone.
+
+    A record carrying every field this version knows plus one it does not is
+    still a record of a unit that may own the checkout. Skipping it entirely
+    would let the next open put a second shell there.
+    """
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    manager.directory.mkdir(parents=True)
+    (manager.directory / "newer.json").write_text(
+        json.dumps(
+            {
+                "session_id": "newer",
+                "project_id": "project",
+                "member_id": "member",
+                "repository_id": "repo-a",
+                "path": "/checkout",
+                "started_at": "start",
+                "last_activity_at": "start",
+                "unit": f"{manager._unit_prefix}-newer",
+                "containment": "mirrored",
+                "a_field_from_another_version": True,
+            }
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        await manager.start()
+    try:
+        assert json.loads((manager.directory / "newer.json").read_text())["session_id"] == "newer"
+        assert ("project", "repo-a") in manager._unresolved
+        with pytest.raises(TerminalUnavailable, match="may still be running"):
+            await manager.open(**arguments(manifest))
     finally:
         await manager.close()
 
@@ -747,6 +788,68 @@ async def test_open_cancellation_stops_the_inflight_launch(
         assert len(process_factory[2]) == 1
         receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
         assert receipt["termination_reason"] == "opening_cancelled"
+    finally:
+        release.set()
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_an_open_cancelled_while_publishing_does_not_leave_its_shell(
+    manifest, tmp_path, process_factory, monkeypatch
+):
+    """Publication waits for the manager lock, which an end can hold across a
+    `systemctl` call. The shell already exists by then, so a requester that
+    leaves during that wait must not strand it: `_opening` is cleared either
+    way, and the next open would put a second shell on the same checkout.
+    """
+
+    class SignallingLock(asyncio.Lock):
+        """Announce that someone is waiting, so the test needs no sleep."""
+
+        def __init__(self):
+            super().__init__()
+            self.waiting = asyncio.Event()
+
+        async def acquire(self):
+            if self.locked():
+                self.waiting.set()
+            return await super().acquire()
+
+    started = threading.Event()
+    release = threading.Event()
+    original = launch.launch
+    launched = []
+
+    def delayed(command, unit):
+        started.set()
+        assert release.wait(5)
+        launched.append(original(command, unit))
+        return launched[-1]
+
+    monkeypatch.setattr(launch, "launch", delayed)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    lock = SignallingLock()
+    manager._lock = lock
+    try:
+        opening = asyncio.create_task(manager.open(**arguments(manifest)))
+        assert await asyncio.to_thread(started.wait, 5)
+        await lock.acquire()
+        release.set()
+        await asyncio.wait_for(lock.waiting.wait(), 5)
+        opening.cancel()
+        lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+        assert manager.sessions == {}
+        assert manager.list("project") == []
+        process, master_fd = launched[0]
+        with pytest.raises(OSError):
+            os.fstat(master_fd)
+        assert process.poll() is not None
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["termination_reason"] == "opening_cancelled"
+        assert receipt["unit"] in process_factory[2]
     finally:
         release.set()
         await manager.close()
