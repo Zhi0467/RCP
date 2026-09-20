@@ -234,7 +234,18 @@ lines; `--machine-readable` remains the complete append-only JSON event record.
 
 A human stop names the typed machine or external-service target, responsible
 authority, nonsecret values, ordered safe actions, plain success signal, and
-exact continue command. In an interactive terminal, Enter runs the declared
+exact continue command. It is titled for the human's own task rather than for
+the machine check it interrupted, so a pause may replace its planned title and
+purpose; everything else that identifies the step stays pinned to the plan. A
+displayed command may also name the shell it belongs to, which is not the
+machine the operation acts on: a local machine target carries the service
+account while the operator works from their own login and the command elevates
+itself. That context is optional, because the separately versioned supervisor
+emits its own steps and a pause stored before it existed must still decode; a
+command without it displays as it always did. A renderer that knows how the
+operator reached that shell, as the desktop knows its saved operator route,
+shows the way in beside the command rather than folding it into the same
+string. In an interactive terminal, Enter runs the declared
 command actions and exact re-entry command inside the same wizard; `q`, EOF, or
 a closed terminal pauses safely and leaves that continue command usable later.
 The one-time team enrollment code gets a second explicit save confirmation

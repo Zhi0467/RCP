@@ -7,7 +7,13 @@ from fastapi.testclient import TestClient
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
-from rcp.server_ops.models import ExternalAction, ExternalServiceTarget, ServerStep
+from rcp.server_ops.models import (
+    OPERATOR_SHELL,
+    CommandAction,
+    ExternalAction,
+    ExternalServiceTarget,
+    ServerStep,
+)
 from rcp.storage import (
     AppStore,
     ProjectProvisioningGitCheckRecord,
@@ -82,7 +88,14 @@ def _operator_action(request_id: str) -> ServerStep:
         state="operator_action_needed",
         expected_success="The request-scoped write probe succeeds and cleans up its ref.",
         message=message,
-        actions=(ExternalAction(instruction=message),),
+        actions=(
+            ExternalAction(instruction=message),
+            CommandAction(
+                argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                execution=OPERATOR_SHELL,
+            ),
+        ),
+        resume_execution=OPERATOR_SHELL,
         resume_argv=(
             str(DEFAULT_SERVER_LAYOUT.cli_wrapper),
             "server",
@@ -374,6 +387,12 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert action_projection["can_cancel"] is False
     assert action_projection["diagnostic"] == "The write grant is not ready yet."
     assert action_projection["operator_action"] == action.model_dump(mode="json")
+    # The client is told which shell each displayed command belongs to; it has
+    # no other way to know, and guessing is what made this panel unusable.
+    projected = action_projection["operator_action"]
+    command = next(item for item in projected["actions"] if item["kind"] == "command")
+    assert command["execution"] == {"kind": "server_shell", "shell_account": None}
+    assert projected["resume_execution"] == {"kind": "server_shell", "shell_account": None}
 
 
 def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> None:

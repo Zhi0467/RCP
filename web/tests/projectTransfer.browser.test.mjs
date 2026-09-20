@@ -61,7 +61,7 @@ test("transfer option stays off by default, binds retries, and survives review r
             display_name: "Fixture team",
             ssh_target: "fixture-team",
             local_origin: "https://fixture.rcp.localhost",
-            operator_route: { ssh_target: "rcp@fixture-team" },
+            operator_route: { ssh_target: "rcp@fixture-team", mode: "direct_rcp" },
           };
           const providers = [
             {
@@ -84,6 +84,16 @@ test("transfer option stays off by default, binds retries, and survives review r
           window.__TAURI_INTERNALS__ = {
             invoke: async (command, args) => {
               if (command === "desktop_list_team_connections") return [connection];
+              if (command === "desktop_probe_server_operator") {
+                if (localStorage.getItem("probe-reachable") !== "yes")
+                  throw new Error("Operator route unreachable fixture");
+                return {
+                  connection_id: connection.connection_id,
+                  available: true,
+                  route: connection.operator_route,
+                  diagnostic: null,
+                };
+              }
               if (command === "desktop_establish_team_session")
                 return { connection, identity: { space_id: connection.expected_space_id } };
               if (command === "desktop_read_target_project_provisioning_options") return providers;
@@ -132,6 +142,27 @@ test("transfer option stays off by default, binds retries, and survives review r
                     providers_total: 6,
                   },
                   operator_argv: [],
+                  operator_action: {
+                    number: 1,
+                    title: "Add a deploy key on GitHub",
+                    purpose: "Give the checkout its write identity.",
+                    performed_by: "human",
+                    target: {
+                      kind: "external_service",
+                      service: "github.com",
+                      resource: "example/state",
+                      destination_url: "https://github.com/example/state/settings/keys",
+                      required_authority_role: "repository administrator",
+                    },
+                    phase: "github_grant",
+                    state: "operator_action_needed",
+                    expected_success: "The scoped push is read back exactly.",
+                    message: "Complete the grant, then resume.",
+                    actions: [],
+                    fields: [],
+                    resume_argv: ["rcp", "server", "project", "provision", "--resume"],
+                    resume_execution: { kind: "server_shell", shell_account: "rcp" },
+                  },
                   final_review: {
                     proposed_project_id: projectId,
                     digest: "b".repeat(64),
@@ -198,6 +229,22 @@ test("transfer option stays off by default, binds retries, and survives review r
       } else {
         await page.getByText(/Local unpushed commits stay behind/).waitFor();
       }
+      // A probe that failed while the server was briefly unreachable must not
+      // hide the sign-in line for good: the stop does not change when
+      // connectivity returns, so Refresh has to ask again.
+      if (!includeLocalCommits) {
+        const panel = page.locator(".provisioning-operator-action");
+        await panel.waitFor();
+        assert.equal(await panel.locator(".operator-run-on code").count(), 0);
+        await page.evaluate(() => localStorage.setItem("probe-reachable", "yes"));
+        await panel.getByRole("button", { name: "Refresh" }).click();
+        await panel.locator(".operator-run-on code").first().waitFor();
+        assert.equal(
+          await panel.locator(".operator-run-on code").first().innerText(),
+          "ssh rcp@fixture-team",
+        );
+      }
+
       assert.deepEqual(errors, []);
       await context.close();
     }

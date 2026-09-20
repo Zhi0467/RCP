@@ -30,6 +30,7 @@ from rcp.server_ops.layout import (
     remote_projects_root,
 )
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     CommandAction,
     ExternalAction,
     ExternalServiceTarget,
@@ -920,11 +921,11 @@ def deploy_key_operator_step(
     _require_resume_request(resume_argv, request_id)
     instruction = (
         f"Open {material.repository.settings_url}; add the displayed public key with title "
-        f"{material.label!r}, and enable Allow write access."
+        f"{material.label!r}."
     )
     return ServerStep(
         number=number,
-        title="Grant repository write access",
+        title="Add a deploy key on GitHub",
         purpose="Give one central checkout its repository-scoped GitHub write identity.",
         performed_by="human",
         target=ExternalServiceTarget(
@@ -943,25 +944,39 @@ def deploy_key_operator_step(
             "key. Complete the displayed grant and host-trust steps, then resume."
         ),
         actions=(
-            ExternalAction(instruction=instruction),
-            CommandAction(argv=manager.github_trust_argv(machine, material)),
             ExternalAction(
+                title="Add the key to GitHub",
+                instruction=instruction,
+                requirement="Enable Allow write access",
+            ),
+            # Before, not after: the command below stops at an unknown host
+            # key and waits, so an operator reading in order has to already
+            # know what to compare it against.
+            ExternalAction(
+                title="Know the host key before you are asked to accept it",
                 instruction=(
-                    "Before accepting GitHub's host key, compare its fingerprint with "
-                    f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
-                    "with status 1."
-                )
+                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
+                    "key; accept it only if the offered fingerprint is listed there. A "
+                    "successful no-shell authentication may then exit with status 1."
+                ),
+            ),
+            CommandAction(
+                title="Trust github.com from the server",
+                argv=manager.github_trust_argv(machine, material),
+                execution=OPERATOR_SHELL,
             ),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label),
-            NonsecretField(name="deploy_public_key", value=material.public_key),
+            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
+            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
+                role="evidence",
             ),
         ),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -978,11 +993,11 @@ def restore_deploy_key_operator_step(
     _require_restore_resume(resume_argv)
     instruction = (
         f"Open {material.repository.settings_url}; replace any stale RCP deploy key for "
-        f"{material.label!r} with the displayed fresh public key, and enable Allow write access."
+        f"{material.label!r} with the displayed fresh public key."
     )
     return ServerStep(
         number=number,
-        title="Grant the fresh restore deploy key",
+        title="Add the replacement deploy key on GitHub",
         purpose=(
             "Give the reconstructed central checkout a new repository-scoped GitHub identity."
         ),
@@ -1003,25 +1018,39 @@ def restore_deploy_key_operator_step(
             "Complete the displayed grant and host-trust steps, then resume restore."
         ),
         actions=(
-            ExternalAction(instruction=instruction),
-            CommandAction(argv=manager.github_trust_argv(machine, material)),
             ExternalAction(
+                title="Add the key to GitHub",
+                instruction=instruction,
+                requirement="Enable Allow write access",
+            ),
+            # Before, not after: the command below stops at an unknown host
+            # key and waits, so an operator reading in order has to already
+            # know what to compare it against.
+            ExternalAction(
+                title="Know the host key before you are asked to accept it",
                 instruction=(
-                    "Before accepting GitHub's host key, compare its fingerprint with "
-                    f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
-                    "with status 1."
-                )
+                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
+                    "key; accept it only if the offered fingerprint is listed there. A "
+                    "successful no-shell authentication may then exit with status 1."
+                ),
+            ),
+            CommandAction(
+                title="Trust github.com from the server",
+                argv=manager.github_trust_argv(machine, material),
+                execution=OPERATOR_SHELL,
             ),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label),
-            NonsecretField(name="deploy_public_key", value=material.public_key),
+            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
+            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
+                role="evidence",
             ),
         ),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -1062,6 +1091,7 @@ def empty_repository_operator_step(
         ),
         fields=(NonsecretField(name="repository", value=material.repository.identity),),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 
@@ -1102,6 +1132,7 @@ def cleanup_ref_operator_step(
         ),
         fields=(NonsecretField(name="temporary_ref", value=probe.temporary_ref),),
         resume_argv=resume_argv,
+        resume_execution=OPERATOR_SHELL,
     )
 
 

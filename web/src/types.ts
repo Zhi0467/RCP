@@ -238,14 +238,27 @@ export interface ServerExternalServiceTarget {
 
 export type ServerStepTarget = ServerMachineTarget | ServerExternalServiceTarget;
 
+export interface ServerExecutionContext {
+  kind: "server_shell";
+  /** The OS account the shell must already belong to; null means the operator's own login. */
+  shell_account: string | null;
+}
+
 export interface ServerCommandAction {
   kind: "command";
   argv: string[];
+  /** A name for this step, when the stop had one to give. */
+  title?: string | null;
+  /** Absent on steps produced before the context existed, and by an older supervisor. */
+  execution?: ServerExecutionContext | null;
 }
 
 export interface ServerExternalAction {
   kind: "external";
   instruction: string;
+  title?: string | null;
+  /** The one thing that must be true when this action is finished. */
+  requirement?: string | null;
 }
 
 export type ServerOperatorAction = ServerCommandAction | ServerExternalAction;
@@ -253,6 +266,8 @@ export type ServerOperatorAction = ServerCommandAction | ServerExternalAction;
 export interface ServerNonsecretField {
   name: string;
   value: string | number | boolean;
+  /** "input" is pasted somewhere; "evidence" is only compared. */
+  role?: "input" | "evidence" | null;
 }
 
 export interface ServerStep {
@@ -268,6 +283,7 @@ export interface ServerStep {
   actions: ServerOperatorAction[];
   fields: ServerNonsecretField[];
   resume_argv: string[];
+  resume_execution?: ServerExecutionContext | null;
 }
 
 export interface ProjectProvisioningMachineProjection {

@@ -20,7 +20,9 @@ from rcp.server_ops.control import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     CommandAction,
+    ExecutionContext,
     MachineTarget,
     NonsecretField,
     ServerCommandRequest,
@@ -83,7 +85,7 @@ def prepare_member_remove_command(
             )
             return
         if snapshot.removal_started_at is None and request.member_confirmed_boundary is None:
-            direct, resume = _resume_routes(
+            direct, resume, service_shell = _resume_routes(
                 snapshot.member_id,
                 boundary_sha256=snapshot.boundary_sha256,
                 layout=layout,
@@ -98,10 +100,11 @@ def prepare_member_remove_command(
                             "to confirm this member-removal boundary."
                         ),
                         "actions": (
-                            CommandAction(argv=direct),
-                            CommandAction(argv=resume),
+                            CommandAction(argv=direct, execution=service_shell),
+                            CommandAction(argv=resume, execution=OPERATOR_SHELL),
                         ),
                         "resume_argv": resume,
+                        "resume_execution": OPERATOR_SHELL,
                     }
                 )
             )
@@ -297,7 +300,7 @@ class MemberRemovalCoordinator:
                     "message": "Member removal completed; historical attribution remains.",
                 }
             )
-        direct, resume = _resume_routes(snapshot.member_id, layout=self.layout)
+        direct, resume, service_shell = _resume_routes(snapshot.member_id, layout=self.layout)
         diagnostic = f" Stop attempts reported {len(errors)} bounded error(s)." if errors else ""
         return pending.model_copy(
             update={
@@ -308,10 +311,11 @@ class MemberRemovalCoordinator:
                     f"settling.{diagnostic} Rerun the command to reconcile and read back."
                 ),
                 "actions": (
-                    CommandAction(argv=direct),
-                    CommandAction(argv=resume),
+                    CommandAction(argv=direct, execution=service_shell),
+                    CommandAction(argv=resume, execution=OPERATOR_SHELL),
                 ),
                 "resume_argv": resume,
+                "resume_execution": OPERATOR_SHELL,
             }
         )
 
@@ -381,7 +385,15 @@ def _resume_routes(
     *,
     layout: ServerLayout,
     boundary_sha256: str | None = None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], ExecutionContext]:
+    """The same removal typed two ways, and the shell the direct route needs.
+
+    `direct` assumes a shell that already belongs to the service account;
+    `preferred` elevates into it from the operator's own login. They differ only
+    by that prefix, so the operator can only tell them apart when each says
+    which shell it is for.
+    """
+
     command = [str(layout.cli_wrapper), "server", "member", "remove", member_id]
     if boundary_sha256 is not None:
         command.extend(("--confirm-boundary", boundary_sha256))
@@ -394,7 +406,7 @@ def _resume_routes(
         "-H",
         *direct,
     )
-    return direct, preferred
+    return direct, preferred, ExecutionContext(shell_account=layout.service_account)
 
 
 __all__ = ["MemberRemovalCoordinator", "prepare_member_remove_command"]

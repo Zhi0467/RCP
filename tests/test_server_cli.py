@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from io import BytesIO, StringIO
+from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -22,9 +23,11 @@ from rcp.server_ops.cli import (
     run_server_command,
 )
 from rcp.server_ops.models import (
+    OPERATOR_SHELL,
     SERVER_CLI_MAX_EXECUTION_BYTES,
     SERVER_CLI_MAX_STEPS,
     CommandAction,
+    ExecutionContext,
     ExternalAction,
     ExternalServiceTarget,
     MachineTarget,
@@ -574,6 +577,62 @@ def test_operator_action_requires_human_responsibility_actions_and_resume() -> N
         ServerStep(**common, performed_by="human")
 
 
+def test_a_command_without_an_execution_context_serializes_exactly_as_before() -> None:
+    """A separately versioned supervisor and every pause stored before the
+    execution context existed must keep decoding, and a transition digest taken
+    over one of them must keep matching."""
+
+    legacy = {
+        "kind": "command",
+        "argv": ["sudo", "-n", "-u", "rcp", "-H", "rcp", "server", "doctor"],
+    }
+    action = CommandAction.model_validate_json(json.dumps(legacy))
+    assert action.execution is None
+    assert action.model_dump(mode="json") == legacy
+
+    stated = CommandAction(argv=tuple(legacy["argv"]), execution=OPERATOR_SHELL)
+    assert stated.model_dump(mode="json")["execution"] == {
+        "kind": "server_shell",
+        "shell_account": None,
+    }
+
+
+def test_an_execution_context_names_the_shell_not_the_operations_target() -> None:
+    """The same removal typed two ways differs only by a sudo prefix, so the
+    context is the only thing telling the operator which shell each needs."""
+
+    direct = CommandAction(
+        argv=("rcp", "server", "member", "remove", MEMBER_ID),
+        execution=ExecutionContext(shell_account="rcp"),
+    )
+    elevated = CommandAction(
+        argv=("sudo", "-n", "-u", "rcp", "-H", "rcp", "server", "member", "remove", MEMBER_ID),
+        execution=OPERATOR_SHELL,
+    )
+    assert direct.execution != elevated.execution
+    assert direct.execution is not None and direct.execution.shell_account == "rcp"
+    assert elevated.execution is not None and elevated.execution.shell_account is None
+
+    with pytest.raises(ValidationError):
+        ExecutionContext(shell_account="rcp_member_abcdefghijklmnop")
+
+
+def test_a_resume_execution_context_requires_a_resume_command() -> None:
+    with pytest.raises(ValidationError, match="requires a resume command"):
+        ServerStep(
+            number=1,
+            title="Enter server preparation",
+            purpose="Claim the next durable preparation revision.",
+            performed_by="system",
+            target=MachineTarget(host="server.example", os_account="rcp"),
+            phase="provisioning_start",
+            state="pending",
+            expected_success="The request is marked as setup in progress.",
+            message="RCP will enter server preparation.",
+            resume_execution=OPERATOR_SHELL,
+        )
+
+
 def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause() -> None:
     pending = _machine_step("server project provision", state="pending")
     paused = pending.model_copy(
@@ -613,6 +672,59 @@ def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause()
                 ),
             ),
             exit_code=1,
+        )
+
+
+def test_only_a_human_pause_may_rename_its_planned_step() -> None:
+    """A stop is named for the human's task, not the check it interrupted."""
+
+    pending = _machine_step("server project provision", state="pending")
+    paused = pending.model_copy(
+        update={
+            "performed_by": "human",
+            "state": "operator_action_needed",
+            "title": "Add a deploy key on GitHub",
+            "purpose": "Give the central checkout its repository-scoped write identity.",
+            "message": "GitHub has not proven write access yet.",
+            "actions": (ExternalAction(instruction="Add the displayed key, then resume."),),
+            "resume_argv": ("rcp", "server", "project", "provision", REQUEST_ID),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    plan = ServerPlanEvent(command="server project provision", timestamp=NOW, steps=(pending,))
+    renamed = ServerCommandExecution(
+        events=(
+            plan,
+            ServerStepEvent(command="server project provision", timestamp=NOW, step=paused),
+        ),
+        exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+    )
+    assert renamed.events[-1].step.title == "Add a deploy key on GitHub"
+
+    # Nothing else renames a step, and a pause still may not become another one.
+    with pytest.raises(ValidationError, match="cannot change planned title"):
+        ServerCommandExecution(
+            events=(
+                plan,
+                ServerStepEvent(
+                    command="server project provision",
+                    timestamp=NOW,
+                    step=pending.model_copy(update={"state": "running", "title": "Something else"}),
+                ),
+            ),
+            exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+        )
+    with pytest.raises(ValidationError, match="cannot change planned phase"):
+        ServerCommandExecution(
+            events=(
+                plan,
+                ServerStepEvent(
+                    command="server project provision",
+                    timestamp=NOW,
+                    step=paused.model_copy(update={"phase": "another_phase"}),
+                ),
+            ),
+            exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
         )
 
 
@@ -1178,6 +1290,43 @@ def test_top_level_main_routes_server_commands_before_personal_data_resolution(
     assert calls[0].server_operation == "server doctor"
 
 
+def test_outer_wizard_skips_a_resume_only_when_the_shell_matches_too() -> None:
+    """The renderer treats the same argv in a different shell as a separate
+    command, so the wizard must run it rather than collapse it into resume."""
+
+    from rcp.server_ops.cli import _continue_interactive_wizard
+
+    original = _operator_execution()
+    plan = original.events[0]
+    paused = original.events[-1]
+    resume = paused.step.resume_argv
+
+    def drive(execution_context) -> list[tuple[str, ...]]:
+        final = paused.step.model_copy(
+            update={
+                "actions": (CommandAction(argv=resume, execution=execution_context),),
+                "resume_execution": OPERATOR_SHELL,
+            }
+        )
+        execution = original.model_copy(
+            update={"events": (plan, paused.model_copy(update={"step": final}))}
+        )
+        ran: list[tuple[str, ...]] = []
+        _continue_interactive_wizard(
+            execution,
+            identity=CallerIdentity(uid=0, username="root", host="host"),
+            input_stream=StringIO("\n"),
+            output_stream=StringIO(),
+            runner=lambda argv: ran.append(argv) or 0,
+        )
+        return ran
+
+    # Same argv, same shell: one command, run once.
+    assert drive(OPERATOR_SHELL) == [resume]
+    # Same argv, a different shell: two commands, both run.
+    assert drive(ExecutionContext(shell_account="rcp")) == [resume, resume]
+
+
 def test_outer_wizard_refuses_to_run_mutually_exclusive_restore_actions():
     from rcp.server_ops.cli import _continue_interactive_wizard
 
@@ -1337,3 +1486,183 @@ def test_supervisor_terminal_event_agrees_with_exit(monkeypatch, state, child_ex
     assert code == expected_exit
     observed = json.loads(output.getvalue().splitlines()[-1])["step"]["state"]
     assert observed == ("failed" if child_exit != expected_exit else state)
+
+
+def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
+    """A stop that stays silent renders without a shell label, so silence is
+    reserved for records written before the field existed and for the
+    separately versioned supervisor -- never for a stop this code builds.
+
+    Reading the sources is deliberate: two construction sites were missed by
+    eye during review, and both looked exactly like the ones that were found.
+
+    The walk recognises `ServerStep(...)` keyword arguments and
+    `model_copy(update={<literal string keys>})`. A builder that spreads its
+    update (`dict(...)`, `{**base, ...}`) passes unread, so a new construction
+    style needs this walk taught about it rather than trusted.
+    """
+
+    import ast
+
+    def carries(keys: set[str]) -> bool:
+        return "resume_argv" in keys and "resume_execution" not in keys
+
+    # Anchored to this file, not the process working directory: a relative glob
+    # yields nothing when pytest runs from elsewhere, and a guard that scans no
+    # files passes every time.
+    sources = Path(__file__).resolve().parents[1] / "src" / "rcp"
+    offenders: list[str] = []
+    scanned = 0
+    for path in sorted(sources.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            if name == "ServerStep":
+                scanned += 1
+                supplied = {keyword.arg for keyword in node.keywords if keyword.arg}
+                if carries(supplied):
+                    offenders.append(f"{path}:{node.lineno} ServerStep(...)")
+            elif name == "model_copy":
+                for keyword in node.keywords:
+                    if keyword.arg != "update" or not isinstance(keyword.value, ast.Dict):
+                        continue
+                    supplied = {
+                        key.value
+                        for key in keyword.value.keys
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    }
+                    if carries(supplied):
+                        offenders.append(f"{path}:{node.lineno} model_copy(update=...)")
+
+    assert scanned > 0, f"no ServerStep construction sites found under {sources}"
+    assert offenders == [], "these stops never say which shell to resume from:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_the_wizard_says_where_a_command_runs_and_stays_quiet_when_unsaid() -> None:
+    """A stop that declares its shell must say so, including when that shell is
+    the operator's own login: the wizard has been reaching the server for them,
+    so an unlabelled command reads as one more thing RCP already handled. A
+    stored record that predates execution contexts claims nothing."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+
+    def render(step: ServerStep) -> str:
+        stream = StringIO()
+        renderer = _InteractiveServerRenderer(plan_size=1, stream=stream)
+        renderer.render(ServerStepEvent(command="server doctor", timestamp=NOW, step=step))
+        return stream.getvalue()
+
+    declared = render(
+        paused.step.model_copy(
+            update={
+                "actions": (
+                    CommandAction(
+                        title="Trust github.com from the server",
+                        argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                        execution=OPERATOR_SHELL,
+                    ),
+                ),
+                "resume_execution": ExecutionContext(shell_account="rcp"),
+            }
+        )
+    )
+    assert "on the server: $ sudo" in declared
+    assert "on the server as rcp: $ " in declared
+
+    # A record written before the contract carried an execution context is not
+    # given one by the renderer.
+    legacy = render(
+        paused.step.model_copy(
+            update={
+                "actions": (
+                    CommandAction(
+                        title="Trust github.com from the server",
+                        argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                    ),
+                ),
+                "resume_execution": None,
+            }
+        )
+    )
+    assert "on the server" not in legacy
+    assert "$ sudo" in legacy
+
+
+def test_a_resume_duplicate_action_leaves_no_heading_without_a_command() -> None:
+    """The renderer skips an action that repeats the resume command; skipping it
+    after printing its title would leave a numbered heading with nothing under,
+    and leaving it in the count would number the rest 1, 3."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+    step = paused.step.model_copy(
+        update={
+            "actions": (
+                CommandAction(
+                    title="Resume setup",
+                    argv=paused.step.resume_argv,
+                    execution=OPERATOR_SHELL,
+                ),
+            ),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    stream = StringIO()
+    _InteractiveServerRenderer(plan_size=1, stream=stream).render(
+        ServerStepEvent(command="server doctor", timestamp=NOW, step=step)
+    )
+    rendered = stream.getvalue()
+
+    assert "1. Resume setup" not in rendered
+    assert "Continue:" in rendered
+
+
+def test_the_wizard_numbers_the_same_list_the_panel_shows() -> None:
+    """The resume command is dropped before numbering, so a stop whose middle
+    action repeats it reads 1, 2 in the wizard exactly as it does in the panel,
+    and a value the operator only compares says so."""
+
+    from rcp.server_ops.cli import _InteractiveServerRenderer
+
+    paused = _operator_execution().events[-1]
+    step = paused.step.model_copy(
+        update={
+            "actions": (
+                ExternalAction(instruction="Add the key to GitHub", title="Add the key"),
+                CommandAction(
+                    title="Resume setup",
+                    argv=paused.step.resume_argv,
+                    execution=OPERATOR_SHELL,
+                ),
+                CommandAction(
+                    title="Trust github.com",
+                    argv=("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com"),
+                    execution=OPERATOR_SHELL,
+                ),
+            ),
+            "fields": (
+                NonsecretField(name="deploy_key_title", value="rcp", role="input"),
+                NonsecretField(name="public_key_fingerprint", value="SHA256:x", role="evidence"),
+            ),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    stream = StringIO()
+    _InteractiveServerRenderer(plan_size=1, stream=stream).render(
+        ServerStepEvent(command="server doctor", timestamp=NOW, step=step)
+    )
+    rendered = stream.getvalue()
+
+    assert "1. Add the key" in rendered
+    assert "2. Trust github.com" in rendered
+    assert "3." not in rendered
+    assert "deploy key title: rcp\n" in rendered
+    assert "public key fingerprint: SHA256:x (compare only)" in rendered
