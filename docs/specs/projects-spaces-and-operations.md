@@ -229,6 +229,13 @@ Opening a session returns an existing session for that repository before any
 launch prerequisite is consulted. A capability probe or inventory read that now
 fails gates a new launch; it never withholds a session that is already running.
 
+That holds only while the alias still names what the session opened on. Once it
+names another path, machine or account, the running shell is not what was
+asked for, and it is retired before any launch prerequisite is consulted rather
+than as part of the launch that replaces it. Every prerequisite belongs to the
+new registration, so one of them failing must leave nothing attachable on the
+checkout the alias has left.
+
 Opening a session holds the manager lock only to admit the request and to
 publish the result. The capability probe, remote repository resolution, and the
 launch run outside it, so one unreachable machine cannot stall another member's

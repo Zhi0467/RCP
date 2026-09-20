@@ -83,6 +83,39 @@ class TerminalManager:
             "rcp-terminal-" + hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()[:12]
         )
 
+    async def _settle_registration(
+        self, project_id: str, manifest: Manifest, repository_alias: str
+    ) -> TerminalSession | None:
+        """The session this alias still names, retiring one it no longer does.
+
+        The caller holds the manager lock. An alias that names another path,
+        machine or account has stopped naming what its session opened on, so
+        handing that session back would answer a request for one checkout with
+        a shell somewhere else.
+        """
+        for runtime in list(self.sessions.values()):
+            session = runtime.session
+            if session.project_id != project_id or session.repository_id != repository_alias:
+                continue
+            if session_registration(session) == manifest_registration(manifest, repository_alias):
+                return session
+            await end_runtime(self, runtime, "repository_repointed")
+            return None
+        return None
+
+    async def retire_repointed(
+        self, project_id: str, manifest: Manifest, repository_alias: str
+    ) -> None:
+        """Retire a repointed session without opening anything in its place.
+
+        A caller that has detected the mismatch itself uses this before it
+        evaluates what the *new* registration needs, because those are
+        prerequisites for launching and one of them failing must not leave a
+        shell attachable on the checkout the alias has stopped naming.
+        """
+        async with self._lock:
+            await self._settle_registration(project_id, manifest, repository_alias)
+
     async def _record_launch_failure(
         self, session: TerminalSession, reason: str = "launch_failed"
     ) -> None:
@@ -367,19 +400,9 @@ class TerminalManager:
                 raise TerminalUnavailable("Terminal manager has not completed startup cleanup.")
             if not self.membership_check(project_id, member_id):
                 raise PermissionError("Project membership is required to open a terminal.")
-            for runtime in self.sessions.values():
-                session = runtime.session
-                if session.project_id == project_id and session.repository_id == repository_alias:
-                    if session_registration(session) == manifest_registration(
-                        manifest, repository_alias
-                    ):
-                        return session
-                    # The alias names something else now — another path, another
-                    # machine, or another account. Handing this session back
-                    # would answer a request for one checkout with a shell
-                    # somewhere else, so it is retired and a new one opened.
-                    await end_runtime(self, runtime, "repository_repointed")
-                    break
+            existing = await self._settle_registration(project_id, manifest, repository_alias)
+            if existing is not None:
+                return existing
             if key in self._opening:
                 raise TerminalUnavailable("A terminal for this repository is already opening.")
             self._opening.add(key)

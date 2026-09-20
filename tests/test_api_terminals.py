@@ -334,6 +334,41 @@ def test_a_live_session_is_returned_even_when_its_machine_now_probes_badly(
         assert again.json()["session_id"] == opened.json()["session_id"]
 
 
+def test_a_repointed_alias_retires_its_shell_even_when_the_new_machine_fails(
+    tmp_path, terminal_pty, monkeypatch
+):
+    """The inverse of returning a live session: once the alias names another
+    checkout, the running shell is no longer what was asked for. Every check
+    after that belongs to the new registration, so one of them failing must
+    not answer with an error while the old shell stays listed and attachable
+    on the checkout the alias has left.
+    """
+    from rcp.api.dependencies import get_project_service
+    from rcp.terminals.backends import TerminalCapability
+
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    path = f"/api/projects/{project_id}/terminals"
+    with client:
+        opened = client.post(path, json={"repository_id": "paper-repo"})
+        assert opened.status_code == 200, opened.text
+
+        moved = tmp_path / "moved-checkout"
+        (moved / ".research").mkdir(parents=True)
+        manifest = get_project_service(app.state.services.catalog, project_id).manifest
+        manifest.repository_map["paper-repo"].path = str(moved)
+
+        async def unavailable(machine, probe):
+            return TerminalCapability(None, "Machine temporarily unavailable.")
+
+        monkeypatch.setattr(app.state.services.terminals, "capability", unavailable)
+        refused = client.post(path, json={"repository_id": "paper-repo"})
+        assert refused.status_code == 409, refused.text
+        listed = client.get(path)
+        assert listed.status_code == 200, listed.text
+        assert [session["session_id"] for session in listed.json()] == []
+
+
 def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypatch):
     from rcp.terminals import launch
 

@@ -128,8 +128,17 @@ async def open_session(
     for session in services.terminals.list(project_id):
         if session.repository_id == body.repository_id:
             if session_registration(session) != manifest_registration(manifest, body.repository_id):
-                # The alias names another path, machine or account now; `open`
-                # retires this session and launches where it now points.
+                # The alias names another path, machine or account now. Retire
+                # the old session here rather than leaving it to `open`: every
+                # check below belongs to the new registration, and one of them
+                # failing must not answer with a 409 while the old shell stays
+                # listed and attachable on the checkout the alias has left.
+                try:
+                    await services.terminals.retire_repointed(
+                        project_id, manifest, body.repository_id
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise HTTPException(503, str(exc)) from exc
                 break
             # Open-or-return-existing: a live session must not be withheld
             # because a later probe refresh or inventory read failed. Those are
