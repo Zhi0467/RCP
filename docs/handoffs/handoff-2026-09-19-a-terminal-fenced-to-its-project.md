@@ -223,10 +223,13 @@ A running Work turn is marked twice: a strip above the active terminal and a
 mark on that session's rail row, so it is visible from a session the member is
 not looking at.
 
-The Terminals tab always appears for a project with registered repositories,
-including one whose repositories are all remote and whose probes are still
-pending or have failed. Predictability won: a tab that comes and goes with a
-probe result is harder to trust than one that explains itself.
+The Terminals tab appears when at least one project machine can host a session,
+and a remote probe that is pending or has failed also keeps it visible so its
+status and Refresh control stay reachable. It is hidden for an empty project,
+or one whose repositories are all on unavailable local machines, where there is
+nothing the tab could explain. Predictability won where a probe result would
+otherwise make the tab come and go; an unavailable local machine is settled,
+not pending, so hiding it there costs nothing.
 
 **Scope.** Repositories on the server itself and on remote execution machines.
 Remote arrived in this work rather than a later handoff, because every

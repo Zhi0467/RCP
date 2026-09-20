@@ -313,6 +313,46 @@ async def test_startup_survives_a_record_whose_unit_cannot_be_stopped(
 
 
 @pytest.mark.asyncio
+async def test_a_failed_mirrored_launch_keeps_its_record_when_the_unit_may_survive(
+    manifest, tmp_path, process_factory, monkeypatch, caplog
+):
+    """A mirrored launch can create its unit and then fail before readiness.
+    Finishing that record would hide the unit from startup reconciliation.
+    """
+
+    def fail(command, unit, **kwargs):
+        raise TerminalUnavailable("systemd-run did not confirm the required terminal profile.")
+
+    def unstoppable(unit):
+        raise TerminalUnavailable("systemctl is unavailable.")
+
+    monkeypatch.setattr(launch, "launch", fail)
+    monkeypatch.setattr(launch, "stop_unit", unstoppable)
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        with caplog.at_level(logging.WARNING), pytest.raises(TerminalUnavailable):
+            await manager.open(**arguments(manifest))
+        receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
+        assert receipt["ended_at"] is None
+        assert receipt["termination_reason"] == "launch_failed"
+        assert any("may have left a unit" in message for message in caplog.messages)
+    finally:
+        await manager.close()
+
+
+def test_a_local_machine_without_a_runnable_shell_is_not_offered(manifest, monkeypatch):
+    """The cooperative helper writes its readiness marker before execv, so an
+    unrunnable shell would otherwise admit a session that is already gone.
+    """
+    monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("rcp.terminals.backends.os.access", lambda path, mode: False)
+    capability = machine_capability(manifest.machine_map["laptop"])
+    assert capability.backend is None
+    assert "/bin/bash" in capability.reason
+
+
+@pytest.mark.asyncio
 async def test_startup_survives_a_record_written_by_another_version(tmp_path, caplog):
     """`TerminalSession` is a dataclass, so a record carrying an unknown or
     missing field raises TypeError rather than a validation error. Startup runs
@@ -811,8 +851,8 @@ async def test_mirrored_launch_failure_never_creates_cooperative_session(
         assert manager.list("project") == []
         receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
         assert receipt["containment"] == "mirrored"
-        # The intent is persisted before the launch. A launch that produced no
-        # unit must finish its own record, or the next startup tries to stop one.
+        # The intent is persisted before the launch, and this stub's unit stop
+        # succeeds, so the record finishes rather than waiting for startup.
         assert receipt["ended_at"]
         assert receipt["termination_reason"] == "launch_failed"
     finally:

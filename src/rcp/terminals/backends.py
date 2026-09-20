@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 from dataclasses import dataclass
@@ -102,6 +103,11 @@ def machine_capability(
             probe.os_name,
         )
     backend = resolve_backend(platform.system(), False)
+    if not os.access("/bin/bash", os.X_OK):
+        # The cooperative helper writes its readiness marker before execv, so a
+        # shell that cannot run would otherwise admit a session that is already
+        # gone. The remote probe applies the same prerequisite.
+        return TerminalCapability(None, "This account requires an executable /bin/bash.")
     if backend.containment == "mirrored":
         diagnostic = launch.availability_diagnostic()
         if diagnostic:

@@ -187,9 +187,11 @@ Startup reconciliation is best effort per record and never refuses the server a
 boot. An unreadable record is left alone, a record naming a unit this data
 directory does not own is retired as a unit-identity mismatch without a stop
 attempt, and a unit that cannot be stopped keeps its unfinished record for a
-later startup. A launch that fails finishes its own record instead, so a
-failure leaves no intent for startup to chase. Failure to stop a unit remains
-visible and retryable.
+later startup. A launch that fails finishes its own record on the same
+condition: a cooperative launch has no unit, and a mirrored one is finished
+only once its unit is known to be gone, because a mirrored launch can create
+its unit and then fail before readiness. Failure to stop a unit remains visible
+and retryable.
 
 Opening a session holds the manager lock only to admit the request and to
 publish the result. The capability probe, remote repository resolution, and the

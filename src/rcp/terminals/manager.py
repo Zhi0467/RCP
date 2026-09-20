@@ -270,10 +270,12 @@ class TerminalManager:
             raise
         except Exception:
             # The intent was persisted before the launch, and an unfinished
-            # record is what startup tries to reconcile. A launch that never
-            # produced a unit must not leave one behind.
-            session.ended_at = timestamp()
+            # record is what startup reconciles. A failed mirrored launch may
+            # still have created its unit, so finish the record only once that
+            # unit is known to be gone.
             session.termination_reason = "launch_failed"
+            if await self._launch_left_no_unit(session):
+                session.ended_at = timestamp()
             save_metadata(self.directory, session)
             raise
         runtime = TerminalRuntime(session, process, master_fd, time.monotonic())
@@ -286,6 +288,31 @@ class TerminalManager:
                 await end_runtime(self, runtime, "membership_lost")
                 raise PermissionError("Project membership ended while the terminal was opening.")
         return session
+
+    async def _launch_left_no_unit(self, session: TerminalSession) -> bool:
+        """Whether a failed launch can be finished rather than left to startup.
+
+        A cooperative launch has no unit. A mirrored one may have created its
+        unit before failing, and neither the local launcher's own cleanup nor a
+        remote supervisor's hangup is acknowledged here.
+        """
+        if session.containment != "mirrored":
+            return True
+        try:
+            if session.execution_host:
+                await asyncio.to_thread(
+                    remote.stop_remote_unit, session.execution_host, session.unit
+                )
+            else:
+                await asyncio.to_thread(launch.stop_unit, session.unit)
+        except (TerminalUnavailable, OSError, RuntimeError) as exc:
+            logger.warning(
+                "Failed terminal launch %s may have left a unit; startup retries it: %s",
+                session.unit,
+                exc,
+            )
+            return False
+        return True
 
     async def end_all(self, reason: str = "server_maintenance") -> None:
         errors = []

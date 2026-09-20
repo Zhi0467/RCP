@@ -59,6 +59,10 @@ backend pattern. Selection is per machine and independent of space kind:
   under an expansion it cannot disable. The shipped preflight also sets a value
   and reads it back, so a manager that rewrote the command line is caught
   whatever version it reports.
+- Every machine requires an executable `/bin/bash` before it is offered at all.
+  The cooperative helper writes its readiness marker before replacing itself
+  with the shell, so an unrunnable shell would otherwise admit a session that
+  is already gone.
 - Other operating systems, including macOS, report `cooperative` and use a
   plain PTY in the registered repository. Canonical-state protection is
   unavailable on that machine: there is no canonical-state fence.
