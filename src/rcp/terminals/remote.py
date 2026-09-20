@@ -37,12 +37,14 @@ def start_remote(
     repository: Path,
     protected_paths: list[str],
     containment: str,
+    expand_environment_option: bool = True,
 ) -> tuple[subprocess.Popen[bytes], int]:
     settings = {
         "unit": unit,
         "repository": str(repository),
         "protected_paths": protected_paths,
         "containment": containment,
+        "expand_environment_option": expand_environment_option,
         "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS,
         "profile_source": terminal_source("profile.py"),
         "git_access_source": terminal_source("git_access.py"),

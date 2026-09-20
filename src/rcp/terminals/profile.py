@@ -39,8 +39,34 @@ def launch_command(
     git_environment: dict[str, str],
     empty_directory: Path,
     stop_timeout: float,
+    expand_environment_option: bool = True,
 ) -> list[str]:
-    """Build the required profile; failed properties refuse launch."""
+    """Build the required profile; failed properties refuse launch.
+
+    ``--expand-environment=no`` arrived in systemd 254. An older manager
+    rejects the option outright, so a launch there omits it and instead
+    refuses any path or value carrying ``$``, which that manager would expand.
+    Refusing is the fail-closed half: never launch with an expansion we cannot
+    turn off.
+    """
+    if not expand_environment_option:
+        expandable = [
+            value
+            for value in (
+                str(repository),
+                str(empty_directory),
+                *protected_paths,
+                *git_read_paths,
+                *git_environment.values(),
+            )
+            if "$" in value
+        ]
+        if expandable:
+            raise ValueError(
+                "This systemd is older than 254 and expands `$` in unit settings, "
+                f"which would change {expandable[0]!r}. Upgrade systemd or remove "
+                "the dollar sign from the registered path."
+            )
     properties = [
         "PrivateUsers=yes",
         "PrivateTmp=yes",
@@ -71,10 +97,11 @@ def launch_command(
         "--collect",
         "--quiet",
         "--service-type=exec",
-        "--expand-environment=no",
         f"--unit={unit}",
         f"--working-directory={_specifier_safe(str(repository))}",
     ]
+    if expand_environment_option:
+        command.insert(1, "--expand-environment=no")
     for property_value in properties:
         command.extend(["--property", property_value])
     command.extend(["--", *shell_environment(git_environment)])

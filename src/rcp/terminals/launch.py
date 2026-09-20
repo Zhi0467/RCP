@@ -63,6 +63,7 @@ def launch_command(
     git_read_paths: tuple[str, ...],
     git_environment: dict[str, str],
     empty_directory: Path,
+    expand_environment_option: bool = True,
 ) -> list[str]:
     try:
         return profile.launch_command(
@@ -73,6 +74,7 @@ def launch_command(
             git_environment=git_environment,
             empty_directory=empty_directory,
             stop_timeout=TERMINAL_STOP_TIMEOUT_SECONDS,
+            expand_environment_option=expand_environment_option,
         )
     except ValueError as exc:
         raise TerminalUnavailable(str(exc)) from exc

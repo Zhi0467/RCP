@@ -101,7 +101,7 @@ def test_linux_missing_prerequisite_is_incapable(remote_linux, monkeypatch, miss
     assert missing in result["diagnostic"]
 
 
-@pytest.mark.parametrize("failed", ["systemd-run", "findmnt", "systemctl", "loginctl"])
+@pytest.mark.parametrize("failed", ["systemd-run", "findmnt", "systemctl"])
 def test_linux_unusable_prerequisite_is_incapable(remote_linux, failed):
     def run(command, **kwargs):
         assert kwargs["env"]["XDG_RUNTIME_DIR"].startswith("/run/user/")
@@ -117,19 +117,23 @@ def test_linux_unusable_prerequisite_is_incapable(remote_linux, failed):
     assert "broken prerequisite" in result["diagnostic"]
 
 
-@pytest.mark.parametrize("linger", ["yes", "no", ""])
-def test_linux_requires_lingering_manager(remote_linux, linger):
+def test_linux_does_not_require_lingering_manager(remote_linux):
+    """A terminal's PTY lives inside the SSH session that owns the manager.
+
+    Requiring linger rejected every real machine this feature was built for,
+    while a session-scoped manager runs transient units perfectly well and
+    tears down with the link, which is what a terminal wants.
+    """
     commands = []
 
     def run(command, **kwargs):
         commands.append(command)
-        return subprocess.CompletedProcess(
-            command, 0, linger if command[0] == "loginctl" else "", ""
-        )
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     result = remote_terminal_probe.probe_machine(command_timeout=1, runner=run)
-    assert result["state"] == ("reachable" if linger == "yes" else "incapable")
+    assert result["state"] == "reachable"
     assert ["systemctl", "--user", "show-environment"] in commands
+    assert all(command[0] != "loginctl" for command in commands)
 
 
 def test_linux_prerequisite_timeout_is_incapable(remote_linux):

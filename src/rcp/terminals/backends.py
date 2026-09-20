@@ -39,6 +39,7 @@ class TerminalBackend:
         git_read_paths: tuple[str, ...],
         git_environment: dict[str, str],
         empty_directory: Path,
+        expand_environment_option: bool = True,
     ) -> tuple[subprocess.Popen[bytes], int]:
         if self.containment == "cooperative":
             return launch.launch(launch.cooperative_command(git_environment), None, cwd=repository)
@@ -49,6 +50,7 @@ class TerminalBackend:
             git_read_paths=git_read_paths,
             git_environment=git_environment,
             empty_directory=empty_directory,
+            expand_environment_option=expand_environment_option,
         )
         return launch.launch(command, unit)
 

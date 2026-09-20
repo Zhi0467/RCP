@@ -87,6 +87,7 @@ def run_session(settings: dict[str, Any]) -> int:
                     git_environment=environment,
                     empty_directory=Path(empty),
                     stop_timeout=timeout,
+                    expand_environment_option=bool(settings.get("expand_environment_option", True)),
                 )
             else:
                 command = [

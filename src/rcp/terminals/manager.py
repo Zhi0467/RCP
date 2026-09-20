@@ -150,6 +150,7 @@ class TerminalManager:
                     repository=root,
                     protected_paths=protected,
                     containment=session.containment,
+                    expand_environment_option=(probe.expand_environment_option if probe else True),
                 )
             else:
                 start = asyncio.to_thread(
