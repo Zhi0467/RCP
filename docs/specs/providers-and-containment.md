@@ -34,6 +34,44 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Member terminals
+
+`terminals/` owns member shell sessions separately from provider tasks. A session
+runs as the service account, in the same registered checkout used by agents,
+with the Work turn's trust boundary. Its mount namespace is resistance to a
+wrong-directory mistake, never isolation from the service account or a security
+boundary against a deliberate member. Read access to a Git deploy key conveys
+its write authority; exposing the key read-only does not keep it secret.
+
+The Linux launch uses its own `systemd-run --user --pty` profile with
+`ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
+`BindReadOnlyPaths` plus `ReadOnlyPaths` for existing Git configuration and
+credentials. It does not reuse compute readiness. `ProtectSystem=strict` and a
+private temporary directory resist writes in the wrong place; they make no
+service-account isolation claim. The shell starts without startup scripts or
+history persistence. Missing systemd tools, an unusable user manager, unsupported
+mount properties, or failure to confirm launch refuse the session with a real
+diagnostic. Before the interactive shell starts, the same launched profile
+checks that the checkout is writable and that every protected path exists,
+rejects writes, and reports a read-only effective mount through `findmnt`.
+The PTY owner requires this check's readiness marker; an active unit alone does
+not admit a session. Missing `findmnt` or failed verification also refuses
+launch. There is no plain-shell fallback.
+
+Canonical state is refused through `agents/write_scope.py`'s shared
+`protected_repository_paths` construction, including declared and canonicalized
+`.research` paths for registered local repositories. These paths receive
+read-only mounts even beneath the writable checkout. Absent protected directories
+receive read-only empty mounts so absence cannot turn a deny into write access.
+An overlapping or canonical-state repository root is refused. These enforced
+filesystem-view restrictions protect against corruption; the retained service
+identity still means this is not hostile-member containment.
+
+Only repositories whose machine has an empty `host` are eligible. A live Work
+turn in the same checkout is projected as a warning with its task identity and
+does not block opening a terminal. Git's index locking remains the ordinary
+collision mechanism. Terminals create no agent task, Patch, or research receipt.
+
 ## Task-engine ownership
 
 `BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,

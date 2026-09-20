@@ -54,7 +54,11 @@ plane and every server-local team checkout; an explicitly configured remote
 execution account owns a team checkout on its SSH machine. Members remain
 distinct RCP humans and may keep independent personal checkouts. RCP member
 identity, process identity, SSH transport credentials, repository credentials,
-and provider-native authentication are separate authorities. RCP selects and
+and provider-native authentication are separate authorities. Project members
+are trusted on their project's server: a member terminal runs as the service
+account and inherits the Work trust boundary. Its mount namespace resists
+mistakes, not deliberate use of that account's authority; canonical paths are
+read-only in the terminal filesystem view. RCP selects and
 readiness-checks a provider and keeps one durable record per machine account of
 whether its shared login is alive, learned from real provider results and
 verified by one real request. Members sign a shared account in and out from the

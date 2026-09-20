@@ -153,6 +153,29 @@ in exactly the same way as an unknown id.
 Membership is authority, not disk confidentiality. The canonical repository
 still has whatever read visibility its host operating-system account permits.
 
+## Member terminal lifecycle
+
+`TerminalManager` owns one session per repository per project. Project members
+may attach to the existing session or end it. The starting member remains its
+audit actor; losing that member's project membership or beginning account
+removal ends the shell, including detached sessions. A viewing member who loses
+access is disconnected independently. A deleted or retired project's sessions
+also lose membership and end.
+
+Sessions outlive the Terminals view and disconnected browsers. Only terminal
+input renews the 30-minute idle lifetime in `limits.py`; output and passive
+attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
+membership, process exit, and idle expiry every five seconds. Clean server
+shutdown and maintenance end sessions. Startup stops orphan units named in this
+application's metadata before admitting new sessions, including launch intents
+persisted before a crash. Failure to stop a unit remains visible and retryable.
+
+The operational metadata under the application data directory records member,
+project, repository, start, end, and termination reason. It contains no PTY byte
+transcript. A bounded in-memory output tail supports reconnect and is discarded
+when the session ends; no shell history file is written. This lifecycle owns no
+canonical research mutation and introduces no manifest permission setting.
+
 ## Repository and truth scope
 
 The project manifest names repository aliases, paths paired with execution

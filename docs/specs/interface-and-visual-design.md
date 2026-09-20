@@ -235,6 +235,32 @@ and Runs on this device and browser origin, scoped to the project. **Show hidden
 them. This display preference preserves the watcher record and other viewers'
 lists; a watcher that becomes active again is visible regardless of the preference.
 
+## Terminals
+
+**Terminals** is a project destination beside Overview, Inbox, Research, Runs,
+Artifacts, Paper, Settings, and Chats, including for projects with only remote
+repositories. Settings has no terminal control. The empty state consists of
+repository controls showing their starting paths. A remote repository shows its
+unavailability reason and cannot open a terminal.
+
+A left rail lists open sessions with Live or Idle state, selection, and an
+individual End control. One session exists per repository in each project.
+The right pane holds the selected interactive shell. A running Work turn does
+not block opening a session: its title appears above the active terminal, and
+a Work running mark appears on its rail row. Repository paths are data, not
+instructional helper copy.
+
+Leaving the destination detaches the viewer without ending the shell. Returning
+lists the existing sessions; ending a session, losing membership, or idle expiry
+ends it. Theme and mode changes repaint the terminal using the same surface and
+text tokens as the project UI.
+
+The shell runs as the service account and inherits the Work turn's trust
+boundary. Its mount namespace resists wrong-directory mistakes; it is not
+isolation from the service account or a boundary against deliberate action.
+Canonical state writes are refused. Terminal setup failures remain explicit in
+the view; no ordinary-shell fallback is offered.
+
 ## Paper
 
 The editor/coach split is human-resizable, and the editor begins with authored

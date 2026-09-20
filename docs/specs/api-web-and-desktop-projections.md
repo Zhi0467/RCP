@@ -5,6 +5,35 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Member terminal API
+
+The project-scoped terminal routes are:
+
+- `GET /api/projects/{project_id}/terminals/repositories`: repository alias,
+  starting path, eligibility, unavailable reason, and running Work identities.
+- `GET /api/projects/{project_id}/terminals`: open sessions and live/idle state.
+- `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
+  the single existing session for that repository and project.
+- `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
+- `WS /api/projects/{project_id}/terminals/{session_id}/ws`: binary PTY output,
+  JSON `input` (`data`) and `resize` (`cols`, `rows`) messages, and a JSON `ended`
+  notification.
+
+Every HTTP route checks project membership. The WebSocket performs its own
+identity, project membership, same-origin, and maintenance admission because
+HTTP middleware does not cover upgrades. It rechecks before input/output and
+periodically while connected; cookie revocation and loss of membership close the
+connection. Unknown and nonmember projects remain indistinguishable. The
+Terminals destination stays visible for remote-only projects and renders each
+remote repository's unavailability reason.
+
+The shell runs as the service account with the Work trust boundary. Its mount
+namespace resists mistakes; it does not isolate a member from that account.
+Canonical-path refusal and Linux launch requirements are owned by
+[Providers and containment](providers-and-containment.md#member-terminals);
+session expiry and metadata are owned by
+[Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
+
 ## API composition and mutation boundary
 
 One FastAPI backend serves the JSON API and, when built, the React/Vite
