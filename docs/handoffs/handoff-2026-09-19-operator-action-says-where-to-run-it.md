@@ -2,8 +2,9 @@
 
 Date: 2026-09-19
 Status: design confirmed by the human on 2026-09-19 against a rendered mockup of
-the redesigned panel. Nothing is implemented. The five decisions below are
-settled; the one open question is named in "Open".
+the redesigned panel, then revised the same day after an xhigh design review
+whose findings were verified against the code. Nothing is implemented. The
+decisions below are settled and the review's answers are folded into them.
 
 Close this handoff when a human stop in project provisioning reaches the
 operator as an ordered list of single actions, every command in it names the
@@ -63,85 +64,133 @@ in the panel, no item is numbered, and the two values that must reach GitHub
 lines render a *single* child, which lands in the 28% column and wraps down it
 while the rest of the card stays empty.
 
-**The SSH hop is baked into one argv.** For a repository on an `ssh` machine,
-`github_trust_argv` returns the remote command `shlex.join`-ed inside the ssh
-invocation. One opaque string where the operator wanted two named pieces.
+**The desktop hides the hop and then shows it whole.** The desktop runs the
+provisioning command for the operator over the saved SSH route, so the operator
+never sees a shell. When a command does surface, it surfaces as one
+`ssh <target> sudo … rcp …` string. The hop and the command that runs on the
+other end are never named as two things.
 
 ## Decided on 2026-09-19
 
-1. **A command action names the shell it runs in.** `CommandAction` gains a
-   required execution context; `ServerStep` gains the same context for
+1. **A command action names the shell it runs in.** `CommandAction` gains an
+   execution context, and `ServerStep` gains `resume_context` beside
    `resume_argv`. This is a shared contract across
    [`server_ops/models.py`](../../src/rcp/server_ops/models.py),
-   [`web/src/types.ts`](../../web/src/types.ts), and the stored step records in
+   [`web/src/types.ts`](../../web/src/types.ts), and the persisted
+   `operator_action` on `ProjectProvisioningRequestRecord` in
    [`storage/models.py`](../../src/rcp/storage/models.py), so it lands serially
-   and first. Every construction site states its context explicitly; there is no
-   default. Rejected: letting the web client infer the host from
-   `machine.location`, which is the guessing that produced this panel.
-2. **The context names the machine, and the client supplies the way in.** The
-   server knows which host and service account a command concerns; only the
-   desktop knows the operator's own SSH target, which lives in the saved
-   operator route. The panel renders the context as a label on the command block
-   and composes the entry line from the saved route beside it. Neither layer
-   invents the other's fact.
-3. **The SSH hop is never bundled into the command the operator reads.** Where a
-   step crosses a machine boundary, the hop and the command that runs there are
-   separate, separately copyable pieces.
-4. **A human stop renders as an ordered list of single actions.** One numbered
+   and first. Rejected: letting the web client infer the host from
+   `machine.location`, which is the guessing that produced this panel. Also
+   rejected: folding the resume command into `actions`. `resume_argv` carries
+   semantics that "the last command" cannot — restore offers mutually exclusive
+   confirmation commands — and folding would change the request binding, both
+   interactive runners, the native validator, and every resume consumer for no
+   gain. Deduplicating a resume-equal action now compares argv *and* context.
+2. **The context is optional on the wire, and absent means unstated.** A
+   required field would be a breaking change across two boundaries that a panel
+   fix has no business breaking. The
+   [separately versioned supervisor](../specs/server-and-machine-operations.md)
+   emits its own operator steps as raw dicts, which the application parses
+   strictly through `ServerStepEvent`, so a required field would make a current
+   RCP refuse an installed older supervisor. Stored paused provisioning requests
+   would likewise stop decoding. Absent context therefore renders exactly as the
+   panel renders today: no execution label. Every operator stop RCP itself
+   builds states its context, and a test asserts that, so the optionality is a
+   compatibility boundary rather than a silent fallback.
+3. **The context names the shell, not the operation's target.** `MachineTarget`
+   is the machine an operation acts on; for a local machine it deliberately
+   carries an empty host and the service account, while the operator logs in
+   under their own name and the command inserts `sudo`. The context is its own
+   discriminated model: a server-shell context naming the account the shell must
+   belong to, where absent means the operator's own login, or an SSH context
+   naming the service account's own onward route. The desktop composes the entry
+   line from the saved operator route, which is the only layer that knows it.
+   Neither layer invents the other's fact.
+4. **Existing argv is not re-split.** The interactive CLI wizard executes an
+   action's argv directly, so removing the SSH wrapper from
+   `github_trust_argv` while leaving the runner alone would run a remote command
+   on the wrong machine. The bundling the human actually read is the desktop's
+   own `ssh <target> …` line, which the desktop owns and now renders as a
+   separate, separately copyable entry line. Splitting server-side argv is
+   therefore out of scope; the execution context supplies the missing frame
+   without moving any execution.
+5. **A human stop renders as an ordered list of single actions.** One numbered
    step per action, each with a heading. `purpose` and `expected_success` move
    behind one explicit disclosure; `performed_by` is dropped from the body,
    because the card already says a human is required. This follows
    [interface and visual design](../specs/interface-and-visual-design.md): no
    muted commentary line under a heading, and a read-only inspector rather than
    a caption when there is more to say.
-5. **The operator stop keeps its own title.** `_copy_operator_contract` takes
+6. **The operator stop keeps its own title.** `_copy_operator_contract` takes
    `title` and `purpose` from the operator step, not the pending plan step, so
-   the card is named after the human's task. The planned step's typed target
-   check is unchanged.
+   the card is named after the human's task. Two independent event validators
+   currently refuse that — `validate_event_sequence` in `server_ops/models.py`
+   and the desktop's own check in `web/src-tauri/src/server_commands.rs` — and
+   both must relax to allow `title` and `purpose` to change on a human
+   `operator_action_needed` event, in the same change. Target, phase, expected
+   success, ordering, and the responsibility transfer stay pinned, including
+   `_copy_operator_contract`'s typed-target check. Because the pause is
+   persisted before it is emitted, landing the title change without both
+   validators would store the right stop and report a CLI failure.
 
 ## Plan
 
 Four slices. The first is the shared contract and lands alone.
 
-1. **Contract.** Add the execution context to `CommandAction` and to
-   `ServerStep`'s resume command; update every construction site in
-   `server_ops/` (`git_credentials.py`, `members.py`, `provider_readiness.py`,
-   and any restore path) to state it; mirror it in `web/src/types.ts`; keep the
-   existing `_StrictModel` validation and the secret-shaped-flag refusals.
-   Update the persisted step record and any replay of stored steps.
-2. **Operator stop titles.** Take `title` and `purpose` from the operator step
-   in `_copy_operator_contract`, and give the deploy-key grant step and its
-   restore twin titles that name the human's task.
+1. **Contract.** Add `ExecutionContext` and hang it off `CommandAction` and off
+   `ServerStep` as `resume_context`, optional per decision 2, with the existing
+   `_StrictModel` validation and credential-shaped-flag refusals unchanged.
+   State the context at every operator stop RCP builds: the four Git operator
+   builders in `git_credentials.py`, the retained-checkout stop in
+   `project_checkout.py`, the provisioning pause and copy helpers in
+   `project_provision.py`, the provider actions and resume in
+   `provider_readiness.py`, both member-removal stops in `members.py`, and
+   restore preparation in `restore.py`. Mirror the model in `web/src/types.ts`.
+   Confirm that a stored pause written before this change still decodes, and
+   that a receipt minted before it still matches on retry; if the added key
+   moves the transition digest, keep the historical serialization rather than
+   weakening the comparison. The separately versioned supervisor is not changed:
+   its steps simply carry no context.
+2. **Operator stop titles.** Relax both event validators to allow `title` and
+   `purpose` to change on a human `operator_action_needed` event, take both from
+   the operator step in `_copy_operator_contract`, and title the deploy-key grant
+   step and its restore twin for the human's task. `restore.py` currently
+   forwards only actions, fields, and diagnostic from its operator step, so the
+   restore twin needs its title forwarded too or the rename is invisible.
 3. **Web panel.** Rebuild `OperatorAction` as the ordered list: numbered steps,
    copy controls on every command and on each deploy-key value, the execution
-   label and entry line, the grant rendered as a titled two-field form with
-   *Allow write access* as an explicit requirement, the resume command as the
-   final step followed by Refresh. Replace the `.operator-action-line` grid with
-   full-width blocks and keep the two-column grid only for labelled rows.
-4. **CLI wizard.** Render the same execution context in `_render_actions` and in
-   the `Continue:` block, so the terminal operator reads the same frame.
+   label with the entry line composed from the saved operator route, the grant
+   rendered as a titled two-field form with *Allow write access* as an explicit
+   requirement, and the resume command as the final step followed by Refresh.
+   Replace the `.operator-action-line` grid with full-width blocks, keeping the
+   two-column grid only for labelled rows. `TransferProjectSetup` renders no
+   actions, fields, or resume command at all today; it reuses the same panel.
+4. **CLI wizard.** Render the execution context in `_render_actions` and in the
+   `Continue:` block. The wizard's own execution is unchanged because no argv
+   moves; its resume-deduplication now compares argv and context.
 
 ## Verification
 
-- `uv run pytest -n0` over the affected `server_ops` and API projection tests,
-  including the step-contract validation tests and any golden machine-readable
-  event records.
+- `uv run pytest -n0` over `server_ops`, storage, and API projection tests,
+  including the step-contract validation tests, the machine-readable round-trip
+  fixture, and the supervisor event tests whose unlabelled terminal output
+  deliberately changes.
+- A test that every operator stop RCP builds carries an execution context, so
+  decision 2's optionality cannot decay into an unnoticed omission.
+- A stored legacy pause, written without the field, decodes, reloads, and
+  retries against its original receipt.
 - `node --experimental-strip-types --test web/tests/<affected>.test.mjs` and
-  `npm --prefix web run build`.
-- `uv run ruff check` and `uv run pre-commit run --files` over changed paths.
+  `npm --prefix web run build`; rebuild Tauri and rerun the affected
+  `docs/desktop.md` checks, including the inline native event records.
 - The served-app journey: drive a provisioning request to the deploy-key stop on
-  a throwaway server with a disposable data directory, and read the rendered
-  panel in the browser. The human's own server and data directory are never used.
-- The interactive CLI wizard's rendering of the same stop, captured from a
-  terminal run rather than asserted only in a unit test.
+  a throwaway server with a disposable data directory, then read and click the
+  rendered panel in a browser — the copy controls, the disclosure, and Refresh.
+  The human's own server and data directory are never used.
+- The interactive CLI wizard's rendering of the same stop, captured from a real
+  terminal run, including Enter-driven continuation rather than rendering alone.
 
 ## Open
 
-One question for the design review: whether the resume command should become a
-`CommandAction` in `actions` carrying its own context, rather than `ServerStep`
-growing a second context field beside `resume_argv`. The contract already
-forbids a step from carrying actions without a resume command, and the CLI
-renderer already skips an action whose argv equals `resume_argv`, so the two are
-near-duplicates today. Folding them would be a larger change to a contract that
-several call sites and stored records depend on; keeping them apart adds one
-field. Decide before slice 1.
+Nothing. The design review's open question — whether the resume command should
+become an action carrying its own context — is answered in decision 1: it stays
+`resume_argv` with a sibling `resume_context`.
