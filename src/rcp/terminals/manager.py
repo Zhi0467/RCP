@@ -237,18 +237,39 @@ class TerminalManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._sweeper
             self._sweeper = None
-        errors = []
-        for runtime in list(self.sessions.values()):
-            try:
-                await self.end(
-                    runtime.session.project_id, runtime.session.session_id, "server_shutdown"
-                )
-            except Exception as exc:
-                errors.append(str(exc))
+        async with self._lock:
+            errors = await self._end_each(list(self.sessions.values()), "server_shutdown")
         self._started = False
         await self.probes.close()
         if errors:
             raise TerminalUnavailable("; ".join(errors))
+
+    async def _end_each(self, runtimes: list[TerminalRuntime], reason: str) -> list[str]:
+        """End these sessions at once rather than one timeout after another.
+
+        Shutdown and the update boundary both hold the instance lock until
+        their caller returns, and a replacement server waits only
+        `SERVER_SHUTDOWN_TIMEOUT_SECONDS` for the old one to go. A single stop
+        can spend its own timeout against a machine that has become
+        unreachable, so ending a project's worth of shells in turn outlasts
+        that window and the update reports that the old server never stopped.
+        Each one touches only its own runtime, and the two manager dictionaries
+        they write are keyed per session, so they can run together.
+
+        Callers hold the manager lock; ending concurrently does not widen what
+        else may run. The idle sweep stays serial because nothing waits on it.
+        """
+        outcomes = await asyncio.gather(
+            *(end_runtime(self, runtime, reason) for runtime in runtimes),
+            return_exceptions=True,
+        )
+        for outcome in outcomes:
+            # `gather` returns a cancellation rather than raising it. Only the
+            # ordinary failures are collected here, as a serial loop's
+            # `except Exception` did.
+            if isinstance(outcome, BaseException) and not isinstance(outcome, Exception):
+                raise outcome
+        return [str(outcome) for outcome in outcomes if isinstance(outcome, Exception)]
 
     async def open(
         self,
@@ -439,13 +460,8 @@ class TerminalManager:
         return True
 
     async def end_all(self, reason: str = "server_maintenance") -> None:
-        errors = []
         async with self._lock:
-            for runtime in list(self.sessions.values()):
-                try:
-                    await end_runtime(self, runtime, reason)
-                except Exception as exc:
-                    errors.append(str(exc))
+            errors = await self._end_each(list(self.sessions.values()), reason)
         if errors:
             raise TerminalUnavailable("; ".join(errors))
 

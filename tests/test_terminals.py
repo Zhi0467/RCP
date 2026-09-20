@@ -249,6 +249,34 @@ async def test_lifecycle_ends_each_session(manifest, tmp_path, process_factory, 
 
 
 @pytest.mark.asyncio
+async def test_shutdown_stops_every_shell_at_once(manifest, tmp_path, process_factory, monkeypatch):
+    """Shutdown holds the instance lock, so its stops cannot be cumulative.
+
+    A single mirrored stop can spend its whole timeout against a machine that
+    has gone unreachable. Retiring a project's shells one after another would
+    outlast the window a replacement server waits for this one to go, so they
+    have to overlap. A barrier proves the overlap without timing anything: a
+    serial shutdown never brings a second stop here, and the barrier breaks.
+    """
+    meeting = threading.Barrier(2)
+
+    def stop(unit):
+        meeting.wait(timeout=5)
+
+    manager = TerminalManager(tmp_path / "data", lambda project, member: True)
+    await manager.start()
+    try:
+        for alias in ("repo-a", "repo-b"):
+            await manager.open(**{**arguments(manifest), "repository_alias": alias})
+        assert len(manager.sessions) == 2
+        monkeypatch.setattr(launch, "stop_unit", stop)
+        await manager.close()
+        assert manager.sessions == {}
+    finally:
+        meeting.abort()
+
+
+@pytest.mark.asyncio
 async def test_restart_cleans_only_own_unfinished_metadata(tmp_path, process_factory):
     manager = TerminalManager(tmp_path / "data", lambda project, member: True)
     manager.directory.mkdir(parents=True)
