@@ -654,6 +654,15 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     assert paused is not None and paused.status == "operator_action_needed"
     assert paused.operator_action is not None
     assert "PRIVATE KEY" not in paused.operator_action.model_dump_json()
+    # The stop the human reads is named for their task, not for the machine
+    # check it interrupted, and every command in it survives the store round
+    # trip still naming the shell the human has to type it into.
+    assert paused.operator_action.title == "Add a deploy key on GitHub"
+    assert events[-1]["step"]["title"] == "Add a deploy key on GitHub"
+    assert paused.operator_action.resume_execution is not None
+    assert paused.operator_action.resume_execution.shell_account is None
+    commands = [action for action in paused.operator_action.actions if action.kind == "command"]
+    assert commands and all(action.execution is not None for action in commands)
 
     credentials.probe_status = "ready"
     _advance_all(coordinator, request.request_id)

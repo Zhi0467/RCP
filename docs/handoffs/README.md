@@ -7,8 +7,9 @@ Active:
   same day. A command action names the shell it runs in, a pause is titled for
   the human's task, and the stop renders as an ordered list of single actions
   with copy controls in the desktop and transfer panels and a matching label in
-  the CLI wizard. The served journey, a Tauri rebuild, and a terminal capture of
-  the wizard remain.
+  the CLI wizard. Python, web, browser, and native checks pass against a stop
+  from the real builder; only the desktop-supplied sign-in line remains
+  unexercised outside its fixture.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six

@@ -674,6 +674,59 @@ def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause()
         )
 
 
+def test_only_a_human_pause_may_rename_its_planned_step() -> None:
+    """A stop is named for the human's task, not the check it interrupted."""
+
+    pending = _machine_step("server project provision", state="pending")
+    paused = pending.model_copy(
+        update={
+            "performed_by": "human",
+            "state": "operator_action_needed",
+            "title": "Add a deploy key on GitHub",
+            "purpose": "Give the central checkout its repository-scoped write identity.",
+            "message": "GitHub has not proven write access yet.",
+            "actions": (ExternalAction(instruction="Add the displayed key, then resume."),),
+            "resume_argv": ("rcp", "server", "project", "provision", REQUEST_ID),
+            "resume_execution": OPERATOR_SHELL,
+        }
+    )
+    plan = ServerPlanEvent(command="server project provision", timestamp=NOW, steps=(pending,))
+    renamed = ServerCommandExecution(
+        events=(
+            plan,
+            ServerStepEvent(command="server project provision", timestamp=NOW, step=paused),
+        ),
+        exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+    )
+    assert renamed.events[-1].step.title == "Add a deploy key on GitHub"
+
+    # Nothing else renames a step, and a pause still may not become another one.
+    with pytest.raises(ValidationError, match="cannot change planned title"):
+        ServerCommandExecution(
+            events=(
+                plan,
+                ServerStepEvent(
+                    command="server project provision",
+                    timestamp=NOW,
+                    step=pending.model_copy(update={"state": "running", "title": "Something else"}),
+                ),
+            ),
+            exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+        )
+    with pytest.raises(ValidationError, match="cannot change planned phase"):
+        ServerCommandExecution(
+            events=(
+                plan,
+                ServerStepEvent(
+                    command="server project provision",
+                    timestamp=NOW,
+                    step=paused.model_copy(update={"phase": "another_phase"}),
+                ),
+            ),
+            exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+        )
+
+
 def test_external_target_names_a_role_without_accepting_an_invented_user() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ExternalServiceTarget.model_validate(

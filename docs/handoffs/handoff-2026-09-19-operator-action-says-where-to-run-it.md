@@ -10,9 +10,10 @@ transfer view, and the CLI wizard's matching label. Focused Python, web, and
 browser checks pass, and the rebuilt panel was driven and inspected against a
 stop produced by the real builder.
 
-What remains: the served journey against a provisioning request paused on a
-throwaway server, a Tauri rebuild with the affected `docs/desktop.md` checks,
-and a terminal capture of the interactive wizard's Enter-driven continuation.
+What remains: the desktop-only half of the served journey. The panel and its
+stored stop are verified end to end, but the `ssh` entry line is composed from
+the saved operator route, which only the Tauri runtime supplies, so it was
+exercised through the fixture rather than through a running desktop.
 
 Close this handoff when a human stop in project provisioning reaches the
 operator as an ordered list of single actions, every command in it names the

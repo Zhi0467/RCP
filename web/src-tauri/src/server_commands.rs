@@ -1283,6 +1283,46 @@ mod tests {
     }
 
     #[test]
+    fn only_a_human_pause_may_rename_its_planned_step() {
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": "server project provision",
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let event = |state| {
+            serde_json::json!({
+                "version": 1,
+                "event": "step",
+                "command": "server project provision",
+                "timestamp": "2026-08-30T00:00:01Z",
+                "step": step(1, state),
+            })
+        };
+
+        // A pause is named for the human's task, not the check it interrupted.
+        let mut paused = event("operator_action_needed");
+        paused["step"]["title"] = Value::String("Add a deploy key on GitHub".into());
+        paused["step"]["purpose"] = Value::String("Give the checkout its write identity.".into());
+        validate_event_prefix(&[plan.clone(), paused.clone()]).unwrap();
+
+        // Nothing else may rename a step, and a pause may still not become a
+        // different step.
+        let mut renamed_while_running = event("running");
+        renamed_while_running["step"]["title"] = Value::String("Something else".into());
+        assert!(validate_event_prefix(&[plan.clone(), renamed_while_running]).is_err());
+
+        let mut retargeted = paused.clone();
+        retargeted["step"]["target"]["host"] = Value::String("other".into());
+        assert!(validate_event_prefix(&[plan.clone(), retargeted]).is_err());
+
+        let mut rephased = paused;
+        rephased["step"]["phase"] = Value::String("other".into());
+        assert!(validate_event_prefix(&[plan, rephased]).is_err());
+    }
+
+    #[test]
     fn transfer_archive_receipt_is_bounded_and_lowercase() {
         assert!(validate_archive_receipt(&"a".repeat(64), 1).is_ok());
         assert!(validate_archive_receipt(&"A".repeat(64), 1).is_err());
