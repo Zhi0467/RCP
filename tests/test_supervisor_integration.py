@@ -29,6 +29,7 @@ from rcp.server_ops.models import ServerPlanEvent, ServerStepEvent, validate_ser
         (["server", "--machine-readable", "backup", "configure"], ["operator"]),
         (["server", "provider", "update", "--machine-readable"], ["operator"]),
         (["server", "update-extra"], ["launch"]),
+        (["server", "prune", "--machine-readable"], []),
         (["serve", "--port", "8421"], ["launch"]),
     ],
 )
@@ -92,6 +93,7 @@ def test_installed_systemd_guard_allows_bounded_recovery_to_finish() -> None:
         "server restore",
         "server supervisor update",
         "server doctor",
+        "server prune",
     ],
 )
 def test_supervisor_events_preserve_application_wizard_contract(command):

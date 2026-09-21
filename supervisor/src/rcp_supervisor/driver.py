@@ -17,6 +17,7 @@ from rcp_supervisor.install import install_operator_console, install_supervisor
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.operations import Coordinator, OperationBusy, OperationStore
 from rcp_supervisor.releases import VerifiedRelease, fetch_release
+from rcp_supervisor.retention import RetentionPlan, prune_retained
 from rcp_supervisor.runtime import (
     DEFAULT_PATHS,
     Paths,
@@ -160,11 +161,13 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         existing = read_selected_receipt(sealed, releases_root=runtime.paths.releases_root)
         if existing != receipt:
             raise SupervisorError("This installed build already names another verified release.")
-    else:
-        if os.path.lexists(target):
-            raise SupervisorError(
-                "An unsealed build directory already exists; inspect retained installation diagnostics before retrying."
-            )
+    elif os.path.lexists(target):
+        raise SupervisorError(
+            "An unsealed build directory already exists; inspect retained installation diagnostics before retrying."
+        )
+    if not os.path.lexists(target):
+        # A sealed receipt outlives a pruned release tree; the verified bundle
+        # installs again under the same identity.
         installed = runtime.filesystem(
             "install",
             {"bundle": str(release.directory), "releases_root": str(runtime.paths.releases_root)},
@@ -172,7 +175,8 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         if installed.get("release_directory") != str(target):
             raise SupervisorError("The service account installed a different release directory.")
         runtime.require_capability(receipt)
-        write_root_json(sealed, receipt)
+        if not os.path.lexists(sealed):
+            write_root_json(sealed, receipt)
     runtime.require_capability(receipt)
     return receipt
 
@@ -228,14 +232,37 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
         return 3
     runtime.require_capability(previous)
     target = prepare_release(runtime, release)
-    result = Coordinator(store_for(paths), runtime).deploy(previous, target)
+    store = store_for(paths)
+    result = Coordinator(store, runtime).deploy(previous, target)
+    fields = [
+        {"name": "build", "value": target["build"]},
+        {"name": "phase", "value": result["phase"]},
+    ]
+    fields.extend(_retention_after_commit(runtime, store))
     emitter.emit(
         "succeeded",
         "The verified release is serving after protected backup and fenced validation.",
-        fields=[
-            {"name": "build", "value": target["build"]},
-            {"name": "phase", "value": result["phase"]},
-        ],
+        fields=fields,
+    )
+    return 0
+
+
+def _retention_after_commit(runtime: SystemRuntime, store: OperationStore) -> list[dict]:
+    """Prune once the update committed; a prune that cannot run is reported, not a failure."""
+    try:
+        return prune_retained(runtime, store).fields()
+    except (SupervisorError, OSError) as exc:
+        return [{"name": "retention", "value": f"not pruned: {str(exc)[:512]}"}]
+
+
+def prune(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
+    del arguments
+    recover(paths=paths)
+    plan: RetentionPlan = prune_retained(SystemRuntime(paths), store_for(paths))
+    emitter.emit(
+        "succeeded",
+        "Retained update checkpoints and release trees outside the retention window were removed.",
+        fields=plan.fields(),
     )
     return 0
 

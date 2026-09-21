@@ -21,7 +21,7 @@ def test_remote_checkpoint_refuses_live_or_unknown_before_mutating_stage(
     store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid")
     store.fail_agent_task("first", "SSH disconnected")
     reopened = AppStore(tmp_path / "state.sqlite3")
-    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: stopped)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: stopped)
     execution = AgentTaskExecution("second", reopened, AgentProcessControl())
 
     with pytest.raises(ValueError, match="confirmed stopped"):
@@ -32,7 +32,7 @@ def test_remote_checkpoint_refuses_live_or_unknown_before_mutating_stage(
     assert reopened.unresolved_remote_provider_passes("remote", "/stage") == [
         ("first", "/stage/one.pid")
     ]
-    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: True)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: True)
     execution.checkpoint_stage("remote", "/stage")
     assert reopened.agent_task("second").stage_root == "/stage"
     assert reopened.unresolved_remote_provider_passes("remote", "/stage") == []
@@ -61,7 +61,7 @@ def test_experiment_retry_checks_remote_pass_before_admission(
         yield
 
     tasks = BackgroundAgentTasks(reopened, forbidden_stream)
-    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args: stopped)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: stopped)
     overrides = {"provider": "claude", "model": "sonnet"} if switch else {}
     with pytest.raises(ValueError, match="confirmed stopped"):
         tasks.retry(root.operation_id, **overrides)
@@ -80,7 +80,7 @@ def test_quiescence_settles_only_verified_pass_and_preserves_stage_until_then(
     assert lifecycle.must_exist
     observed = []
 
-    def confirmed(host, pid_file):
+    def confirmed(host, pid_file, **_kwargs):
         observed.append((host, pid_file))
         return True
 

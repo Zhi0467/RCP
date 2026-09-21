@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import pwd
 import re
@@ -20,10 +21,10 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
-from rcp.agents.failure_kinds import transport_failure
+from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
@@ -61,7 +62,9 @@ from rcp.providers import (
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import _remote_script, _remote_turn_supervisor_script
+from rcp.transport.state import StateUnreachable, _remote_script, _remote_turn_supervisor_script
+
+logger = logging.getLogger(__name__)
 
 ProviderPathState = Literal[
     "resolved",
@@ -114,6 +117,10 @@ class ProviderReadiness(BaseModel):
     #: a project manifest may save it as a stable pin.
     binary_path: str | None = None
     path_state: ProviderPathState = "resolved"
+    #: `unreachable` because ssh itself ran and exited 255, the one unreachable
+    #: a reattempt may fix. An ssh that could not start or gave no answer in
+    #: time is unreachable too, but not this. Read by launch classification only.
+    link_lost: bool = Field(default=False, exclude=True)
     #: What this CLI will actually accept, probed where it can enumerate and
     #: declared where it cannot. Empty when the provider is unreachable, which
     #: leaves the UI showing the saved manifest values.
@@ -204,6 +211,11 @@ class AgentEvent(BaseModel):
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
     usage: ProviderUsage | None = None
+    #: Typed cause on an `error` the launcher can name itself. Set only for a
+    #: link lost before the provider started; a provider process that exits
+    #: leaves its code in `provider_exit` instead, and classification reads
+    #: that. Never inferred from text.
+    failure_kind: AgentFailureKind | None = None
 
 
 def _supervised_remote_turn_command(
@@ -390,7 +402,7 @@ class AgentProcessControl:
         await process.wait()
 
     @staticmethod
-    def remote_stopped(host: str, pid_file: str) -> bool | None:
+    def remote_stopped(host: str, pid_file: str, *, raise_unreachable: bool = False) -> bool | None:
         """Observe the exact remote process group; unavailable is not stopped.
 
         Deliberately on the shared connection, not the run's. This has to reach
@@ -400,12 +412,22 @@ class AgentProcessControl:
         stop it. `test_provider_turn_rides_the_master_of_its_own_run` fails if
         this or `_terminate_remote` ever takes one.
         """
-        stopped, _identity = AgentProcessControl.remote_process_state(host, pid_file)
+        stopped, _identity = AgentProcessControl.remote_process_state(
+            host, pid_file, raise_unreachable=raise_unreachable
+        )
         return stopped
 
     @staticmethod
-    def remote_process_state(host: str, pid_file: str) -> tuple[bool | None, str | None]:
-        """Observe absence and, for a live supervised group, its process identity."""
+    def remote_process_state(
+        host: str, pid_file: str, *, raise_unreachable: bool = False
+    ) -> tuple[bool | None, str | None]:
+        """Observe absence and, for a live supervised group, its process identity.
+
+        `None` covers every way the probe could not answer. With
+        `raise_unreachable`, the one case ssh itself reports, exit 255, raises
+        `StateUnreachable` instead, so a caller that fails a task on it can
+        name the lost link rather than an unverifiable process.
+        """
 
         command = [
             "python3",
@@ -424,6 +446,10 @@ class AgentProcessControl:
             )
         except (OSError, subprocess.TimeoutExpired):
             return None, None
+        if raise_unreachable and result.returncode == 255:
+            raise StateUnreachable(
+                f"{host} is unreachable, so the previous provider call could not be checked."
+            )
         stopped = {0: True, 1: False}.get(result.returncode)
         identity = None
         if stopped is False:
@@ -538,6 +564,53 @@ def _discover_local_provider(provider: str) -> str | None:
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return str(candidate)
     return None
+
+
+class _ProbeNoVerdict(subprocess.CompletedProcess):
+    """A probe ssh gave no verdict on: it could not start, or RCP stopped waiting.
+
+    Its 255 is RCP's own, so the probe reads as failed everywhere without ever
+    being taken for ssh's word that the link is gone.
+    """
+
+
+def _link_lost(result: subprocess.CompletedProcess[str]) -> bool:
+    """Whether ssh itself ran to completion and exited 255: the one code that names a lost link."""
+
+    return result.returncode == 255 and not isinstance(result, _ProbeNoVerdict)
+
+
+def _unreachable_reason(probe: subprocess.CompletedProcess[str], *, host: str, checked: str) -> str:
+    if _link_lost(probe):
+        return f"{host} is unreachable, so {checked} could not be checked."
+    return f"{checked} on {host} could not be checked: " + (probe.stderr.strip() or "unknown error")
+
+
+def _unreachable_readiness(
+    provider: str,
+    probe: subprocess.CompletedProcess[str],
+    *,
+    host: str,
+    binary_path: str | None = None,
+) -> ProviderReadiness:
+    """The answer when a remote probe of one readiness check exited 255.
+
+    Discovery, version, auth, catalog, and Work probes can each be the one that
+    finds the link gone. They all say so the same way, and only a probe ssh ran
+    to a verdict marks the loss a reattempt may fix; one that could not start,
+    or hung on a live link, is a failure the same reattempt would meet again.
+    """
+
+    return ProviderReadiness(
+        provider=provider,
+        label=profile_for(provider).label,
+        installed=False,
+        authenticated=False,
+        binary_path=binary_path,
+        path_state="unreachable",
+        link_lost=_link_lost(probe),
+        reason=_unreachable_reason(probe, host=host, checked=binary_path or provider),
+    )
 
 
 class AgentLauncher:
@@ -668,7 +741,13 @@ class AgentLauncher:
             raise
 
         with self._readiness_lock:
-            if self._readiness_generations.get(key, 0) == generation:
+            # A host that did not answer is a fact about one moment, not about
+            # the capability. Cached, it would fail every later launch from
+            # memory, an automatic reattempt included, without asking the host.
+            if (
+                self._readiness_generations.get(key, 0) == generation
+                and result.path_state != "unreachable"
+            ):
                 self._readiness_cache[key] = result.model_copy(deep=True)
             probe.result = result.model_copy(deep=True)
             self._readiness_probes.pop(probe_key, None)
@@ -746,7 +825,7 @@ class AgentLauncher:
         configured = binary is not None
         candidate = binary
         if configured:
-            path_state, path_problem = self._configured_path_state(binary, host=host)
+            path_state, path_problem, link_lost = self._configured_path_state(binary, host=host)
             if path_state != "resolved":
                 return ProviderReadiness(
                     provider=provider,
@@ -755,20 +834,14 @@ class AgentLauncher:
                     authenticated=False,
                     binary_path=binary,
                     path_state=path_state,
+                    link_lost=link_lost,
                     reason=path_problem,
                 )
             installed = True
         elif host:
             installed_probe = self._probe(host, ["command", "-v", provider])
             if installed_probe.returncode == 255:
-                return ProviderReadiness(
-                    provider=provider,
-                    label=profile.label,
-                    installed=False,
-                    authenticated=False,
-                    path_state="unreachable",
-                    reason=f"{host} is unreachable, so {provider} could not be checked.",
-                )
+                return _unreachable_readiness(provider, installed_probe, host=host)
             discovered = installed_probe.stdout.strip().splitlines()
             candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
             installed = bool(candidate and PurePosixPath(candidate).is_absolute())
@@ -797,14 +870,8 @@ class AgentLauncher:
                 host, [candidate, "--version"], environment=version_environment
             )
         if host and version_result.returncode == 255:
-            return ProviderReadiness(
-                provider=provider,
-                label=profile.label,
-                installed=False,
-                authenticated=False,
-                binary_path=candidate,
-                path_state="unreachable",
-                reason=f"{host} became unreachable while checking {candidate}.",
+            return _unreachable_readiness(
+                provider, version_result, host=host, binary_path=candidate
             )
         version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
         version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
@@ -828,6 +895,8 @@ class AgentLauncher:
             authenticated = False
             if login_reason is None:
                 auth = self._probe(host, profile.auth_command(candidate), environment=environment)
+                if host and auth.returncode == 255:
+                    return _unreachable_readiness(provider, auth, host=host, binary_path=candidate)
                 authenticated = profile.is_authenticated(auth)
                 if self._observe_probe_failure(provider, host, auth, generation):
                     authenticated = False
@@ -842,6 +911,8 @@ class AgentLauncher:
                 if catalog_command
                 else None
             )
+            if catalog is not None and host and catalog.returncode == 255:
+                return _unreachable_readiness(provider, catalog, host=host, binary_path=candidate)
             if catalog is not None and self._observe_probe_failure(
                 provider, host, catalog, generation
             ):
@@ -854,6 +925,10 @@ class AgentLauncher:
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
                 work_probe = self._probe(host, work_command, environment=environment)
+                if host and work_probe.returncode == 255:
+                    return _unreachable_readiness(
+                        provider, work_probe, host=host, binary_path=candidate
+                    )
                 if self._observe_probe_failure(provider, host, work_probe, generation):
                     authenticated = False
                     work_like_available = False
@@ -917,42 +992,56 @@ class AgentLauncher:
         binary: str,
         *,
         host: str,
-    ) -> tuple[ProviderPathState, str | None]:
+    ) -> tuple[ProviderPathState, str | None, bool]:
         where = f" on {host}" if host else ""
         if host:
             probe = self._probe(host, ["python3", "-c", _REMOTE_PATH_PROBE, binary])
             if probe.returncode == 0:
-                return "resolved", None
+                return "resolved", None, False
             if probe.returncode == 255:
-                return (
-                    "unreachable",
-                    f"{host} is unreachable, so {binary} could not be checked.",
-                )
+                reason = _unreachable_reason(probe, host=host, checked=binary)
+                return "unreachable", reason, _link_lost(probe)
             if probe.returncode == _REMOTE_PATH_MISSING:
-                return "missing", f"The recorded executable {binary}{where} does not exist."
+                return "missing", f"The recorded executable {binary}{where} does not exist.", False
             if probe.returncode == _REMOTE_PATH_NOT_FILE:
-                return "denied", f"The recorded executable {binary}{where} is not a regular file."
+                return (
+                    "denied",
+                    f"The recorded executable {binary}{where} is not a regular file.",
+                    False,
+                )
             if probe.returncode == _REMOTE_PATH_NOT_EXECUTABLE:
-                return "denied", f"The recorded executable {binary}{where} is not executable."
+                return (
+                    "denied",
+                    f"The recorded executable {binary}{where} is not executable.",
+                    False,
+                )
             if probe.returncode == _REMOTE_PATH_DENIED:
-                return "denied", f"Execute access to {binary}{where} was denied."
-            return "denied", f"The recorded executable {binary}{where} could not be inspected."
+                return "denied", f"Execute access to {binary}{where} was denied.", False
+            return (
+                "denied",
+                f"The recorded executable {binary}{where} could not be inspected.",
+                False,
+            )
 
         try:
             mode = Path(binary).stat().st_mode
         except FileNotFoundError:
-            return "missing", f"The recorded executable {binary} does not exist."
+            return "missing", f"The recorded executable {binary} does not exist.", False
         except PermissionError:
-            return "denied", f"Access to the recorded executable {binary} was denied."
+            return "denied", f"Access to the recorded executable {binary} was denied.", False
         except OSError as exc:
-            return "denied", f"The recorded executable {binary} could not be inspected: {exc}."
+            return (
+                "denied",
+                f"The recorded executable {binary} could not be inspected: {exc}.",
+                False,
+            )
         if not stat.S_ISREG(mode):
-            return "denied", f"The recorded executable {binary} is not a regular file."
+            return "denied", f"The recorded executable {binary} is not a regular file.", False
         if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-            return "denied", f"The recorded executable {binary} is not executable."
+            return "denied", f"The recorded executable {binary} is not executable.", False
         if not os.access(binary, os.X_OK):
-            return "denied", f"Execute access to {binary} was denied."
-        return "resolved", None
+            return "denied", f"Execute access to {binary} was denied.", False
+        return "resolved", None, False
 
     async def stream(
         self,
@@ -976,6 +1065,7 @@ class AgentLauncher:
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1014,6 +1104,7 @@ class AgentLauncher:
                         runtime_id=runtime.id,
                         before_start=before_start,
                         supervise_remote=supervise_remote,
+                        operation_id=operation_id,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1058,6 +1149,7 @@ class AgentLauncher:
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1083,7 +1175,16 @@ class AgentLauncher:
             or not readiness.installed
             or not readiness.authenticated
         ):
-            yield AgentEvent(event="error", text=readiness.reason or "Provider is unavailable.")
+            yield AgentEvent(
+                event="error",
+                text=readiness.reason or "Provider is unavailable.",
+                # Set only when a probe ssh actually ran exited 255: the probe's
+                # own word, not a reading of its text or of `unreachable`, which
+                # a local ssh that could not start also reports.
+                failure_kind=(
+                    "transport_lost" if host and getattr(readiness, "link_lost", False) else None
+                ),
+            )
             return
 
         if write_scope is not None:
@@ -1239,10 +1340,37 @@ class AgentLauncher:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
                 self.invalidate_readiness(provider, host=host, binary=binary)
+            logger.warning(
+                "provider process failed to start provider=%s capability=%s runtime=%s "
+                "host=%s executable=%s operation=%s error=%s",
+                provider,
+                capability,
+                runtime.id,
+                host or "local",
+                resolved_binary,
+                operation_id or "-",
+                type(exc).__name__,
+            )
             raise _PrePromptRuntimeFailure(str(exc)) from exc
         # Every stop of this process, local or remote, honours the startup hold
         # measured from here, not only an explicit Pause.
         started_at = time.monotonic()
+        launched_at = started_at
+        # The one trace of this process outside the task row. Identifiers only:
+        # provider output can carry token-shaped values and never reaches the
+        # journal (docs/server.md, "Inspect and stop the service").
+        logger.info(
+            "provider process started provider=%s capability=%s runtime=%s host=%s "
+            "executable=%s pid=%s%s operation=%s",
+            provider,
+            capability,
+            runtime.id,
+            host or "local",
+            resolved_binary,
+            process.pid,
+            f" remote_pid_file={remote_pid_file}" if host and remote_pid_file else "",
+            operation_id or "-",
+        )
         if control is not None:
             control.attach(process)
         steering = LiveProviderSteering(
@@ -1579,14 +1707,27 @@ class AgentLauncher:
                             started_at,
                         )
                 finally:
-                    await _cleanup_provider_process(
-                        process,
-                        started_at=started_at,
-                        stdin_task=stdin_task,
-                        stdout_task=stdout_task,
-                        stdout_lines=stdout_lines,
-                        stderr_task=stderr_task,
-                    )
+                    try:
+                        await _cleanup_provider_process(
+                            process,
+                            started_at=started_at,
+                            stdin_task=stdin_task,
+                            stdout_task=stdout_task,
+                            stdout_lines=stdout_lines,
+                            stderr_task=stderr_task,
+                        )
+                    finally:
+                        _log_provider_exit(
+                            provider,
+                            capability=capability,
+                            runtime_id=runtime.id,
+                            host=host,
+                            executable=resolved_binary,
+                            pid=process.pid,
+                            return_code=process.returncode,
+                            duration_seconds=time.monotonic() - launched_at,
+                            operation_id=operation_id,
+                        )
 
             cleanup_task = asyncio.create_task(cleanup())
             try:
@@ -1658,8 +1799,14 @@ class AgentLauncher:
                 check=False,
                 env=environment.local_env if environment and not host else None,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return subprocess.CompletedProcess(arguments, 255, "", str(exc))
+        except subprocess.TimeoutExpired:
+            # ssh connects within its own shorter timeout, so this is a remote
+            # command that hung on a live link, not a link that dropped.
+            return _ProbeNoVerdict(
+                arguments, 255, "", f"the probe gave no answer within {timeout:g}s"
+            )
+        except OSError as exc:
+            return _ProbeNoVerdict(arguments, 255, "", f"ssh could not start: {exc}")
 
     @staticmethod
     def _remote_login_command(
@@ -1730,6 +1877,43 @@ def _meaningful_stderr(stderr: str) -> str:
         if not any(noise in line for noise in _BASH_TTY_NOISE)
     ]
     return "\n".join(kept).strip()
+
+
+def _log_provider_exit(
+    provider: str,
+    *,
+    capability: AgentCapability,
+    runtime_id: str,
+    host: str,
+    executable: str,
+    pid: int,
+    return_code: int | None,
+    duration_seconds: float,
+    operation_id: str | None,
+) -> None:
+    """One journal line per provider process end, without any provider output.
+
+    The exit code and RCP's own reading of it are the whole diagnostic here; a
+    provider's stderr can print token-shaped values and stays on the task row.
+    """
+    detail = ""
+    if return_code:
+        detail = f" reason={_exit_reason(provider, return_code, host)!r}"
+    logger.log(
+        logging.INFO if return_code == 0 else logging.WARNING,
+        "provider process exited provider=%s capability=%s runtime=%s host=%s "
+        "executable=%s pid=%s return_code=%s duration_seconds=%.1f operation=%s%s",
+        provider,
+        capability,
+        runtime_id,
+        host or "local",
+        executable,
+        pid,
+        return_code,
+        duration_seconds,
+        operation_id or "-",
+        detail,
+    )
 
 
 def _exit_reason(provider: str, return_code: int, host: str) -> str:

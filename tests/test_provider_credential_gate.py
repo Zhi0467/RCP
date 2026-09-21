@@ -142,6 +142,7 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
 
     class FakeProcess:
         returncode = 0
+        pid = 4242
 
         def __init__(self) -> None:
             self.stdin = FakeStdin()

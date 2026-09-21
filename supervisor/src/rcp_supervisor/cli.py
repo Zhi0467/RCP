@@ -65,13 +65,14 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     restore.add_argument("--confirm-member-roster")
     restore.add_argument("--remove-stale-member")
     doctor = operations.add_parser("doctor")
+    prune = operations.add_parser("prune")
     supervisor = operations.add_parser("supervisor")
     self_update = supervisor.add_subparsers(dest="supervisor_command", required=True).add_parser(
         "update"
     )
     # Public wrappers preserve the application's flags at any server command
     # depth. Passthrough launch/operator arguments belong to the app parser.
-    for command in (server, initial, update, restore, doctor, supervisor, self_update):
+    for command in (server, initial, update, restore, doctor, prune, supervisor, self_update):
         command.add_argument("--plan", action="store_true", default=argparse.SUPPRESS)
         command.add_argument("--machine-readable", action="store_true", default=argparse.SUPPRESS)
     values = list(sys.argv[1:] if argv is None else argv)
@@ -179,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                 "server restore": driver.restore,
                 "server supervisor update": driver.supervisor_update,
                 "server doctor": driver.doctor,
+                "server prune": driver.prune,
             }[command]
             code = owner(arguments, emitter)
         except (SupervisorError, OSError, ValueError, subprocess.SubprocessError) as exc:

@@ -293,6 +293,7 @@ def _operator_execution() -> ServerCommandExecution:
             {"member_id": MEMBER_ID, "member_confirmed_boundary": "d" * 64},
         ),
         (("server", "update"), "server update", {}),
+        (("server", "prune"), "server prune", {}),
         (
             ("server", "update", "--confirm-target", "v0.3.2:" + "a" * 64),
             "server update",

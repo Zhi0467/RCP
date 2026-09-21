@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.background as background_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -40,6 +41,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
+    AgentTaskAlreadyContinued,
     AgentTaskRecord,
     AppStore,
     AutoResearchChildExperimentRecord,
@@ -170,6 +172,7 @@ def _admitted_launch_task(
     request: RunRequest | None = None,
     parent_operation_id: str | None = None,
     record_updates: dict[str, object] | None = None,
+    continuation_cause: str = "fresh",
 ) -> AgentTaskRecord:
     request = request or RunRequest(
         provider="codex",
@@ -202,7 +205,9 @@ def _admitted_launch_task(
         authorized_by=fabricated_authorizer("Researcher"),
         dispatch_authority=authority,
     )
-    return store.create_agent_task(record.model_copy(update=record_updates or {}))
+    return store.create_agent_task(
+        record.model_copy(update=record_updates or {}), continuation_cause=continuation_cause
+    )
 
 
 async def _done_stream(_project_id, _kind, _request, _execution):
@@ -3702,3 +3707,135 @@ def test_a_stage_the_host_says_is_gone_fails_instead_of_retrying(
     task = store.agent_task(waiting.operation_id)
     assert task is not None and task.status == "failed"
     assert "staging directory is unavailable" in (task.error or "")
+
+
+def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A readiness probe, previous-pass check, or input transfer that cannot
+    reach the host fails the turn with no `provider_exit` to read. The execution
+    carries the probe's own word instead; the error text is never consulted."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="never-started")
+    store.mark_agent_task_running(task.operation_id)
+    request = tasks._request_from_record(store.agent_task(task.operation_id))
+    error = "gpu.example.edu is unreachable, so codex could not be checked."
+
+    def kind(*, stage_unreachable: bool, host: str | None = "gpu.example.edu"):
+        execution = SimpleNamespace(
+            stage_host=host, stage_unreachable=stage_unreachable, login_generation=0
+        )
+        return tasks._failure_kind(task.operation_id, request, execution, error)  # type: ignore[arg-type]
+
+    assert kind(stage_unreachable=True) == "transport_lost"
+    assert kind(stage_unreachable=False) is None
+    assert kind(stage_unreachable=True, host="") is None
+    # A stage that never opened checkpointed no host. The turn was still bound
+    # to one by its request, and the link lost opening the stage is on it.
+    assert kind(stage_unreachable=True, host=None) is None
+    monkeypatch.setattr(
+        background_module, "provider_login_host", lambda manifest, run_on: "gpu.example.edu"
+    )
+    assert kind(stage_unreachable=True, host=None) == "transport_lost"
+
+
+@pytest.mark.parametrize("cause", ["retry", "graph_repair"])
+def test_a_second_recovery_of_one_task_is_refused_inside_admission(
+    tmp_path: Path, cause: str
+) -> None:
+    """The window between `_transport_retry_superseded` and `retry` used to admit
+    a second child if a human Retry was admitted inside it. The claim now lives
+    in the transaction that inserts the child, for a graph-repair recovery too."""
+
+    store = _store(tmp_path)
+    # One request throughout: a continuation must keep its parent's dispatch authority.
+    request = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="claimed-once",
+        message="Exercise the admitted launch boundary.",
+        mode="work",
+        patch_kind="work",
+    )
+    failed = _transport_failed_task(store, operation_id="dropped", request=request)
+    human = _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=request
+    )
+    # Settled, so the chat overlap guard has nothing left to refuse.
+    store.mark_agent_task_running(human.operation_id)
+    store.fail_agent_task(human.operation_id, "also failed")
+
+    with pytest.raises(AgentTaskAlreadyContinued):
+        _admitted_launch_task(
+            store,
+            operation_id="timer-retry",
+            parent_operation_id=failed.operation_id,
+            request=request,
+            continuation_cause=cause,
+        )
+    assert store.agent_task("timer-retry") is None
+
+
+def test_a_reattempt_refused_by_the_claim_stands_down(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    _transport_failed_task(store, operation_id="dropped")
+
+    def taken(_operation_id, **_kwargs):
+        raise AgentTaskAlreadyContinued("another attempt already continues this task")
+
+    monkeypatch.setattr(tasks, "retry", taken)
+    tasks._run_transport_retry("dropped", attempt=0)
+
+    assert store.agent_task_has_receipt("dropped", "transport_auto_retry_superseded")
+    assert not store.agent_task_has_receipt("dropped", "transport_auto_retry_failed")
+    assert tasks._transport_retry_timers == []
+
+
+def test_shutdown_waits_for_a_reattempt_that_is_already_admitting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A callback that passed its shutdown check is admitting a child. If
+    shutdown fenced spawns underneath it, that child would sit queued until a
+    startup interrupted it, and the parent would no longer be owed anything."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    _transport_failed_task(store, operation_id="dropped")
+    entered = threading.Event()
+    release = threading.Event()
+    observed: list[bool] = []
+
+    def slow_retry(operation_id, **_kwargs):
+        entered.set()
+        assert release.wait(5)
+        # Spawns are still open: this is what lets the child get a worker.
+        observed.append(tasks._shutdown_requested)
+
+    monkeypatch.setattr(tasks, "retry", slow_retry)
+    reattempt = threading.Thread(
+        target=tasks._run_transport_retry, args=("dropped",), kwargs={"attempt": 0}
+    )
+    reattempt.start()
+    assert entered.wait(5)
+    stopping = threading.Thread(target=tasks.shutdown, kwargs={"timeout": 5})
+    stopping.start()
+    wait_until(lambda: tasks._transport_retry_closed, timeout=5)
+    stopping.join(0.2)
+    assert stopping.is_alive() and not tasks._shutdown_requested
+
+    release.set()
+    reattempt.join(5)
+    stopping.join(5)
+    assert not reattempt.is_alive() and not stopping.is_alive()
+    assert observed == [False] and tasks._shutdown_requested
+
+    # A reattempt that arrives once shutdown has begun stands down instead.
+    tasks._run_transport_retry("dropped", attempt=0)
+    assert observed == [False]

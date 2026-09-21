@@ -55,6 +55,7 @@ from rcp.storage.models import (
     AGENT_TASK_TRANSITIONS,
     AgentFailureKind,
     AgentTaskAdmissionConflict,
+    AgentTaskAlreadyContinued,
     AgentTaskContractRecord,
     AgentTaskEventRecord,
     AgentTaskKind,
@@ -112,6 +113,15 @@ _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
         "episode_report",
     }
 )
+# An ordinary task's children are its recoveries, and the first one admitted
+# takes it over: `agent_task_has_continuation` already reads any child as
+# exactly that. Claiming it inside the transaction that inserts the child lets
+# an automatic reattempt and a human Retry race without running the turn twice.
+# Experiment and Auto-research recoveries keep their own atomic claims, because
+# their lineages carry children that are not recoveries. The first graph repair
+# of a Work turn has its own claimant too; a recovery of a failed repair, which
+# reaches this path as `graph_repair`, is an ordinary recovery.
+_EXCLUSIVE_CONTINUATION_CAUSES = frozenset({"resume", "retry", "handoff", "graph_repair"})
 
 
 def _joined_repositories(aliases: Sequence[str]) -> str:
@@ -177,6 +187,19 @@ class AgentTaskStoreMixin:
                 if self._has_active_chat_overlap(connection, record):
                     raise AgentTaskAdmissionConflict(
                         "Another task is already active in this conversation."
+                    )
+                if (
+                    record.parent_operation_id is not None
+                    and continuation_cause in _EXCLUSIVE_CONTINUATION_CAUSES
+                    and connection.execute(
+                        "SELECT 1 FROM graph_runs WHERE parent_operation_id = ? LIMIT 1",
+                        (record.parent_operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise AgentTaskAlreadyContinued(
+                        "Another attempt already continues this task; "
+                        "recover its latest attempt instead."
                     )
                 self._insert_agent_task(
                     connection,

@@ -49,6 +49,7 @@ ServerCommandName = Literal[
     "server member remove",
     "server update",
     "server supervisor update",
+    "server prune",
 ]
 ServerStepState = Literal[
     "pending",

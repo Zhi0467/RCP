@@ -296,9 +296,10 @@ class OperationStore:
                 },
             )
 
-    def active(self) -> dict | None:
+    def records(self) -> list[tuple[dict, float]]:
+        """Every published operation with the time its journal was last written."""
         _private_directory(self.directory)
-        active = []
+        found: list[tuple[dict, float]] = []
         with os.scandir(self.directory) as paths:
             for count, entry in enumerate(paths):
                 if count > 10000:
@@ -329,8 +330,11 @@ class OperationStore:
                 record = self.validate(_read(path))
                 if path.name != f"{record['operation_id']}.json":
                     raise SupervisorError("Deployment journal name differs from its identity.")
-                if record["phase"] not in TERMINAL:
-                    active.append(record)
+                found.append((record, path.lstat().st_mtime))
+        return found
+
+    def active(self) -> dict | None:
+        active = [record for record, _ in self.records() if record["phase"] not in TERMINAL]
         if len(active) > 1:
             raise SupervisorError(
                 "Multiple unfinished deployment journals require operator repair."

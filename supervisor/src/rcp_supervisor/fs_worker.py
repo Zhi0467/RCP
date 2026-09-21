@@ -93,6 +93,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
         elif (
+            arguments == ["remove"]
+            and isinstance(request, dict)
+            and request.keys() == {"directory", "root"}
+        ):
+            from rcp_supervisor.retention import remove_retained_tree
+
+            remove_retained_tree(Path(request["directory"]), Path(request["root"]))
+            result = {"version": 1, "status": "removed"}
+        elif (
             arguments == ["restore"]
             and isinstance(request, dict)
             and request.keys() == {"directory", "sha256", "boundary_sha256"}

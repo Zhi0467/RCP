@@ -22,6 +22,7 @@ _OPERATIONS = {
     "server restore": ("Restore server", "supervisor_restore"),
     "server supervisor update": ("Update supervisor", "supervisor_self_update"),
     "server doctor": ("Inspect server", "supervisor_doctor"),
+    "server prune": ("Prune retained update artifacts", "supervisor_prune"),
 }
 # Every installed server command re-enters through the root-owned public wrapper,
 # which delegates to the supervisor. Continue commands therefore never name the

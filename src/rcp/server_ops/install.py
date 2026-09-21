@@ -592,7 +592,7 @@ def _wrapper_text(layout: ServerLayout) -> str:
         'case "$route" in\n'
         '  "server backup configure"|"server provider update")\n'
         f'    exec {layout.supervisor_wrapper} operator "$@";;\n'
-        '  "server install"|"server install "*|"server update"|"server update "*|"server restore"|"server restore "*|"server supervisor update")\n'
+        '  "server install"|"server install "*|"server update"|"server update "*|"server restore"|"server restore "*|"server supervisor update"|"server prune")\n'
         f'    exec {layout.supervisor_wrapper} "$@";;\n'
         "esac\n"
         f'exec {layout.supervisor_wrapper} launch "$@"\n'

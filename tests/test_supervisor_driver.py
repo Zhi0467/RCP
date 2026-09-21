@@ -83,6 +83,7 @@ def test_existing_unsafe_root_storage_is_refused_without_normalizing_it(
         ["restore", "/tmp/archive.tar.age"],
         ["supervisor", "update"],
         ["doctor"],
+        ["prune"],
     ],
 )
 def test_installed_plans_use_the_existing_wizard_contract_without_machine_access(
@@ -374,3 +375,41 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
         assert calls == ["enable"]
         with pytest.raises(SupervisorError, match="completed team initialization or restore"):
             startup_recover(paths=paths, startup=True)
+
+
+def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(monkeypatch, tmp_path):
+    """Retention removes a release tree but keeps the root-owned receipt that
+    says the build is installed; selecting that version again must install."""
+
+    releases = tmp_path / "releases"
+    target = releases / "7"
+    supervisor = tmp_path / "supervisor"
+    (supervisor / "release-receipts").mkdir(parents=True)
+    sealed = supervisor / "release-receipts" / "7.json"
+    sealed.write_text("{}")
+    receipt = {"build": 7, "release_directory": str(target)}
+    calls: list[str] = []
+    runtime = SimpleNamespace(
+        paths=SimpleNamespace(supervisor=supervisor, releases_root=releases),
+        filesystem=lambda action, request: (
+            calls.append(action),
+            target.mkdir(parents=True),
+            {"release_directory": str(target)},
+        )[-1],
+        require_capability=lambda _receipt: calls.append("capability"),
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *_args: receipt)
+    monkeypatch.setattr(driver, "install_operator_console", lambda *_args: None)
+    monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(driver, "read_selected_receipt", lambda *_args, **_kwargs: receipt)
+    monkeypatch.setattr(
+        driver, "write_root_json", lambda *_args: pytest.fail("the sealed receipt is not rewritten")
+    )
+    release = SimpleNamespace(build=7, directory=tmp_path / "bundle")
+
+    assert driver.prepare_release(runtime, release) == receipt
+    assert calls == ["install", "capability", "capability"]
+    assert target.is_dir()
+    # Installed and sealed: nothing to do but verify.
+    assert driver.prepare_release(runtime, release) == receipt
+    assert calls == ["install", "capability", "capability", "capability"]

@@ -536,6 +536,19 @@ The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel and phones through the tailnet above; opening port 8421 publicly is
 not a supported deployment.
 
+Every provider process leaves two lines in the journal: one when it starts and
+one when it ends. Each names the provider, capability, runtime, execution host
+(or `local`), resolved executable, child pid, and the operation id that opens
+the same turn in **Agent tasks**; the end line adds the exit code, duration,
+and, for a non-zero exit, RCP's own reading of it. A failed turn adds one line
+with its classification (`transport_lost`, `provider_auth`, or `-`). Nothing
+a provider prints reaches the journal: its stderr can carry token-shaped values,
+so it stays on the task row. To read one turn:
+
+```bash
+sudo journalctl --unit=rcp.service --no-pager | grep 'operation=<operation-id>'
+```
+
 ## Update the server release
 
 ```bash
@@ -553,6 +566,28 @@ Before that decision, interruption chooses verified rollback. Afterwards,
 recovery completes the selected release. Both paths retain failed preparation,
 checkpoints, and quarantined roots for inspection. Reboot follows the same
 root-owned journal without fetching a release or consulting `main`.
+
+Retention is bounded. After an update commits, the supervisor keeps the two
+newest rollback checkpoints under `update-checkpoints/` and the two newest
+release trees under `releases/`, plus whatever those checkpoints need: the live
+release, its rollback target, and the releases the kept checkpoints were taken
+between. Everything older is removed as `rcp`. A checkpoint workspace that no
+journal names is removed once it is a day old; the source-adoption workspace is
+never touched. The prune refuses as a whole when the release pointer and the
+selected receipt disagree or an operation is unfinished, and it leaves alone,
+by name, any entry it does not recognize or that no completed update names, so
+a release still being installed is never removed. The update's final event lists what
+was removed and kept. A pruned build keeps its sealed receipt, so pinning that
+version again installs its verified bundle. To prune on demand, for an
+installation that already carries a backlog:
+
+```bash
+sudo /usr/local/bin/rcp server prune
+```
+
+The public wrapper learns that route at `server install`; on a server installed
+before it existed, run `sudo /usr/local/bin/rcp-supervisor server prune` until
+the next converge.
 
 The installed `[release]` table defaults to `followed = "stable"`. An operator
 may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
