@@ -74,11 +74,14 @@ def test_shipped_helper_confirms_stop_and_escalates_when_needed(owned_group, ign
         os.killpg(process.pid, 0)
 
 
-def test_missing_pidfile_is_not_success(tmp_path):
-    assert (
-        remote_terminate_provider.main(["helper", str(tmp_path / "missing"), "0", "0", "0", "0.01"])
-        == 1
+def test_missing_pidfile_never_reports_a_stop_it_did_not_see(tmp_path):
+    """Absence is its own answer, and it is never dressed up as a confirmed stop."""
+
+    code = remote_terminate_provider.main(
+        ["helper", str(tmp_path / "missing"), "0", "0", "0", "0.01"]
     )
+    assert code == remote_terminate_provider.ABSENT
+    assert code != 0
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1", "not-a-pid", "9" * 100])
@@ -179,11 +182,10 @@ def test_shipped_probe_observes_live_then_absent_group_without_stopping_it(owned
     assert remote_terminate_provider.provider_stopped(str(pid_file)) is True
 
 
-@pytest.mark.parametrize("value", [None, "", "not-a-pid", "0", "1", "9" * 100])
-def test_probe_invalid_or_missing_receipt_is_unknown_without_waiting(tmp_path, monkeypatch, value):
+@pytest.mark.parametrize("value", ["", "not-a-pid", "0", "1", "9" * 100])
+def test_probe_unreadable_receipt_is_unknown_without_waiting(tmp_path, monkeypatch, value):
     pid_file = tmp_path / "agent.pid"
-    if value is not None:
-        pid_file.write_text(value)
+    pid_file.write_text(value)
 
     def unexpected_sleep(_seconds):
         raise AssertionError("A read-only probe must not wait for a receipt")
@@ -269,4 +271,35 @@ def test_stop_refuses_a_recycled_process_identity_without_signalling(tmp_path, m
         kill_timeout=0,
         poll_interval=0.01,
         expect_identity="boot:original-process",
+    )
+
+
+def test_absence_is_conclusive_only_while_the_stage_still_stands(owned_group, tmp_path):
+    """What may clear the guard, and what must not.
+
+    The wrapper writes its pidfile before it execs anything and RCP never
+    removes one, so inside a stage that still stands a missing pidfile means no
+    process was started. A stage that is gone proves nothing: whatever removed
+    it could have taken a running pass's pidfile too, and that pass is what this
+    guard exists to catch.
+    """
+
+    _process, pid_file = owned_group(ignore_term=False)
+    stage = Path(pid_file).parent
+
+    # A live group is still running, and absence never speaks for it.
+    assert remote_terminate_provider.provider_stopped(str(pid_file)) is False
+    assert remote_terminate_provider.main(["helper", "--probe", str(pid_file)]) == 1
+
+    # Never written, stage intact: the host has answered.
+    assert remote_terminate_provider.main(["helper", "--probe", str(stage / "never.pid")]) == (
+        remote_terminate_provider.ABSENT
+    )
+
+    # Stage gone: unknown, because the removal could have taken a live pass with it.
+    assert (
+        remote_terminate_provider.main(
+            ["helper", "--probe", str(tmp_path / "vanished" / "agent.pid")]
+        )
+        == remote_terminate_provider.UNKNOWN
     )

@@ -61,6 +61,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
+from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnreachable, _remote_script
 
@@ -405,6 +406,12 @@ class AgentProcessControl:
     def remote_stopped(host: str, pid_file: str, *, raise_unreachable: bool = False) -> bool | None:
         """Observe the exact remote process group; unavailable is not stopped.
 
+        A host that reports no pidfile at all is stopped rather than unknown.
+        The wrapper writes that file before it execs anything and nothing in RCP
+        ever removes one, so its absence is the host answering that this pass
+        started no process. A pidfile that exists and cannot be read stays
+        unknown, because it may still name something that is running.
+
         Deliberately on the shared connection, not the run's. This has to reach
         the host at the moment the run's own connection may be what died, and a
         shared path is the only one OpenSSH reopens by itself. Giving it the
@@ -450,6 +457,12 @@ class AgentProcessControl:
             raise StateUnreachable(
                 f"{host} is unreachable, so the previous provider call could not be checked."
             )
+        if result.returncode == REMOTE_PROBE_ABSENT:
+            # The wrapper writes its pidfile before it execs anything, so a host
+            # that can see there is no pidfile is telling RCP no process was
+            # ever started here. Reading that as "unknown" is what turned one
+            # failed launch into a conversation that could never run again.
+            return True, None
         stopped = {0: True, 1: False}.get(result.returncode)
         identity = None
         if stopped is False:
@@ -517,7 +530,7 @@ class AgentProcessControl:
                 timeout=REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
                 check=False,
             )
-            return result.returncode == 0
+            return result.returncode in {0, REMOTE_PROBE_ABSENT}
         except (OSError, subprocess.TimeoutExpired):
             return False
 

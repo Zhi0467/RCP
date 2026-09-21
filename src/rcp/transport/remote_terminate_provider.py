@@ -16,6 +16,38 @@ import subprocess
 import sys
 import time
 
+#: A pidfile the wrapper never wrote. The wrapper writes it before it execs
+#: anything, so a stage that still stands and holds no pidfile is the host
+#: answering that this pass started no process -- an answer, not an absence of
+#: one. Every other way of failing to read it stays `UNKNOWN`, because a pidfile
+#: that exists and cannot be interpreted may still name something running.
+ABSENT = 3
+UNKNOWN = 2
+
+
+def _pid_file_absent(pid_file: str) -> bool:
+    """Whether a standing stage can show that this pidfile was never written.
+
+    The stage itself must still be there. RCP never removes a pidfile, so inside
+    a live stage absence means the wrapper never got as far as writing one. A
+    stage that is gone proves nothing: whatever removed it could have taken a
+    running pass's pidfile with it, and that pass is exactly what this guard
+    exists to notice.
+    """
+
+    try:
+        if not stat.S_ISDIR(os.stat(os.path.dirname(pid_file) or ".").st_mode):
+            return False
+    except OSError:
+        return False
+    try:
+        os.lstat(pid_file)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
 
 def _read_pid(pid_file: str, timeout: float, poll_interval: float) -> int | None:
     deadline = time.monotonic() + timeout
@@ -187,9 +219,11 @@ def main(argv: list[str]) -> int:
         if stopped is False:
             pid = _read_pid(argv[2], timeout=0, poll_interval=1)
             print(json.dumps({"identity": None if pid is None else process_identity(pid, argv[2])}))
-        return 2 if stopped is None else (0 if stopped else 1)
+        if stopped is None:
+            return ABSENT if _pid_file_absent(argv[2]) else UNKNOWN
+        return 0 if stopped else 1
     if len(argv) not in {6, 7}:
-        return 2
+        return UNKNOWN
     try:
         stopped = terminate_provider(
             argv[1],
@@ -201,9 +235,14 @@ def main(argv: list[str]) -> int:
         )
     except ValueError:
         return 2
-    if not stopped:
-        print("Could not confirm that the provider process group stopped.", file=sys.stderr)
-    return 0 if stopped else 1
+    if stopped:
+        return 0
+    # The wait above gave the pidfile its chance to appear. Still nothing there
+    # is the host saying no process was ever recorded, not that one is hiding.
+    if _pid_file_absent(argv[1]):
+        return ABSENT
+    print("Could not confirm that the provider process group stopped.", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through shipped source

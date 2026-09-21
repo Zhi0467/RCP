@@ -454,8 +454,14 @@ must be confirmed stopped before a correction or recovery can reuse the stage.
 Each remote pass has a unique pidfile and a durable start/stop receipt. An
 unresolved pass fences stage reuse across task failure and server restart; a
 read-only check may release that fence only after confirming process absence.
-Unreachable or unprovable process state keeps recovery blocked and preserves the
-stage and receipts for reconciliation.
+A host that reports no pidfile inside a stage that still stands has confirmed
+that absence: the wrapper writes its pidfile before it execs anything and RCP
+never removes one, so nothing was started. That is the only inference allowed,
+and it is what keeps a launch that died before reaching the host from fencing
+its conversation for good. A vanished stage is not absence, because whatever
+removed it could have removed a running pass's pidfile too. Unreachable hosts,
+and pidfiles that exist but cannot be read, keep recovery blocked and preserve
+the stage and receipts for reconciliation.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, stage, and external-effect
