@@ -190,6 +190,21 @@ test("sessions reconnect after navigating, resize and type, expose Work on both 
   await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
   await page.locator(".xterm-helper-textarea").press("Enter");
   assert.ok(input.some((event) => event.type === "resize" && event.cols > 0 && event.rows > 0));
+  // The fit addon reads the emulator's own box to size the grid and subtracts
+  // no padding, so a grid that overruns the padding is cut by the pane's
+  // overflow clip: the bottom row loses the cursor.
+  assert.deepEqual(
+    await page.locator(".terminal-emulator").evaluate((element) => {
+      const grid = element.querySelector(".xterm").getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        withinBottomPadding: grid.bottom <= box.bottom - parseFloat(style.paddingBottom) + 0.5,
+        withinRightPadding: grid.right <= box.right - parseFloat(style.paddingRight) + 0.5,
+      };
+    }),
+    { withinBottomPadding: true, withinRightPadding: true },
+  );
   assert.ok(input.some((event) => event.type === "input"));
   const pasted = "a".repeat(16383) + "🌱" + "b".repeat(17000);
   const inputCount = input.length;
