@@ -1070,7 +1070,6 @@ class BackgroundAgentTasks:
             with suppress(ValueError):
                 self.store.request_agent_task_pause(operation_id, requested_by="shutdown")
             control.request_pause()
-        deadline = time.monotonic() + timeout
         for worker in workers:
             if worker is None or worker is threading.current_thread():
                 continue
@@ -1774,10 +1773,11 @@ class BackgroundAgentTasks:
             )
             self._schedule_remote_reconciliation(delay=0)
         except Exception as exc:  # The persisted task is the API error boundary.
-            if isinstance(exc, StateUnavailable):
+            if isinstance(exc, StateUnavailable) and not isinstance(exc, StateMissing):
                 # A stage checkpoint or context read that could not reach the
                 # host escapes here untyped otherwise, and the classifier below
-                # would read it as an ordinary failure.
+                # would read it as an ordinary failure. A stage the host says
+                # is gone is an answer, not a lost link.
                 execution.stage_unreachable = True
             if (
                 isinstance(request, AutoResearchRunRequest)

@@ -191,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def reload_app() -> FastAPI:
     """Rebuild the app inside uvicorn's reloader, which imports it on every restart."""
+    _configure_logging()
     raw_metadata = os.environ.get(RELOAD_METADATA_ENV)
     metadata = ServerMetadata.from_dict(json.loads(raw_metadata)) if raw_metadata else None
     return create_app(

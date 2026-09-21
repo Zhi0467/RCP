@@ -12,7 +12,7 @@ from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.transport import StateUnavailable
+from rcp.transport import StateMissing, StateUnavailable
 
 from .test_remote_provider_receipts import _store
 
@@ -92,7 +92,10 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [StateUnavailable("link lost"), ValueError("bad input")])
+@pytest.mark.parametrize(
+    "failure",
+    [StateUnavailable("link lost"), StateMissing("stage is gone"), ValueError("bad input")],
+)
 async def test_a_failed_input_transfer_marks_only_a_lost_link(
     tmp_path: Path, failure: Exception
 ) -> None:
@@ -131,4 +134,5 @@ async def test_a_failed_input_transfer_marks_only_a_lost_link(
     ]
 
     assert outcome.failed and len(frames) == 1 and str(failure) in frames[0]
-    assert execution.stage_unreachable is isinstance(failure, StateUnavailable)
+    # A host that answers "gone" has not lost its link; only silence has.
+    assert execution.stage_unreachable is (type(failure) is StateUnavailable)
