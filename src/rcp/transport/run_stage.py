@@ -28,6 +28,7 @@ from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
     StateUnavailable,
+    StateUnreachable,
     _remote_lock_holder_script,
     _remote_script,
 )
@@ -186,7 +187,7 @@ for target in glob.glob('/tmp/rcp-run.*'):
             # 255 is ssh saying it could not ask. Anything else is the host
             # answering that this stage is gone, replaced, or not ours, and a
             # caller that waits on an answer waits forever.
-            unavailable = StateUnavailable if result.returncode == 255 else StateMissing
+            unavailable = StateUnreachable if result.returncode == 255 else StateMissing
             raise unavailable(
                 "The saved remote staging directory is unavailable; retry this operation instead."
             )
@@ -266,7 +267,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
             ]
         )
         if result.returncode == 255:
-            raise StateUnavailable(
+            raise StateUnreachable(
                 result.stderr.strip() or "could not inspect remote project repository roots"
             )
         if result.returncode:
@@ -401,7 +402,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         )
         error = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode == 255:
-            raise StateUnavailable(error or "could not verify staged provider sources")
+            raise StateUnreachable(error or "could not verify staged provider sources")
         if result.returncode:
             raise ValueError(error or "staged provider sources differ from their inventory")
         try:
@@ -596,14 +597,15 @@ except BaseException:
                     json.dumps(reusable_labels, separators=(",", ":")),
                 ]
             )
+            # rsync and ssh both exit 255 only when the connection itself failed;
+            # any other code is the host refusing or rejecting the inputs, and a
+            # reattempt would meet the same answer.
             if result.returncode:
-                raise StateUnavailable(
-                    result.stderr.strip() or "could not transfer remote task inputs"
-                )
+                unavailable = StateUnreachable if result.returncode == 255 else StateUnavailable
+                raise unavailable(result.stderr.strip() or "could not transfer remote task inputs")
             if committed.returncode:
-                raise StateUnavailable(
-                    committed.stderr.strip() or "could not commit remote task inputs"
-                )
+                unavailable = StateUnreachable if committed.returncode == 255 else StateUnavailable
+                raise unavailable(committed.stderr.strip() or "could not commit remote task inputs")
         finally:
             self._clear_pending_inputs()
 

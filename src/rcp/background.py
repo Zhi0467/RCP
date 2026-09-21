@@ -89,7 +89,7 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.storage.models import AgentTaskAlreadyContinued
-from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable
+from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 
 logger = logging.getLogger(__name__)
 
@@ -1773,11 +1773,11 @@ class BackgroundAgentTasks:
             )
             self._schedule_remote_reconciliation(delay=0)
         except Exception as exc:  # The persisted task is the API error boundary.
-            if isinstance(exc, StateUnavailable) and not isinstance(exc, StateMissing):
+            if isinstance(exc, StateUnreachable):
                 # A stage checkpoint or context read that could not reach the
                 # host escapes here untyped otherwise, and the classifier below
-                # would read it as an ordinary failure. A stage the host says
-                # is gone is an answer, not a lost link.
+                # would read it as an ordinary failure. Only ssh's own 255 is
+                # a lost link; anything the host answered is not.
                 execution.stage_unreachable = True
             if (
                 isinstance(request, AutoResearchRunRequest)

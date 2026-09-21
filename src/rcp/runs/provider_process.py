@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
     """A task status or SSH exit is never a substitute for remote process absence.
 
-    A host the probe cannot reach raises `StateUnavailable`, the typed word for
+    A host the probe cannot reach raises `StateUnreachable`, the typed word for
     a lost link, so the task this fails is classified as transport loss rather
     than as an ordinary failure a reattempt could never fix.
     """

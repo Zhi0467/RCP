@@ -30,7 +30,7 @@ from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
-from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable
+from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.run_stage import run_stage_partition
 
 if TYPE_CHECKING:
@@ -720,14 +720,11 @@ async def _stream_agent_events(
                 )
             await asyncio.to_thread(remote_stage.finalize_inputs)
         except (OSError, StateUnavailable, ValueError) as exc:
-            # No provider process will report a code for this turn, so this
-            # typed failure is the only thing classification can read. A stage
-            # the host says is gone is an answer, not a lost link.
-            if (
-                isinstance(exc, StateUnavailable)
-                and not isinstance(exc, StateMissing)
-                and execution is not None
-            ):
+            # No provider process will report a code for this turn, so the
+            # typed word is the only thing classification can read. Only ssh's
+            # own 255 carries it; a stage the host says is gone, or inputs it
+            # refused, are answers, not a lost link.
+            if isinstance(exc, StateUnreachable) and execution is not None:
                 execution.stage_unreachable = True
             outcome.failed = True
             yield _sse(AgentEvent(event="error", text=str(exc)))

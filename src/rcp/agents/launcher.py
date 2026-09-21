@@ -62,7 +62,7 @@ from rcp.providers import (
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import StateUnavailable, _remote_script, _remote_turn_supervisor_script
+from rcp.transport.state import StateUnreachable, _remote_script, _remote_turn_supervisor_script
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +421,7 @@ class AgentProcessControl:
 
         `None` covers every way the probe could not answer. With
         `raise_unreachable`, the one case ssh itself reports, exit 255, raises
-        `StateUnavailable` instead, so a caller that fails a task on it can
+        `StateUnreachable` instead, so a caller that fails a task on it can
         name the lost link rather than an unverifiable process.
         """
 
@@ -443,7 +443,7 @@ class AgentProcessControl:
         except (OSError, subprocess.TimeoutExpired):
             return None, None
         if raise_unreachable and result.returncode == 255:
-            raise StateUnavailable(
+            raise StateUnreachable(
                 f"{host} is unreachable, so the previous provider call could not be checked."
             )
         stopped = {0: True, 1: False}.get(result.returncode)
@@ -567,9 +567,11 @@ def _unreachable_readiness(
 ) -> ProviderReadiness:
     """The answer when ssh itself exited 255 under any probe of one readiness check.
 
-    Discovery, version, auth, catalog, and Work probes can each be the one that
-    finds the link gone. They all say so the same way, so a launch can type the
-    loss from `path_state` instead of reading the reason.
+    Discovery, version, auth, and catalog probes can each be the one that finds
+    the link gone. They all say so the same way, so a launch can type the loss
+    from `path_state` instead of reading the reason. The Work probe keeps its
+    own answer: by then the host has spoken three times, and a 255 there leaves
+    Work unchecked rather than the saved path rejected.
     """
 
     return ProviderReadiness(
@@ -892,8 +894,6 @@ class AgentLauncher:
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
                 work_probe = self._probe(host, work_command, environment=environment)
-                if host and work_probe.returncode == 255:
-                    return _unreachable_readiness(provider, host=host, binary_path=candidate)
                 if self._observe_probe_failure(provider, host, work_probe, generation):
                     authenticated = False
                     work_like_available = False

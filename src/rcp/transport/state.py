@@ -762,6 +762,15 @@ class StateMissing(StateUnavailable):
     """
 
 
+class StateUnreachable(StateUnavailable):
+    """The host did not answer: ssh itself exited 255.
+
+    `StateUnavailable` also names state a host answered about and RCP cannot
+    use, so only this subclass may mark a turn as having lost its link. A
+    caller raises it where it saw the 255, never from the failure's text.
+    """
+
+
 def _restore_file_matches(
     path: Path,
     *,

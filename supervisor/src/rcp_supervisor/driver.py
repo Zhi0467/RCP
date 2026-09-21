@@ -161,11 +161,13 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         existing = read_selected_receipt(sealed, releases_root=runtime.paths.releases_root)
         if existing != receipt:
             raise SupervisorError("This installed build already names another verified release.")
-    else:
-        if os.path.lexists(target):
-            raise SupervisorError(
-                "An unsealed build directory already exists; inspect retained installation diagnostics before retrying."
-            )
+    elif os.path.lexists(target):
+        raise SupervisorError(
+            "An unsealed build directory already exists; inspect retained installation diagnostics before retrying."
+        )
+    if not os.path.lexists(target):
+        # A sealed receipt outlives a pruned release tree; the verified bundle
+        # installs again under the same identity.
         installed = runtime.filesystem(
             "install",
             {"bundle": str(release.directory), "releases_root": str(runtime.paths.releases_root)},
@@ -173,7 +175,8 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         if installed.get("release_directory") != str(target):
             raise SupervisorError("The service account installed a different release directory.")
         runtime.require_capability(receipt)
-        write_root_json(sealed, receipt)
+        if not os.path.lexists(sealed):
+            write_root_json(sealed, receipt)
     runtime.require_capability(receipt)
     return receipt
 

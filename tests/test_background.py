@@ -3739,16 +3739,33 @@ def test_a_second_recovery_of_one_task_is_refused_inside_admission(tmp_path: Pat
     in the transaction that inserts the child."""
 
     store = _store(tmp_path)
-    failed = _transport_failed_task(store, operation_id="dropped")
-    _admitted_launch_task(
-        store, operation_id="human-retry", parent_operation_id=failed.operation_id
+    # One request throughout: a continuation must keep its parent's dispatch authority.
+    request = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id="claimed-once",
+        message="Exercise the admitted launch boundary.",
+        mode="work",
+        patch_kind="work",
     )
+    failed = _transport_failed_task(store, operation_id="dropped", request=request)
+    human = _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=request
+    )
+    # Settled, so the chat overlap guard has nothing left to refuse.
+    store.mark_agent_task_running(human.operation_id)
+    store.fail_agent_task(human.operation_id, "also failed")
 
     with pytest.raises(AgentTaskAlreadyContinued):
         _admitted_launch_task(
             store,
             operation_id="timer-retry",
             parent_operation_id=failed.operation_id,
+            request=request,
             continuation_cause="retry",
         )
     assert store.agent_task("timer-retry") is None
