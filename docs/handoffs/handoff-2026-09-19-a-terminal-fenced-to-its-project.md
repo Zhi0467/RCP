@@ -1,7 +1,8 @@
 # A terminal in a project, fenced to its repositories
 
 Date: 2026-09-19
-Status: implemented and under review on the branch. The design was confirmed on
+Status: implemented; the Linux merge qualification passed on 2026-09-20. The
+design was confirmed on
 2026-09-19 after a gpt-6-astra review refuted the original containment
 mechanism and two of its findings were reverified directly. The trust model and
 the collision behavior are settled.
@@ -12,9 +13,20 @@ its cleanup, and Git access including a remote team checkout's deploy key. A
 live run against a real Linux execution machine opened a shell on every
 registered repository and returned real `git status` output.
 
-Remaining: the merge qualification below — one run on a real Linux machine
-covering mounts, interactive Git with a deploy key, PTY resize, orphan cleanup,
-and a restart while an unfinished record names an unreachable host.
+Qualified on 2026-09-20 on a Linux machine with systemd, in a personal space,
+driven over the API and WebSocket against a throwaway data directory: the
+mirrored mounts hold (canonical `.research` and the account's SSH directory
+refuse writes, home is the empty tmpfs with only the bound entries, the ambient
+environment is scrubbed); Git reaches its remote over SSH with the account's key
+and an interactive `git add -p` stages a hunk; a PTY resize reaches the shell;
+the unit survives the server being killed, and the restart stops it and finishes
+its record; a record naming an unreachable machine is retained, refuses a
+reopening on that repository, and stops refusing once it is gone.
+
+Remaining: the closure condition below driven from the Terminals destination
+rather than the API — a conflicted `git rebase -i` completed after navigating
+away and back — and one live run in a team space, where Git uses the
+repository's deploy key instead of the account's key.
 
 Close this handoff when a project member can open an interactive shell on a
 registered repository from the project UI, that shell runs every ordinary Git

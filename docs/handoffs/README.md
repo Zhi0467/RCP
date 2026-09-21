@@ -19,10 +19,11 @@ Active:
   [a decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md):
   the terminal inherits the Work turn's boundary rather than isolating from the
   service account, so it must never describe itself as containment, and
-  canonical state stays refused wherever the OS can refuse it. Remaining: the
-  live Linux qualification named in the handoff's closure condition — real
-  mounts, interactive Git and credentials, PTY resize, and orphan cleanup —
-  none of which a macOS development machine can exercise.
+  canonical state stays refused wherever the OS can refuse it. The Linux merge
+  qualification passed on 2026-09-20: real mounts, interactive Git with the
+  account's key, PTY resize, orphan cleanup, and a restart with an
+  unreachable-host record. Remaining: the closure journey driven from the
+  Terminals destination, and one team-space run where Git uses the deploy key.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
