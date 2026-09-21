@@ -28,24 +28,31 @@ UNKNOWN = 2
 def _pid_file_absent(pid_file: str) -> bool:
     """Whether a standing stage can show that this pidfile was never written.
 
-    The stage itself must still be there. RCP never removes a pidfile, so inside
-    a live stage absence means the wrapper never got as far as writing one. A
-    stage that is gone proves nothing: whatever removed it could have taken a
-    running pass's pidfile with it, and that pass is exactly what this guard
-    exists to notice.
+    The stage itself must still be there, and it must be the directory the pass
+    was staged in. RCP never removes a pidfile, so inside a live stage absence
+    means the wrapper never got as far as writing one. A stage that is gone, or
+    whose path now leads somewhere else, proves nothing: whatever removed or
+    replaced it could have taken a running pass's pidfile with it, and that pass
+    is exactly what this guard exists to notice. Opening the directory without
+    following links and looking the pidfile up inside that open directory is
+    what ties the two observations to one stage.
     """
 
+    directory, name = os.path.split(pid_file)
+    if not name:
+        return False
     try:
-        if not stat.S_ISDIR(os.stat(os.path.dirname(pid_file) or ".").st_mode):
-            return False
+        stage = os.open(directory or ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
         return False
     try:
-        os.lstat(pid_file)
+        os.stat(name, dir_fd=stage, follow_symlinks=False)
     except FileNotFoundError:
         return True
     except OSError:
         return False
+    finally:
+        os.close(stage)
     return False
 
 

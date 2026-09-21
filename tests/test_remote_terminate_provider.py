@@ -303,3 +303,14 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(owned_group, tm
         )
         == remote_terminate_provider.UNKNOWN
     )
+
+    # Stage path swapped for a link to some other directory: unknown for the
+    # same reason. The real stage, pidfile and process may all still exist.
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "swapped").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    assert (
+        remote_terminate_provider.main(
+            ["helper", "--probe", str(tmp_path / "swapped" / "agent.pid")]
+        )
+        == remote_terminate_provider.UNKNOWN
+    )

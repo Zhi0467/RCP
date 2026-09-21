@@ -461,8 +461,9 @@ and it is what keeps a launch that died before reaching the host from fencing
 its conversation for good. It is drawn only once the launch has ended: the
 post-exit confirmation and the pre-flight fence read absence that way, while a
 stop racing a launch still in flight does not, because a pidfile that has not
-appeared yet may only be late. A vanished stage is not absence, because whatever
-removed it could have removed a running pass's pidfile too. Unreachable hosts,
+appeared yet may only be late. A vanished stage, or a stage path that now leads
+somewhere else, is not absence, because whatever removed or replaced it could
+have taken a running pass's pidfile with it. Unreachable hosts,
 and pidfiles that exist but cannot be read, keep recovery blocked and preserve
 the stage and receipts for reconciliation.
 
