@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.background as background_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -3709,7 +3710,7 @@ def test_a_stage_the_host_says_is_gone_fails_instead_of_retrying(
 
 
 def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A readiness probe, previous-pass check, or input transfer that cannot
     reach the host fails the turn with no `provider_exit` to read. The execution
@@ -3722,7 +3723,7 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     request = tasks._request_from_record(store.agent_task(task.operation_id))
     error = "gpu.example.edu is unreachable, so codex could not be checked."
 
-    def kind(*, stage_unreachable: bool, host: str = "gpu.example.edu"):
+    def kind(*, stage_unreachable: bool, host: str | None = "gpu.example.edu"):
         execution = SimpleNamespace(
             stage_host=host, stage_unreachable=stage_unreachable, login_generation=0
         )
@@ -3731,6 +3732,13 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     assert kind(stage_unreachable=True) == "transport_lost"
     assert kind(stage_unreachable=False) is None
     assert kind(stage_unreachable=True, host="") is None
+    # A stage that never opened checkpointed no host. The turn was still bound
+    # to one by its request, and the link lost opening the stage is on it.
+    assert kind(stage_unreachable=True, host=None) is None
+    monkeypatch.setattr(
+        background_module, "provider_login_host", lambda manifest, run_on: "gpu.example.edu"
+    )
+    assert kind(stage_unreachable=True, host=None) == "transport_lost"
 
 
 @pytest.mark.parametrize("cause", ["retry", "graph_repair"])

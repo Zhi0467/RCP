@@ -33,6 +33,34 @@ from rcp.transport.state import (
     _remote_script,
 )
 
+
+class _SshNoVerdict(subprocess.CompletedProcess):
+    """An ssh call that gave no verdict: it could not start, or RCP stopped waiting.
+
+    Its 255 is RCP's own. Every caller still reads it as failed, and none reads
+    it as ssh's word that the link is gone.
+    """
+
+
+def _ssh_failure(
+    result: subprocess.CompletedProcess,
+    default: str,
+    *,
+    answered: type[StateUnavailable] = StateUnavailable,
+) -> StateUnavailable:
+    """The exception for a failed ssh call: a lost link only when ssh itself said 255."""
+
+    stderr = result.stderr
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    detail = (stderr or "").strip() or default
+    if isinstance(result, _SshNoVerdict):
+        return StateUnavailable(detail)
+    if result.returncode == 255:
+        return StateUnreachable(detail)
+    return answered(detail)
+
+
 _REMOTE_TREE_HELPERS = """\
 import os,shutil
 def make_writable(path):
@@ -168,15 +196,15 @@ for target in glob.glob('/tmp/rcp-run.*'):
                 else ["mkdir", "-m", "700", remote_root]
             )
         if result.returncode or not _safe_root(remote_root):
-            raise StateUnavailable(result.stderr.strip() or "could not create remote run stage")
+            raise _ssh_failure(result, "could not create remote run stage")
         safe = self._directory_probe(remote_root)
         if safe.returncode:
-            raise StateUnavailable(safe.stderr.strip() or "could not safely adopt remote run stage")
+            raise _ssh_failure(safe, "could not safely adopt remote run stage")
         self.root = PurePosixPath(remote_root)
         prepared = self._ssh(["mkdir", "-p", str(self.root / "inputs"), str(self.workspace)])
         if prepared.returncode:
             self.close()
-            raise StateUnavailable(prepared.stderr.strip() or "could not prepare remote run stage")
+            raise _ssh_failure(prepared, "could not prepare remote run stage")
         return self
 
     def attach(self, root: str) -> RemoteRunStage:
@@ -187,10 +215,12 @@ for target in glob.glob('/tmp/rcp-run.*'):
             # 255 is ssh saying it could not ask. Anything else is the host
             # answering that this stage is gone, replaced, or not ours, and a
             # caller that waits on an answer waits forever.
-            unavailable = StateUnreachable if result.returncode == 255 else StateMissing
-            raise unavailable(
+            detail = (
                 "The saved remote staging directory is unavailable; retry this operation instead."
             )
+            if isinstance(result, _SshNoVerdict):
+                raise StateUnavailable(detail)
+            raise (StateUnreachable if result.returncode == 255 else StateMissing)(detail)
         self.root = PurePosixPath(root)
         return self
 
@@ -267,9 +297,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
             ]
         )
         if result.returncode == 255:
-            raise StateUnreachable(
-                result.stderr.strip() or "could not inspect remote project repository roots"
-            )
+            raise _ssh_failure(result, "could not inspect remote project repository roots")
         if result.returncode:
             raise ValueError(
                 result.stderr.strip() or "remote project repository roots are unavailable"
@@ -402,7 +430,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         )
         error = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode == 255:
-            raise StateUnreachable(error or "could not verify staged provider sources")
+            raise _ssh_failure(result, "could not verify staged provider sources")
         if result.returncode:
             raise ValueError(error or "staged provider sources differ from their inventory")
         try:
@@ -610,8 +638,7 @@ except BaseException:
                 )
                 raise unavailable(result.stderr.strip() or "could not transfer remote task inputs")
             if committed.returncode:
-                unavailable = StateUnreachable if committed.returncode == 255 else StateUnavailable
-                raise unavailable(committed.stderr.strip() or "could not commit remote task inputs")
+                raise _ssh_failure(committed, "could not commit remote task inputs")
         finally:
             self._clear_pending_inputs()
 
@@ -1411,7 +1438,7 @@ finally:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return subprocess.CompletedProcess([], 255, "", str(exc))
+            return _SshNoVerdict([], 255, "", str(exc))
 
     def _ssh_bytes(
         self,
@@ -1430,7 +1457,7 @@ finally:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return subprocess.CompletedProcess([], 255, b"", str(exc).encode())
+            return _SshNoVerdict([], 255, b"", str(exc).encode())
 
 
 def _safe_label(value: str) -> str:

@@ -427,7 +427,9 @@ rest through the service-account filesystem worker. A checkpoint workspace no
 journal names is reclaimed only past an age floor, and the adoption journal's
 workspace is protected. The prune refuses entirely when the release pointer and
 selected receipt disagree or an operation is unfinished; entries it does not
-recognize are left alone and named in the result. A pruned build keeps its
+recognize, and builds no completed deployment names, are left alone and named
+in the result, so a release being installed is never removed from under its
+installer. A pruned build keeps its
 sealed receipt; selecting that version again installs the verified bundle
 under the same identity. `server prune` runs the same decision on demand.
 

@@ -1091,12 +1091,14 @@ exit codes decide this only for a turn that said nothing: ssh returns 255 for a
 provider that exits 255 as readily as for a link it lost, so a provider that
 reached its own terminal event or reported its own error is never blamed on the
 link, whatever the code. A link that drops before the provider starts is named
-the same way. The readiness probe, under whichever of its probes ssh died, the
-check that the previous remote pass has stopped, and the input transfer each
-fail the turn with no process to leave a code, so each carries its own typed
-word for an unreachable host to classification; the error text is never read.
-Only an ssh or rsync that ran and exited 255 carries it: one RCP could not
-start is a local failure the same reattempt would meet again.
+the same way. Opening the remote stage, the readiness probe under whichever of
+its probes ssh died, the check that the previous remote pass has stopped, and
+the input transfer each fail the turn with no process to leave a code, so each
+carries its own typed word for an unreachable host to classification, on the
+host the turn was bound to even before a stage existed; the error text is never
+read. Only an ssh or rsync that ran to a verdict and exited 255 carries it: one
+RCP could not start, or stopped waiting for on a live link, is a failure the
+same reattempt would meet again.
 An unreachable readiness answer is not cached, so the reattempt asks the host
 again instead of failing from memory. A reattempt stands down when
 anything else has already taken the turn over, so a wait that outlives the

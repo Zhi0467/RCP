@@ -575,7 +575,8 @@ between. Everything older is removed as `rcp`. A checkpoint workspace that no
 journal names is removed once it is a day old; the source-adoption workspace is
 never touched. The prune refuses as a whole when the release pointer and the
 selected receipt disagree or an operation is unfinished, and it leaves alone,
-by name, any entry it does not recognize. The update's final event lists what
+by name, any entry it does not recognize or that no completed update names, so
+a release still being installed is never removed. The update's final event lists what
 was removed and kept. A pruned build keeps its sealed receipt, so pinning that
 version again installs its verified bundle. To prune on demand, for an
 installation that already carries a backlog:

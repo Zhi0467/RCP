@@ -117,9 +117,9 @@ class ProviderReadiness(BaseModel):
     #: a project manifest may save it as a stable pin.
     binary_path: str | None = None
     path_state: ProviderPathState = "resolved"
-    #: `unreachable` because ssh itself exited 255 under a probe that ran, the
-    #: one unreachable a reattempt may fix. A local ssh that could not start is
-    #: unreachable too, but not this. Read by launch classification only.
+    #: `unreachable` because ssh itself ran and exited 255, the one unreachable
+    #: a reattempt may fix. An ssh that could not start or gave no answer in
+    #: time is unreachable too, but not this. Read by launch classification only.
     link_lost: bool = Field(default=False, exclude=True)
     #: What this CLI will actually accept, probed where it can enumerate and
     #: declared where it cannot. Empty when the provider is unreachable, which
@@ -566,22 +566,24 @@ def _discover_local_provider(provider: str) -> str | None:
     return None
 
 
-class _ProbeNotStarted(subprocess.CompletedProcess):
-    """A probe whose ssh never ran. Its 255 is RCP's own, not ssh's word."""
+class _ProbeNoVerdict(subprocess.CompletedProcess):
+    """A probe ssh gave no verdict on: it could not start, or RCP stopped waiting.
+
+    Its 255 is RCP's own, so the probe reads as failed everywhere without ever
+    being taken for ssh's word that the link is gone.
+    """
 
 
 def _link_lost(result: subprocess.CompletedProcess[str]) -> bool:
-    """Whether ssh itself ran and exited 255: the one code that names a lost link."""
+    """Whether ssh itself ran to completion and exited 255: the one code that names a lost link."""
 
-    return result.returncode == 255 and not isinstance(result, _ProbeNotStarted)
+    return result.returncode == 255 and not isinstance(result, _ProbeNoVerdict)
 
 
 def _unreachable_reason(probe: subprocess.CompletedProcess[str], *, host: str, checked: str) -> str:
     if _link_lost(probe):
         return f"{host} is unreachable, so {checked} could not be checked."
-    return f"ssh could not start to reach {host}, so {checked} could not be checked: " + (
-        probe.stderr.strip() or "unknown error"
-    )
+    return f"{checked} on {host} could not be checked: " + (probe.stderr.strip() or "unknown error")
 
 
 def _unreachable_readiness(
@@ -594,9 +596,9 @@ def _unreachable_readiness(
     """The answer when a remote probe of one readiness check exited 255.
 
     Discovery, version, auth, catalog, and Work probes can each be the one that
-    finds the link gone. They all say so the same way, and only a probe ssh
-    actually ran marks the loss a reattempt may fix; an ssh that could not
-    start is a local defect the same reattempt would meet again.
+    finds the link gone. They all say so the same way, and only a probe ssh ran
+    to a verdict marks the loss a reattempt may fix; one that could not start,
+    or hung on a live link, is a failure the same reattempt would meet again.
     """
 
     return ProviderReadiness(
@@ -1797,11 +1799,14 @@ class AgentLauncher:
                 check=False,
                 env=environment.local_env if environment and not host else None,
             )
-        except subprocess.TimeoutExpired as exc:
-            # ssh ran and the host did not answer in time: its own 255.
-            return subprocess.CompletedProcess(arguments, 255, "", str(exc))
+        except subprocess.TimeoutExpired:
+            # ssh connects within its own shorter timeout, so this is a remote
+            # command that hung on a live link, not a link that dropped.
+            return _ProbeNoVerdict(
+                arguments, 255, "", f"the probe gave no answer within {timeout:g}s"
+            )
         except OSError as exc:
-            return _ProbeNotStarted(arguments, 255, "", str(exc))
+            return _ProbeNoVerdict(arguments, 255, "", f"ssh could not start: {exc}")
 
     @staticmethod
     def _remote_login_command(

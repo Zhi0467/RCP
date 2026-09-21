@@ -114,6 +114,16 @@ def plan_retention(
     ][:RETAINED_CHECKPOINTS]
     kept_ids = {record["operation_id"] for record in kept_operations} | set(protected_operation_ids)
     recorded_ids = {record["operation_id"] for record, _ in records}
+    # Only a build some completed deployment names is this store's to remove. A
+    # release being installed for a deployment that has not committed yet is
+    # unknown here, and pruning it from under the installer is not an option.
+    known_release_directories: set[str] = set()
+    for record, _ in records:
+        for side in ("previous", "target"):
+            release = record.get(side)
+            directory = release.get("release_directory") if isinstance(release, dict) else None
+            if isinstance(directory, str):
+                known_release_directories.add(directory)
     # A kept checkpoint is only usable if the release it would roll back to,
     # and the one it was taken for, are both still installed.
     kept_release_directories = {selected["release_directory"], current_release_directory}
@@ -155,6 +165,8 @@ def plan_retention(
     for build, path in builds:
         if str(path) in kept_release_directories or path in newest_builds:
             kept_releases.append(str(build))
+        elif str(path) not in known_release_directories:
+            left_alone.append(f"{path}: named by no completed deployment")
         else:
             remove_releases.append(path)
     return RetentionPlan(

@@ -87,7 +87,7 @@ def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
             return subprocess.CompletedProcess(command, 0, "codex 1.0\n", "")
         if ssh_ran:
             return subprocess.CompletedProcess(command, 255, "", "ssh: connection timed out")
-        return launcher_module._ProbeNotStarted(command, 255, "", "No such file: 'ssh'")
+        return launcher_module._ProbeNoVerdict(command, 255, "", "ssh could not start")
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
     first = launcher.readiness("codex", host=HOST)
@@ -198,3 +198,45 @@ def test_only_a_spawned_rsync_exit_255_names_a_lost_link(
     with pytest.raises(StateUnavailable) as caught:
         stage.finalize_inputs()
     assert isinstance(caught.value, StateUnreachable) is spawned
+
+
+@pytest.mark.parametrize("outcome", ["exit_255", "timeout", "not_started"])
+def test_only_an_ssh_verdict_of_255_names_a_lost_link(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """ssh connects within its own shorter timeout, so a probe RCP stopped
+    waiting for hung on a live link; one that could not start never asked."""
+
+    def run(arguments, **kwargs):
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(arguments, kwargs["timeout"])
+        if outcome == "not_started":
+            raise FileNotFoundError("ssh")
+        return subprocess.CompletedProcess(arguments, 255, "", "ssh: connection closed")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    probe = AgentLauncher._probe(HOST, ["codex", "--version"])
+    assert probe.returncode == 255
+    assert launcher_module._link_lost(probe) is (outcome == "exit_255")
+    assert bool(probe.stderr)
+
+
+@pytest.mark.parametrize("outcome", ["exit_255", "exit_1", "no_verdict"])
+def test_opening_a_stage_names_a_lost_link_only_from_ssh(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from rcp.transport import run_stage as run_stage_module
+
+    stage = RemoteRunStage(HOST)
+    monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
+
+    def ssh(arguments):
+        if outcome == "no_verdict":
+            return run_stage_module._SshNoVerdict([], 255, "", "ssh could not start")
+        code = 255 if outcome == "exit_255" else 1
+        return subprocess.CompletedProcess(arguments, code, "", "mkdir: refused")
+
+    monkeypatch.setattr(stage, "_ssh", ssh)
+    with pytest.raises(StateUnavailable) as caught:
+        stage.open("op-open")
+    assert isinstance(caught.value, StateUnreachable) is (outcome == "exit_255")

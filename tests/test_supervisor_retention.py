@@ -161,6 +161,8 @@ def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp
     (checkpoints / "notes.txt").write_text("operator notes")
     (releases / "install.log").write_text("log")
     (releases / "99").symlink_to(releases / "100")
+    # A build no completed deployment names may be mid-install for one.
+    (releases / "42").mkdir(mode=0o700)
 
     plan = plan_retention(
         records=[(committed, 1.0)],
@@ -179,6 +181,7 @@ def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp
     assert str(young_orphan) in reasons and "age floor" in reasons
     assert str(checkpoints / "scratch") in reasons and str(checkpoints / "notes.txt") in reasons
     assert str(releases / "install.log") in reasons and str(releases / "99") in reasons
+    assert str(releases / "42") in reasons and "no completed deployment" in reasons
 
 
 def test_remove_retained_tree_unlocks_read_only_trees_and_never_follows_links(tmp_path):

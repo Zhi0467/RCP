@@ -1935,6 +1935,21 @@ class BackgroundAgentTasks:
                 remote_pid_file=remote_pid_file,
             )
 
+    def _bound_execution_host(self, operation_id: str, request: AgentTaskRequest) -> str:
+        """The host a request runs on, or "" when it is local or cannot be resolved."""
+
+        run_on = getattr(request, "run_on", None)
+        if run_on in {None, "local"}:
+            return ""
+        record = self.store.agent_task(operation_id)
+        project = self.store.project(record.project_id) if record is not None else None
+        if project is None:
+            return ""
+        try:
+            return provider_login_host(load_manifest(project.locator), run_on)
+        except (OSError, ValueError, KeyError):
+            return ""
+
     def _failure_kind(
         self,
         operation_id: str,
@@ -1953,7 +1968,9 @@ class BackgroundAgentTasks:
         kind = classify_agent_failure(
             error=error,
             return_code=exit.return_code if exit is not None else None,
-            host=execution.stage_host or "",
+            # A stage that never opened checkpointed no host; the turn was
+            # still bound to one, and a link lost opening the stage is on it.
+            host=execution.stage_host or self._bound_execution_host(operation_id, request),
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
             link_lost_before_provider=exit is None and execution.stage_unreachable,
