@@ -217,6 +217,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
         "chats",
         "paper",
         "artifacts",
+        "terminals",
         "settings",
       ].includes(params.get("view") ?? "")
         ? params.get("view")
@@ -268,9 +269,9 @@ export function projectHashAfterViewChange(hash: string, nextView: AppView): str
   const target = graphTargetFromHash(hash);
   if (target.kind === "branch" && route.projectId)
     return graphViewHash(route.projectId, target, nextView);
-  if (nextView === "artifacts" && route.projectId)
-    return `#/projects/${encodeURIComponent(route.projectId)}?view=artifacts`;
-  if (route.view === "artifacts" && route.projectId)
+  if ((nextView === "artifacts" || nextView === "terminals") && route.projectId)
+    return `#/projects/${encodeURIComponent(route.projectId)}?view=${nextView}`;
+  if ((route.view === "artifacts" || route.view === "terminals") && route.projectId)
     return `#/projects/${encodeURIComponent(route.projectId)}`;
   if (nextView === "execution" || route.view !== "execution" || !route.projectId) return null;
   return `#/projects/${encodeURIComponent(route.projectId)}`;

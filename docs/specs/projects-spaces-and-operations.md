@@ -153,6 +153,178 @@ in exactly the same way as an unknown id.
 Membership is authority, not disk confidentiality. The canonical repository
 still has whatever read visibility its host operating-system account permits.
 
+## Member terminal lifecycle
+
+`TerminalManager` owns one session per repository per project, and underneath
+that one shell per working tree: a request is refused when any session, under
+another alias or in another project, is already open on the tree it resolves
+to, or is still opening on it. An open reserves the tree it resolved, not the
+alias it was asked for, because a registration can be renamed or moved while
+that open is still probing or launching. A working tree is identified by the
+path a session resolved, locally or on its execution machine, and the host it
+resolved it on. Declarations are how settings name a tree and are never
+compared, so two declarations that spell one tree are one tree.
+Registrations can be renamed and moved between projects, and two shells writing
+one tree is what the rule exists to prevent. Project members may attach to the
+existing session of their own project's alias, or end it. The starting member remains its
+audit actor; losing that member's project membership or beginning account
+removal ends the shell, including detached sessions. A viewing member who loses
+access is disconnected independently. A deleted or retired project's sessions
+also lose membership and end.
+
+A viewer that cannot keep up with its own output is detached, not ended: the
+shell keeps running and the view offers a reconnect. Reusing the session-end
+signal there would report a live shell as terminated.
+
+Sessions outlive the Terminals view and disconnected browsers. Only terminal
+input renews the 30-minute idle lifetime in `limits.py`, and it renews it on
+arrival rather than once the shell has taken it, because a backpressured PTY
+can leave a write waiting for as long as it likes; output and passive
+attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
+membership, process exit, and idle expiry every five seconds. Clean server
+shutdown and maintenance end sessions. For mirrored sessions, startup stops
+orphan systemd units named in this application's metadata before admitting new
+sessions, including launch intents persisted before a crash.
+
+A session record is finished only when its unit is known to be gone. Ending a
+mirrored remote session confirms the stop explicitly rather than trusting the
+far side's hangup handler, and a stop that cannot be confirmed leaves the
+record unfinished, because an unfinished record is what the next startup
+reconciles. A session whose SSH has already exited is confirmed the same way,
+over a fresh connection: the supervisor writes its completion marker before the
+cleanup that can still fail, and reports that failure only through an exit
+status a dropped link produces too, so a finished shell says nothing about
+whether its unit went with it. Server shutdown leaves the same unfinished
+record rather than waiting on the network for every live session.
+
+A live session whose stop fails keeps its runtime so the stop can be retried on
+the next sweep, and stops being one a member can list, attach to, or be handed
+back by a new open request. The decision to end it stands even though its shell
+may still be running, and a second shell on that checkout is refused until the
+stop succeeds — under whatever alias it is asked for, because a failed local
+stop leaves no retained record and settings can register that checkout under
+another name. Anyone already watching is told the session ended, because a
+socket reads its queue without consulting the manager again, and refusing the
+next attach would leave the viewer it already has. The output still queued for
+them goes with it: the decision is that they stop receiving from this session,
+and a subscriber queue holds many frames of it. A stop that succeeds instead
+lets what is queued through, because the shell finished and that output is
+theirs.
+
+Startup reconciliation is best effort per record and never refuses the server a
+boot. A record is readable when it names every field this version writes,
+each holding a string or, for the two that end a record, null, and the file is
+named for the session in it; `save_metadata` writes every record that way, so
+anything else was not written by this version and is not read through the
+dataclass's defaults, where an absent execution host would say local. An unreadable
+record is left exactly as found and, if it still names a project and
+repository, blocks that repository in a way nothing can confirm gone, because
+being unable to read a record is not evidence that its shell is gone. It is
+resolved by hand or by the version that wrote it. A readable record that fails
+to reconcile for a reason no branch anticipates, such as a destination `ssh`
+refuses outright, blocks its repository the same way. Only the file's own name
+identifies a blocker, so two records never share one and resolving either
+cannot release the other.
+
+A readable, unfinished record is retained before its stop is tried and finished
+only once its unit is confirmed gone. Records reconcile together, because
+shutdown leaves every live remote session unfinished and a machine that went
+away would otherwise cost one remote stop timeout per record before any other
+startup owner runs; the budget bounds the boot, because the stops are blocking
+calls in one thread pool. Retaining first is what makes the budget safe: a
+record still running when it expires stays retained with everything it says,
+so a later open retries the very stop it names. A record naming a unit this
+data directory does not own is retired as a unit-identity mismatch without a
+stop attempt, because the unit prefix hashes the data directory and moving it
+must not be a permanent startup failure. A launch that fails finishes its own
+record on the same condition: a cooperative launch has no unit, and a mirrored
+one is finished only once its unit is known to be gone, because a mirrored
+launch can create its unit and then fail before readiness.
+
+A retained record blocks a reopen. Opening a repository retries every retained
+record that speaks for it, once the open has resolved its tree, and refuses
+while any cannot be confirmed gone, rather than putting a second shell on one
+working tree. A record speaks for an open by the alias it was filed under and
+by the tree its shell resolved, compared against the tree the open resolved, so
+settings dropping an alias and registering the same checkout under another
+name or spelling hide nothing. A record this version could not read resolved
+nothing, so its alias is all it has. The retry runs wherever a record was
+retained: after a startup that could not stop it, after a launch that failed
+with its unit unaccounted for, and after an end whose stop went unconfirmed.
+
+A session records what its repository was registered as: the declared path,
+the machine, that machine's host, and its account. Re-registering the alias as
+any of those retires the session rather than handing it back, so a request for
+one checkout is never answered with a live shell on another, on another
+machine, or under another account. Two machines can share a path string, so
+the path alone does not identify a registration. Remote unit cleanup carries
+that recorded account as well, because stopping under a different one would
+find no unit, call that success, and finish a record whose unit still runs.
+
+Opening a session returns an existing session for that repository before any
+launch prerequisite is consulted. A capability probe or inventory read that now
+fails gates a new launch; it never withholds a session that is already running.
+
+That holds only while the alias still names what the session opened on. Once it
+names another path, machine or account, or the project stops registering it at
+all, the running shell is not what was asked for.
+
+Nothing recomputes a registration on its own, and a member cannot be relied on
+to ask: the Open control is hidden for a repository that already has a session,
+so a stale session hides the very control that would replace it. The
+projections a member reaches a session through settle registrations instead —
+the polling session list, the open request before its 404 and before every
+launch prerequisite, and the socket, which is reached by id rather than through
+the list. A session whose alias has stopped naming it is retired there, so it
+stops being listed and stops being attachable without anyone opening anything.
+Stale aliases are retired together rather than in turn, because every one of
+those callers is a member waiting on an answer and an alias whose machine has
+gone costs a stop timeout. An open request settles only the alias its answer is
+about, so it never waits on the machines of aliases it does not mention. An
+alias whose retirement fails keeps its session, and the next call retries.
+
+Opening a session holds the manager lock only to admit the request and to
+publish the result. The capability probe, remote repository resolution, and the
+launch run outside it, so one unreachable machine cannot stall another member's
+open, end, or the lifecycle sweep. A second open for a repository already
+opening is refused rather than queued behind it.
+
+A cooperative session is a server-owned PTY with a plain shell in the repository,
+using the scrubbed environment and no mount profile. Normal termination hangs
+up the shell and uses a bounded kill if needed. Server exit closes its PTY and
+hangs up the shell; deliberately detached descendants have no cleanup guarantee.
+This is not systemd cgroup ownership. Its session payload reports `cooperative`
+and the missing canonical-state protection: no canonical-state fence exists on
+that machine.
+
+Eligibility belongs to the repository's machine, never its space kind. Linux
+selects the mirrored backend only with usable systemd tools, `findmnt`, and a
+reachable user manager; other operating systems select cooperative. A remote
+machine's source-shipped capability probe supplies its OS, its prerequisites,
+and its systemd version. It does not require lingering for the execution
+account, because a terminal's manager need only outlive its own session.
+`TerminalManager` caches one probe per machine for its lifetime, including failed
+results, and caches the local machine's capability the same way rather than
+spawning its probe processes on every repositories poll. A cache miss schedules background work and projects pending without
+blocking the route. Changed machine metadata invalidates the matching result;
+the explicit terminal Refresh action invalidates the project's machine results.
+An older in-flight result cannot replace a newer probe, and is
+cancelled so it stops holding a probe worker its replacement needs.
+
+Remote sessions use a server-owned SSH PTY. Browser detachment still leaves the
+same session running, but loss of the SSH link ends its RCP session and records
+the link failure. A shell completion marker distinguishes an actual shell exit
+255 from SSH's ambiguous exit 255. There is no automatic replacement shell. A
+mirrored profile or verification failure ends the launch with its diagnostic and never
+starts a cooperative session. Backend selection and launch details are owned by
+[Providers and containment](providers-and-containment.md#member-terminals).
+
+The operational metadata under the application data directory records member,
+project, repository, start, end, and termination reason. It contains no PTY byte
+transcript. A bounded in-memory output tail supports reconnect and is discarded
+when the session ends; no shell history file is written. This lifecycle owns no
+canonical research mutation and introduces no manifest permission setting.
+
 ## Repository and truth scope
 
 The project manifest names repository aliases, paths paired with execution

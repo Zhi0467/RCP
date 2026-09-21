@@ -200,6 +200,11 @@ def reload_app() -> FastAPI:
 
 
 def main() -> None:
+    if sys.argv[1:] == ["_terminal-shell"]:
+        from rcp.terminals.pty_shell import main as terminal_shell
+
+        terminal_shell()
+        return
     parser = build_parser()
     args = parser.parse_args()
     if args.show_version:

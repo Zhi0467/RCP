@@ -235,6 +235,47 @@ and Runs on this device and browser origin, scoped to the project. **Show hidden
 them. This display preference preserves the watcher record and other viewers'
 lists; a watcher that becomes active again is visible regardless of the preference.
 
+## Terminals
+
+**Terminals** is a project destination beside Overview, Inbox, Research, Runs,
+Artifacts, Paper, Settings, and Chats when at least one project machine can host
+a session. Remote pending and failed probes also keep it visible so their
+status and recovery control remain reachable. It is hidden for empty projects
+or only unavailable local machines. Settings has no terminal control. The empty
+state consists of repository controls showing their starting paths. Unavailable
+repositories show their capability reason and cannot open a terminal. Remote
+rows distinguish pending checks, unreachable hosts, authentication failures,
+host-key failures, and missing prerequisites. The tab polls while a probe is
+pending; ordinary refresh reads cached results. The terminal Refresh control
+explicitly retries machine probes. Space kind does not affect eligibility.
+
+A left rail lists open sessions with Live or Idle state, selection, and an
+individual End control. One session exists per repository in each project.
+The right pane holds the selected interactive shell. A running Work turn does
+not block opening a session: its title appears above the active terminal, and
+a Work running mark appears on its rail row. Repository paths are data, not
+instructional helper copy.
+
+Leaving the destination detaches the viewer without ending the shell. Returning
+lists the existing sessions; ending a session, losing membership, or idle expiry
+ends it. SSH link loss ends the session with an explicit link-drop diagnostic
+that survives removal from the open-session list. It offers no reconnect into a
+new shell; opening the repository again is a new session. Theme and mode changes
+repaint the terminal using the same surface and text tokens as the project UI.
+
+The shell runs as the service account and inherits the Work turn's trust
+boundary. A mirrored session's mount namespace provides accident resistance to
+wrong-directory mistakes; it is not isolation from the service account or a
+boundary against deliberate action.
+Mirrored sessions refuse canonical-state writes in that filesystem view.
+Cooperative sessions show a visible, explicit warning in the terminal pane:
+canonical-state protection is unavailable on this machine, and there is no
+canonical-state fence. This required warning uses semantic warning colors,
+border, and surface tokens, following the Aqua treatment and remaining explicit
+in Classic and Aqua across System, Light, and Dark modes. It is not a smaller,
+muted commentary line beneath a heading. Terminal setup failures remain explicit
+in the view; a failed mirrored launch never offers a cooperative downgrade.
+
 ## Paper
 
 The editor/coach split is human-resizable, and the editor begins with authored

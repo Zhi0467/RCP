@@ -34,6 +34,113 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Member terminals
+
+`terminals/` owns member shell sessions separately from provider tasks. A session
+runs as the local service account or remote execution account, in the same
+registered checkout used by agents,
+with the Work turn's trust boundary. Where supported, its mount namespace provides
+accident resistance to a wrong-directory mistake, never isolation from the
+service account or a security boundary against a deliberate member. Read access to a Git deploy key conveys
+its write authority; exposing the key read-only does not keep it secret.
+
+A small terminal backend registry owns an id, display name, and
+`supports(os_name, is_remote)` predicate per backend, following the compute
+backend pattern. Selection is per machine and independent of space kind:
+
+- Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
+  user manager reports `mirrored`. Lingering is deliberately not required: the
+  PTY lives inside the session that owns a session-scoped manager, which runs
+  transient units and tears down with the link. A manager reporting `degraded`
+  still answers and still launches.
+- `--expand-environment=no` exists only from systemd 254. A probe reports the
+  manager's version and a launch passes the option only where it exists; below
+  it, the launch refuses any path or value containing `$` rather than running
+  under an expansion it cannot disable. The shipped preflight also sets a value
+  and reads it back, so a manager that rewrote the command line is caught
+  whatever version it reports. A transient unit is built over D-Bus rather than
+  parsed from a unit file and receives no `%` specifier expansion, so registered
+  paths are passed through exactly as they are; doubling a literal percent
+  instead makes the working directory unreachable.
+- Every machine requires an executable `/bin/bash` before it is offered at all.
+  The cooperative helper writes its readiness marker before replacing itself
+  with the shell, so an unrunnable shell would otherwise admit a session that
+  is already gone.
+- Other operating systems, including macOS, report `cooperative` and use a
+  plain PTY in the registered repository. Canonical-state protection is
+  unavailable on that machine: there is no canonical-state fence.
+- A machine with a non-empty `host` uses its probed remote OS, never the OS of
+  the RCP process. A source-shipped Python probe checks the execution account's
+  tools and user manager, and reports the account it actually answered as. An
+  SSH destination that carries no user takes its account from the client's SSH
+  configuration, so a machine answering as an account other than its registered
+  `os_account` is refused rather than offered: the shell would hold the wrong
+  home, credentials and write authority, and the mount profile was computed for
+  the registered account. A machine with no registered account has nothing to
+  compare and is not refused on this ground. The probe's answer is cached for
+  the manager's lifetime, so the launch verifies the account again inside the
+  connection that runs the shell, and refuses there too. The shared SSH failure vocabulary distinguishes
+  unreachable, authentication failed, host key failed, and reachable but
+  incapable machines, with the actual diagnostic.
+
+The `containment` field reuses compute's `mirrored` / `cooperative` vocabulary;
+those labels do not make the terminal mount profile a security boundary.
+Linux with missing tools or an unusable user manager is unavailable, with the
+prerequisite diagnostic. Cooperative is selected by OS, never after a mirrored
+launch or probe fails. Terminal capability does not reuse compute readiness.
+A non-Linux remote selects cooperative only after its OS is known.
+
+Remote launches allocate a PTY through SSH and ship the remote launcher module's
+source. Local and remote launchers share `terminals/profile.py` for the scrubbed
+shell and mirrored profile rather than maintaining a second set of mount properties.
+Remote canonicalization uses `protected_repository_paths` with `remote_stage`,
+so declared paths and remote symlink targets receive the same refusal checks.
+An explicit shell completion marker distinguishes a shell exiting 255 from an
+SSH connection failure; exit 255 without completion reports the lost link and
+ends the session. RCP never reconnects into a replacement shell.
+
+Ending a mirrored remote session confirms that its unit stopped, through one
+explicit remote stop over a fresh connection. A stop that cannot be confirmed
+leaves the session record unfinished, so the next startup reconciles that unit
+instead of skipping it. A session whose SSH has already exited is confirmed the
+same way: the supervisor writes its completion marker before the cleanup that
+can still fail, and reports that failure only through an exit status a dropped
+link produces too, so neither says whether the unit went with the shell. Server
+shutdown skips the round trip and leaves the same unfinished record rather than
+waiting on the network.
+
+The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
+with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
+`BindReadOnlyPaths` plus `ReadOnlyPaths` for existing Git configuration and
+credentials. `ProtectSystem=strict` and a private temporary directory provide
+accident resistance to writes in the wrong place, not isolation from the
+service account. Before the interactive shell starts, the same launched profile
+checks that the checkout is writable and that every protected path exists,
+rejects writes, and reports a read-only effective mount through `findmnt`.
+The PTY owner requires this check's readiness marker; an active unit alone does
+not admit a session. Unsupported mount properties or failed verification refuse
+launch with the real diagnostic. There is no cooperative retry or downgrade.
+
+For mirrored sessions, canonical-state writes are refused through
+`agents/write_scope.py`'s shared `protected_repository_paths` construction,
+including declared and canonicalized `.research` paths for registered
+repositories on the execution machine. These paths receive read-only mounts
+even beneath the writable checkout. Absent protected directories receive read-only empty mounts so absence
+cannot turn a deny into write access. An overlapping or canonical-state
+repository root is refused. These filesystem-view restrictions provide accident
+resistance against corruption; the retained service identity does not prevent
+deliberate action by a member.
+
+Both backends preserve the repository working directory, `env -i` environment
+scrubbing, and shells without startup scripts or history persistence. Cooperative
+sessions apply no mount properties or mount preflight and explicitly report the
+missing canonical-state protection in the session payload and terminal view.
+
+A live Work turn in the same checkout is projected as a warning with its task
+identity and does not block opening a terminal. Git's index locking remains the
+ordinary collision mechanism. Terminals create no agent task, Patch, or research
+receipt.
+
 ## Task-engine ownership
 
 `BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,

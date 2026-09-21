@@ -13580,3 +13580,146 @@ details[open] > .view-disclosure-summary > svg:last-child {
   opacity: 0.75;
   font-size: 0.85em;
 }
+
+.terminals-layout {
+  display: grid;
+  gap: 18px;
+  min-height: 420px;
+}
+.terminals-layout.has-sessions {
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+}
+.terminal-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.terminal-repository {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 12px 24px;
+  padding: 16px;
+  text-align: left;
+}
+.terminal-repository-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.terminal-repository code,
+.terminal-active-heading code {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.terminal-unavailable {
+  color: var(--coral);
+}
+.terminal-repository:disabled {
+  opacity: 1;
+}
+.terminal-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: var(--sheet);
+}
+.terminal-session-row.selected {
+  border-color: var(--cobalt);
+  background: var(--cobalt-soft);
+}
+.terminal-session-select {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  border: 0;
+  padding: 4px;
+  background: none;
+  color: var(--walnut);
+  text-align: left;
+  cursor: pointer;
+}
+.terminal-session-state {
+  color: var(--teal);
+}
+.terminal-work-mark {
+  color: var(--forest);
+  font-weight: 600;
+}
+.terminal-active {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--sheet);
+}
+.terminal-active-heading,
+.terminal-work-strip,
+.terminal-connection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.terminal-protection-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--mustard);
+  background: var(--amber-soft);
+  color: var(--walnut);
+  font-size: 14px;
+}
+.terminal-protection-warning svg {
+  flex: none;
+}
+.terminal-work-strip {
+  background: var(--forest-soft);
+  color: var(--forest);
+}
+.terminal-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.terminal-emulator {
+  height: clamp(360px, 62vh, 850px);
+  min-width: 0;
+  padding: 12px;
+}
+/* xterm.css hardcodes an opaque black viewport and, since 6.0, no longer
+   overrides it from the theme. RCP owns this surface in both themes. */
+.terminal-emulator .xterm .xterm-viewport {
+  background-color: var(--sheet);
+}
+:root[data-theme="aqua"] .terminal-session-row {
+  background: var(--aqua-surface);
+  box-shadow: var(--aqua-raised);
+}
+:root[data-theme="aqua"] .terminal-session-row.selected {
+  background: var(--aqua-selected);
+  box-shadow: var(--aqua-inset);
+}
+@media (max-width: 700px) {
+  .terminals-layout.has-sessions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .terminal-rail {
+    max-height: 240px;
+    overflow-y: auto;
+  }
+}

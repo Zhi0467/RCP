@@ -7,7 +7,8 @@ authorization lineage. Runtime filesystem capability is specified separately in
 
 ## Product authority and machine authority
 
-RCP has two disjoint authority kinds, and neither can reach the other.
+RCP distinguishes product authorization from operating-system authority.
+A project member is trusted on the server that hosts their project.
 
 **Product authority** is everything below: authenticated members, agent
 profiles, task contracts, and project membership. It governs graph actions,
@@ -17,24 +18,35 @@ administrator product role, so no member token is more powerful than another.
 **Machine authority** is operating-system authority on the server host. It
 governs installing, updating, restoring, configuring machine credentials,
 provisioning a central checkout, and removing a member. Those operations live
-under `rcp server ...` and are reached only from a console or SSH session with
-the required OS account, never from a member session or an API route. A member
-token cannot perform any of them, and no product role grants them. One narrow,
-documented exception: signing a shared provider login in, verifying it, and
-signing it out are reachable from a member session, because a dead login
+under `rcp server ...`; their handlers require the appropriate OS identity and
+are not ordinary member API actions. A member terminal retains the service
+identity, including its access to that account's control socket. Separately,
+signing a shared provider login in, verifying it, and signing it out are
+reachable from a member session, because a dead login
 stops every member's work and RCP has no administrator; the action runs as the
 execution account, is attributed to the acting member, and is visible to every
 member.
 
-The separation is structural rather than cooperative. The backend runs under a
-dedicated operating-system account that owns its data directory and the
-singleton lock, so an ordinary shell on the lab machine cannot read the control
-plane, append to canonical history, or become the authority. A running-server
-CLI command never opens SQLite beside the lock owner; it uses that account's
-private control socket. `install`, `backup configure`, `restore`, and `update`
-additionally need root because they change accounts, `/etc`, systemd, or
-stopped-service state, and each drops back to the service account for ordinary
-source and data work.
+The service account owns its data directory, singleton lock, and private control
+socket. An unrelated operating-system account does not inherit that access.
+A member terminal, however, runs as the service account and inherits the Work
+turn's trust boundary: it is not isolated from that account's authority. Where supported, the
+mount namespace resists wrong-directory mistakes; it is not a security boundary
+against a deliberate member. Route membership gates which project terminal a
+member may open, not what the service identity could deliberately reach. This
+accepted gap follows the
+[member terminal decision](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md).
+Mirrored sessions mount canonical state read-only in the ordinary filesystem
+view using the shared protected-path construction. Cooperative sessions report
+that canonical-state protection is unavailable on the machine: there is no
+canonical-state filesystem fence. Neither kind of session is a graph-write
+channel.
+
+A running-server CLI command uses the private control socket instead of opening
+SQLite beside the lock owner. `install`, `backup configure`, `restore`, and
+`update` additionally need root because they change accounts, `/etc`, systemd,
+or stopped-service state, and each drops back to the service account for
+ordinary source and data work.
 
 Machine authority never substitutes for human product judgment. An operator with
 root cannot approve a Proposal, change project truth membership, or authorize an

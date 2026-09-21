@@ -849,7 +849,13 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
         "/declared/repo-a/.research",
         "/srv/repo-a/.research",
     ]
-    assert [writable for _paths, writable in stage.calls] == [True, False, False]
+    assert stage.calls[0][1] is True
+    assert all(not writable for _paths, writable in stage.calls[1:])
+    # Every declared canonical-state path is canonicalized in one call. With a
+    # remote stage each call is an SSH exec, so this count is the launch's
+    # round-trip budget and must not grow with the repository count.
+    assert len(stage.calls) == 3
+    assert stage.calls[-1][0] == ["/srv/repo-a/.research", "/declared/repo-a/.research"]
 
 
 @pytest.mark.parametrize(

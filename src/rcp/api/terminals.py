@@ -1,0 +1,329 @@
+"""Membership-gated transport for service-account member terminals."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from typing import Literal
+
+import anyio
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from rcp.api.dependencies import (
+    _api_services,
+    get_project_service,
+    require_project_membership,
+    require_project_write_admission,
+)
+from rcp.api.identity import mutation_origin_matches
+from rcp.api.terminal_projection import running_repository_work, terminal_session_payload
+from rcp.limits import (
+    TERMINAL_IO_CHUNK_BYTES,
+    TERMINAL_MAX_DIMENSION,
+    TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS,
+    TERMINAL_SWEEP_INTERVAL_SECONDS,
+)
+from rcp.server_ops.layout import remote_project_deploy_key_relative_path
+from rcp.terminals.git_access import terminal_git_access
+from rcp.terminals.models import DETACHED
+
+router = APIRouter()
+# 403 and 503 collide under any modulo of the status, so name them.
+_SOCKET_CLOSE_CODES = {401: 4401, 403: 4403, 404: 4404, 409: 4409, 503: 4503}
+# Taken as a value, not a bare dependency: it returns the canonical project id,
+# and a legacy URL alias must never reach membership checks or credential paths.
+_member = Depends(require_project_membership)
+
+
+class OpenTerminalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    repository_id: str = Field(min_length=1)
+
+
+class TerminalInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["input"]
+    data: str = Field(max_length=TERMINAL_IO_CHUNK_BYTES)
+
+
+class TerminalResize(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    type: Literal["resize"]
+    cols: int = Field(ge=1, le=TERMINAL_MAX_DIMENSION)
+    rows: int = Field(ge=1, le=TERMINAL_MAX_DIMENSION)
+
+
+@router.get("/api/projects/{project_id}/terminals/repositories")
+async def repositories(request: Request, project_id: str = _member) -> list[dict[str, object]]:
+    services = _api_services(request)
+    manifest = get_project_service(services.catalog, project_id).manifest
+    work = running_repository_work(services.store, project_id, manifest)
+    capabilities = {}
+    for machine in manifest.machines:
+        probe = services.terminals.probes.get(machine) if machine.host else None
+        capabilities[machine.alias] = await services.terminals.capability(machine, probe)
+    result = []
+    for repository in manifest.repositories:
+        capability = capabilities[repository.machine]
+        backend = capability.backend
+        result.append(
+            {
+                "repository_id": repository.alias,
+                "machine_id": repository.machine,
+                "path": repository.path,
+                "eligible": backend is not None,
+                "probe_state": capability.probe_state
+                if manifest.machine_map[repository.machine].host
+                else None,
+                "os_name": capability.os_name,
+                "backend_id": backend.id if backend else None,
+                "backend_name": backend.display_name if backend else None,
+                "containment": capability.containment,
+                "reason": capability.reason,
+                "unavailable_reason": capability.reason if backend is None else None,
+                "running_work": work[repository.alias],
+            }
+        )
+    return result
+
+
+@router.post("/api/projects/{project_id}/terminals/probe")
+async def refresh_probes(request: Request, project_id: str = _member) -> list[dict[str, object]]:
+    services = _api_services(request)
+    manifest = get_project_service(services.catalog, project_id).manifest
+    for machine in manifest.machines:
+        if machine.host:
+            services.terminals.probes.invalidate(machine)
+    # Refresh is the one place a member asks for a fresh answer, so the
+    # local capability is re-read here too rather than on every poll.
+    services.terminals.invalidate_local_capability()
+    return await repositories(request, project_id)
+
+
+@router.get("/api/projects/{project_id}/terminals")
+async def sessions(request: Request, project_id: str = _member) -> list[dict[str, object]]:
+    services = _api_services(request)
+    manifest = get_project_service(services.catalog, project_id).manifest
+    # This is the polling projection every member watches, so it is where a
+    # repointed or unregistered alias is noticed. A session it kept listing
+    # would also keep hiding the control that replaces it.
+    await services.terminals.reconcile_registrations(project_id, manifest)
+    work = running_repository_work(services.store, project_id, manifest)
+    return [
+        terminal_session_payload(session, work) for session in services.terminals.list(project_id)
+    ]
+
+
+@router.post(
+    "/api/projects/{project_id}/terminals",
+    dependencies=[Depends(require_project_membership), Depends(require_project_write_admission)],
+)
+async def open_session(
+    body: OpenTerminalRequest, request: Request, project_id: str = _member
+) -> dict[str, object]:
+    services = _api_services(request)
+    manifest = get_project_service(services.catalog, project_id).manifest
+    member = services.identity_access.acting_user(request)
+    # Before the 404 and before every launch prerequisite: all of them belong
+    # to what the alias names now, and any of them answering first would leave
+    # a shell listed and attachable on the checkout it has stopped naming.
+    # Only this alias: the answer is about it, and the polling list settles
+    # the rest without making this request wait on their machines. A stop that
+    # fails retains the session for retry, which is an operational failure and
+    # not a fault in this request.
+    try:
+        await services.terminals.retire_repointed(project_id, manifest, body.repository_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if body.repository_id not in manifest.repository_map:
+        raise HTTPException(404, "Repository not found")
+    work = running_repository_work(services.store, project_id, manifest)
+    for session in services.terminals.list(project_id):
+        if session.repository_id == body.repository_id:
+            # Registrations were just settled, so a session still listed here
+            # is one its alias still names. Open-or-return-existing: it must
+            # not be withheld because a later probe refresh or inventory read
+            # failed. Those gate a launch, not handing back what is running.
+            return terminal_session_payload(session, work)
+    repository = manifest.repository_map[body.repository_id]
+    machine = manifest.machine_map[repository.machine]
+    probe = await services.terminals.probes.ensure(machine) if machine.host else None
+    capability = await services.terminals.capability(machine, probe)
+    if capability.backend is None:
+        raise HTTPException(409, capability.reason)
+    try:
+        try:
+            inventory = await asyncio.to_thread(services.catalog.repository_ownership_inventory)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                503, "Cannot establish repository ownership; a registered project is unavailable."
+            ) from exc
+        key = (
+            request.app.state.server_layout.project_deploy_key_path(project_id, body.repository_id)
+            if services.store.space_kind == "team"
+            else None
+        )
+        paths, environment = ((), {}) if machine.host else terminal_git_access(key)
+        # A remote team checkout authenticates with its provisioned deploy key,
+        # which lives under the far account's home. Only that side knows the
+        # home, so send the path relative to it.
+        remote_key_relative = (
+            str(remote_project_deploy_key_relative_path(project_id, body.repository_id))
+            if machine.host and services.store.space_kind == "team"
+            else None
+        )
+        session = await services.terminals.open(
+            project_id=project_id,
+            member_id=member.user_id,
+            manifest=manifest,
+            repository_alias=body.repository_id,
+            repository_inventory=inventory,
+            git_read_paths=paths,
+            git_environment=environment,
+            remote_git_key_relative=remote_key_relative,
+        )
+    except PermissionError as exc:
+        # PermissionError is an OSError; catching it second would report a
+        # lost membership as a server fault instead of an unknown project.
+        raise HTTPException(404, "Project not found") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return terminal_session_payload(
+        session, running_repository_work(services.store, project_id, manifest)
+    )
+
+
+@router.delete("/api/projects/{project_id}/terminals/{session_id}")
+async def end_session(
+    session_id: str, request: Request, project_id: str = _member
+) -> dict[str, bool]:
+    try:
+        await _api_services(request).terminals.end(project_id, session_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Terminal not found") from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"ended": True}
+
+
+def _socket_request(websocket: WebSocket) -> Request:
+    # IdentityAccess uses cookies, headers and state; HTTP middleware never runs
+    # for an upgraded connection. Fresh state prevents caching a revoked member.
+    return Request(
+        {
+            **websocket.scope,
+            "type": "http",
+            "method": "GET",
+            "scheme": "https" if websocket.url.scheme == "wss" else "http",
+            "state": {},
+        }
+    )
+
+
+def _admit_socket(websocket: WebSocket, project_id: str) -> str:
+    request = _socket_request(websocket)
+    origin = request.headers.get("origin")
+    if origin is None or not mutation_origin_matches(request, origin):
+        raise HTTPException(403, "Terminal origin does not match this server.")
+    canonical = require_project_membership(project_id, request)
+    if request.app.state.runtime_admission_gate.closed:
+        raise HTTPException(503, "Server maintenance is in progress.")
+    return canonical
+
+
+@router.websocket("/api/projects/{project_id}/terminals/{session_id}/ws")
+async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str) -> None:
+    manager = websocket.app.state.services.terminals
+    try:
+        project_id = _admit_socket(websocket, project_id)
+        # A socket is reached by id, not through the listing, so it settles
+        # registrations itself rather than trusting that a poll already has.
+        manifest = get_project_service(websocket.app.state.services.catalog, project_id).manifest
+        await manager.reconcile_registrations(project_id, manifest)
+        session = manager.get(project_id, session_id)
+    except HTTPException as exc:
+        await websocket.close(code=_SOCKET_CLOSE_CODES.get(exc.status_code, 4400))
+        return
+    except KeyError:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    try:
+        queue = manager.attach(project_id, session_id)
+    except KeyError:
+        await websocket.close(code=4404)
+        return
+
+    async def receive_input() -> None:
+        while True:
+            payload = await websocket.receive_json()
+            _admit_socket(websocket, project_id)
+            if isinstance(payload, dict) and payload.get("type") == "input":
+                message = TerminalInput.model_validate(payload)
+                await manager.write(project_id, session_id, message.data.encode("utf-8"))
+            else:
+                dimensions = TerminalResize.model_validate(payload)
+                manager.resize(project_id, session_id, dimensions.cols, dimensions.rows)
+
+    async def send_output() -> None:
+        checked = 0.0
+        while True:
+            data = await queue.get()
+            # Admission is a synchronous store read, so rechecking it per chunk
+            # costs hundreds of reads a second on the event loop at full PTY
+            # throughput. Rechecking on a short interval bounds what a revoked
+            # viewer can still receive without paying that per chunk.
+            now = asyncio.get_running_loop().time()
+            if now - checked >= TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS:
+                _admit_socket(websocket, project_id)
+                checked = now
+            if data is DETACHED:
+                await websocket.send_json(
+                    {
+                        "type": "detached",
+                        "reason": "Output fell behind; reconnect to keep watching.",
+                    }
+                )
+                return
+            if data is None:
+                await websocket.send_json(
+                    {
+                        "type": "ended",
+                        "reason": (
+                            "SSH link dropped; terminal session ended."
+                            if session.termination_reason == "link_dropped"
+                            else "Terminal session ended."
+                        ),
+                    }
+                )
+                return
+            await websocket.send_bytes(data)
+
+    async def watch_admission() -> None:
+        while True:
+            await asyncio.sleep(TERMINAL_SWEEP_INTERVAL_SECONDS)
+            _admit_socket(websocket, project_id)
+
+    tasks = [
+        asyncio.create_task(action()) for action in (receive_input, send_output, watch_admission)
+    ]
+    close_code = 1000
+    try:
+        completed, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in completed:
+            task.result()
+    except HTTPException as exc:
+        close_code = _SOCKET_CLOSE_CODES.get(exc.status_code, 4400)
+    except (ValueError, ValidationError, KeyError, OSError):
+        close_code = 1008
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
+    finally:
+        manager.detach(project_id, session_id, queue)
+        for task in tasks:
+            task.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.gather(*tasks, return_exceptions=True)
+            with suppress(RuntimeError, WebSocketDisconnect):
+                await websocket.close(code=close_code)

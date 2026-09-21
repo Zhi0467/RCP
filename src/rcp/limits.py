@@ -336,3 +336,39 @@ PROVIDER_CLAUDE_TOKEN_ESTIMATED_LIFETIME_DAYS = 335
 
 # A minimal authenticated sign-in request can outlast a metadata probe.
 PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS = 60
+
+# Member terminal lifetime and bounded in-memory transport; no byte log is stored.
+TERMINAL_IDLE_TIMEOUT_SECONDS = 30 * 60
+TERMINAL_SWEEP_INTERVAL_SECONDS = 5.0
+# Output admission is rechecked on this interval rather than per PTY chunk.
+TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS = 1.0
+TERMINAL_LAUNCH_TIMEOUT_SECONDS = 15.0
+TERMINAL_PROBE_TIMEOUT_SECONDS = 30.0
+TERMINAL_PROBE_COMMAND_TIMEOUT_SECONDS = 5.0
+TERMINAL_PROBE_WORKERS = 4
+# Probes run on their own threads, not the interpreter's shared default pool,
+# which the rest of the application uses for every other blocking call. A probe
+# cannot be stopped once it is in its thread, so one abandoned by a refresh
+# runs out its own timeout above; on the shared pool a burst of refreshes
+# against unreachable machines could therefore hold up unrelated work. This
+# bounds what probes can hold, with room above the admitted count for the ones
+# a burst abandons, so the newest answer still finds a thread.
+TERMINAL_PROBE_THREADS = 16
+TERMINAL_STOP_TIMEOUT_SECONDS = 5.0
+# Stops run on their own threads, not the interpreter's shared default pool,
+# which the rest of the application uses for every other blocking call. Ending
+# a project's worth of shells at once is only as concurrent as the pool it runs
+# on, and a stop against a machine that has gone spends its own timeout while
+# its caller holds the instance lock. This admits a realistic project's worth
+# at once; beyond it they still queue, but never behind unrelated work.
+TERMINAL_STOP_THREADS = 32
+# Startup reconciles every record at once, but their stops run in a shared
+# thread pool, so enough unreachable records still queue into timeout-sized
+# batches. This bounds what they can cost the boot; whatever has not finished
+# keeps its record and blocks its repository, and a later attempt retries it.
+TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS = 30.0
+TERMINAL_POLL_INTERVAL_SECONDS = 0.05
+TERMINAL_OUTPUT_BUFFER_BYTES = 256 * 1024
+TERMINAL_SUBSCRIBER_QUEUE_SIZE = 64
+TERMINAL_IO_CHUNK_BYTES = 16 * 1024
+TERMINAL_MAX_DIMENSION = 1000

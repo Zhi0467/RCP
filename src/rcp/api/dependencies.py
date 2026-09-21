@@ -23,6 +23,7 @@ from rcp.server_runtime import ServerMetadata
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import AppStore, SpaceKind
+from rcp.terminals import TerminalManager
 from rcp.watchers import WatcherDelivery, WatcherPoller
 
 
@@ -70,6 +71,7 @@ class ApiServices:
     provider_credentials: ProviderCredentialStore
     provider_sign_ins: ProviderSignInRunner
     episode_reconciliation: Callable[[], int]
+    terminals: TerminalManager
 
 
 def _api_services(request: Request) -> ApiServices:

@@ -52,6 +52,8 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
         "session-slices",
         "source-cache",
         "state-cache",
+        # Member terminal scratch is per-session; a transfer must not carry it.
+        "terminals",
     }
 )
 TRANSFER_RESEARCH_PROVENANCE_ROOTS = frozenset({"manifest.toml"})

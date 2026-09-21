@@ -323,23 +323,12 @@ def resolve_project_write_scope(
             for root in roots
         )
 
-    state_repository = manifest.repository_map[manifest.state.repository]
-    state_research_declared = str(PurePosixPath(state_repository.path) / ".research")
-    protected = [str(PurePosixPath(item.path) / ".research") for item in repository_roots]
-    protected.extend(explicit_protected)
-    protected.extend(canonical[path] for path in explicit_protected)
-    try:
-        state_canonical, _unused_home = _canonical_directories(
-            [state_research_declared],
-            remote_stage=remote_stage,
-            require_writable=False,
-        )
-    except (OSError, ValueError):
-        # The canonical state directory may be temporarily unavailable during a
-        # degraded read. Its lexical path still remains an explicit write deny.
-        protected.append(state_research_declared)
-    else:
-        protected.extend([state_research_declared, state_canonical[state_research_declared]])
+    protected = protected_repository_paths(
+        manifest=manifest,
+        repository_roots=[item.path for item in repository_roots],
+        remote_stage=remote_stage,
+        additional_paths=[*explicit_protected, *(canonical[path] for path in explicit_protected)],
+    )
 
     return ProjectWriteScope.create(
         project_id=project_id,
@@ -352,6 +341,42 @@ def resolve_project_write_scope(
         git_metadata_roots=[binding.git_common_dir] if binding else [],
         protected_write_paths=protected,
     )
+
+
+def protected_repository_paths(
+    *,
+    manifest: Manifest,
+    repository_roots: list[str],
+    remote_stage: RemoteRunStage | None = None,
+    additional_paths: list[str] | None = None,
+) -> list[str]:
+    """Canonical-state write denies shared by Work and member terminals."""
+    state_repository = manifest.repository_map[manifest.state.repository]
+    declared = [str(PurePosixPath(root) / ".research") for root in repository_roots]
+    declared.append(str(PurePosixPath(state_repository.path) / ".research"))
+    protected = [*declared, *(additional_paths or [])]
+    unique = list(dict.fromkeys(declared))
+    # One call, not one per repository: with a remote stage each call is an SSH
+    # exec, so a project with several repositories otherwise pays a round trip
+    # per repository on every launch.
+    try:
+        canonical, _home = _canonical_directories(
+            unique, remote_stage=remote_stage, require_writable=False
+        )
+        protected.extend(canonical[path] for path in unique)
+    except (OSError, ValueError):
+        # One unavailable state directory must not discard the others, so fall
+        # back to resolving each on its own. An unresolved path keeps its
+        # lexical write deny.
+        for path in unique:
+            try:
+                resolved, _home = _canonical_directories(
+                    [path], remote_stage=remote_stage, require_writable=False
+                )
+            except (OSError, ValueError):
+                continue
+            protected.append(resolved[path])
+    return sorted(set(protected))
 
 
 def registered_repository_roots(

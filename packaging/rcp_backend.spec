@@ -18,6 +18,10 @@ REMOTE_READ_KEPT_VIEW = TRANSPORT_ROOT / "remote_read_kept_view.py"
 REMOTE_TRANSFER_GIT = TRANSPORT_ROOT / "remote_transfer_git.py"
 CONVERSATION_WORKTREE = TRANSPORT_ROOT / "conversation_worktree.py"
 REMOTE_TERMINATE_PROVIDER = TRANSPORT_ROOT / "remote_terminate_provider.py"
+REMOTE_TERMINAL = TRANSPORT_ROOT / "remote_terminal.py"
+REMOTE_TERMINAL_PROBE = TRANSPORT_ROOT / "remote_terminal_probe.py"
+TERMINAL_PROFILE = SOURCE_ROOT / "rcp" / "terminals" / "profile.py"
+TERMINAL_GIT_ACCESS = SOURCE_ROOT / "rcp" / "terminals" / "git_access.py"
 SKILL_ROOT = SOURCE_ROOT / "rcp" / "skills"
 SKILL_GRAPH_AUDIT = SKILL_ROOT / "graph-audit"
 SKILL_EVIDENCE_TRIAGE = SKILL_ROOT / "evidence-triage"
@@ -46,6 +50,10 @@ analysis = Analysis(
         (str(REMOTE_TRANSFER_GIT), "rcp/transport"),
         (str(CONVERSATION_WORKTREE), "rcp/transport"),
         (str(REMOTE_TERMINATE_PROVIDER), "rcp/transport"),
+        (str(REMOTE_TERMINAL), "rcp/transport"),
+        (str(REMOTE_TERMINAL_PROBE), "rcp/transport"),
+        (str(TERMINAL_PROFILE), "rcp/terminals"),
+        (str(TERMINAL_GIT_ACCESS), "rcp/terminals"),
         (str(SKILL_GRAPH_AUDIT), "rcp/skills/graph-audit"),
         (str(SKILL_EVIDENCE_TRIAGE), "rcp/skills/evidence-triage"),
         (str(SKILL_EXPERIMENT_CAUSALITY), "rcp/skills/experiment-causality"),

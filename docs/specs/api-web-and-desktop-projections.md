@@ -5,6 +5,67 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Member terminal API
+
+The project-scoped terminal routes are:
+
+- `GET /api/projects/{project_id}/terminals/repositories`: repository alias,
+  starting path, per-machine capability, and running Work identities.
+- `GET /api/projects/{project_id}/terminals`: open sessions and live/idle state.
+- `POST /api/projects/{project_id}/terminals/probe`: invalidate this project's
+  machine probes and schedule fresh results.
+- `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
+  the single existing session for that repository and project.
+- `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
+- `WS /api/projects/{project_id}/terminals/{session_id}/ws`: binary PTY output,
+  JSON `input` (`data`) and `resize` (`cols`, `rows`) messages, and a JSON `ended`
+  notification.
+
+Every HTTP route checks project membership. The WebSocket performs its own
+identity, project membership, same-origin, and maintenance admission because
+HTTP middleware does not cover upgrades. It rechecks before every input, on a
+short interval before output, and periodically while connected; cookie
+revocation and loss of membership close the connection. Output is rechecked on
+an interval rather than per frame because the check is a synchronous store read
+and a PTY can produce hundreds of frames a second. Unknown and nonmember projects remain indistinguishable.
+
+Repository rows retain `eligible` and `unavailable_reason` and include
+`machine_id`, `backend_id`, `backend_name`, `containment`, `os_name`,
+`probe_state`, and a `reason` for every outcome. Available machines report `mirrored` or `cooperative`; unavailable
+machines have null `containment`. The reason names the applicable launch
+capability, missing canonical-state protection, or failed prerequisite. Remote
+probe states distinguish `pending`, `reachable`, `incapable`, `unreachable`,
+`authentication_failed`, and `host_key_failed`. A cold projection schedules one
+probe per machine and returns pending immediately; repositories reuse the cached
+result without an SSH round trip per row. The cache lives with the terminal
+manager and is invalidated explicitly by Refresh or by changed machine metadata.
+Space kind does not participate in eligibility. The projection and open guard use the same
+per-machine capability resolution; a later mirrored launch failure remains a
+hard failure with its real diagnostic, never a cooperative session.
+
+Session payloads carry `containment` and `protection_notice`. A cooperative
+session explicitly reports that canonical-state protection is unavailable on
+this machine. The Terminals destination appears when any machine can host a
+session, and whenever the project has an open one, because the destination is
+the only way back to a running shell and the only way to end it. Remote pending
+and failed probes also keep the destination visible so members can read the
+reason and refresh it. Empty projects and projects with only unavailable local
+machines and no open session hide it. Repository controls show unavailable rows
+with their reasons. A lost SSH link produces an `ended` reason, removes the
+session from the open list, and leaves the diagnostic visible without offering
+to reconnect into a new shell. That diagnostic belongs to the open destination
+and survives a refresh there, not a departure from it: the session projection
+carries open sessions only, so a link that drops while the member is elsewhere
+leaves the reason in the persisted record rather than on their screen.
+
+The shell runs as the service account with the Work trust boundary. A mirrored
+session's mount namespace provides accident resistance to mistakes; it does not
+isolate a member from that account.
+Per-machine capability and canonical-path refusal are owned by
+[Providers and containment](providers-and-containment.md#member-terminals);
+session expiry and metadata are owned by
+[Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
+
 ## API composition and mutation boundary
 
 One FastAPI backend serves the JSON API and, when built, the React/Vite

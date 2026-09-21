@@ -7,6 +7,7 @@ export type AppView =
   | "dag"
   | "execution"
   | "artifacts"
+  | "terminals"
   | "paper"
   | "settings"
   | "chats";
@@ -2855,4 +2856,41 @@ export interface ProviderLoginAccount extends ProviderLoginState {
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
 export interface ProviderResumeSummary {
   checked: number;
+}
+
+export interface TerminalWorkTurn {
+  operation_id: string;
+  title: string;
+}
+
+export interface TerminalRepository {
+  probe_state:
+    | "pending"
+    | "reachable"
+    | "incapable"
+    | "unreachable"
+    | "authentication_failed"
+    | "host_key_failed"
+    | null;
+  os_name: string | null;
+  repository_id: string;
+  machine_id: string;
+  backend_id: string | null;
+  backend_name: string | null;
+  containment: "mirrored" | "cooperative" | null;
+  reason: string;
+  path: string;
+  eligible: boolean;
+  unavailable_reason: string | null;
+  running_work: TerminalWorkTurn[];
+}
+
+export interface TerminalSession {
+  session_id: string;
+  containment: "mirrored" | "cooperative";
+  protection_notice: string | null;
+  repository_id: string;
+  path: string;
+  state: "live" | "idle";
+  running_work: TerminalWorkTurn[];
 }

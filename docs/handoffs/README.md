@@ -12,6 +12,18 @@ Active:
   requirement, and whether a value is pasted or only compared. Driving the
   panel from the desktop app, so the sign-in line comes from a real saved
   operator route rather than its fixture, remains.
+- [A terminal in a project, fenced to its repositories](handoff-2026-09-19-a-terminal-fenced-to-its-project.md)
+  — design confirmed 2026-09-19; the manager, routes, WebSocket, Terminals
+  destination, per-machine capability, PTY-over-SSH, and their tests are
+  implemented on one pull request. Its trust boundary is settled in
+  [a decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md):
+  the terminal inherits the Work turn's boundary rather than isolating from the
+  service account, so it must never describe itself as containment, and
+  canonical state stays refused wherever the OS can refuse it. The Linux merge
+  qualification passed on 2026-09-20: real mounts, interactive Git with the
+  account's key, PTY resize, orphan cleanup, and a restart with an
+  unreachable-host record. Remaining: the closure journey driven from the
+  Terminals destination, and one team-space run where Git uses the deploy key.
 
 - [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
   — design confirmed 2026-09-14 and revised after an xhigh review; all six
