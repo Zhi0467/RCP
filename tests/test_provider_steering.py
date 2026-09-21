@@ -485,13 +485,15 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
     monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
     stops = []
 
-    def stop(host, pid_file):
+    def stop(host, pid_file, **_kwargs):
         stops.append((host, pid_file))
         return stop_confirmed
 
     monkeypatch.setattr(AgentProcessControl, "_terminate_remote", staticmethod(stop))
     monkeypatch.setattr(
-        AgentProcessControl, "remote_stopped", staticmethod(lambda *args: stop_confirmed)
+        AgentProcessControl,
+        "remote_stopped",
+        staticmethod(lambda *_args, **_kwargs: stop_confirmed),
     )
     control = AgentProcessControl()
 
