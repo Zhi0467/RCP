@@ -221,7 +221,10 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
         assert actions.count("launch") == 1
         assert not any(event.event == "runtime_fallback" for event in events)
         assert events[-1].event == "error"
+        # The blocked fallback is the consequence; the launch failure is the
+        # cause, and the human needs to be told the cause.
         assert "fallback is blocked" in events[-1].text
+        assert "closed its provider runtime before accepting the turn" in events[-1].text
 
 
 @pytest.mark.asyncio
@@ -313,6 +316,7 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
     """A lost SSH process is not permission to kill or repeat accepted work."""
 
     from rcp.providers import profile_for
+    from rcp.transport.state import _remote_turn_supervisor_script
 
     monkeypatch.setattr(
         transported_launcher,
@@ -324,6 +328,8 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
         ],
     )
     pid_file = str(tmp_path / "agent.pid")
+    supervisor = tmp_path / "supervisor.py"
+    supervisor.write_text(_remote_turn_supervisor_script(), encoding="utf-8")
     events = [
         event
         async for event in transported_launcher.stream(
@@ -335,6 +341,7 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
             remote_pid_file=pid_file,
             runtime_id=profile_for("codex").legacy_runtime_id,
             supervise_remote=True,
+            supervisor_path=str(supervisor),
         )
     ]
 

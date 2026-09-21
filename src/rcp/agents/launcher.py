@@ -62,7 +62,7 @@ from rcp.providers import (
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import StateUnreachable, _remote_script, _remote_turn_supervisor_script
+from rcp.transport.state import StateUnreachable, _remote_script
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +221,7 @@ class AgentEvent(BaseModel):
 def _supervised_remote_turn_command(
     command: list[str],
     *,
+    supervisor_path: str,
     pid_file: str,
     provider: str,
     runtime_id: str,
@@ -234,8 +235,7 @@ def _supervised_remote_turn_command(
 
     wrapped = [
         "python3",
-        "-c",
-        _remote_turn_supervisor_script(),
+        supervisor_path,
         "--pid-file",
         pid_file,
         "--provider",
@@ -1065,6 +1065,7 @@ class AgentLauncher:
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        supervisor_path: str | None = None,
         operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
@@ -1104,6 +1105,7 @@ class AgentLauncher:
                         runtime_id=runtime.id,
                         before_start=before_start,
                         supervise_remote=supervise_remote,
+                        supervisor_path=supervisor_path,
                         operation_id=operation_id,
                     )
                 ) as stream:
@@ -1149,6 +1151,7 @@ class AgentLauncher:
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        supervisor_path: str | None = None,
         operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
@@ -1255,8 +1258,11 @@ class AgentLauncher:
         if supervise_remote:
             if not host or remote_pid_file is None:
                 raise ValueError("A supervised provider turn requires a remote pidfile.")
+            if not supervisor_path:
+                raise ValueError("A supervised provider turn requires its staged supervisor.")
             command = _supervised_remote_turn_command(
                 command,
+                supervisor_path=supervisor_path,
                 pid_file=remote_pid_file,
                 provider=provider,
                 runtime_id=runtime.id,
@@ -1606,12 +1612,6 @@ class AgentLauncher:
             if not prompt_delivered and not (
                 control is not None and control.pause_requested.is_set()
             ):
-                if completion_stop_failed:
-                    yield AgentEvent(
-                        event="error",
-                        text="RCP could not confirm that the remote provider process stopped. Runtime fallback is blocked.",
-                    )
-                    return
                 detail = (
                     pre_prompt_error
                     or stderr
@@ -1621,6 +1621,22 @@ class AgentLauncher:
                         else f"{provider} closed its provider runtime before accepting the turn."
                     )
                 )
+                if completion_stop_failed:
+                    # Why the launch failed is the human's first question, and
+                    # this branch used to answer a second one instead. The stop
+                    # RCP could not confirm is why no other runtime may follow;
+                    # it is not what went wrong.
+                    yield AgentEvent(
+                        event="error",
+                        text="\n".join(
+                            (
+                                detail,
+                                "RCP could not confirm that the remote provider process "
+                                "stopped, so runtime fallback is blocked.",
+                            )
+                        ),
+                    )
+                    return
                 raise _PrePromptRuntimeFailure(detail)
             paused = control is not None and control.pause_requested.is_set()
             turn_failed = bool(

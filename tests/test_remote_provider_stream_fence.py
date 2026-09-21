@@ -20,6 +20,12 @@ class _Stage:
     def finalize_inputs(self):
         pass
 
+    def read_input_text(self, label):
+        raise ValueError(label)
+
+    def put_file(self, source, label):
+        return str(self.root / "inputs" / label)
+
     def list_workspace_files(self):
         return []
 

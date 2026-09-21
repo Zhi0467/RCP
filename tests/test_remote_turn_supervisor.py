@@ -411,3 +411,34 @@ def test_a_flood_of_watcher_outputs_is_an_incomplete_turn(tmp_path, bound) -> No
     # No partial set is left claiming to be what the pass produced.
     assert outcome["experiment_watch_snapshotted"] is False
     assert outcome["experiment_watch_sha256"] == {}
+
+
+def test_supervised_launch_ships_the_supervisor_as_a_staged_file():
+    """The supervisor travels as a path, never as a command-line argument.
+
+    An SSH multiplexing master cannot carry an argument this large: the client
+    fills the control socket with the command and then fails passing the
+    process's own file descriptors, so the launch dies before the execution
+    host runs anything at all.
+    """
+
+    from rcp.agents.launcher import _supervised_remote_turn_command
+    from rcp.transport.state import _remote_turn_supervisor_script
+
+    source = _remote_turn_supervisor_script()
+    command = _supervised_remote_turn_command(
+        ["codex", "app-server", "--stdio"],
+        supervisor_path="/stage/inputs/rcp-turn-supervisor-0123456789abcdef.py",
+        pid_file="/stage/agent.pid",
+        provider="codex",
+        runtime_id="codex.app-server-stdio.v1",
+        provider_version=None,
+        patch_path="/stage/workspace/patch.json",
+        watch_path="/stage/workspace/watch.json",
+        experiment_watch_glob="/stage/workspace/experiment-watch-*.json",
+        close_input_after_initial=False,
+    )
+
+    assert "/stage/inputs/rcp-turn-supervisor-0123456789abcdef.py" in command
+    assert not any(source in argument for argument in command)
+    assert len(" ".join(command)) < len(source)

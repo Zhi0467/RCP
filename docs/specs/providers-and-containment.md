@@ -857,12 +857,17 @@ the turn, and recovering one is not a new turn: the pass belongs to the operatio
 that opened it and is finalized on that same operation, under the authority,
 graph target, episode and accounting identity it already had.
 
-A supervised pass is journalled on its execution host. The supervisor forwards
-output while recording it, and writes its acceptance of the prompt before a byte
-of it reaches the provider. That host-written acceptance, never the presence of a
-receipt in RCP's own database, is what says work may have begun: a controller
-that died in that window has no receipt of its own, and its silence is not the
-host's answer.
+A supervised pass is journalled on its execution host. Its source travels as a
+staged run input and the launch names that path, because a command large enough
+to carry the source cannot reach an SSH multiplexing master: the client fills the
+control socket with the command and then fails passing the process's own file
+descriptors, so the launch dies before the host runs anything. A supervised
+launch without that staged path is refused rather than sent. The supervisor
+forwards output while recording it, and writes its acceptance of the prompt
+before a byte of it reaches the provider. That host-written acceptance, never
+the presence of a receipt in RCP's own database, is what says work may have
+begun: a controller that died in that window has no receipt of its own, and its
+silence is not the host's answer.
 
 The supervisor publishes no verdict. It decides only where the turn ends, which a
 persistent server makes unavoidable, and hands over its bytes. What the turn was
