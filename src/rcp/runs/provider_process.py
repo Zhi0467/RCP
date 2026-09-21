@@ -11,9 +11,14 @@ if TYPE_CHECKING:
 
 
 def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
-    """A task status or SSH exit is never a substitute for remote process absence."""
+    """A task status or SSH exit is never a substitute for remote process absence.
+
+    A host the probe cannot reach raises `StateUnavailable`, the typed word for
+    a lost link, so the task this fails is classified as transport loss rather
+    than as an ordinary failure a reattempt could never fix.
+    """
     for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
-        stopped = AgentProcessControl.remote_stopped(host, pid_file)
+        stopped = AgentProcessControl.remote_stopped(host, pid_file, raise_unreachable=True)
         if stopped is not True:
             reason = (
                 "A previous provider call is still running"

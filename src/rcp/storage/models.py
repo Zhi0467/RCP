@@ -86,6 +86,10 @@ class AgentTaskAdmissionConflict(ValueError):
     """A valid task request conflicts with already-admitted operational work."""
 
 
+class AgentTaskAlreadyContinued(AgentTaskAdmissionConflict):
+    """Another resume, retry, or handoff already continues the task this one follows."""
+
+
 class ProjectActiveTaskConflict(ValueError):
     """A project mutation is fenced by one of its active tasks."""
 
@@ -3707,6 +3711,7 @@ __all__ = [
     "ArtifactRevisionCandidateStatus",
     "ArtifactRevisionConflict",
     "AgentTaskAdmissionConflict",
+    "AgentTaskAlreadyContinued",
     "ACTIVE_AGENT_TASK_STATUSES",
     "AGENT_TASK_TRANSITIONS",
     "AgentCommandInvocationRecord",

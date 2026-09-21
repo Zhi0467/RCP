@@ -41,6 +41,34 @@ def test_lost_connection_is_worth_another_attempt() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("host", "link_lost", "expected"),
+    [
+        ("gpu.example.edu", True, "transport_lost"),
+        ("gpu.example.edu", False, None),
+        ("", True, None),
+    ],
+)
+def test_a_link_lost_before_the_provider_started_has_no_code_to_read(
+    host: str, link_lost: bool, expected: str | None
+) -> None:
+    """The readiness probe, the previous-pass check, and the input transfer all
+    fail a turn before any provider process exists. Only their typed word can
+    name the lost link then; the error text never does."""
+
+    assert (
+        classify_agent_failure(
+            error=f"{host or 'laptop'} is unreachable, so codex could not be checked.",
+            return_code=None,
+            host=host,
+            profile=CODEX,
+            provider_spoke_for_itself=False,
+            link_lost_before_provider=link_lost,
+        )
+        == expected
+    )
+
+
 def test_revoked_login_is_named_even_when_it_exits_like_a_dropped_link() -> None:
     """The provider's own diagnostic is more specific than an exit code, and a
     revoked login retried forever never recovers."""

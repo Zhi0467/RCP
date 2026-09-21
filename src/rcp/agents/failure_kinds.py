@@ -25,8 +25,14 @@ def classify_agent_failure(
     host: str,
     profile: ProviderProfile | None,
     provider_spoke_for_itself: bool,
+    link_lost_before_provider: bool = False,
 ) -> AgentFailureKind | None:
-    """Name one provider failure so recovery can offer the right next step."""
+    """Name one provider failure so recovery can offer the right next step.
+
+    `link_lost_before_provider` is the typed word of a probe or stage read that
+    could not reach the execution host before any provider process existed:
+    there is no exit code to read, and the error text is the only other witness.
+    """
 
     # The provider's own diagnostic is more specific than an exit code, and a
     # revoked login can still exit the way a dropped link does.
@@ -40,5 +46,10 @@ def classify_agent_failure(
     if provider_spoke_for_itself:
         return None
     if transport_failure(return_code, host):
+        return "transport_lost"
+    # The readiness probe, the previous-pass check, and the input transfer all
+    # run over SSH before the provider starts. A link that drops there fails
+    # the task with no process to report a code, and the work did not run.
+    if return_code is None and link_lost_before_provider and host:
         return "transport_lost"
     return None

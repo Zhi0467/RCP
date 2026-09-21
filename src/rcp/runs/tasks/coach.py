@@ -307,6 +307,7 @@ async def stream_coach(
             control=execution.control if execution is not None else None,
             binary=provider_binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
+            operation_id=execution.operation_id if execution is not None else None,
         )
     ) as stream:
         async for event in stream:

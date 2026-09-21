@@ -720,6 +720,10 @@ async def _stream_agent_events(
                 )
             await asyncio.to_thread(remote_stage.finalize_inputs)
         except (OSError, StateUnavailable, ValueError) as exc:
+            # No provider process will report a code for this turn, so this
+            # typed failure is the only thing classification can read.
+            if isinstance(exc, StateUnavailable) and execution is not None:
+                execution.stage_unreachable = True
             outcome.failed = True
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -764,6 +768,7 @@ async def _stream_agent_events(
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
             supervise_remote=supervise_remote,
+            operation_id=execution.operation_id if execution is not None else None,
         )
     ) as stream:
         async for event in stream:
@@ -860,6 +865,8 @@ async def _stream_agent_events(
                 continue
             if event.event == "error":
                 outcome.failed = True
+                if event.failure_kind == "transport_lost" and execution is not None:
+                    execution.stage_unreachable = True
             if event.event == "done":
                 outcome.completed = True
                 continue

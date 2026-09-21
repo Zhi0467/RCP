@@ -1073,6 +1073,15 @@ noise filtering. When the result has no text-bearing field, its subtype is the
 fallback diagnostic. This preserves the real startup failure for task consumers
 that stop reading at the first error.
 
+Every provider process is also journalled by the service: one log line when
+it starts and one when it ends, each carrying the provider, capability,
+runtime, execution host, resolved executable, child pid, and the operation id,
+with the exit code, duration, and RCP's own reading of a non-zero exit on the
+end line. A failed task adds one line naming its classification. These lines
+carry identifiers and RCP wording only; provider stdout and stderr never reach
+the journal, because a provider CLI can print token-shaped values in its own
+errors. The task row remains the complete record.
+
 A settled failure is also named, because recovery differs by cause. SSH's own
 exit codes for a remote run mean the link died rather than the work, and RCP
 reattempts such a turn a bounded number of times with growing waits before
@@ -1081,9 +1090,20 @@ performs, so it resumes the native session rather than repeating the turn. Those
 exit codes decide this only for a turn that said nothing: ssh returns 255 for a
 provider that exits 255 as readily as for a link it lost, so a provider that
 reached its own terminal event or reported its own error is never blamed on the
-link, whatever the code. A reattempt stands down when anything else has already
-taken the turn over, so a wait that outlives the failure it was scheduled for
-cannot repeat finished work. A wait whose reattempt is refused keeps the waits
+link, whatever the code. A link that drops before the provider starts is named
+the same way. The readiness probe, the check that the previous remote pass has
+stopped, and the input transfer each fail the turn with no process to leave a
+code, so each carries its own typed word for an unreachable host to
+classification; the error text is never read. A reattempt stands down when
+anything else has already taken the turn over, so a wait that outlives the
+failure it was scheduled for cannot repeat finished work. That claim is made
+inside the admission that inserts the reattempt's child: an ordinary task's
+resume, retry, or handoff is refused there when the task already has one, so a
+human Retry admitted and settled during the wait leaves the timer nothing to
+repeat. Experiment and Auto-research recoveries keep their own atomic claims.
+Shutdown waits for a reattempt that has already begun admitting before it
+fences new workers, so the child it admits is paused with the rest instead of
+being left queued for a startup that would only interrupt it. A wait whose reattempt is refused keeps the waits
 that remain, because a host that is still returning is the case the longer waits
 exist for. The promise of a reattempt is durable while the wait holding it is
 not, so startup re-arms the waits a stopped process could not keep, at the wait

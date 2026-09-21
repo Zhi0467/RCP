@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import ipaddress
 import json
+import logging
 import os
 import signal
 import socket
@@ -463,6 +464,22 @@ def _drain_worker_threads(*, timeout: float = SERVER_THREAD_DRAIN_TIMEOUT_SECOND
         os._exit(0)
 
 
+def _configure_logging() -> None:
+    """Send the application's own log lines to stderr, where the service journal reads them.
+
+    uvicorn configures only its own loggers, so without this every `rcp.*`
+    record below WARNING is dropped and a WARNING reaches stderr only through
+    Python's last-resort handler. One handler on the package logger, once.
+    """
+    package = logging.getLogger("rcp")
+    if package.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    package.addHandler(handler)
+    package.setLevel(logging.INFO)
+
+
 def _run_server(
     args: argparse.Namespace,
     metadata: ServerMetadata,
@@ -470,6 +487,7 @@ def _run_server(
     server_fd: int | None = None,
     on_ready: Callable[[], None] | None = None,
 ) -> None:
+    _configure_logging()
     reload = args.command == "serve" and args.reload
     try:
         with prepared_web_assets(

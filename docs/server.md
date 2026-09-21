@@ -536,6 +536,19 @@ The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel and phones through the tailnet above; opening port 8421 publicly is
 not a supported deployment.
 
+Every provider process leaves two lines in the journal: one when it starts and
+one when it ends. Each names the provider, capability, runtime, execution host
+(or `local`), resolved executable, child pid, and the operation id that opens
+the same turn in **Agent tasks**; the end line adds the exit code, duration,
+and, for a non-zero exit, RCP's own reading of it. A failed turn adds one line
+with its classification (`transport_lost`, `provider_auth`, or `-`). Nothing
+a provider prints reaches the journal: its stderr can carry token-shaped values,
+so it stays on the task row. To read one turn:
+
+```bash
+sudo journalctl --unit=rcp.service --no-pager | grep 'operation=<operation-id>'
+```
+
 ## Update the server release
 
 ```bash

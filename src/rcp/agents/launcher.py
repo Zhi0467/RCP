@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import pwd
 import re
@@ -23,7 +24,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, model_validator
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
-from rcp.agents.failure_kinds import transport_failure
+from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
@@ -61,7 +62,9 @@ from rcp.providers import (
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import _remote_script, _remote_turn_supervisor_script
+from rcp.transport.state import StateUnavailable, _remote_script, _remote_turn_supervisor_script
+
+logger = logging.getLogger(__name__)
 
 ProviderPathState = Literal[
     "resolved",
@@ -204,6 +207,11 @@ class AgentEvent(BaseModel):
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
     usage: ProviderUsage | None = None
+    #: Typed cause on an `error` the launcher can name itself. Set only for a
+    #: link lost before the provider started; a provider process that exits
+    #: leaves its code in `provider_exit` instead, and classification reads
+    #: that. Never inferred from text.
+    failure_kind: AgentFailureKind | None = None
 
 
 def _supervised_remote_turn_command(
@@ -390,7 +398,7 @@ class AgentProcessControl:
         await process.wait()
 
     @staticmethod
-    def remote_stopped(host: str, pid_file: str) -> bool | None:
+    def remote_stopped(host: str, pid_file: str, *, raise_unreachable: bool = False) -> bool | None:
         """Observe the exact remote process group; unavailable is not stopped.
 
         Deliberately on the shared connection, not the run's. This has to reach
@@ -400,12 +408,22 @@ class AgentProcessControl:
         stop it. `test_provider_turn_rides_the_master_of_its_own_run` fails if
         this or `_terminate_remote` ever takes one.
         """
-        stopped, _identity = AgentProcessControl.remote_process_state(host, pid_file)
+        stopped, _identity = AgentProcessControl.remote_process_state(
+            host, pid_file, raise_unreachable=raise_unreachable
+        )
         return stopped
 
     @staticmethod
-    def remote_process_state(host: str, pid_file: str) -> tuple[bool | None, str | None]:
-        """Observe absence and, for a live supervised group, its process identity."""
+    def remote_process_state(
+        host: str, pid_file: str, *, raise_unreachable: bool = False
+    ) -> tuple[bool | None, str | None]:
+        """Observe absence and, for a live supervised group, its process identity.
+
+        `None` covers every way the probe could not answer. With
+        `raise_unreachable`, the one case ssh itself reports, exit 255, raises
+        `StateUnavailable` instead, so a caller that fails a task on it can
+        name the lost link rather than an unverifiable process.
+        """
 
         command = [
             "python3",
@@ -424,6 +442,10 @@ class AgentProcessControl:
             )
         except (OSError, subprocess.TimeoutExpired):
             return None, None
+        if raise_unreachable and result.returncode == 255:
+            raise StateUnavailable(
+                f"{host} is unreachable, so the previous provider call could not be checked."
+            )
         stopped = {0: True, 1: False}.get(result.returncode)
         identity = None
         if stopped is False:
@@ -976,6 +998,7 @@ class AgentLauncher:
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1014,6 +1037,7 @@ class AgentLauncher:
                         runtime_id=runtime.id,
                         before_start=before_start,
                         supervise_remote=supervise_remote,
+                        operation_id=operation_id,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1058,6 +1082,7 @@ class AgentLauncher:
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1083,7 +1108,17 @@ class AgentLauncher:
             or not readiness.installed
             or not readiness.authenticated
         ):
-            yield AgentEvent(event="error", text=readiness.reason or "Provider is unavailable.")
+            yield AgentEvent(
+                event="error",
+                text=readiness.reason or "Provider is unavailable.",
+                # `unreachable` is set only when the SSH probe itself exited 255,
+                # so this is the probe's own word, not a reading of its text.
+                failure_kind=(
+                    "transport_lost"
+                    if host and getattr(readiness, "path_state", "resolved") == "unreachable"
+                    else None
+                ),
+            )
             return
 
         if write_scope is not None:
@@ -1239,10 +1274,37 @@ class AgentLauncher:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
                 self.invalidate_readiness(provider, host=host, binary=binary)
+            logger.warning(
+                "provider process failed to start provider=%s capability=%s runtime=%s "
+                "host=%s executable=%s operation=%s error=%s",
+                provider,
+                capability,
+                runtime.id,
+                host or "local",
+                resolved_binary,
+                operation_id or "-",
+                type(exc).__name__,
+            )
             raise _PrePromptRuntimeFailure(str(exc)) from exc
         # Every stop of this process, local or remote, honours the startup hold
         # measured from here, not only an explicit Pause.
         started_at = time.monotonic()
+        launched_at = started_at
+        # The one trace of this process outside the task row. Identifiers only:
+        # provider output can carry token-shaped values and never reaches the
+        # journal (docs/server.md, "Inspect and stop the service").
+        logger.info(
+            "provider process started provider=%s capability=%s runtime=%s host=%s "
+            "executable=%s pid=%s%s operation=%s",
+            provider,
+            capability,
+            runtime.id,
+            host or "local",
+            resolved_binary,
+            process.pid,
+            f" remote_pid_file={remote_pid_file}" if host and remote_pid_file else "",
+            operation_id or "-",
+        )
         if control is not None:
             control.attach(process)
         steering = LiveProviderSteering(
@@ -1579,14 +1641,26 @@ class AgentLauncher:
                             started_at,
                         )
                 finally:
-                    await _cleanup_provider_process(
-                        process,
-                        started_at=started_at,
-                        stdin_task=stdin_task,
-                        stdout_task=stdout_task,
-                        stdout_lines=stdout_lines,
-                        stderr_task=stderr_task,
-                    )
+                    try:
+                        await _cleanup_provider_process(
+                            process,
+                            started_at=started_at,
+                            stdin_task=stdin_task,
+                            stdout_task=stdout_task,
+                            stdout_lines=stdout_lines,
+                            stderr_task=stderr_task,
+                        )
+                    finally:
+                        _log_provider_exit(
+                            provider,
+                            capability=capability,
+                            runtime_id=runtime.id,
+                            host=host,
+                            pid=process.pid,
+                            return_code=process.returncode,
+                            duration_seconds=time.monotonic() - launched_at,
+                            operation_id=operation_id,
+                        )
 
             cleanup_task = asyncio.create_task(cleanup())
             try:
@@ -1730,6 +1804,41 @@ def _meaningful_stderr(stderr: str) -> str:
         if not any(noise in line for noise in _BASH_TTY_NOISE)
     ]
     return "\n".join(kept).strip()
+
+
+def _log_provider_exit(
+    provider: str,
+    *,
+    capability: AgentCapability,
+    runtime_id: str,
+    host: str,
+    pid: int,
+    return_code: int | None,
+    duration_seconds: float,
+    operation_id: str | None,
+) -> None:
+    """One journal line per provider process end, without any provider output.
+
+    The exit code and RCP's own reading of it are the whole diagnostic here; a
+    provider's stderr can print token-shaped values and stays on the task row.
+    """
+    detail = ""
+    if return_code:
+        detail = f" reason={_exit_reason(provider, return_code, host)!r}"
+    logger.log(
+        logging.INFO if return_code == 0 else logging.WARNING,
+        "provider process exited provider=%s capability=%s runtime=%s host=%s pid=%s "
+        "return_code=%s duration_seconds=%.1f operation=%s%s",
+        provider,
+        capability,
+        runtime_id,
+        host or "local",
+        pid,
+        return_code,
+        duration_seconds,
+        operation_id or "-",
+        detail,
+    )
 
 
 def _exit_reason(provider: str, return_code: int, host: str) -> str:

@@ -88,6 +88,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
+from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable
 
 logger = logging.getLogger(__name__)
@@ -222,10 +223,12 @@ class AgentTaskExecution:
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
-    #: Set when a stage read during this run failed because the host could not
-    #: be reached, rather than because a deliverable was bad. Only the read that
-    #: failed knows which of the two happened, and by the time settlement has
-    #: turned it into a failure the difference is gone. In memory because it
+    #: Set when a stage read or host probe during this run failed because the
+    #: host could not be reached, rather than because a deliverable was bad or a
+    #: setting refused. Only the read that failed knows which happened, and by
+    #: the time settlement has turned it into a failure the difference is gone.
+    #: Before the provider starts it is also the only witness classification
+    #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
 
@@ -398,6 +401,13 @@ class BackgroundAgentTasks:
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
         self._transport_retry_timers: list[threading.Timer] = []
+        # An automatic reattempt that has passed its shutdown check is admitting
+        # a child. Shutdown waits for it under this condition before it fences
+        # spawns, so the child it admits gets a worker instead of being left
+        # queued for a startup that would only interrupt it.
+        self._transport_retry_admissions = 0
+        self._transport_retry_closed = False
+        self._transport_retry_fence = threading.Condition(self._controls_lock)
         self._remote_reconciliation_timer: threading.Timer | None = None
         self._remote_reconciliation_worker: threading.Thread | None = None
         self._remote_reconciliation_requested = False
@@ -484,6 +494,8 @@ class BackgroundAgentTasks:
         self._require_startup_effects_open("startup recovery")
         with self._controls_lock:
             self._shutdown_requested = False
+            self._transport_retry_closed = False
+            self._transport_retry_admissions = 0
         preserved_dispatches = proven_committed_auto_research_dispatches(self)
         reserved_roots = proven_reserved_auto_research_roots(self)
         self.store.interrupt_active_agent_tasks(
@@ -1030,7 +1042,18 @@ class BackgroundAgentTasks:
         """Pause live subprocesses before the web process exits."""
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False
-            with self._controls_lock:
+            with self._transport_retry_fence:
+                # Closing the fence turns away reattempts that have not begun.
+                # One that has already passed it is mid-admission; wait for it
+                # before fencing spawns, so the child it admits gets a worker
+                # and is paused with the rest rather than left queued for a
+                # startup that would only interrupt it.
+                self._transport_retry_closed = True
+                deadline = time.monotonic() + timeout
+                while self._transport_retry_admissions:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not self._transport_retry_fence.wait(remaining):
+                        break
                 self._shutdown_requested = True
                 active = list(self._controls.items())
                 workers = [self._workers.get(operation_id) for operation_id, _ in active]
@@ -1751,6 +1774,11 @@ class BackgroundAgentTasks:
             )
             self._schedule_remote_reconciliation(delay=0)
         except Exception as exc:  # The persisted task is the API error boundary.
+            if isinstance(exc, StateUnavailable):
+                # A stage checkpoint or context read that could not reach the
+                # host escapes here untyped otherwise, and the classifier below
+                # would read it as an ordinary failure.
+                execution.stage_unreachable = True
             if (
                 isinstance(request, AutoResearchRunRequest)
                 and request.role == "orchestrator"
@@ -1802,11 +1830,23 @@ class BackgroundAgentTasks:
                 and current.status in {"succeeded", "failed"}
             )
             if not report_already_finalized:
+                failure_kind = self._failure_kind(operation_id, request, execution, str(exc))
+                # The journal's only record that this turn failed. RCP's own
+                # classification and the exception type, never the error text:
+                # that is provider output and can carry token-shaped values.
+                logger.warning(
+                    "task failed operation=%s kind=%s host=%s failure_kind=%s exception=%s",
+                    operation_id,
+                    record.kind,
+                    execution.stage_host or "local",
+                    failure_kind or "-",
+                    type(exc).__name__,
+                )
                 self.store.fail_agent_task(
                     operation_id,
                     str(exc),
                     result=result if partial or artifacts else None,
-                    failure_kind=self._failure_kind(operation_id, request, execution, str(exc)),
+                    failure_kind=failure_kind,
                 )
         else:
             self._complete_task_outcome(record, request, execution, outcome)
@@ -1916,6 +1956,7 @@ class BackgroundAgentTasks:
             host=execution.stage_host or "",
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
+            link_lost_before_provider=exit is None and execution.stage_unreachable,
         )
         if kind == "provider_auth" and provider:
             host = execution.stage_host or ""
@@ -2177,42 +2218,7 @@ class BackgroundAgentTasks:
 
         def run() -> None:
             try:
-                with self._controls_lock:
-                    if self._shutdown_requested:
-                        return
-                if self._transport_retry_superseded(operation_id):
-                    return
-                try:
-                    self.retry(
-                        operation_id,
-                        authorized_by=self.store.agent_task_authorizer(operation_id),
-                    )
-                except Exception as exc:
-                    # The human still has Retry; a failed reattempt must not
-                    # become a second failure report on top of the one they
-                    # already have.
-                    with suppress(Exception):
-                        self.store.record_agent_task_receipt(
-                            operation_id,
-                            "transport_auto_retry_failed",
-                            {"exception_type": type(exc).__name__},
-                            tier="diagnostic",
-                        )
-                    # A host that is still rebooting refuses admission too, and
-                    # that is the case the later, longer waits exist for. No
-                    # child was admitted, so the receipt chain cannot carry the
-                    # count and this hands it to the next wait directly.
-                    if attempt + 1 < AGENT_TRANSPORT_RETRY_LIMIT:
-                        with suppress(Exception):
-                            self._schedule_transport_retry(operation_id, attempt=attempt + 1)
-                    else:
-                        with suppress(Exception):
-                            self.store.record_agent_task_receipt(
-                                operation_id,
-                                "transport_auto_retry_exhausted",
-                                {"attempts": attempt + 1},
-                                tier="summary",
-                            )
+                self._run_transport_retry(operation_id, attempt=attempt)
             finally:
                 with self._controls_lock:
                     if timer in self._transport_retry_timers:
@@ -2221,10 +2227,69 @@ class BackgroundAgentTasks:
         timer = threading.Timer(delay, run)
         timer.daemon = True
         with self._controls_lock:
-            if self._shutdown_requested:
+            if self._shutdown_requested or self._transport_retry_closed:
                 return
             self._transport_retry_timers.append(timer)
         timer.start()
+
+    def _run_transport_retry(self, operation_id: str, *, attempt: int) -> None:
+        """Fire one armed reattempt: the body of its timer, fenced against shutdown."""
+
+        with self._transport_retry_fence:
+            if self._shutdown_requested or self._transport_retry_closed:
+                return
+            # From here until the child has a worker, shutdown waits for us.
+            self._transport_retry_admissions += 1
+        try:
+            if self._transport_retry_superseded(operation_id):
+                return
+            try:
+                self.retry(
+                    operation_id,
+                    authorized_by=self.store.agent_task_authorizer(operation_id),
+                )
+            except AgentTaskAlreadyContinued:
+                # The check above and this admission are not one transaction;
+                # the claim inside admission is. Something else took the turn
+                # over in between, so this stands down exactly as if the check
+                # had seen it.
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        operation_id,
+                        "transport_auto_retry_superseded",
+                        {"reason": "another attempt already took this turn over"},
+                        tier="summary",
+                    )
+            except Exception as exc:
+                # The human still has Retry; a failed reattempt must not
+                # become a second failure report on top of the one they
+                # already have.
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        operation_id,
+                        "transport_auto_retry_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
+                # A host that is still rebooting refuses admission too, and
+                # that is the case the later, longer waits exist for. No
+                # child was admitted, so the receipt chain cannot carry the
+                # count and this hands it to the next wait directly.
+                if attempt + 1 < AGENT_TRANSPORT_RETRY_LIMIT:
+                    with suppress(Exception):
+                        self._schedule_transport_retry(operation_id, attempt=attempt + 1)
+                else:
+                    with suppress(Exception):
+                        self.store.record_agent_task_receipt(
+                            operation_id,
+                            "transport_auto_retry_exhausted",
+                            {"attempts": attempt + 1},
+                            tier="summary",
+                        )
+        finally:
+            with self._transport_retry_fence:
+                self._transport_retry_admissions -= 1
+                self._transport_retry_fence.notify_all()
 
     def _rearm_owed_transport_retries(self) -> None:
         """Re-arm reattempts a previous process promised and could not keep.
@@ -2250,10 +2315,10 @@ class BackgroundAgentTasks:
 
         A human pressing Retry, a recovery owner, or a second timer all leave a
         child on the failed task. Firing anyway would run the turn a second time
-        after the first already finished, repeating whatever it did. The check
-        and the admission that follows are not one transaction, but `retry`
-        refuses an overlapping active turn, so the remaining window is a retry
-        that both starts and finishes inside it.
+        after the first already finished, repeating whatever it did. This read
+        is the cheap early exit; the claim that closes the remaining window is
+        admission itself, which refuses a second recovery child of one parent
+        inside the transaction that would insert it.
         """
 
         settled = self.store.agent_task(operation_id)
