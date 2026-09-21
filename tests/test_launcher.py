@@ -426,6 +426,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
         stdout = FakeStdout()
         stderr = FakeStderr()
         returncode = 0
+        pid = 4242
 
         async def wait(self):
             return self.returncode

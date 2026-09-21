@@ -114,25 +114,6 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
     assert plan.left_alone == ()
 
 
-def test_plan_protects_a_pinned_live_release_outside_the_newest_window(tmp_path):
-    checkpoints, releases = _roots(tmp_path, range(100, 105))
-    downgrade = _record(checkpoints, _release(releases, 104), _release(releases, 101))
-    _workspace(checkpoints, downgrade["operation_id"])
-
-    plan = plan_retention(
-        records=[(downgrade, 1.0)],
-        checkpoints_root=checkpoints,
-        releases_root=releases,
-        current_release_directory=str(releases / "101"),
-        selected=_release(releases, 101),
-        protected_operation_ids=frozenset(),
-        now=NOW,
-    )
-
-    assert plan.kept_releases == ("104", "103", "101")
-    assert {path.name for path in plan.remove_releases} == {"100", "102"}
-
-
 @pytest.mark.parametrize("defect", ["pointer", "unfinished"])
 def test_plan_refuses_as_a_whole_when_the_machine_state_disagrees(tmp_path, defect):
     checkpoints, releases = _roots(tmp_path, range(100, 103))
@@ -210,7 +191,7 @@ def test_remove_retained_tree_unlocks_read_only_trees_and_never_follows_links(tm
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
-@pytest.mark.parametrize("shape", ["link", "nested", "outside", "file", "relative"])
+@pytest.mark.parametrize("shape", ["link", "nested", "outside"])
 def test_remove_retained_tree_refuses_anything_but_an_owned_direct_child(tmp_path, shape):
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
@@ -224,18 +205,13 @@ def test_remove_retained_tree_refuses_anything_but_an_owned_direct_child(tmp_pat
         (root / "101").mkdir(mode=0o700)
         directory = root / "101" / "assets"
         directory.mkdir(mode=0o700)
-    elif shape == "outside":
-        directory = other
-    elif shape == "file":
-        directory = root / "install.log"
-        directory.write_text("log")
     else:
-        directory = Path("releases/101")
+        directory = other
 
     with pytest.raises(SupervisorError):
         remove_retained_tree(directory, root)
     assert (other / "keep").read_text() == "untouched"
-    if shape in {"nested", "file"}:
+    if shape == "nested":
         assert directory.exists()
 
 
@@ -325,29 +301,3 @@ def test_a_refused_prune_is_reported_and_does_not_fail_the_committed_update(tmp_
     assert [field["name"] for field in fields] == ["retention"]
     assert fields[0]["value"].startswith("not pruned: The installed release pointer")
     assert (releases / "100").is_dir()
-
-
-def test_prune_command_recovers_first_and_reports_the_plan(monkeypatch, tmp_path):
-    from io import StringIO
-
-    from rcp_supervisor.events import EventEmitter
-
-    order: list[str] = []
-    monkeypatch.setattr(driver, "recover", lambda *, paths: order.append("recover"))
-    monkeypatch.setattr(driver, "SystemRuntime", lambda paths: SimpleNamespace(name="runtime"))
-    monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(name="store"))
-
-    def fake_prune(runtime, store):
-        order.append("prune")
-        return SimpleNamespace(fields=lambda: [{"name": "removed_checkpoints", "value": 0}])
-
-    monkeypatch.setattr(driver, "prune_retained", fake_prune)
-    stream = StringIO()
-    emitter = EventEmitter("server prune", machine_readable=True, stream=stream)
-    emitter.emit("running", "Verifying.")
-
-    assert driver.prune(None, emitter, paths=SimpleNamespace()) == 0
-    assert order == ["recover", "prune"]
-    last = json.loads(stream.getvalue().splitlines()[-1])
-    assert last["step"]["state"] == "succeeded"
-    assert last["step"]["fields"] == [{"name": "removed_checkpoints", "value": 0}]

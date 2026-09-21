@@ -1091,10 +1091,12 @@ exit codes decide this only for a turn that said nothing: ssh returns 255 for a
 provider that exits 255 as readily as for a link it lost, so a provider that
 reached its own terminal event or reported its own error is never blamed on the
 link, whatever the code. A link that drops before the provider starts is named
-the same way. The readiness probe, the check that the previous remote pass has
-stopped, and the input transfer each fail the turn with no process to leave a
-code, so each carries its own typed word for an unreachable host to
-classification; the error text is never read. A reattempt stands down when
+the same way. The readiness probe, under whichever of its probes ssh died, the
+check that the previous remote pass has stopped, and the input transfer each
+fail the turn with no process to leave a code, so each carries its own typed
+word for an unreachable host to classification; the error text is never read.
+An unreachable readiness answer is not cached, so the reattempt asks the host
+again instead of failing from memory. A reattempt stands down when
 anything else has already taken the turn over, so a wait that outlives the
 failure it was scheduled for cannot repeat finished work. That claim is made
 inside the admission that inserts the reattempt's child: an ordinary task's

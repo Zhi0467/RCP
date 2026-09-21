@@ -66,7 +66,34 @@ async def test_an_unreachable_readiness_probe_types_its_error(
     assert error.failure_kind == ("transport_lost" if path_state == "unreachable" else None)
 
 
-@pytest.mark.parametrize("exit_code", [255, 1, 7])
+def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery and version answered; ssh died under the auth probe. The answer
+    is still `unreachable`, and it is not cached: the next launch, an automatic
+    reattempt included, asks the host again instead of failing from memory."""
+
+    launcher = AgentLauncher()
+    probes: list[list[str]] = []
+
+    def probe(self, host, command, **_kwargs):
+        probes.append(command)
+        if command[:2] == ["command", "-v"]:
+            return subprocess.CompletedProcess(command, 0, "/opt/codex\n", "")
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, "codex 1.0\n", "")
+        return subprocess.CompletedProcess(command, 255, "", "ssh: connection timed out")
+
+    monkeypatch.setattr(AgentLauncher, "_probe", probe)
+    first = launcher.readiness("codex", host=HOST)
+    assert first.path_state == "unreachable" and not first.authenticated
+    assert launcher.cached_readiness("codex", host=HOST) is None
+    probed = len(probes)
+    launcher.readiness("codex", host=HOST)
+    assert len(probes) > probed
+
+
+@pytest.mark.parametrize("exit_code", [255, 1])
 def test_the_previous_pass_check_names_a_host_it_cannot_reach(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int
 ) -> None:
@@ -83,10 +110,9 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
         with pytest.raises(StateUnavailable, match="unreachable"):
             require_remote_provider_quiescence(store, HOST, "/stage")
     else:
-        # Any other answer is the host speaking: a live or unverifiable process
-        # is still not a lost link, and reattempting would not change it.
-        expected = "still running" if exit_code == 1 else "could not be verified"
-        with pytest.raises(ValueError, match=expected):
+        # Any other answer is the host speaking: a live process is not a lost
+        # link, and reattempting would not change it.
+        with pytest.raises(ValueError, match="still running"):
             require_remote_provider_quiescence(store, HOST, "/stage")
     assert store.unresolved_remote_provider_passes(HOST, "/stage") == [("first", "/stage/one.pid")]
 

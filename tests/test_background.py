@@ -171,6 +171,7 @@ def _admitted_launch_task(
     request: RunRequest | None = None,
     parent_operation_id: str | None = None,
     record_updates: dict[str, object] | None = None,
+    continuation_cause: str = "fresh",
 ) -> AgentTaskRecord:
     request = request or RunRequest(
         provider="codex",
@@ -203,7 +204,9 @@ def _admitted_launch_task(
         authorized_by=fabricated_authorizer("Researcher"),
         dispatch_authority=authority,
     )
-    return store.create_agent_task(record.model_copy(update=record_updates or {}))
+    return store.create_agent_task(
+        record.model_copy(update=record_updates or {}), continuation_cause=continuation_cause
+    )
 
 
 async def _done_stream(_project_id, _kind, _request, _execution):
@@ -3732,50 +3735,22 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
 
 def test_a_second_recovery_of_one_task_is_refused_inside_admission(tmp_path: Path) -> None:
     """The window between `_transport_retry_superseded` and `retry` used to admit
-    a second child if a human Retry was admitted and settled inside it. The
-    claim now lives in the transaction that inserts the child."""
+    a second child if a human Retry was admitted inside it. The claim now lives
+    in the transaction that inserts the child."""
 
     store = _store(tmp_path)
-    shared = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id="claimed-once",
-        message="Exercise the admitted launch boundary.",
-        mode="work",
-        patch_kind="work",
+    failed = _transport_failed_task(store, operation_id="dropped")
+    _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id
     )
-    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
-    human = _admitted_launch_task(
-        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=shared
-    )
-    # Settled, so the chat overlap guard has nothing left to refuse.
-    store.mark_agent_task_running(human.operation_id)
-    store.fail_agent_task(human.operation_id, "also failed")
 
-    authority = resolve_dispatch_authority("project_chat", shared)
-    now = store.now()
-    late = AgentTaskRecord(
-        operation_id="timer-retry",
-        project_id="project",
-        kind="project_chat",
-        status="queued",
-        request=shared.model_dump(mode="json"),
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
-        attempt=2,
-        parent_operation_id=failed.operation_id,
-        phase="queued",
-        last_activity_at=now,
-        authorized_by=fabricated_authorizer("Researcher"),
-        dispatch_authority=authority,
-    )
     with pytest.raises(AgentTaskAlreadyContinued):
-        store.create_agent_task(late, continuation_cause="retry")
+        _admitted_launch_task(
+            store,
+            operation_id="timer-retry",
+            parent_operation_id=failed.operation_id,
+            continuation_cause="retry",
+        )
     assert store.agent_task("timer-retry") is None
 
 

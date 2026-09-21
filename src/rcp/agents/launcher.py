@@ -562,6 +562,27 @@ def _discover_local_provider(provider: str) -> str | None:
     return None
 
 
+def _unreachable_readiness(
+    provider: str, *, host: str, binary_path: str | None = None
+) -> ProviderReadiness:
+    """The answer when ssh itself exited 255 under any probe of one readiness check.
+
+    Discovery, version, auth, catalog, and Work probes can each be the one that
+    finds the link gone. They all say so the same way, so a launch can type the
+    loss from `path_state` instead of reading the reason.
+    """
+
+    return ProviderReadiness(
+        provider=provider,
+        label=profile_for(provider).label,
+        installed=False,
+        authenticated=False,
+        binary_path=binary_path,
+        path_state="unreachable",
+        reason=f"{host} is unreachable, so {binary_path or provider} could not be checked.",
+    )
+
+
 class AgentLauncher:
     # Consume pipes in small chunks so asyncio never has to buffer one complete
     # provider event. Final graph patches may be large, but tool/read events
@@ -690,7 +711,13 @@ class AgentLauncher:
             raise
 
         with self._readiness_lock:
-            if self._readiness_generations.get(key, 0) == generation:
+            # A host that did not answer is a fact about one moment, not about
+            # the capability. Cached, it would fail every later launch from
+            # memory, an automatic reattempt included, without asking the host.
+            if (
+                self._readiness_generations.get(key, 0) == generation
+                and result.path_state != "unreachable"
+            ):
                 self._readiness_cache[key] = result.model_copy(deep=True)
             probe.result = result.model_copy(deep=True)
             self._readiness_probes.pop(probe_key, None)
@@ -783,14 +810,7 @@ class AgentLauncher:
         elif host:
             installed_probe = self._probe(host, ["command", "-v", provider])
             if installed_probe.returncode == 255:
-                return ProviderReadiness(
-                    provider=provider,
-                    label=profile.label,
-                    installed=False,
-                    authenticated=False,
-                    path_state="unreachable",
-                    reason=f"{host} is unreachable, so {provider} could not be checked.",
-                )
+                return _unreachable_readiness(provider, host=host)
             discovered = installed_probe.stdout.strip().splitlines()
             candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
             installed = bool(candidate and PurePosixPath(candidate).is_absolute())
@@ -819,15 +839,7 @@ class AgentLauncher:
                 host, [candidate, "--version"], environment=version_environment
             )
         if host and version_result.returncode == 255:
-            return ProviderReadiness(
-                provider=provider,
-                label=profile.label,
-                installed=False,
-                authenticated=False,
-                binary_path=candidate,
-                path_state="unreachable",
-                reason=f"{host} became unreachable while checking {candidate}.",
-            )
+            return _unreachable_readiness(provider, host=host, binary_path=candidate)
         version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
         version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
         path_state: ProviderPathState = "resolved" if configured else "unconfigured"
@@ -850,6 +862,8 @@ class AgentLauncher:
             authenticated = False
             if login_reason is None:
                 auth = self._probe(host, profile.auth_command(candidate), environment=environment)
+                if host and auth.returncode == 255:
+                    return _unreachable_readiness(provider, host=host, binary_path=candidate)
                 authenticated = profile.is_authenticated(auth)
                 if self._observe_probe_failure(provider, host, auth, generation):
                     authenticated = False
@@ -864,6 +878,8 @@ class AgentLauncher:
                 if catalog_command
                 else None
             )
+            if catalog is not None and host and catalog.returncode == 255:
+                return _unreachable_readiness(provider, host=host, binary_path=candidate)
             if catalog is not None and self._observe_probe_failure(
                 provider, host, catalog, generation
             ):
@@ -876,6 +892,8 @@ class AgentLauncher:
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
                 work_probe = self._probe(host, work_command, environment=environment)
+                if host and work_probe.returncode == 255:
+                    return _unreachable_readiness(provider, host=host, binary_path=candidate)
                 if self._observe_probe_failure(provider, host, work_probe, generation):
                     authenticated = False
                     work_like_available = False
