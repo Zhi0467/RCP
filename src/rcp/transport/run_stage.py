@@ -347,7 +347,15 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         self.root = None
         return True
 
-    def put_file(self, source: Path, label: str) -> str:
+    def put_file(self, source: Path, label: str, *, reuse: bool = False) -> str:
+        """Queue one input; `reuse` accepts an identical file already committed.
+
+        Content-addressed inputs are staged again whenever RCP cannot read the
+        existing copy, and a link that dropped during that read is one such
+        time. Without `reuse` the commit would then reject a file whose content
+        it is about to prove identical, turning a blip into a failed turn.
+        """
+
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         safe_label = _safe_label(label)
@@ -356,6 +364,8 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         if pending.exists():
             raise ValueError(f"immutable remote task input already exists: {safe_label}")
         shutil.copyfile(source, pending)
+        if reuse:
+            self._reusable_inputs.add(safe_label)
         return str(remote)
 
     def put_directory(self, source: Path, label: str, *, reuse: bool = False) -> str:

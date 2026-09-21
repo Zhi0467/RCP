@@ -23,7 +23,8 @@ class _Stage:
     def read_input_text(self, label):
         raise ValueError(label)
 
-    def put_file(self, source, label):
+    def put_file(self, source, label, *, reuse=False):
+        assert reuse is True
         return str(self.root / "inputs" / label)
 
     def list_workspace_files(self):

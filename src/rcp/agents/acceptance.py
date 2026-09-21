@@ -177,6 +177,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        supervisor_path: str | None = None,
         operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
@@ -201,6 +202,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     runtime_id=runtime_id,
                     before_start=before_start,
                     supervise_remote=supervise_remote,
+                    supervisor_path=supervisor_path,
                     operation_id=operation_id,
                 ):
                     yield event
@@ -216,6 +218,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             capability,
             binary,
             supervise_remote,
+            supervisor_path,
             operation_id,
         )
         resolved_cwd = cwd.resolve()

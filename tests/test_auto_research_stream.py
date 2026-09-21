@@ -572,7 +572,7 @@ class _LocalBackedRemoteStage:
         self.root = Path(root)
         return self
 
-    def put_file(self, source: Path, label: str) -> str:
+    def put_file(self, source: Path, label: str, *, reuse: bool = False) -> str:
         assert self.root is not None
         target = self.root / "inputs" / label
         if target.exists():

@@ -191,7 +191,10 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
     monkeypatch.setattr(profile, "runtime", lambda runtime_id: runtime)
     monkeypatch.setattr(profile, "runtime_candidates", lambda configured: (runtime, runtime))
 
-    def confirm(host, pid_file, started_at):
+    confirm_flags: list[bool] = []
+
+    def confirm(host, pid_file, started_at, *, launch_ended=False):
+        confirm_flags.append(launch_ended)
         actions.append("confirm")
         return confirmed
 
@@ -207,6 +210,9 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
             remote_pid_file=str(tmp_path / "agent.pid"),
         )
     ]
+    # Only a confirmation taken after the launch exited may read a missing
+    # pidfile as a pass that never started.
+    assert confirm_flags[0] is True
     starts = [event.text for event in events if event.event == "remote_process_start"]
     stops = [event.text for event in events if event.event == "remote_process_stop"]
     if confirmed:
@@ -220,6 +226,9 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
         assert stops == []
         assert actions.count("launch") == 1
         assert not any(event.event == "runtime_fallback" for event in events)
+        # The cleanup confirmation races a live SSH process, so it stays
+        # conservative: absence there is not a pass that never started.
+        assert confirm_flags[-1] is False
         assert events[-1].event == "error"
         # The blocked fallback is the consequence; the launch failure is the
         # cause, and the human needs to be told the cause.

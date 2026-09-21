@@ -2153,7 +2153,7 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp
             self.files: list[Path] = []
             self.directories: list[str] = []
 
-        def put_file(self, source: Path, label: str) -> str:
+        def put_file(self, source: Path, label: str, *, reuse: bool = False) -> str:
             self.files.append(source)
             return str(self.root / "inputs" / label)
 
@@ -2299,7 +2299,7 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
     class RecordingStage:
         root = PurePosixPath("/tmp/rcp-run.test")
 
-        def put_file(self, _source: Path, label: str) -> str:
+        def put_file(self, _source: Path, label: str, *, reuse: bool = False) -> str:
             return str(self.root / "inputs" / label)
 
         def put_directory(self, _source: Path, label: str) -> str:
@@ -2367,7 +2367,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             self.root = PurePosixPath(f"/tmp/rcp-run.{operation_id}")
             return self
 
-        def put_file(self, _source, label):
+        def put_file(self, _source, label, *, reuse=False):
             assert self.root is not None
             return str(self.root / "inputs" / label)
 
@@ -5180,7 +5180,10 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
             assert scope_id == "remote-original"
             return self.workspace / "turns" / scope_id / "artifacts"
 
-        def put_file(self, _source, label):
+        def read_input_text(self, label):
+            raise ValueError(label)
+
+        def put_file(self, _source, label, *, reuse=False):
             assert self.root is not None
             return str(self.root / "inputs" / label)
 

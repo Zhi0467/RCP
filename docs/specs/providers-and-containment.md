@@ -458,7 +458,10 @@ A host that reports no pidfile inside a stage that still stands has confirmed
 that absence: the wrapper writes its pidfile before it execs anything and RCP
 never removes one, so nothing was started. That is the only inference allowed,
 and it is what keeps a launch that died before reaching the host from fencing
-its conversation for good. A vanished stage is not absence, because whatever
+its conversation for good. It is drawn only once the launch has ended: the
+post-exit confirmation and the pre-flight fence read absence that way, while a
+stop racing a launch still in flight does not, because a pidfile that has not
+appeared yet may only be late. A vanished stage is not absence, because whatever
 removed it could have removed a running pass's pidfile too. Unreachable hosts,
 and pidfiles that exist but cannot be read, keep recovery blocked and preserve
 the stage and receipts for reconciliation.

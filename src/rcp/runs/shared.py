@@ -387,6 +387,8 @@ def _stage_task_input(
     remote_stage: RemoteRunStage | None,
     label: str,
     content: str,
+    *,
+    reuse: bool = False,
 ) -> str:
     """Create one immutable task input and return its execution-host path."""
     if (local_stage is None) == (remote_stage is None):
@@ -399,7 +401,7 @@ def _stage_task_input(
             source = Path(temporary) / safe_label
             source.write_text(content, encoding="utf-8")
             source.chmod(0o400)
-            return remote_stage.put_file(source, safe_label)
+            return remote_stage.put_file(source, safe_label, reuse=reuse)
 
     assert local_stage is not None
     inputs = local_stage / "inputs"
@@ -439,7 +441,10 @@ def _stage_or_reuse_task_input(
         try:
             existing = remote_stage.read_input_text(label)
         except ValueError:
-            return _stage_task_input(local_stage, remote_stage, label, content)
+            # The read can fail because the file is not there, and equally
+            # because the link dropped while asking. Staging it as reusable
+            # settles both: the commit proves the content before accepting it.
+            return _stage_task_input(local_stage, remote_stage, label, content, reuse=True)
         if existing != content:
             raise ValueError(f"immutable remote task input already differs: {label}")
         assert remote_stage.root is not None
