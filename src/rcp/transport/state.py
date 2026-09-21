@@ -145,6 +145,13 @@ def _remote_turn_supervisor_script() -> str:
     return f"{fence}\n{_remote_script('remote_turn_supervisor.py')}"
 
 
+def remote_turn_supervisor_input_label() -> str:
+    """Name the staged supervisor by its own content, so one stage stages it once."""
+
+    digest = hashlib.sha256(_remote_turn_supervisor_script().encode("utf-8")).hexdigest()[:16]
+    return f"rcp-turn-supervisor-{digest}.py"
+
+
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
 patches=$1
 if [ ! -d "$patches" ]; then

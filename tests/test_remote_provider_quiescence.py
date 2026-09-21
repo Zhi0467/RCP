@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import shlex
+import sys
 
 import pytest
 
+from rcp.agents import launcher
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.runs.provider_process import require_remote_provider_quiescence
@@ -90,3 +93,28 @@ def test_quiescence_settles_only_verified_pass_and_preserves_stage_until_then(
     assert store.unresolved_remote_provider_passes("remote", "/stage") == []
     assert "/stage" not in store.protected_run_stage_roots("remote")
     store.begin_remote_provider_pass("second", "remote", "/stage", "/stage/two.pid")
+
+
+def test_a_pass_that_never_started_stops_fencing_its_stage(tmp_path, monkeypatch):
+    """A launch that failed before the host ran anything must not fence forever.
+
+    The fence runs long after that launch ended, so it asks the real probe and
+    accepts the one absence the host can prove: a stage that still stands and
+    holds no pidfile the wrapper would have written before exec.
+    """
+
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    pid_file = str(stage / "one.pid")
+    store = _store(tmp_path)
+    store.begin_remote_provider_pass("first", "remote", str(stage), pid_file)
+    store.fail_agent_task("first", "SSH disconnected")
+
+    monkeypatch.setattr(
+        launcher,
+        "ssh_arguments",
+        lambda _host, remote_command: [sys.executable, *shlex.split(remote_command)[1:]],
+    )
+    require_remote_provider_quiescence(store, "remote", str(stage))
+
+    assert store.unresolved_remote_provider_passes("remote", str(stage)) == []

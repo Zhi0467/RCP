@@ -752,9 +752,13 @@ time.sleep(30)
     monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
     monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
     monkeypatch.setattr(
-        AgentProcessControl, "_terminate_remote", staticmethod(lambda host, pid_file: True)
+        AgentProcessControl,
+        "_terminate_remote",
+        staticmethod(lambda _host, _pid_file, **_kwargs: True),
     )
-    monkeypatch.setattr(AgentProcessControl, "remote_stopped", staticmethod(lambda *args: True))
+    monkeypatch.setattr(
+        AgentProcessControl, "remote_stopped", staticmethod(lambda *_args, **_kwargs: True)
+    )
 
     started = time.monotonic()
     events = [

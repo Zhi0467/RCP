@@ -32,6 +32,10 @@ from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.run_stage import run_stage_partition
+from rcp.transport.state import (
+    _remote_turn_supervisor_script,
+    remote_turn_supervisor_input_label,
+)
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -383,6 +387,8 @@ def _stage_task_input(
     remote_stage: RemoteRunStage | None,
     label: str,
     content: str,
+    *,
+    reuse: bool = False,
 ) -> str:
     """Create one immutable task input and return its execution-host path."""
     if (local_stage is None) == (remote_stage is None):
@@ -395,7 +401,7 @@ def _stage_task_input(
             source = Path(temporary) / safe_label
             source.write_text(content, encoding="utf-8")
             source.chmod(0o400)
-            return remote_stage.put_file(source, safe_label)
+            return remote_stage.put_file(source, safe_label, reuse=reuse)
 
     assert local_stage is not None
     inputs = local_stage / "inputs"
@@ -435,7 +441,10 @@ def _stage_or_reuse_task_input(
         try:
             existing = remote_stage.read_input_text(label)
         except ValueError:
-            return _stage_task_input(local_stage, remote_stage, label, content)
+            # The read can fail because the file is not there, and equally
+            # because the link dropped while asking. Staging it as reusable
+            # settles both: the commit proves the content before accepting it.
+            return _stage_task_input(local_stage, remote_stage, label, content, reuse=True)
         if existing != content:
             raise ValueError(f"immutable remote task input already differs: {label}")
         assert remote_stage.root is not None
@@ -709,8 +718,20 @@ async def _stream_agent_events(
         else None
     )
     remote_pass_recorded = False
+    supervisor_path: str | None = None
     if remote_stage is not None:
         try:
+            if supervise_remote:
+                # The supervisor travels as a staged input, never on the command
+                # line: an argument that large cannot reach an SSH multiplexing
+                # master, which fails the launch before the host runs anything.
+                supervisor_path = await asyncio.to_thread(
+                    _stage_or_reuse_task_input,
+                    None,
+                    remote_stage,
+                    remote_turn_supervisor_input_label(),
+                    _remote_turn_supervisor_script(),
+                )
             if execution is not None and remote_stage.root is not None:
                 await asyncio.to_thread(
                     require_remote_provider_quiescence,
@@ -770,6 +791,7 @@ async def _stream_agent_events(
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
             supervise_remote=supervise_remote,
+            supervisor_path=supervisor_path,
             operation_id=execution.operation_id if execution is not None else None,
         )
     ) as stream:

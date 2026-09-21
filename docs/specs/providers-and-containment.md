@@ -454,8 +454,20 @@ must be confirmed stopped before a correction or recovery can reuse the stage.
 Each remote pass has a unique pidfile and a durable start/stop receipt. An
 unresolved pass fences stage reuse across task failure and server restart; a
 read-only check may release that fence only after confirming process absence.
-Unreachable or unprovable process state keeps recovery blocked and preserves the
-stage and receipts for reconciliation.
+A host that reports no pidfile inside a stage that still stands has confirmed
+that absence: the wrapper writes its pidfile before it execs anything and RCP
+never removes one, so nothing was started. That is the only inference allowed,
+and it is what keeps a launch that died before reaching the host from fencing
+its conversation for good. It is drawn only once the launch has ended: the
+post-exit confirmation and the pre-flight fence read absence that way, while a
+stop racing a launch still in flight does not, because a pidfile that has not
+appeared yet may only be late. A vanished stage, a stage path that now leads
+somewhere else, or a directory at that path RCP would not adopt as a stage
+(not the account's own, or not private) is not absence, because whatever
+removed or replaced the stage could have taken a running pass's pidfile with
+it. Unreachable hosts,
+and pidfiles that exist but cannot be read, keep recovery blocked and preserve
+the stage and receipts for reconciliation.
 
 Pause, Resume, Retry, and correction form explicit parent/child attempt chains.
 They retain task mode, graph target, capability, stage, and external-effect
@@ -857,12 +869,17 @@ the turn, and recovering one is not a new turn: the pass belongs to the operatio
 that opened it and is finalized on that same operation, under the authority,
 graph target, episode and accounting identity it already had.
 
-A supervised pass is journalled on its execution host. The supervisor forwards
-output while recording it, and writes its acceptance of the prompt before a byte
-of it reaches the provider. That host-written acceptance, never the presence of a
-receipt in RCP's own database, is what says work may have begun: a controller
-that died in that window has no receipt of its own, and its silence is not the
-host's answer.
+A supervised pass is journalled on its execution host. Its source travels as a
+staged run input and the launch names that path, because a command large enough
+to carry the source cannot reach an SSH multiplexing master: the client fills the
+control socket with the command and then fails passing the process's own file
+descriptors, so the launch dies before the host runs anything. A supervised
+launch without that staged path is refused rather than sent. The supervisor
+forwards output while recording it, and writes its acceptance of the prompt
+before a byte of it reaches the provider. That host-written acceptance, never
+the presence of a receipt in RCP's own database, is what says work may have
+begun: a controller that died in that window has no receipt of its own, and its
+silence is not the host's answer.
 
 The supervisor publishes no verdict. It decides only where the turn ends, which a
 persistent server makes unavoidable, and hands over its bytes. What the turn was

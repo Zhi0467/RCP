@@ -18,6 +18,7 @@ from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
@@ -61,8 +62,9 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
+from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import StateUnreachable, _remote_script, _remote_turn_supervisor_script
+from rcp.transport.state import StateUnreachable, _remote_script
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +223,7 @@ class AgentEvent(BaseModel):
 def _supervised_remote_turn_command(
     command: list[str],
     *,
+    supervisor_path: str,
     pid_file: str,
     provider: str,
     runtime_id: str,
@@ -234,8 +237,7 @@ def _supervised_remote_turn_command(
 
     wrapped = [
         "python3",
-        "-c",
-        _remote_turn_supervisor_script(),
+        supervisor_path,
         "--pid-file",
         pid_file,
         "--provider",
@@ -402,8 +404,22 @@ class AgentProcessControl:
         await process.wait()
 
     @staticmethod
-    def remote_stopped(host: str, pid_file: str, *, raise_unreachable: bool = False) -> bool | None:
+    def remote_stopped(
+        host: str,
+        pid_file: str,
+        *,
+        raise_unreachable: bool = False,
+        absent_is_stopped: bool = False,
+    ) -> bool | None:
         """Observe the exact remote process group; unavailable is not stopped.
+
+        With `absent_is_stopped`, a host reporting no pidfile inside a standing
+        stage is stopped rather than unknown: the wrapper writes that file before
+        it execs anything and nothing in RCP ever removes one, so its absence
+        says this pass started no process. Only a caller that knows the launch is
+        over may ask for that. While a launch is still in flight the pidfile may
+        simply not have been written yet, and reading that as a stop would let a
+        provider start immediately after RCP decided nothing was running.
 
         Deliberately on the shared connection, not the run's. This has to reach
         the host at the moment the run's own connection may be what died, and a
@@ -413,13 +429,20 @@ class AgentProcessControl:
         this or `_terminate_remote` ever takes one.
         """
         stopped, _identity = AgentProcessControl.remote_process_state(
-            host, pid_file, raise_unreachable=raise_unreachable
+            host,
+            pid_file,
+            raise_unreachable=raise_unreachable,
+            absent_is_stopped=absent_is_stopped,
         )
         return stopped
 
     @staticmethod
     def remote_process_state(
-        host: str, pid_file: str, *, raise_unreachable: bool = False
+        host: str,
+        pid_file: str,
+        *,
+        raise_unreachable: bool = False,
+        absent_is_stopped: bool = False,
     ) -> tuple[bool | None, str | None]:
         """Observe absence and, for a live supervised group, its process identity.
 
@@ -450,6 +473,13 @@ class AgentProcessControl:
             raise StateUnreachable(
                 f"{host} is unreachable, so the previous provider call could not be checked."
             )
+        if result.returncode == REMOTE_PROBE_ABSENT:
+            # The wrapper writes its pidfile before it execs anything, so a host
+            # that can see there is no pidfile is telling RCP no process was ever
+            # started here. Reading that as "unknown" is what turned one failed
+            # launch into a conversation that could never run again -- but only a
+            # caller that knows the launch is over may read it that way.
+            return (True, None) if absent_is_stopped else (None, None)
         stopped = {0: True, 1: False}.get(result.returncode)
         identity = None
         if stopped is False:
@@ -460,21 +490,37 @@ class AgentProcessControl:
         return stopped, identity
 
     @staticmethod
-    def _confirm_remote_stopped(host: str, pid_file: str, started_at: float) -> bool:
-        """Settle this newly spawned pass before allowing another runtime or turn."""
-        return AgentProcessControl.remote_stopped(host, pid_file) is True or (
-            AgentProcessControl._terminate_remote_after_hold(host, pid_file, started_at)
+    def _confirm_remote_stopped(
+        host: str, pid_file: str, started_at: float, *, launch_ended: bool = False
+    ) -> bool:
+        """Settle this newly spawned pass before allowing another runtime or turn.
+
+        `launch_ended` says the local SSH process has already exited, which is
+        what makes a missing pidfile mean the wrapper never wrote one. While the
+        launch is still in flight it may only be late, so absence stays unknown.
+        """
+        return AgentProcessControl.remote_stopped(
+            host, pid_file, absent_is_stopped=launch_ended
+        ) is True or (
+            AgentProcessControl._terminate_remote_after_hold(
+                host, pid_file, started_at, absent_is_stopped=launch_ended
+            )
         )
 
     @classmethod
     def _terminate_remote_after_hold(
-        cls, host: str, pid_file: str, started_at: float | None
+        cls,
+        host: str,
+        pid_file: str,
+        started_at: float | None,
+        *,
+        absent_is_stopped: bool = False,
     ) -> bool:
         """The remote counterpart of `_terminate`; `None` means nothing was spawned yet."""
 
         if started_at is not None and (remaining := remaining_startup_hold(started_at)) > 0:
             time.sleep(remaining)
-        return cls._terminate_remote(host, pid_file)
+        return cls._terminate_remote(host, pid_file, absent_is_stopped=absent_is_stopped)
 
     @classmethod
     def stop_remote_process(
@@ -495,6 +541,8 @@ class AgentProcessControl:
         host: str,
         pid_file: str,
         expect_identity: str | None = None,
+        *,
+        absent_is_stopped: bool = False,
     ) -> bool:
         # Shared connection on purpose; see `remote_stopped`.
         command = [
@@ -517,7 +565,10 @@ class AgentProcessControl:
                 timeout=REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
                 check=False,
             )
-            return result.returncode == 0
+            # An active stop only counts a confirmed stop. A pidfile that has
+            # not appeared yet is not a pass that never started.
+            settled = {0, REMOTE_PROBE_ABSENT} if absent_is_stopped else {0}
+            return result.returncode in settled
         except (OSError, subprocess.TimeoutExpired):
             return False
 
@@ -1065,6 +1116,7 @@ class AgentLauncher:
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        supervisor_path: str | None = None,
         operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
@@ -1104,6 +1156,7 @@ class AgentLauncher:
                         runtime_id=runtime.id,
                         before_start=before_start,
                         supervise_remote=supervise_remote,
+                        supervisor_path=supervisor_path,
                         operation_id=operation_id,
                     )
                 ) as stream:
@@ -1149,6 +1202,7 @@ class AgentLauncher:
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
+        supervisor_path: str | None = None,
         operation_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
@@ -1255,8 +1309,11 @@ class AgentLauncher:
         if supervise_remote:
             if not host or remote_pid_file is None:
                 raise ValueError("A supervised provider turn requires a remote pidfile.")
+            if not supervisor_path:
+                raise ValueError("A supervised provider turn requires its staged supervisor.")
             command = _supervised_remote_turn_command(
                 command,
+                supervisor_path=supervisor_path,
                 pid_file=remote_pid_file,
                 provider=provider,
                 runtime_id=runtime.id,
@@ -1598,7 +1655,13 @@ class AgentLauncher:
             )
             if host and remote_pid_file and not remote_result_pending:
                 remote_stopped = await asyncio.to_thread(
-                    AgentProcessControl._confirm_remote_stopped, host, remote_pid_file, started_at
+                    partial(
+                        AgentProcessControl._confirm_remote_stopped,
+                        host,
+                        remote_pid_file,
+                        started_at,
+                        launch_ended=True,
+                    )
                 )
                 completion_stop_failed = not remote_stopped
                 if not prompt_delivered and remote_stopped:
@@ -1606,12 +1669,6 @@ class AgentLauncher:
             if not prompt_delivered and not (
                 control is not None and control.pause_requested.is_set()
             ):
-                if completion_stop_failed:
-                    yield AgentEvent(
-                        event="error",
-                        text="RCP could not confirm that the remote provider process stopped. Runtime fallback is blocked.",
-                    )
-                    return
                 detail = (
                     pre_prompt_error
                     or stderr
@@ -1621,6 +1678,22 @@ class AgentLauncher:
                         else f"{provider} closed its provider runtime before accepting the turn."
                     )
                 )
+                if completion_stop_failed:
+                    # Why the launch failed is the human's first question, and
+                    # this branch used to answer a second one instead. The stop
+                    # RCP could not confirm is why no other runtime may follow;
+                    # it is not what went wrong.
+                    yield AgentEvent(
+                        event="error",
+                        text="\n".join(
+                            (
+                                detail,
+                                "RCP could not confirm that the remote provider process "
+                                "stopped, so runtime fallback is blocked.",
+                            )
+                        ),
+                    )
+                    return
                 raise _PrePromptRuntimeFailure(detail)
             paused = control is not None and control.pause_requested.is_set()
             turn_failed = bool(

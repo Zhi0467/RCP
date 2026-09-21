@@ -74,11 +74,13 @@ def test_shipped_helper_confirms_stop_and_escalates_when_needed(owned_group, ign
         os.killpg(process.pid, 0)
 
 
-def test_missing_pidfile_is_not_success(tmp_path):
-    assert (
-        remote_terminate_provider.main(["helper", str(tmp_path / "missing"), "0", "0", "0", "0.01"])
-        == 1
+def test_missing_pidfile_never_reports_a_stop_it_did_not_see(tmp_path):
+    """Absence is its own answer, and it is never dressed up as a confirmed stop."""
+
+    code = remote_terminate_provider.main(
+        ["helper", str(tmp_path / "missing"), "0", "0", "0", "0.01"]
     )
+    assert code == remote_terminate_provider.ABSENT
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1", "not-a-pid", "9" * 100])
@@ -179,11 +181,10 @@ def test_shipped_probe_observes_live_then_absent_group_without_stopping_it(owned
     assert remote_terminate_provider.provider_stopped(str(pid_file)) is True
 
 
-@pytest.mark.parametrize("value", [None, "", "not-a-pid", "0", "1", "9" * 100])
-def test_probe_invalid_or_missing_receipt_is_unknown_without_waiting(tmp_path, monkeypatch, value):
+@pytest.mark.parametrize("value", ["", "not-a-pid", "0", "1", "9" * 100])
+def test_probe_unreadable_receipt_is_unknown_without_waiting(tmp_path, monkeypatch, value):
     pid_file = tmp_path / "agent.pid"
-    if value is not None:
-        pid_file.write_text(value)
+    pid_file.write_text(value)
 
     def unexpected_sleep(_seconds):
         raise AssertionError("A read-only probe must not wait for a receipt")
@@ -270,3 +271,81 @@ def test_stop_refuses_a_recycled_process_identity_without_signalling(tmp_path, m
         poll_interval=0.01,
         expect_identity="boot:original-process",
     )
+
+
+def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
+    """What may clear the guard, and what must not.
+
+    The wrapper writes its pidfile before it execs anything and RCP never
+    removes one, so inside a stage that still stands a missing pidfile means no
+    process was started. A stage that is gone proves nothing: whatever removed
+    it could have taken a running pass's pidfile too, and that pass is what this
+    guard exists to catch.
+    """
+
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+
+    # Never written, stage intact: the host has answered.
+    assert remote_terminate_provider.main(["helper", "--probe", str(stage / "never.pid")]) == (
+        remote_terminate_provider.ABSENT
+    )
+
+    # Stage gone: unknown, because the removal could have taken a live pass with it.
+    assert (
+        remote_terminate_provider.main(
+            ["helper", "--probe", str(tmp_path / "vanished" / "agent.pid")]
+        )
+        == remote_terminate_provider.UNKNOWN
+    )
+
+    # Stage path swapped for a link to some other directory: unknown for the
+    # same reason. The real stage, pidfile and process may all still exist.
+    (tmp_path / "elsewhere").mkdir(mode=0o700)
+    (tmp_path / "swapped").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    assert (
+        remote_terminate_provider.main(
+            ["helper", "--probe", str(tmp_path / "swapped" / "agent.pid")]
+        )
+        == remote_terminate_provider.UNKNOWN
+    )
+
+    # An ordinary directory recreated at the path is not the stage either: a
+    # stage is private to the account, the way `open` makes it and `attach`
+    # checks it, and this one is not.
+    recreated = tmp_path / "recreated"
+    recreated.mkdir()
+    os.chmod(recreated, 0o755)
+    assert (
+        remote_terminate_provider.main(["helper", "--probe", str(recreated / "agent.pid")])
+        == remote_terminate_provider.UNKNOWN
+    )
+
+
+def test_an_in_flight_stop_never_reads_absence_as_a_stop(tmp_path, monkeypatch):
+    """Only a caller that knows the launch is over may clear a never-written pidfile.
+
+    While the local SSH process is still alive the wrapper may simply not have
+    written its pidfile yet. A stop that read that as done would let the
+    provider start right after RCP decided nothing was running, so both the
+    read-only probe and the active stop keep absence unknown unless told the
+    launch has ended.
+    """
+
+    from rcp.agents import launcher
+
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    pid_file = str(stage / "never.pid")
+    monkeypatch.setattr(
+        launcher,
+        "ssh_arguments",
+        lambda _host, remote_command: [sys.executable, *shlex.split(remote_command)[1:]],
+    )
+    monkeypatch.setattr(launcher, "REMOTE_PROVIDER_PID_WAIT_SECONDS", 0.05)
+    control = launcher.AgentProcessControl
+
+    assert control.remote_stopped("host", pid_file) is None
+    assert control._terminate_remote("host", pid_file) is False
+    assert control.remote_stopped("host", pid_file, absent_is_stopped=True) is True
+    assert control._terminate_remote("host", pid_file, absent_is_stopped=True) is True

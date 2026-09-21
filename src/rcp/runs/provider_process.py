@@ -16,9 +16,16 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
     A host the probe cannot reach raises `StateUnreachable`, the typed word for
     a lost link, so the task this fails is classified as transport loss rather
     than as an ordinary failure a reattempt could never fix.
+
+    Every pass this reads belongs to a launch that has already ended, so a stage
+    that still stands and holds no pidfile is the host reporting that the pass
+    started nothing. Without that, a launch which failed before the remote ran
+    would fence its conversation until someone cleared the record by hand.
     """
     for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
-        stopped = AgentProcessControl.remote_stopped(host, pid_file, raise_unreachable=True)
+        stopped = AgentProcessControl.remote_stopped(
+            host, pid_file, raise_unreachable=True, absent_is_stopped=True
+        )
         if stopped is not True:
             reason = (
                 "A previous provider call is still running"

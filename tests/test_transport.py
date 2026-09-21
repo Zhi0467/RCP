@@ -2317,6 +2317,59 @@ def test_remote_directory_input_reuses_only_matching_immutable_content(
         stage.close()
 
 
+def test_content_addressed_input_survives_a_read_that_never_reached_the_host(
+    tmp_path, monkeypatch
+) -> None:
+    """A dropped link while reading an input must not make the turn unstageable.
+
+    The reuse read fails the same way whether the file is missing or the link
+    went away, so the restage has to be one the commit can accept. It still
+    proves the content: the same label carrying different bytes is refused.
+    """
+
+    from rcp.runs.shared import _stage_or_reuse_task_input
+
+    root = tmp_path / "stage"
+    (root / "inputs").mkdir(parents=True)
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    real_run = subprocess.run
+
+    def fake_run(arguments, **_kwargs):
+        if arguments[0] == "rsync":
+            source = Path(arguments[-2].rstrip("/"))
+            destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        return real_run(arguments, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: real_run(arguments, capture_output=True, text=True, check=False),
+    )
+
+    try:
+        first = _stage_or_reuse_task_input(None, stage, "master-context.md", "Run the task.\n")
+        stage.finalize_inputs()
+
+        def link_dropped(label):
+            raise ValueError(label)
+
+        monkeypatch.setattr(stage, "read_input_text", link_dropped)
+        second = _stage_or_reuse_task_input(None, stage, "master-context.md", "Run the task.\n")
+        stage.finalize_inputs()
+        assert first == second == str(root / "inputs" / "master-context.md")
+        assert (root / "inputs" / "master-context.md").read_text() == "Run the task.\n"
+
+        _stage_or_reuse_task_input(None, stage, "master-context.md", "Run something else.\n")
+        with pytest.raises(StateUnavailable, match="does not match its content label"):
+            stage.finalize_inputs()
+    finally:
+        stage.close()
+
+
 def test_remote_stage_failed_finalize_cleans_local_pending_inputs(tmp_path, monkeypatch) -> None:
     source = tmp_path / "contract.md"
     source.write_text("Run the task.\n", encoding="utf-8")
