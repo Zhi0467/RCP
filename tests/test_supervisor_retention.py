@@ -90,6 +90,13 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
     for record in chain:
         _workspace(checkpoints, record["operation_id"])
     records = [(record, float(index)) for index, record in enumerate(chain)]
+    # Two newer journals that aborted before any checkpoint existed own nothing
+    # and must not take the retained slots from the real rollback artifacts.
+    for offset in (1, 2):
+        aborted = _record(
+            checkpoints, _release(releases, 104), _release(releases, 105), phase="aborted"
+        )
+        records.append((aborted, float(len(chain) + offset)))
 
     plan = plan_retention(
         records=records,

@@ -97,7 +97,11 @@ def plan_retention(
         raise SupervisorError("A deployment operation is unfinished; nothing is pruned.")
 
     newest_first = sorted(records, key=lambda item: item[1], reverse=True)
-    kept_operations = [record for record, _ in newest_first[:RETAINED_CHECKPOINTS]]
+    # A journal that ended before its checkpoint existed, or whose checkpoint
+    # an earlier prune removed, owns no rollback artifact and takes no slot.
+    kept_operations = [
+        record for record, _ in newest_first if (checkpoints_root / record["operation_id"]).is_dir()
+    ][:RETAINED_CHECKPOINTS]
     kept_ids = {record["operation_id"] for record in kept_operations} | set(protected_operation_ids)
     recorded_ids = {record["operation_id"] for record, _ in records}
     # A kept checkpoint is only usable if the release it would roll back to,

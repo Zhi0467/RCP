@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +12,7 @@ from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.transport import StateMissing, StateUnavailable, StateUnreachable
+from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 
 from .test_remote_provider_receipts import _store
 
@@ -167,3 +167,28 @@ async def test_a_failed_input_transfer_marks_only_a_lost_link(
     assert outcome.failed and len(frames) == 1 and str(failure) in frames[0]
     # A host that answers, "gone" or "refused", has not lost its link; only silence has.
     assert execution.stage_unreachable is (type(failure) is StateUnreachable)
+
+
+@pytest.mark.parametrize("spawned", [True, False])
+def test_only_a_spawned_rsync_exit_255_names_a_lost_link(
+    monkeypatch: pytest.MonkeyPatch, spawned: bool
+) -> None:
+    """A local rsync that cannot start is given the failed code the commit
+    script needs to clean up, but that code is RCP's own, not ssh's."""
+
+    stage = RemoteRunStage(HOST)
+    stage.root = PurePosixPath("/tmp/rcp-run.test")
+    (stage._pending_input_root() / "notes.md").write_text("inputs")
+    monkeypatch.setattr(
+        stage, "_ssh", lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", "")
+    )
+
+    def rsync(arguments, **_kwargs):
+        if not spawned:
+            raise FileNotFoundError("rsync")
+        return subprocess.CompletedProcess(arguments, 255, "", "ssh: connection closed")
+
+    monkeypatch.setattr(subprocess, "run", rsync)
+    with pytest.raises(StateUnavailable) as caught:
+        stage.finalize_inputs()
+    assert isinstance(caught.value, StateUnreachable) is spawned

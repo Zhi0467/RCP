@@ -569,6 +569,7 @@ except BaseException:
 """
         )
         try:
+            spawned = True
             try:
                 result = subprocess.run(
                     [
@@ -584,6 +585,9 @@ except BaseException:
                     check=False,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
+                # The commit script needs a failed code to clean the batch up.
+                # This code is RCP's own, not ssh's, so it never names a lost link.
+                spawned = False
                 result = subprocess.CompletedProcess([], 255, "", str(exc))
             committed = self._ssh(
                 [
@@ -601,7 +605,9 @@ except BaseException:
             # any other code is the host refusing or rejecting the inputs, and a
             # reattempt would meet the same answer.
             if result.returncode:
-                unavailable = StateUnreachable if result.returncode == 255 else StateUnavailable
+                unavailable = (
+                    StateUnreachable if spawned and result.returncode == 255 else StateUnavailable
+                )
                 raise unavailable(result.stderr.strip() or "could not transfer remote task inputs")
             if committed.returncode:
                 unavailable = StateUnreachable if committed.returncode == 255 else StateUnavailable
