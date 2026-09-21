@@ -13697,6 +13697,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   min-width: 0;
 }
 .terminal-emulator {
+  /* The fit addon sizes the grid from this element's computed width and height
+     and subtracts no padding of its own, so the box has to be measured in
+     content terms. Under the inherited border-box the grid overran the padding
+     and the enclosing overflow clip cut the last row through the cursor. */
+  box-sizing: content-box;
   height: clamp(360px, 62vh, 850px);
   min-width: 0;
   padding: 12px;
