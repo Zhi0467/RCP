@@ -90,12 +90,17 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
     for record in chain:
         _workspace(checkpoints, record["operation_id"])
     records = [(record, float(index)) for index, record in enumerate(chain)]
-    # Two newer journals that aborted before any checkpoint existed own nothing
-    # and must not take the retained slots from the real rollback artifacts.
+    # Two newer journals aborted after preparing a candidate but before any
+    # checkpoint was recorded: their workspaces hold no rollback artifact and
+    # must not take the retained slots; terminal and recorded, they are reclaimed.
+    aborted_ids = set()
     for offset in (1, 2):
         aborted = _record(
             checkpoints, _release(releases, 104), _release(releases, 105), phase="aborted"
         )
+        aborted["checkpoint"] = None
+        (checkpoints / aborted["operation_id"] / "prepared").mkdir(parents=True, mode=0o700)
+        aborted_ids.add(aborted["operation_id"])
         records.append((aborted, float(len(chain) + offset)))
 
     plan = plan_retention(
@@ -113,7 +118,7 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
     assert sorted(plan.kept_checkpoints) == sorted(newest)
     assert {path.name for path in plan.remove_checkpoints} == {
         record["operation_id"] for record in chain[:2]
-    }
+    } | aborted_ids
     # 104 is live, 103 is its rollback target, 102 is where the older kept
     # checkpoint would roll back to. 100 and 101 are unreachable.
     assert plan.kept_releases == ("104", "103", "102")

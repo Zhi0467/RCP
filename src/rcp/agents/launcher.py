@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
@@ -117,6 +117,10 @@ class ProviderReadiness(BaseModel):
     #: a project manifest may save it as a stable pin.
     binary_path: str | None = None
     path_state: ProviderPathState = "resolved"
+    #: `unreachable` because ssh itself exited 255 under a probe that ran, the
+    #: one unreachable a reattempt may fix. A local ssh that could not start is
+    #: unreachable too, but not this. Read by launch classification only.
+    link_lost: bool = Field(default=False, exclude=True)
     #: What this CLI will actually accept, probed where it can enumerate and
     #: declared where it cannot. Empty when the provider is unreachable, which
     #: leaves the UI showing the saved manifest values.
@@ -562,16 +566,37 @@ def _discover_local_provider(provider: str) -> str | None:
     return None
 
 
-def _unreachable_readiness(
-    provider: str, *, host: str, binary_path: str | None = None
-) -> ProviderReadiness:
-    """The answer when ssh itself exited 255 under any probe of one readiness check.
+class _ProbeNotStarted(subprocess.CompletedProcess):
+    """A probe whose ssh never ran. Its 255 is RCP's own, not ssh's word."""
 
-    Discovery, version, auth, and catalog probes can each be the one that finds
-    the link gone. They all say so the same way, so a launch can type the loss
-    from `path_state` instead of reading the reason. The Work probe keeps its
-    own answer: by then the host has spoken three times, and a 255 there leaves
-    Work unchecked rather than the saved path rejected.
+
+def _link_lost(result: subprocess.CompletedProcess[str]) -> bool:
+    """Whether ssh itself ran and exited 255: the one code that names a lost link."""
+
+    return result.returncode == 255 and not isinstance(result, _ProbeNotStarted)
+
+
+def _unreachable_reason(probe: subprocess.CompletedProcess[str], *, host: str, checked: str) -> str:
+    if _link_lost(probe):
+        return f"{host} is unreachable, so {checked} could not be checked."
+    return f"ssh could not start to reach {host}, so {checked} could not be checked: " + (
+        probe.stderr.strip() or "unknown error"
+    )
+
+
+def _unreachable_readiness(
+    provider: str,
+    probe: subprocess.CompletedProcess[str],
+    *,
+    host: str,
+    binary_path: str | None = None,
+) -> ProviderReadiness:
+    """The answer when a remote probe of one readiness check exited 255.
+
+    Discovery, version, auth, catalog, and Work probes can each be the one that
+    finds the link gone. They all say so the same way, and only a probe ssh
+    actually ran marks the loss a reattempt may fix; an ssh that could not
+    start is a local defect the same reattempt would meet again.
     """
 
     return ProviderReadiness(
@@ -581,7 +606,8 @@ def _unreachable_readiness(
         authenticated=False,
         binary_path=binary_path,
         path_state="unreachable",
-        reason=f"{host} is unreachable, so {binary_path or provider} could not be checked.",
+        link_lost=_link_lost(probe),
+        reason=_unreachable_reason(probe, host=host, checked=binary_path or provider),
     )
 
 
@@ -797,7 +823,7 @@ class AgentLauncher:
         configured = binary is not None
         candidate = binary
         if configured:
-            path_state, path_problem = self._configured_path_state(binary, host=host)
+            path_state, path_problem, link_lost = self._configured_path_state(binary, host=host)
             if path_state != "resolved":
                 return ProviderReadiness(
                     provider=provider,
@@ -806,13 +832,14 @@ class AgentLauncher:
                     authenticated=False,
                     binary_path=binary,
                     path_state=path_state,
+                    link_lost=link_lost,
                     reason=path_problem,
                 )
             installed = True
         elif host:
             installed_probe = self._probe(host, ["command", "-v", provider])
             if installed_probe.returncode == 255:
-                return _unreachable_readiness(provider, host=host)
+                return _unreachable_readiness(provider, installed_probe, host=host)
             discovered = installed_probe.stdout.strip().splitlines()
             candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
             installed = bool(candidate and PurePosixPath(candidate).is_absolute())
@@ -841,7 +868,9 @@ class AgentLauncher:
                 host, [candidate, "--version"], environment=version_environment
             )
         if host and version_result.returncode == 255:
-            return _unreachable_readiness(provider, host=host, binary_path=candidate)
+            return _unreachable_readiness(
+                provider, version_result, host=host, binary_path=candidate
+            )
         version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
         version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
         path_state: ProviderPathState = "resolved" if configured else "unconfigured"
@@ -865,7 +894,7 @@ class AgentLauncher:
             if login_reason is None:
                 auth = self._probe(host, profile.auth_command(candidate), environment=environment)
                 if host and auth.returncode == 255:
-                    return _unreachable_readiness(provider, host=host, binary_path=candidate)
+                    return _unreachable_readiness(provider, auth, host=host, binary_path=candidate)
                 authenticated = profile.is_authenticated(auth)
                 if self._observe_probe_failure(provider, host, auth, generation):
                     authenticated = False
@@ -881,7 +910,7 @@ class AgentLauncher:
                 else None
             )
             if catalog is not None and host and catalog.returncode == 255:
-                return _unreachable_readiness(provider, host=host, binary_path=candidate)
+                return _unreachable_readiness(provider, catalog, host=host, binary_path=candidate)
             if catalog is not None and self._observe_probe_failure(
                 provider, host, catalog, generation
             ):
@@ -894,6 +923,10 @@ class AgentLauncher:
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
             if work_command is not None:
                 work_probe = self._probe(host, work_command, environment=environment)
+                if host and work_probe.returncode == 255:
+                    return _unreachable_readiness(
+                        provider, work_probe, host=host, binary_path=candidate
+                    )
                 if self._observe_probe_failure(provider, host, work_probe, generation):
                     authenticated = False
                     work_like_available = False
@@ -957,42 +990,56 @@ class AgentLauncher:
         binary: str,
         *,
         host: str,
-    ) -> tuple[ProviderPathState, str | None]:
+    ) -> tuple[ProviderPathState, str | None, bool]:
         where = f" on {host}" if host else ""
         if host:
             probe = self._probe(host, ["python3", "-c", _REMOTE_PATH_PROBE, binary])
             if probe.returncode == 0:
-                return "resolved", None
+                return "resolved", None, False
             if probe.returncode == 255:
-                return (
-                    "unreachable",
-                    f"{host} is unreachable, so {binary} could not be checked.",
-                )
+                reason = _unreachable_reason(probe, host=host, checked=binary)
+                return "unreachable", reason, _link_lost(probe)
             if probe.returncode == _REMOTE_PATH_MISSING:
-                return "missing", f"The recorded executable {binary}{where} does not exist."
+                return "missing", f"The recorded executable {binary}{where} does not exist.", False
             if probe.returncode == _REMOTE_PATH_NOT_FILE:
-                return "denied", f"The recorded executable {binary}{where} is not a regular file."
+                return (
+                    "denied",
+                    f"The recorded executable {binary}{where} is not a regular file.",
+                    False,
+                )
             if probe.returncode == _REMOTE_PATH_NOT_EXECUTABLE:
-                return "denied", f"The recorded executable {binary}{where} is not executable."
+                return (
+                    "denied",
+                    f"The recorded executable {binary}{where} is not executable.",
+                    False,
+                )
             if probe.returncode == _REMOTE_PATH_DENIED:
-                return "denied", f"Execute access to {binary}{where} was denied."
-            return "denied", f"The recorded executable {binary}{where} could not be inspected."
+                return "denied", f"Execute access to {binary}{where} was denied.", False
+            return (
+                "denied",
+                f"The recorded executable {binary}{where} could not be inspected.",
+                False,
+            )
 
         try:
             mode = Path(binary).stat().st_mode
         except FileNotFoundError:
-            return "missing", f"The recorded executable {binary} does not exist."
+            return "missing", f"The recorded executable {binary} does not exist.", False
         except PermissionError:
-            return "denied", f"Access to the recorded executable {binary} was denied."
+            return "denied", f"Access to the recorded executable {binary} was denied.", False
         except OSError as exc:
-            return "denied", f"The recorded executable {binary} could not be inspected: {exc}."
+            return (
+                "denied",
+                f"The recorded executable {binary} could not be inspected: {exc}.",
+                False,
+            )
         if not stat.S_ISREG(mode):
-            return "denied", f"The recorded executable {binary} is not a regular file."
+            return "denied", f"The recorded executable {binary} is not a regular file.", False
         if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-            return "denied", f"The recorded executable {binary} is not executable."
+            return "denied", f"The recorded executable {binary} is not executable.", False
         if not os.access(binary, os.X_OK):
-            return "denied", f"Execute access to {binary} was denied."
-        return "resolved", None
+            return "denied", f"Execute access to {binary} was denied.", False
+        return "resolved", None, False
 
     async def stream(
         self,
@@ -1129,12 +1176,11 @@ class AgentLauncher:
             yield AgentEvent(
                 event="error",
                 text=readiness.reason or "Provider is unavailable.",
-                # `unreachable` is set only when the SSH probe itself exited 255,
-                # so this is the probe's own word, not a reading of its text.
+                # Set only when a probe ssh actually ran exited 255: the probe's
+                # own word, not a reading of its text or of `unreachable`, which
+                # a local ssh that could not start also reports.
                 failure_kind=(
-                    "transport_lost"
-                    if host and getattr(readiness, "path_state", "resolved") == "unreachable"
-                    else None
+                    "transport_lost" if host and getattr(readiness, "link_lost", False) else None
                 ),
             )
             return
@@ -1674,6 +1720,7 @@ class AgentLauncher:
                             capability=capability,
                             runtime_id=runtime.id,
                             host=host,
+                            executable=resolved_binary,
                             pid=process.pid,
                             return_code=process.returncode,
                             duration_seconds=time.monotonic() - launched_at,
@@ -1750,8 +1797,11 @@ class AgentLauncher:
                 check=False,
                 env=environment.local_env if environment and not host else None,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            # ssh ran and the host did not answer in time: its own 255.
             return subprocess.CompletedProcess(arguments, 255, "", str(exc))
+        except OSError as exc:
+            return _ProbeNotStarted(arguments, 255, "", str(exc))
 
     @staticmethod
     def _remote_login_command(
@@ -1830,6 +1880,7 @@ def _log_provider_exit(
     capability: AgentCapability,
     runtime_id: str,
     host: str,
+    executable: str,
     pid: int,
     return_code: int | None,
     duration_seconds: float,
@@ -1845,12 +1896,13 @@ def _log_provider_exit(
         detail = f" reason={_exit_reason(provider, return_code, host)!r}"
     logger.log(
         logging.INFO if return_code == 0 else logging.WARNING,
-        "provider process exited provider=%s capability=%s runtime=%s host=%s pid=%s "
-        "return_code=%s duration_seconds=%.1f operation=%s%s",
+        "provider process exited provider=%s capability=%s runtime=%s host=%s "
+        "executable=%s pid=%s return_code=%s duration_seconds=%.1f operation=%s%s",
         provider,
         capability,
         runtime_id,
         host or "local",
+        executable,
         pid,
         return_code,
         duration_seconds,

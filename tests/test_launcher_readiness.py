@@ -123,9 +123,14 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
     monkeypatch.setattr(launcher, "_probe", probe)
     readiness = launcher.readiness("claude", binary=str(binary), host=host)
     assert readiness.work_like_available is None
-    assert "could not be checked" in readiness.work_like_reason
-    assert "connection failed" in readiness.work_like_reason
-    assert _WORK_PROBE_REASON not in readiness.work_like_reason
+    assert _WORK_PROBE_REASON not in (readiness.work_like_reason or "")
+    if host:
+        # ssh's own 255: the host is gone, the saved path is not wrong.
+        assert readiness.path_state == "unreachable" and readiness.link_lost
+        assert "unreachable" in (readiness.reason or "")
+    else:
+        assert "could not be checked" in readiness.work_like_reason
+        assert "connection failed" in readiness.work_like_reason
 
 
 @pytest.mark.asyncio

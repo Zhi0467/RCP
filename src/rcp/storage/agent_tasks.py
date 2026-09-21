@@ -118,8 +118,10 @@ _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
 # exactly that. Claiming it inside the transaction that inserts the child lets
 # an automatic reattempt and a human Retry race without running the turn twice.
 # Experiment and Auto-research recoveries keep their own atomic claims, because
-# their lineages carry children that are not recoveries.
-_EXCLUSIVE_CONTINUATION_CAUSES = frozenset({"resume", "retry", "handoff"})
+# their lineages carry children that are not recoveries. The first graph repair
+# of a Work turn has its own claimant too; a recovery of a failed repair, which
+# reaches this path as `graph_repair`, is an ordinary recovery.
+_EXCLUSIVE_CONTINUATION_CAUSES = frozenset({"resume", "retry", "handoff", "graph_repair"})
 
 
 def _joined_repositories(aliases: Sequence[str]) -> str:

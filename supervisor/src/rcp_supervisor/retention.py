@@ -67,6 +67,15 @@ def _is_operation_id(name: str) -> bool:
     return identity.version == 4 and str(identity) == name
 
 
+def _owns_checkpoint(record: dict, checkpoints_root: Path) -> bool:
+    checkpoint = record.get("checkpoint")
+    directory = checkpoint.get("directory") if isinstance(checkpoint, dict) else None
+    if not isinstance(directory, str):
+        return False
+    path = Path(directory)
+    return path.parent == checkpoints_root / record["operation_id"] and path.is_dir()
+
+
 def _children(root: Path) -> list[os.DirEntry]:
     with os.scandir(root) as entries:
         return sorted(entries, key=lambda entry: entry.name)
@@ -97,10 +106,11 @@ def plan_retention(
         raise SupervisorError("A deployment operation is unfinished; nothing is pruned.")
 
     newest_first = sorted(records, key=lambda item: item[1], reverse=True)
-    # A journal that ended before its checkpoint existed, or whose checkpoint
-    # an earlier prune removed, owns no rollback artifact and takes no slot.
+    # A journal that ended before its checkpoint was recorded, or whose
+    # checkpoint an earlier prune removed, owns no rollback artifact and takes
+    # no slot, even when its workspace still holds a prepared candidate.
     kept_operations = [
-        record for record, _ in newest_first if (checkpoints_root / record["operation_id"]).is_dir()
+        record for record, _ in newest_first if _owns_checkpoint(record, checkpoints_root)
     ][:RETAINED_CHECKPOINTS]
     kept_ids = {record["operation_id"] for record in kept_operations} | set(protected_operation_ids)
     recorded_ids = {record["operation_id"] for record, _ in records}

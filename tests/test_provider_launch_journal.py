@@ -76,6 +76,7 @@ async def test_provider_process_leaves_two_journal_lines_and_none_of_its_output(
     start_line, exit_line = started[0].getMessage(), exited[0].getMessage()
     assert "provider=codex" in start_line and "capability=scratch_patch" in start_line
     assert "host=local" in start_line and "operation=op-journal" in start_line
+    assert "executable=codex" in start_line and "executable=codex" in exit_line
     pid = next(part for part in start_line.split() if part.startswith("pid=")).removeprefix("pid=")
     assert int(pid) > 0 and f"pid={pid}" in exit_line
     assert f"return_code={exit_code}" in exit_line and "duration_seconds=" in exit_line

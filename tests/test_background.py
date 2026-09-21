@@ -3733,10 +3733,13 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     assert kind(stage_unreachable=True, host="") is None
 
 
-def test_a_second_recovery_of_one_task_is_refused_inside_admission(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cause", ["retry", "graph_repair"])
+def test_a_second_recovery_of_one_task_is_refused_inside_admission(
+    tmp_path: Path, cause: str
+) -> None:
     """The window between `_transport_retry_superseded` and `retry` used to admit
     a second child if a human Retry was admitted inside it. The claim now lives
-    in the transaction that inserts the child."""
+    in the transaction that inserts the child, for a graph-repair recovery too."""
 
     store = _store(tmp_path)
     # One request throughout: a continuation must keep its parent's dispatch authority.
@@ -3766,7 +3769,7 @@ def test_a_second_recovery_of_one_task_is_refused_inside_admission(tmp_path: Pat
             operation_id="timer-retry",
             parent_operation_id=failed.operation_id,
             request=request,
-            continuation_cause="retry",
+            continuation_cause=cause,
         )
     assert store.agent_task("timer-retry") is None
 

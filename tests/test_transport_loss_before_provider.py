@@ -35,13 +35,14 @@ def _request() -> RunRequest:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path_state", ["unreachable", "missing"])
+@pytest.mark.parametrize("link_lost", [True, False])
 async def test_an_unreachable_readiness_probe_types_its_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_state: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_lost: bool
 ) -> None:
     """Six real failed turns read `<host> is unreachable` and none carried a
-    provider exit, so the classifier saw nothing. The probe already knows the
-    SSH exit was 255; that word travels on the error event, never its text."""
+    provider exit, so the classifier saw nothing. The probe already knows whether
+    ssh ran and exited 255; that word travels on the error event, never its text,
+    and `unreachable` alone is not it: a local ssh that cannot start says so too."""
 
     launcher = AgentLauncher()
     monkeypatch.setattr(
@@ -51,7 +52,8 @@ async def test_an_unreachable_readiness_probe_types_its_error(
             provider="codex",
             installed=False,
             authenticated=False,
-            path_state=path_state,  # type: ignore[arg-type]
+            path_state="unreachable",
+            link_lost=link_lost,
             reason=f"{HOST} is unreachable, so codex could not be checked.",
         ),
     )
@@ -63,15 +65,16 @@ async def test_an_unreachable_readiness_probe_types_its_error(
     ]
     (error,) = [event for event in events if event.event == "error"]
     assert error.text.startswith(f"{HOST} is unreachable")
-    assert error.failure_kind == ("transport_lost" if path_state == "unreachable" else None)
+    assert error.failure_kind == ("transport_lost" if link_lost else None)
 
 
+@pytest.mark.parametrize("ssh_ran", [True, False])
 def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, ssh_ran: bool
 ) -> None:
-    """Discovery and version answered; ssh died under the auth probe. The answer
-    is still `unreachable`, and it is not cached: the next launch, an automatic
-    reattempt included, asks the host again instead of failing from memory."""
+    """Discovery and version answered; the auth probe exited 255. The answer is
+    `unreachable` either way and is not cached, so the next launch asks the host
+    again. Only a probe whose ssh ran marks the loss a reattempt may fix."""
 
     launcher = AgentLauncher()
     probes: list[list[str]] = []
@@ -82,11 +85,14 @@ def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
             return subprocess.CompletedProcess(command, 0, "/opt/codex\n", "")
         if command[-1] == "--version":
             return subprocess.CompletedProcess(command, 0, "codex 1.0\n", "")
-        return subprocess.CompletedProcess(command, 255, "", "ssh: connection timed out")
+        if ssh_ran:
+            return subprocess.CompletedProcess(command, 255, "", "ssh: connection timed out")
+        return launcher_module._ProbeNotStarted(command, 255, "", "No such file: 'ssh'")
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
     first = launcher.readiness("codex", host=HOST)
     assert first.path_state == "unreachable" and not first.authenticated
+    assert first.link_lost is ssh_ran
     assert launcher.cached_readiness("codex", host=HOST) is None
     probed = len(probes)
     launcher.readiness("codex", host=HOST)
