@@ -83,6 +83,7 @@ def test_existing_unsafe_root_storage_is_refused_without_normalizing_it(
         ["restore", "/tmp/archive.tar.age"],
         ["supervisor", "update"],
         ["doctor"],
+        ["prune"],
     ],
 )
 def test_installed_plans_use_the_existing_wizard_contract_without_machine_access(

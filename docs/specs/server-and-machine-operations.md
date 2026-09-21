@@ -419,6 +419,17 @@ quarantine, then atomically publishes the replacement and fsyncs its parent.
 Every individual root can resume after interruption. A completed restoration
 verifies its resulting bytes and never reapplies over later changes.
 
+Retained artifacts are bounded. Once an update commits, the supervisor prunes
+under the same operation lock: it keeps the newest checkpoints and newest
+release trees (two of each, in `limits.py`), the live release, the rollback
+target, and every release a kept checkpoint sits between, and removes the
+rest through the service-account filesystem worker. A checkpoint workspace no
+journal names is reclaimed only past an age floor, and the adoption journal's
+workspace is protected. The prune refuses entirely when the release pointer and
+selected receipt disagree or an operation is unfinished; entries it does not
+recognize are left alone and named in the result. `server prune` runs the same
+decision on demand.
+
 ### Selection and startup guard
 
 The supervisor persists each operation phase before its consequential effect.

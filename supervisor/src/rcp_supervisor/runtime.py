@@ -388,8 +388,22 @@ class SystemRuntime:
         return self.service_json(
             [sys.executable, "-I", "-m", "rcp_supervisor.fs_worker", action],
             request,
-            timeout=INSTALL_TIMEOUT_SECONDS if action == "install" else APP_COMMAND_TIMEOUT_SECONDS,
+            timeout=(
+                INSTALL_TIMEOUT_SECONDS
+                if action in {"install", "remove"}
+                else APP_COMMAND_TIMEOUT_SECONDS
+            ),
         )
+
+    def remove_retained(self, directory: Path, root: Path) -> None:
+        """Delete one retained artifact through the account that created it."""
+        self.filesystem("remove", {"directory": str(directory), "root": str(root)})
+
+    def current_release_directory(self) -> str:
+        info = self.paths.current.lstat()
+        if not stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+            raise SupervisorError("The installed release pointer is not the root-owned link.")
+        return os.readlink(self.paths.current)
 
     def application(self, release: dict, action: str, request: dict | None = None) -> dict:
         return self.service_json(

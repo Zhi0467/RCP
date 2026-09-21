@@ -68,6 +68,7 @@ _ROOT_COMMANDS: frozenset[ServerCommandName] = frozenset(
         "server provider update",
         "server update",
         "server supervisor update",
+        "server prune",
     }
 )
 _SERVICE_COMMANDS: frozenset[ServerCommandName] = frozenset(
@@ -293,6 +294,12 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         help="Confirm the exact vX.Y.Z:manifest-sha256 release target shown by RCP",
     )
     update.set_defaults(server_operation="server update")
+    prune = _leaf(
+        server_commands,
+        "prune",
+        "Remove update checkpoints and release trees that no rollback can reach",
+    )
+    prune.set_defaults(server_operation="server prune")
     supervisor = server_commands.add_parser(
         "supervisor", help="Maintain the independent deployment supervisor"
     )
@@ -662,7 +669,7 @@ def _dispatch_server_command(
             from rcp.server_ops.members import prepare_member_remove_command
 
             return prepare_member_remove_command(request, identity)
-        case "server update" | "server supervisor update":
+        case "server update" | "server supervisor update" | "server prune":
             from rcp.server_ops.supervisor_client import prepare_supervisor_command
 
             return prepare_supervisor_command(request, identity)

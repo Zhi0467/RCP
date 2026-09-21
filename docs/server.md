@@ -567,6 +567,26 @@ recovery completes the selected release. Both paths retain failed preparation,
 checkpoints, and quarantined roots for inspection. Reboot follows the same
 root-owned journal without fetching a release or consulting `main`.
 
+Retention is bounded. After an update commits, the supervisor keeps the two
+newest rollback checkpoints under `update-checkpoints/` and the two newest
+release trees under `releases/`, plus whatever those checkpoints need: the live
+release, its rollback target, and the releases the kept checkpoints were taken
+between. Everything older is removed as `rcp`. A checkpoint workspace that no
+journal names is removed once it is a day old; the source-adoption workspace is
+never touched. The prune refuses as a whole when the release pointer and the
+selected receipt disagree or an operation is unfinished, and it leaves alone,
+by name, any entry it does not recognize. The update's final event lists what
+was removed and kept. To prune on demand, for an installation that already
+carries a backlog:
+
+```bash
+sudo /usr/local/bin/rcp server prune
+```
+
+The public wrapper learns that route at `server install`; on a server installed
+before it existed, run `sudo /usr/local/bin/rcp-supervisor server prune` until
+the next converge.
+
 The installed `[release]` table defaults to `followed = "stable"`. An operator
 may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
 removing the pin follows stable again. Prereleases and build tags are refused.
