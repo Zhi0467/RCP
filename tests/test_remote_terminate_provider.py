@@ -284,7 +284,7 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
     """
 
     stage = tmp_path / "stage"
-    stage.mkdir()
+    stage.mkdir(mode=0o700)
 
     # Never written, stage intact: the host has answered.
     assert remote_terminate_provider.main(["helper", "--probe", str(stage / "never.pid")]) == (
@@ -301,12 +301,23 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
 
     # Stage path swapped for a link to some other directory: unknown for the
     # same reason. The real stage, pidfile and process may all still exist.
-    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere").mkdir(mode=0o700)
     (tmp_path / "swapped").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     assert (
         remote_terminate_provider.main(
             ["helper", "--probe", str(tmp_path / "swapped" / "agent.pid")]
         )
+        == remote_terminate_provider.UNKNOWN
+    )
+
+    # An ordinary directory recreated at the path is not the stage either: a
+    # stage is private to the account, the way `open` makes it and `attach`
+    # checks it, and this one is not.
+    recreated = tmp_path / "recreated"
+    recreated.mkdir()
+    os.chmod(recreated, 0o755)
+    assert (
+        remote_terminate_provider.main(["helper", "--probe", str(recreated / "agent.pid")])
         == remote_terminate_provider.UNKNOWN
     )
 
@@ -324,7 +335,7 @@ def test_an_in_flight_stop_never_reads_absence_as_a_stop(tmp_path, monkeypatch):
     from rcp.agents import launcher
 
     stage = tmp_path / "stage"
-    stage.mkdir()
+    stage.mkdir(mode=0o700)
     pid_file = str(stage / "never.pid")
     monkeypatch.setattr(
         launcher,

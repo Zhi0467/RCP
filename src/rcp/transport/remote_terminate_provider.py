@@ -35,7 +35,10 @@ def _pid_file_absent(pid_file: str) -> bool:
     replaced it could have taken a running pass's pidfile with it, and that pass
     is exactly what this guard exists to notice. Opening the directory without
     following links and looking the pidfile up inside that open directory is
-    what ties the two observations to one stage.
+    what ties the two observations to one stage, and the directory must be one
+    RCP would adopt as a stage at all: ours, private, exactly as `open` creates
+    it and `attach` re-checks it. A directory that merely shares the path does
+    not stand in for the stage that owned the pass.
     """
 
     directory, name = os.path.split(pid_file)
@@ -46,6 +49,13 @@ def _pid_file_absent(pid_file: str) -> bool:
     except OSError:
         return False
     try:
+        info = os.fstat(stage)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            return False
         os.stat(name, dir_fd=stage, follow_symlinks=False)
     except FileNotFoundError:
         return True

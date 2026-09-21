@@ -104,7 +104,7 @@ def test_a_pass_that_never_started_stops_fencing_its_stage(tmp_path, monkeypatch
     """
 
     stage = tmp_path / "stage"
-    stage.mkdir()
+    stage.mkdir(mode=0o700)
     pid_file = str(stage / "one.pid")
     store = _store(tmp_path)
     store.begin_remote_provider_pass("first", "remote", str(stage), pid_file)
