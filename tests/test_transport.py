@@ -2354,9 +2354,10 @@ def test_content_addressed_input_survives_a_read_that_never_reached_the_host(
         first = _stage_or_reuse_task_input(None, stage, "master-context.md", "Run the task.\n")
         stage.finalize_inputs()
 
-        monkeypatch.setattr(
-            stage, "read_input_text", lambda label: (_ for _ in ()).throw(ValueError(label))
-        )
+        def link_dropped(label):
+            raise ValueError(label)
+
+        monkeypatch.setattr(stage, "read_input_text", link_dropped)
         second = _stage_or_reuse_task_input(None, stage, "master-context.md", "Run the task.\n")
         stage.finalize_inputs()
         assert first == second == str(root / "inputs" / "master-context.md")

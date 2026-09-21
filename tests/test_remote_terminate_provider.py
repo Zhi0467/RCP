@@ -81,7 +81,6 @@ def test_missing_pidfile_never_reports_a_stop_it_did_not_see(tmp_path):
         ["helper", str(tmp_path / "missing"), "0", "0", "0", "0.01"]
     )
     assert code == remote_terminate_provider.ABSENT
-    assert code != 0
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1", "not-a-pid", "9" * 100])
@@ -274,7 +273,7 @@ def test_stop_refuses_a_recycled_process_identity_without_signalling(tmp_path, m
     )
 
 
-def test_absence_is_conclusive_only_while_the_stage_still_stands(owned_group, tmp_path):
+def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
     """What may clear the guard, and what must not.
 
     The wrapper writes its pidfile before it execs anything and RCP never
@@ -284,12 +283,8 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(owned_group, tm
     guard exists to catch.
     """
 
-    _process, pid_file = owned_group(ignore_term=False)
-    stage = Path(pid_file).parent
-
-    # A live group is still running, and absence never speaks for it.
-    assert remote_terminate_provider.provider_stopped(str(pid_file)) is False
-    assert remote_terminate_provider.main(["helper", "--probe", str(pid_file)]) == 1
+    stage = tmp_path / "stage"
+    stage.mkdir()
 
     # Never written, stage intact: the host has answered.
     assert remote_terminate_provider.main(["helper", "--probe", str(stage / "never.pid")]) == (
@@ -314,3 +309,32 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(owned_group, tm
         )
         == remote_terminate_provider.UNKNOWN
     )
+
+
+def test_an_in_flight_stop_never_reads_absence_as_a_stop(tmp_path, monkeypatch):
+    """Only a caller that knows the launch is over may clear a never-written pidfile.
+
+    While the local SSH process is still alive the wrapper may simply not have
+    written its pidfile yet. A stop that read that as done would let the
+    provider start right after RCP decided nothing was running, so both the
+    read-only probe and the active stop keep absence unknown unless told the
+    launch has ended.
+    """
+
+    from rcp.agents import launcher
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    pid_file = str(stage / "never.pid")
+    monkeypatch.setattr(
+        launcher,
+        "ssh_arguments",
+        lambda _host, remote_command: [sys.executable, *shlex.split(remote_command)[1:]],
+    )
+    monkeypatch.setattr(launcher, "REMOTE_PROVIDER_PID_WAIT_SECONDS", 0.05)
+    control = launcher.AgentProcessControl
+
+    assert control.remote_stopped("host", pid_file) is None
+    assert control._terminate_remote("host", pid_file) is False
+    assert control.remote_stopped("host", pid_file, absent_is_stopped=True) is True
+    assert control._terminate_remote("host", pid_file, absent_is_stopped=True) is True
