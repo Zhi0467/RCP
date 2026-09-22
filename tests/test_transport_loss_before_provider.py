@@ -305,3 +305,38 @@ async def test_a_failed_experiment_stage_preparation_marks_only_a_lost_link(
 
     assert len(frames) == 1 and str(failure) in frames[0]
     assert execution.stage_unreachable is (type(failure) is StateUnreachable)
+
+
+@pytest.mark.parametrize("sent", [True, False])
+def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
+    monkeypatch: pytest.MonkeyPatch, sent: bool
+) -> None:
+    """A Work turn that lost its link while preparing its stage never composed a
+    prompt, so its reattempt has no original to continue and must not refuse."""
+
+    from rcp.runs import shared
+
+    records = {
+        "retry": SimpleNamespace(parent_operation_id="dropped"),
+        "dropped": SimpleNamespace(parent_operation_id=None),
+    }
+    receipts: list[str] = []
+    store = SimpleNamespace(
+        agent_task=records.get,
+        agent_task_contracts=lambda _id: [SimpleNamespace(role="work")] if sent else [],
+        agent_task_receipts=lambda _id: [],
+        record_agent_task_receipt=lambda _op, category, _payload, **_kwargs: receipts.append(
+            category
+        ),
+    )
+    monkeypatch.setattr(shared, "_parent_task_contract_path", lambda *_args: "original.md")
+
+    path = shared.retry_original_contract_path(
+        SimpleNamespace(store=store, operation_id="retry"),  # type: ignore[arg-type]
+        None,
+        None,
+        "current.md",
+    )
+
+    assert path == ("original.md" if sent else "current.md")
+    assert receipts == ([] if sent else ["retry_without_sent_prompt"])

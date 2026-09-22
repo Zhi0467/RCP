@@ -77,6 +77,7 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
     note_link_lost_before_provider,
+    retry_original_contract_path,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
@@ -836,7 +837,9 @@ def _compose_child_retry_prompt(
     original_contract_path = (
         current_contract_path
         if result_view_handoff
-        else _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
+        else retry_original_contract_path(
+            turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
+        )
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,

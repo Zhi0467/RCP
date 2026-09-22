@@ -460,6 +460,43 @@ def _task_token(execution: AgentTaskExecution | None) -> str:
     return _safe_stage_name(execution.operation_id if execution is not None else uuid.uuid4().hex)
 
 
+def retry_original_contract_path(
+    execution: AgentTaskExecution,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    current_contract_path: str,
+) -> str:
+    """The contract a retry continues: its lineage's first prompt, or its own.
+
+    An attempt whose link dropped while its stage was prepared never composed a
+    prompt, so no ancestor holds one. This retry is then the first time the turn
+    is sent, and its current contract is the original.
+    """
+
+    record = execution.store.agent_task(execution.operation_id)
+    ancestor_id = record.parent_operation_id if record is not None else None
+    while ancestor_id is not None:
+        ancestor = execution.store.agent_task(ancestor_id)
+        if ancestor is None:
+            break
+        if any(
+            contract.role not in _NON_PROMPT_CONTRACT_ROLES
+            for contract in execution.store.agent_task_contracts(ancestor_id)
+        ) or any(
+            receipt.category == "agent_prompt"
+            for receipt in execution.store.agent_task_receipts(ancestor_id)
+        ):
+            return _parent_task_contract_path(execution, local_stage, remote_stage)
+        ancestor_id = ancestor.parent_operation_id
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "retry_without_sent_prompt",
+        {"contract_path": current_contract_path},
+        tier="summary",
+    )
+    return current_contract_path
+
+
 def _parent_task_contract_path(
     execution: AgentTaskExecution,
     local_stage: Path | None,
