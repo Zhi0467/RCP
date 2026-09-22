@@ -312,18 +312,39 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
     monkeypatch: pytest.MonkeyPatch, sent: bool
 ) -> None:
     """A Work turn that lost its link while preparing its stage never composed a
-    prompt, so its reattempt has no original to continue and must not refuse."""
+    prompt, so its reattempt has no original to continue and must not refuse.
+    What it did record before the drop is bookkeeping, never a prompt."""
 
-    from rcp.runs import shared
+    from rcp.runs import chat, shared
+    from rcp.runs import experiment_loop as experiment_context
+    from rcp.runs.tasks import (
+        auto_research_child_work,
+        discuss,
+        experiment_loop,
+        work,
+        work_turn_runtime,
+    )
 
+    bookkeeping = [
+        chat._CHAT_PROMPT_STATE_ROLE,
+        experiment_context._EPISODE_CONTEXT_CANDIDATE_ROLE,
+        experiment_loop.EXPERIMENT_LOOP_EPISODE_CONTEXT_ROLE,
+        experiment_loop.EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
+        work.WORK_FINALIZATION_CONTEXT_ROLE,
+        work._WORK_PRIMARY_ANSWER_ROLE,
+        auto_research_child_work.AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
+        discuss.DISCUSS_FINALIZATION_CONTEXT_ROLE,
+        work_turn_runtime.WORK_CORRECTION_SESSION_ROLE,
+    ]
     records = {
         "retry": SimpleNamespace(parent_operation_id="dropped"),
         "dropped": SimpleNamespace(parent_operation_id=None),
     }
+    roles = bookkeeping + (["work"] if sent else [])
     receipts: list[str] = []
     store = SimpleNamespace(
         agent_task=records.get,
-        agent_task_contracts=lambda _id: [SimpleNamespace(role="work")] if sent else [],
+        agent_task_contracts=lambda _id: [SimpleNamespace(role=role) for role in roles],
         agent_task_receipts=lambda _id: [],
         record_agent_task_receipt=lambda _op, category, _payload, **_kwargs: receipts.append(
             category

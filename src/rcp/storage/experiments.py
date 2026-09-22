@@ -1824,15 +1824,16 @@ class ExperimentStoreMixin:
     def experiment_episode_context_root(self, operation_id: str) -> str | None:
         """Name the attempt whose episode context a recovery of this lineage keeps.
 
-        That is the earliest attempt that recorded a candidate, which each
-        composed launch does just before it builds its prompt.
+        That is the newest attempt that recorded a candidate. Only the root does,
+        unless it never sent a prompt and was run again as itself; the rerun's
+        candidate is then the one the provider saw.
         """
 
         with self.connection() as connection:
             lineage, problem = self._experiment_task_lineage(connection, operation_id)
             if problem is not None:
                 raise ValueError(problem)
-            return self._first_attempt_with_contract(connection, lineage, candidate=True)
+            return self._newest_attempt_with_candidate(connection, lineage)
 
     def experiment_lineage_never_composed(self, operation_id: str) -> bool:
         """Whether no attempt in this lineage got far enough to send the provider anything."""
@@ -1874,21 +1875,14 @@ class ExperimentStoreMixin:
             current_id = str(row["parent_operation_id"])
 
     @staticmethod
-    def _first_attempt_with_contract(
+    def _newest_attempt_with_candidate(
         connection: sqlite3.Connection,
         lineage: list[str],
-        *,
-        candidate: bool,
     ) -> str | None:
-        """The oldest attempt holding a context candidate, or else any prompt contract."""
-
-        roles = sorted(_NON_PROMPT_CONTRACT_ROLES)
-        clause = "role = ?" if candidate else f"role NOT IN ({', '.join('?' for _ in roles)})"
-        values = (_EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,) if candidate else tuple(roles)
-        for current_id in lineage:
+        for current_id in reversed(lineage):
             found = connection.execute(
-                f"SELECT 1 FROM graph_run_contracts WHERE operation_id = ? AND {clause} LIMIT 1",
-                (current_id, *values),
+                "SELECT 1 FROM graph_run_contracts WHERE operation_id = ? AND role = ? LIMIT 1",
+                (current_id, _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE),
             ).fetchone()
             if found is not None:
                 return current_id
@@ -1896,19 +1890,23 @@ class ExperimentStoreMixin:
 
     @staticmethod
     def _lineage_never_composed(connection: sqlite3.Connection, lineage: list[str]) -> bool:
-        """No candidate and no prompt anywhere: every attempt failed before composing.
+        """No prompt contract anywhere: every attempt failed before its prompt.
 
-        A watcher wake whose link dropped while its stage was prepared is one.
-        It sent the provider nothing, so there is no context to keep and no
-        prompt to continue.
+        A watcher wake whose link dropped while its stage was prepared is one,
+        even when it had already recorded its candidate. It sent the provider
+        nothing, so there is no prompt to continue.
         """
 
+        roles = sorted(_NON_PROMPT_CONTRACT_ROLES)
+        placeholders = ", ".join("?" for _ in roles)
         return all(
-            ExperimentStoreMixin._first_attempt_with_contract(
-                connection, lineage, candidate=candidate
-            )
+            connection.execute(
+                "SELECT 1 FROM graph_run_contracts WHERE operation_id = ? "
+                f"AND role NOT IN ({placeholders}) LIMIT 1",
+                (current_id, *roles),
+            ).fetchone()
             is None
-            for candidate in (True, False)
+            for current_id in lineage
         )
 
     @staticmethod
@@ -1943,9 +1941,7 @@ class ExperimentStoreMixin:
             # Nothing was sent, so there is no context to keep: recovery re-runs
             # the turn and records the context that run sends.
             return None
-        context_root = ExperimentStoreMixin._first_attempt_with_contract(
-            connection, lineage, candidate=True
-        )
+        context_root = ExperimentStoreMixin._newest_attempt_with_candidate(connection, lineage)
         if context_root is None:
             return _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC
         contract = connection.execute(

@@ -736,6 +736,10 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
         candidate,
         hashlib.sha256(candidate.encode()).hexdigest(),
     )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "loop-root", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
+    )
     stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
     assert stopping is not None and stopping.stop_settled_at is None
     observed = Event()
@@ -1827,6 +1831,10 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "limited-wake", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
+    )
     control = loop.control()
     assert {
         field: control[field]
@@ -1880,9 +1888,9 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
 def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest, tmp_path) -> None:
     """The link dropped while the wake's stage was prepared, so it sent nothing.
 
-    There is no prompt to continue and no context to keep, which is not a
-    legacy root: the episode stays live, and Retry runs the same invocation as
-    the wake it recovers.
+    It had recorded its candidate but no prompt, so there is nothing to
+    continue, which is not a legacy root: the episode stays live, and Retry runs
+    the same invocation as the wake it recovers.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1922,6 +1930,12 @@ def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest
             dispatch_authority=_task_authority(wake_request),
         ),
         ["dropped-wake-watcher"],
+    )
+    loop.store.record_agent_task_contract(
+        "dropped-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
 
     assert loop.store.experiment_episode_recovery_context_problem("dropped-wake") is None
@@ -2232,6 +2246,13 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
         "experiment_episode_context_candidate",
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "failed-wake-before-switch",
+        "work",
+        "task contract",
+        hashlib.sha256(b"task contract").hexdigest(),
     )
     provisional_stage = tmp_path / "provisional-stage"
     provisional_stage.mkdir()

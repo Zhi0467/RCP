@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -138,6 +139,18 @@ def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHum
         user_id=str(uuid.uuid4()),
         display_name=display_name,
     )
+
+
+def record_launched_experiment_turn(store: AppStore, operation_id: str) -> None:
+    """Record what a real Experiment launch holds before its provider starts."""
+
+    for role, content in (
+        ("experiment_episode_context_candidate", "{}"),
+        ("work", "task contract"),
+    ):
+        store.record_agent_task_contract(
+            operation_id, role, content, hashlib.sha256(content.encode()).hexdigest()
+        )
 
 
 def wait_until(

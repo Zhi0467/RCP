@@ -1136,12 +1136,13 @@ the sequence had reached rather than at its first; a turn something else has
 already continued is not re-armed.
 
 An Experiment-loop turn whose link dropped before it composed its prompt sent
-the provider nothing: its lineage holds neither an episode context candidate nor
-a prompt contract. That is not a legacy root to refuse. Its recovery, automatic
-or human, runs the same invocation again as the turn it recovers, a watcher wake
-as a wake, and records the context that run sends; the child carries an
-`experiment_uncomposed_rerun` receipt. A lineage that composed a prompt but kept
-no candidate is legacy and still refuses recovery.
+the provider nothing: its lineage holds no prompt contract, only bookkeeping
+such as a context candidate or finalization context. That is not a legacy root
+to refuse. Its recovery, automatic or human, runs the same invocation again as
+the turn it recovers, a watcher wake as a wake, and records the context that run
+sends; the child carries an `experiment_uncomposed_rerun` receipt, and later
+recoveries keep the newest candidate in the lineage. A lineage that composed a
+prompt but kept no candidate is legacy and still refuses recovery.
 
 New automatic launches wait until the machine has stayed awake long enough to
 finish one (`AUTOMATIC_LAUNCH_AWAKE_SECONDS`). A laptop sleeping with its lid

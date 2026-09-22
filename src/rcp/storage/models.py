@@ -1981,9 +1981,20 @@ AGENT_TASK_TRANSITIONS: dict[AgentTaskStatus, frozenset[AgentTaskStatus]] = {
 _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
 # Contracts that are bookkeeping rather than a prompt the provider was sent. An
 # attempt with none but these never composed its launch, so there is nothing a
-# recovery could continue from.
+# recovery could continue from. Every contract recorded outside
+# `_stage_task_contract` belongs here; a test holds the owners to it.
 _NON_PROMPT_CONTRACT_ROLES = frozenset(
-    {"chat_prompt_state", _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE}
+    {
+        "chat_prompt_state",
+        _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
+        "experiment_loop_episode_context",
+        "work_finalization_context",
+        "experiment_loop_finalization_context",
+        "auto_research_child_finalization_context",
+        "discuss_finalization_context",
+        "work_correction_session",
+        "work_primary_answer",
+    }
 )
 # An ended episode shows these next to Add turns and Start new episode, and a live
 # one next to Stop loop, so the advice has to hold in both.

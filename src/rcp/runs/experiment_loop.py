@@ -1271,7 +1271,7 @@ def prepare_experiment_episode_context_candidate(
 
     Resume and in-session Retry keep their original narrow contract, so they must
     commit the originating invocation's candidate rather than whatever happens to
-    be current when recovery finishes. The originating invocation is the first
+    be current when recovery finishes. The originating invocation is the newest
     attempt that recorded a candidate. Fresh human turns and automatic wakes each
     establish their own immutable candidate.
     """

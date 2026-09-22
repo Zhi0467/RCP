@@ -41,7 +41,13 @@ from rcp.storage import (
 )
 from rcp.storage.models import _required_timestamp
 
-from .helpers import fabricated_authorizer, store_test_claude_token, wait_for_task, wait_until
+from .helpers import (
+    fabricated_authorizer,
+    record_launched_experiment_turn,
+    store_test_claude_token,
+    wait_for_task,
+    wait_until,
+)
 
 EXPERIMENT_ID = "exp/orchestrated-loop"
 PROJECT_ID = "project"
@@ -611,13 +617,7 @@ def test_kickoff_replay_is_deterministic_and_exact_resume_does_not_respend_e(
     async def child_stream(_project_id, _kind, request, execution):
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
-            candidate = "{}"
-            execution.store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                candidate,
-                hashlib.sha256(candidate.encode()).hexdigest(),
-            )
+            record_launched_experiment_turn(execution.store, execution.operation_id)
             execution.checkpoint_stage("", str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
@@ -719,13 +719,7 @@ def test_experiment_resume_recovers_a_row_committed_before_process_spawn(
     async def child_stream(_project_id, _kind, _request, execution):
         nonlocal resume_executions
         if execution.continuation == "fresh":
-            candidate = "{}"
-            execution.store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                candidate,
-                hashlib.sha256(candidate.encode()).hexdigest(),
-            )
+            record_launched_experiment_turn(execution.store, execution.operation_id)
             execution.checkpoint_stage("", str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
@@ -1171,13 +1165,7 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
         assert isinstance(request, RunRequest)
         if request.control_episode_id == STOP_RECOVERY_PREDECESSOR:
             if execution.continuation == "fresh":
-                candidate = "{}"
-                execution.store.record_agent_task_contract(
-                    execution.operation_id,
-                    "experiment_episode_context_candidate",
-                    candidate,
-                    hashlib.sha256(candidate.encode()).hexdigest(),
-                )
+                record_launched_experiment_turn(execution.store, execution.operation_id)
                 execution.checkpoint_stage("", str(stage))
                 yield _sse(AgentEvent(event="session", session_id="stopped-predecessor-session"))
                 predecessor_started.set()

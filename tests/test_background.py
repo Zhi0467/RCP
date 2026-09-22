@@ -54,7 +54,13 @@ from rcp.storage import (
     WatcherRecord,
 )
 
-from .helpers import fabricated_authorizer, wait_for_task, wait_until, write_local_test_manifest
+from .helpers import (
+    fabricated_authorizer,
+    record_launched_experiment_turn,
+    wait_for_task,
+    wait_until,
+    write_local_test_manifest,
+)
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
@@ -1313,13 +1319,7 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
             return
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
-            candidate = "{}"
-            store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                candidate,
-                hashlib.sha256(candidate.encode()).hexdigest(),
-            )
+            record_launched_experiment_turn(store, execution.operation_id)
             execution.checkpoint_stage("", str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
@@ -1464,13 +1464,7 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
             yield _sse(AgentEvent(event="done"))
             return
         if execution.continuation == "fresh":
-            candidate = "{}"
-            store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                candidate,
-                hashlib.sha256(candidate.encode()).hexdigest(),
-            )
+            record_launched_experiment_turn(store, execution.operation_id)
             execution.checkpoint_stage("", str(stage))
             yield _sse(AgentEvent(event="session", session_id="restart-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
@@ -1667,13 +1661,7 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         if kind == "auto_research":
             yield _sse(AgentEvent(event="done"))
             return
-        candidate = "{}"
-        store.record_agent_task_contract(
-            execution.operation_id,
-            "experiment_episode_context_candidate",
-            candidate,
-            hashlib.sha256(candidate.encode()).hexdigest(),
-        )
+        record_launched_experiment_turn(store, execution.operation_id)
         execution.checkpoint_stage("experiment-host", "/tmp/rcp-run.remote-experiment")
         yield _sse(AgentEvent(event="session", session_id="remote-experiment-session"))
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
@@ -1939,13 +1927,7 @@ def test_experiment_root_and_recovery_use_atomic_episode_admission(tmp_path: Pat
     async def stream(_project_id, _kind, request, execution):
         execution.checkpoint_stage("", str(stage))
         if execution.continuation == "fresh":
-            candidate = "{}"
-            store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                candidate,
-                hashlib.sha256(candidate.encode()).hexdigest(),
-            )
+            record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         if execution.continuation == "fresh":
             yield _sse(AgentEvent(event="error", text="Transient provider failure."))
@@ -2524,13 +2506,7 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
 
     async def stream(_project_id, _kind, request, execution):
         execution.checkpoint_stage("", str(stage))
-        candidate = "{}"
-        store.record_agent_task_contract(
-            execution.operation_id,
-            "experiment_episode_context_candidate",
-            candidate,
-            hashlib.sha256(candidate.encode()).hexdigest(),
-        )
+        record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event="error", text="Transient provider failure."))
 
