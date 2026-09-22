@@ -242,6 +242,14 @@ SSH_CONTROL_PROBE_TIMEOUT_SECONDS = 1.0
 AGENT_TRANSPORT_RETRY_LIMIT = 3
 AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS = (30.0, 120.0, 600.0)
 
+# A laptop sleeping with its lid closed still wakes for a few seconds at a time,
+# too briefly to finish a remote launch (median 8 s, p90 14 s). Automatic
+# launches wait until the machine has stayed awake this long since it last
+# slept. Growth in the gap between a sleep-counting clock and a clock that
+# skips sleep past the tolerance is a sleep; less is clock-read jitter.
+AUTOMATIC_LAUNCH_AWAKE_SECONDS = 30.0
+SLEEP_DETECTION_TOLERANCE_SECONDS = 2.0
+
 # Canonical-state advisory lock acquisition and holder lifecycle.
 STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
 # A read-side snapshot refresh gives up on a lock another run holds instead of

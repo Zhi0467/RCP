@@ -29,6 +29,7 @@ from rcp.limits import (
     WATCHER_ERROR_MAX_CHARS,
     WATCHER_POLL_INTERVAL_SECONDS,
 )
+from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.storage import (
     AgentTaskKind,
     AppStore,
@@ -664,9 +665,11 @@ class WatcherDelivery:
             list[list[StoredWatcherRecord]],
         ],
         logger: logging.Logger,
+        launch_wait: Callable[[], float] = seconds_until_automatic_launch,
     ) -> None:
         self._store = store
         self._retry = retry
+        self._launch_wait = launch_wait
         self._project_service = project_service
         self._graph_project_service = graph_project_service or (
             lambda project_id, _target: project_service(project_id)
@@ -731,6 +734,10 @@ class WatcherDelivery:
         if not group:
             return
         if not self._retry.generation_is_current(retry_generation):
+            return
+        if self._launch_wait() > 0:
+            # A wake started now would lose its link partway through its launch.
+            # The group stays completed, and every poll offers it again.
             return
         watcher_ids = [item.watcher_id for item in group]
         first = group[0]

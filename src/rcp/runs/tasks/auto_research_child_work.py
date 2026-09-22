@@ -76,6 +76,8 @@ from rcp.runs.shared import (
     _stage_task_input,
     _swept_stage_root,
     _task_token,
+    note_link_lost_before_provider,
+    retry_original_contract_path,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
@@ -835,7 +837,9 @@ def _compose_child_retry_prompt(
     original_contract_path = (
         current_contract_path
         if result_view_handoff
-        else _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
+        else retry_original_contract_path(
+            turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
+        )
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
@@ -1137,6 +1141,7 @@ async def stream_auto_research_child_work_run(
     except BaseException as exc:
         if turn is not None:
             await turn.validator_lifecycle.close(primary_error=exc)
+        note_link_lost_before_provider(execution, exc)
         if isinstance(exc, (OSError, ReplayHalted, StateUnavailable, ValueError)):
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return

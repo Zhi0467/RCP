@@ -1108,9 +1108,11 @@ exit codes decide this only for a turn that said nothing: ssh returns 255 for a
 provider that exits 255 as readily as for a link it lost, so a provider that
 reached its own terminal event or reported its own error is never blamed on the
 link, whatever the code. A link that drops before the provider starts is named
-the same way. Opening the remote stage, the readiness probe under whichever of
-its probes ssh died, the check that the previous remote pass has stopped, and
-the input transfer each fail the turn with no process to leave a code, so each
+the same way. Opening the remote stage, every stage read or write that prepares
+the turn (such as clearing the previous turn's mailbox), the readiness probe
+under whichever of its probes ssh died, the check that the previous remote pass
+has stopped, and the input transfer each fail the turn with no process to leave
+a code, so each
 carries its own typed word for an unreachable host to classification, on the
 host the turn was bound to even before a stage existed; the error text is never
 read. Only an ssh or rsync that ran to a verdict and exited 255 carries it: one
@@ -1132,6 +1134,30 @@ exist for. The promise of a reattempt is durable while the wait holding it is
 not, so startup re-arms the waits a stopped process could not keep, at the wait
 the sequence had reached rather than at its first; a turn something else has
 already continued is not re-armed.
+
+An Experiment-loop turn whose link dropped before it composed its prompt sent
+the provider nothing: its lineage holds no prompt contract, only bookkeeping
+such as a context candidate or finalization context. That is not a legacy root
+to refuse. Its recovery, automatic or human, runs the same invocation again as
+the turn it recovers, a watcher wake as a wake, and records the context that run
+sends; the child carries an `experiment_uncomposed_rerun` receipt, and later
+recoveries keep the newest candidate in the lineage. A lineage that composed a
+prompt but kept no candidate is legacy and still refuses recovery.
+
+New automatic launches wait until the machine has stayed awake long enough to
+finish one (`AUTOMATIC_LAUNCH_AWAKE_SECONDS`). A laptop sleeping with its lid
+closed wakes for a few seconds at a time, and a launch started in one of those
+wakes loses its link partway through. Watcher delivery leaves a completed group
+for the next poll; a transport reattempt re-arms its wait without spending the
+attempt; an episode report stays wrapping up for the next reconciliation; and
+Auto-research mail and lifecycle wakes leave their inputs pending for the next
+pass. Re-dispatching a wake an earlier pass already admitted is not held, and
+falls back on the lost-link reattempt. Sleep is read from two monotonic clocks, one that counts time
+asleep and one that does not, named per platform in `rcp.machine_sleep`: on
+macOS `CLOCK_MONOTONIC` counts sleep and `CLOCK_UPTIME_RAW` skips it, on Linux
+`CLOCK_BOOTTIME` counts it and `CLOCK_MONOTONIC` skips it. A platform with no
+named pair, or a pair that stops behaving as named, holds nothing. Turns a
+human starts are never held.
 
 A provider whose CLI reports that its own login is no longer valid is named
 separately, because no unattended attempt can fix it: every one fails

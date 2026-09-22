@@ -670,6 +670,19 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
     }).label,
     "The episode paused for human authority. Add turns or start a new episode",
   );
+  // A failed episode that can continue offers Add turns beside Start new episode.
+  assert.equal(
+    experimentRecommendation({
+      ...base,
+      control: {
+        ...base.control,
+        recommendation: "start_episode",
+        episode: { can_continue: true, ending: "failed" },
+      },
+      health: "failed",
+    }).label,
+    "Add turns or start a new episode",
+  );
   assert.equal(
     experimentRecommendation({
       ...base,

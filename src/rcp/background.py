@@ -30,6 +30,7 @@ from rcp.limits import (
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
     REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS,
 )
+from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
@@ -53,6 +54,7 @@ from rcp.runs.auto_research_recovery import (
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_recovery import (
+    experiment_rerun_continuation,
     preflight_experiment_episode_recovery,
     record_bound_experiment_session_limit,
     restart_stopping_experiment_recoveries,
@@ -1731,6 +1733,7 @@ class BackgroundAgentTasks:
             finally:
                 self._forget_control(operation_id)
             return
+        continuation = experiment_rerun_continuation(self, record, request, continuation)
         execution = AgentTaskExecution(
             operation_id=operation_id,
             store=self.store,
@@ -2230,8 +2233,15 @@ class BackgroundAgentTasks:
         )
         self._schedule_transport_retry(settled.operation_id, attempt=attempt)
 
-    def _schedule_transport_retry(self, operation_id: str, *, attempt: int) -> None:
-        delay = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt]
+    def _schedule_transport_retry(
+        self,
+        operation_id: str,
+        *,
+        attempt: int,
+        delay: float | None = None,
+    ) -> None:
+        if delay is None:
+            delay = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt]
 
         def run() -> None:
             try:
@@ -2259,6 +2269,13 @@ class BackgroundAgentTasks:
             self._transport_retry_admissions += 1
         try:
             if self._transport_retry_superseded(operation_id):
+                return
+            wait = seconds_until_automatic_launch()
+            if wait > 0:
+                # The machine only just woke, likely for a few seconds, and a
+                # launch started now would lose its link the same way. The
+                # attempt is not spent; it waits for a wake long enough to finish.
+                self._schedule_transport_retry(operation_id, attempt=attempt, delay=wait)
                 return
             try:
                 self.retry(

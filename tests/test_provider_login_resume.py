@@ -22,7 +22,7 @@ from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_recovery import (
     _install_recovery_callback,
     _sse,
@@ -174,8 +174,6 @@ def _verify_client(store, background, monkeypatch):
 
 
 def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
-    import hashlib
-
     from .helpers import wait_until
     from .test_background import _experiment_request
 
@@ -191,12 +189,7 @@ def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
         calls.append(execution.continuation)
         execution.checkpoint_stage("", str(stage))
         if execution.continuation == "fresh":
-            store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                "{}",
-                hashlib.sha256(b"{}").hexdigest(),
-            )
+            record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         if execution.continuation == "fresh":
             yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
@@ -281,8 +274,6 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
 def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     manifest, tmp_path, monkeypatch, run_on
 ):
-    import hashlib
-
     from .helpers import wait_until
     from .test_background import _experiment_request
 
@@ -298,12 +289,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
             stage = tmp_path / execution.operation_id
             stage.mkdir()
             execution.checkpoint_stage("", str(stage))
-            store.record_agent_task_contract(
-                execution.operation_id,
-                "experiment_episode_context_candidate",
-                "{}",
-                hashlib.sha256(b"{}").hexdigest(),
-            )
+            record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(
             AgentEvent(event="session", session_id=_request.session_id or execution.operation_id)
         )

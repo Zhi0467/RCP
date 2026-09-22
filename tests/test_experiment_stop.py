@@ -633,7 +633,7 @@ def test_closed_experiment_outranks_a_stopped_episode_until_the_node_is_reopened
 ) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     append_fixture_patch(loop.service, _experiment_status_patch("completed"))
-    loop.start_episode(status="paused")
+    loop.start_episode()
 
     loop.stop()
 
@@ -735,6 +735,10 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
         "experiment_episode_context_candidate",
         candidate,
         hashlib.sha256(candidate.encode()).hexdigest(),
+    )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "loop-root", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
     )
     stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
     assert stopping is not None and stopping.stop_settled_at is None
@@ -1827,6 +1831,10 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "limited-wake", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
+    )
     control = loop.control()
     assert {
         field: control[field]
@@ -1875,6 +1883,119 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
     assert request.control_invocation == 2
     assert retried.stage_root == str(stage)
     assert retried.parent_operation_id == "limited-wake"
+
+
+def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest, tmp_path) -> None:
+    """The link dropped while the wake's stage was prepared, so it sent nothing.
+
+    It had recorded its candidate but no prompt, so there is nothing to
+    continue, which is not a legacy root: the episode stays live, and Retry runs
+    the same invocation as the wake it recovers.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "loop-root",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    stage = tmp_path / "wake-stage"
+    loop.bind_session(stage)
+    loop.arm_watcher("dropped-wake-watcher", status="completed")
+    wake_request = loop.root_request(invocation=2).model_copy(
+        update={
+            "trigger": "watcher",
+            "session_id": "native-session-abc",
+            "watcher_ids": ["dropped-wake-watcher"],
+        }
+    )
+    now = loop.store.now()
+    loop.create_watcher_invocation(
+        AgentTaskRecord(
+            operation_id="dropped-wake",
+            project_id=loop.project_id,
+            kind="node_chat",
+            status="failed",
+            request=wake_request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="could not list remote run workspace",
+            error="could not list remote run workspace",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+            dispatch_authority=_task_authority(wake_request),
+        ),
+        ["dropped-wake-watcher"],
+    )
+    loop.store.record_agent_task_contract(
+        "dropped-wake",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+
+    assert loop.store.experiment_episode_recovery_context_problem("dropped-wake") is None
+    control = loop.control()
+    assert (control["live"], control["task_control"]) == (True, "retry")
+    observed = Event()
+    captured: dict[str, object] = {}
+
+    async def stream(_project_id, _kind, request, execution):
+        captured.update(request=request, continuation=execution.continuation)
+        observed.set()
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    retried = app.state.background_tasks.retry("dropped-wake", authorized_by=loop.authorizer)
+
+    assert observed.wait(timeout=2)
+    request = captured["request"]
+    assert isinstance(request, RunRequest)
+    assert captured["continuation"] == "watcher_wake"
+    assert request.control_invocation == 2
+    assert request.watcher_ids == ["dropped-wake-watcher"]
+    assert retried.parent_operation_id == "dropped-wake"
+    assert loop.store.agent_task_has_receipt(retried.operation_id, "experiment_uncomposed_rerun")
+
+
+def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode()
+    candidate = "{}"
+    loop.store.record_agent_task_contract(
+        "loop-root",
+        "experiment_episode_context_candidate",
+        candidate,
+        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+    )
+    loop.bind_session(tmp_path / "wake-stage")
+    loop.arm_watcher("finished-job", status="completed")
+    delivery = app.state.services.watcher_delivery
+    (group,) = loop.store.completed_watcher_groups()
+    before = loop.loop_task_ids()
+
+    delivery._launch_wait = lambda: 25.0
+    delivery.deliver_watcher_group(group)
+
+    assert loop.loop_task_ids() == before
+    # The group stays completed, so the next poll offers it again.
+    assert [
+        [item.watcher_id for item in held] for held in loop.store.completed_watcher_groups()
+    ] == [["finished-job"]]
+
+    async def stream(*_args, **_kwargs):
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    delivery._launch_wait = lambda: 0.0
+    delivery.deliver_watcher_group(group)
+
+    assert loop.loop_task_ids() != before
 
 
 def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tmp_path) -> None:
@@ -2126,6 +2247,13 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
+    # It launched: the candidate went out with a prompt.
+    loop.store.record_agent_task_contract(
+        "failed-wake-before-switch",
+        "work",
+        "task contract",
+        hashlib.sha256(b"task contract").hexdigest(),
+    )
     provisional_stage = tmp_path / "provisional-stage"
     provisional_stage.mkdir()
     provisional_request = failed_wake_request.model_copy(
@@ -2222,6 +2350,11 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
         native_session_id="legacy-session",
         stage_root=str(stage),
     )
+    # A legacy root launched: it composed a prompt, but no context candidate.
+    prompt = "legacy task contract"
+    loop.store.record_agent_task_contract(
+        "loop-root", "work", prompt, hashlib.sha256(prompt.encode()).hexdigest()
+    )
     launched = Event()
 
     async def stream(*_args, **_kwargs):
@@ -2230,7 +2363,7 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
 
     app.state.background_tasks.stream = stream
 
-    with pytest.raises(ValueError, match="no retained episode context candidate"):
+    with pytest.raises(ValueError, match="did not retain its episode context"):
         getattr(app.state.background_tasks, action)("loop-root")
 
     assert not launched.is_set()
@@ -2242,7 +2375,7 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
     assert episode.session_diagnostic is not None
-    assert "pre-migration root" in episode.session_diagnostic
+    assert "older RCP" in episode.session_diagnostic
 
     stopped = loop.stop()
     assert stopped["operational"]["stop_settled"] is True
@@ -2264,6 +2397,11 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
         "loop-root",
         native_session_id="legacy-session",
         stage_root=str(stage),
+    )
+    # A legacy root launched: it composed a prompt, but no context candidate.
+    prompt = "legacy task contract"
+    loop.store.record_agent_task_contract(
+        "loop-root", "work", prompt, hashlib.sha256(prompt.encode()).hexdigest()
     )
     retry_request = loop.root_request().model_copy(update={"session_id": "legacy-session"})
     now = loop.store.now()
@@ -2304,7 +2442,7 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     assert episode is not None
     assert episode.stop_settled_at is not None
     assert episode.session_diagnostic is not None
-    assert "pre-migration root" in episode.session_diagnostic
+    assert "older RCP" in episode.session_diagnostic
     assert loop.loop_task_ids() == before
     root = loop.store.agent_task("loop-root")
     retry = loop.store.agent_task("doomed-retry")

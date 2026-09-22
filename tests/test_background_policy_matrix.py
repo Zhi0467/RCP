@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +16,12 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task, write_local_test_manifest
+from .helpers import (
+    fabricated_authorizer,
+    record_launched_experiment_turn,
+    wait_for_task,
+    write_local_test_manifest,
+)
 
 # Every engine-owned policy cell is reachable with a deterministic fake stream;
 # none of these rows needs or skips for a real provider.
@@ -505,13 +509,7 @@ def _experiment_parent(
 ) -> AgentTaskRecord:
     async def stream(_project_id, _kind, _request, execution):
         execution.checkpoint_stage("", str(stage))
-        candidate = "{}"
-        store.record_agent_task_contract(
-            execution.operation_id,
-            "experiment_episode_context_candidate",
-            candidate,
-            hashlib.sha256(candidate.encode()).hexdigest(),
-        )
+        record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event=terminal_event, text="provider paused or failed"))
 

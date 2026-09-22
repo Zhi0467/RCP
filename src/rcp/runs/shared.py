@@ -30,6 +30,7 @@ from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.run_stage import run_stage_partition
 from rcp.transport.state import (
@@ -53,10 +54,6 @@ _STATE_PATH_FIELDS = (
     "glossary_path",
     "facts_dir",
 )
-_NON_PROMPT_CONTRACT_ROLES = {
-    "chat_prompt_state",
-    "experiment_episode_context_candidate",
-}
 _RequestT = TypeVar("_RequestT", bound=BaseModel)
 
 
@@ -463,6 +460,43 @@ def _task_token(execution: AgentTaskExecution | None) -> str:
     return _safe_stage_name(execution.operation_id if execution is not None else uuid.uuid4().hex)
 
 
+def retry_original_contract_path(
+    execution: AgentTaskExecution,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    current_contract_path: str,
+) -> str:
+    """The contract a retry continues: its lineage's first prompt, or its own.
+
+    An attempt whose link dropped while its stage was prepared never composed a
+    prompt, so no ancestor holds one. This retry is then the first time the turn
+    is sent, and its current contract is the original.
+    """
+
+    record = execution.store.agent_task(execution.operation_id)
+    ancestor_id = record.parent_operation_id if record is not None else None
+    while ancestor_id is not None:
+        ancestor = execution.store.agent_task(ancestor_id)
+        if ancestor is None:
+            break
+        if any(
+            contract.role not in _NON_PROMPT_CONTRACT_ROLES
+            for contract in execution.store.agent_task_contracts(ancestor_id)
+        ) or any(
+            receipt.category == "agent_prompt"
+            for receipt in execution.store.agent_task_receipts(ancestor_id)
+        ):
+            return _parent_task_contract_path(execution, local_stage, remote_stage)
+        ancestor_id = ancestor.parent_operation_id
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "retry_without_sent_prompt",
+        {"contract_path": current_contract_path},
+        tier="summary",
+    )
+    return current_contract_path
+
+
 def _parent_task_contract_path(
     execution: AgentTaskExecution,
     local_stage: Path | None,
@@ -592,6 +626,22 @@ def _pinned_to_profile(request: _RequestT, profile: AgentSurfaceConfig) -> _Requ
             "run_on": profile.run_on,
         }
     )
+
+
+def note_link_lost_before_provider(
+    execution: AgentTaskExecution | None,
+    exc: BaseException,
+) -> None:
+    """Mark a turn that failed before its provider started as a lost link.
+
+    No provider process will report a code for this turn, so the typed word is
+    the only thing classification can read. Only ssh's own 255 carries it; a
+    stage the host says is gone, or inputs it refused, are answers, not a lost
+    link.
+    """
+
+    if isinstance(exc, StateUnreachable) and execution is not None:
+        execution.stage_unreachable = True
 
 
 def _record_agent_launch_receipt(
@@ -741,12 +791,7 @@ async def _stream_agent_events(
                 )
             await asyncio.to_thread(remote_stage.finalize_inputs)
         except (OSError, StateUnavailable, ValueError) as exc:
-            # No provider process will report a code for this turn, so the
-            # typed word is the only thing classification can read. Only ssh's
-            # own 255 carries it; a stage the host says is gone, or inputs it
-            # refused, are answers, not a lost link.
-            if isinstance(exc, StateUnreachable) and execution is not None:
-                execution.stage_unreachable = True
+            note_link_lost_before_provider(execution, exc)
             outcome.failed = True
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return

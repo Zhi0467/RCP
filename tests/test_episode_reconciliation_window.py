@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 
 import pytest
@@ -12,7 +11,7 @@ from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.watchers import WatcherPoller
 
-from .helpers import create_named_app, wait_for_task
+from .helpers import create_named_app, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_children_storage import _experiment_route
 from .test_auto_research_delivery import _sse
 from .test_episode_lifecycle_acceptance import _add_worker_seat
@@ -83,12 +82,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
     store.create_experiment_episode_with_invocation(
         child, auto_research_route=_experiment_route(store, parent, root, child)
     )
-    store.record_agent_task_contract(
-        child.operation_id,
-        "experiment_episode_context_candidate",
-        "{}",
-        hashlib.sha256(b"{}").hexdigest(),
-    )
+    record_launched_experiment_turn(store, child.operation_id)
     store.pause_agent_task(child.operation_id, detail="Saved child checkpoint.")
     auto_research_exhaustion_signal(store, parent.episode_id)
     for index in range(51):
