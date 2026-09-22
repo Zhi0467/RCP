@@ -513,9 +513,7 @@ if actual!=expected:
             return False
         if result.returncode in {46, 47}:
             raise ValueError(result.stderr.strip() or "remote reusable input is unsafe")
-        raise StateUnavailable(
-            result.stderr.strip() or f"could not inspect remote reusable input {remote}"
-        )
+        raise _ssh_failure(result, f"could not inspect remote reusable input {remote}")
 
     def finalize_inputs(self) -> None:
         """Transfer and commit all locally queued inputs as one immutable batch."""
@@ -699,9 +697,7 @@ print(json.dumps(sorted(set(matches))))
 """
         result = self._ssh(["python3", "-c", script, json.dumps(roots), session_id])
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or "could not search native provider sessions"
-            )
+            raise _ssh_failure(result, "could not search native provider sessions")
         try:
             values = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -738,7 +734,7 @@ finally:
 """
         result = self._ssh(["python3", "-c", script, json.dumps(sources), str(target)])
         if result.returncode:
-            raise StateUnavailable(result.stderr.strip() or "could not project native transcripts")
+            raise _ssh_failure(result, "could not project native transcripts")
         try:
             values = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -843,8 +839,7 @@ finally:
         if result.returncode == 47:
             raise ValueError(f"mailbox file exceeds {max_bytes} bytes: {name}")
         if result.returncode:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise StateUnavailable(detail or f"could not read remote workspace file {name}")
+            raise _ssh_failure(result, f"could not read remote workspace file {name}")
         try:
             return result.stdout.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -903,8 +898,7 @@ finally:
         if result.returncode == 46:
             raise ValueError(f"remote workspace target is not a regular file: {name}")
         if result.returncode:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise StateUnavailable(detail or f"could not write remote workspace file {name}")
+            raise _ssh_failure(result, f"could not write remote workspace file {name}")
 
     def list_workspace_files(self) -> list[str]:
         """Return the base names of regular files directly inside the run workspace.
@@ -936,9 +930,7 @@ finally:
 """
         result = self._ssh(["python3", "-c", script, str(self.root)])
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not list remote run workspace {self.workspace}"
-            )
+            raise _ssh_failure(result, f"could not list remote run workspace {self.workspace}")
         try:
             names = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -974,9 +966,7 @@ finally:
 """
         result = self._ssh(["python3", "-c", script, str(self.root)])
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not list remote run workspace {self.workspace}"
-            )
+            raise _ssh_failure(result, f"could not list remote run workspace {self.workspace}")
         try:
             names = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -996,9 +986,7 @@ finally:
         name = _plain_workspace_file_name(name)
         result = self._ssh(["rm", "-f", str(self.workspace / name)])
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not remove remote {self.workspace / name}"
-            )
+            raise _ssh_failure(result, f"could not remove remote {self.workspace / name}")
 
     def remove_workspace_file_if_sha256(self, name: str, expected_sha256: str) -> bool:
         """Delete one direct regular file only while its bytes still match a snapshot."""
@@ -1050,10 +1038,7 @@ finally:
             return True
         if result.returncode in {45, 47}:
             return False
-        raise StateUnavailable(
-            result.stderr.strip()
-            or f"could not conditionally remove remote {self.workspace / name}"
-        )
+        raise _ssh_failure(result, f"could not conditionally remove remote {self.workspace / name}")
 
     def prepare_artifact_directory(self, scope_id: str, *, reuse: bool) -> PurePosixPath:
         """Create the exact output directory for one logical chat turn."""
@@ -1088,9 +1073,7 @@ else:
             ["python3", "-c", script, str(self.workspace), scope_id, "1" if reuse else "0"]
         )
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or "could not prepare remote artifact directory"
-            )
+            raise _ssh_failure(result, "could not prepare remote artifact directory")
         return target
 
     def list_artifact_files(self, scope_id: str) -> list[tuple[str, int]]:
@@ -1122,7 +1105,7 @@ finally:
         if result.returncode:
             if result.returncode == 44:
                 raise FileNotFoundError("remote artifact directory is unavailable")
-            raise StateUnavailable(result.stderr.strip() or "could not list remote artifacts")
+            raise _ssh_failure(result, "could not list remote artifacts")
         try:
             values = json.loads(result.stdout)
             return [(str(name), int(size)) for name, size in values]
@@ -1173,8 +1156,7 @@ finally:
         if result.returncode == 45:
             raise ValueError("remote artifact is not a bounded regular file")
         if result.returncode:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise StateUnavailable(detail or "could not read remote artifact")
+            raise _ssh_failure(result, "could not read remote artifact")
         return result.stdout
 
     def replace_artifact_bytes(
@@ -1216,8 +1198,7 @@ finally:
                 or "remote artifact source is missing or unsafe"
             )
         if result.returncode:
-            detail = result.stderr.decode("utf-8", errors="replace").strip()
-            raise StateUnavailable(detail or "could not replace remote artifact")
+            raise _ssh_failure(result, "could not replace remote artifact")
         return True
 
     def touch(self) -> None:
@@ -1239,9 +1220,7 @@ finally:
 """
         result = self._ssh(["python3", "-c", script, str(self.root)])
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not touch remote run stage {self.root}"
-            )
+            raise _ssh_failure(result, f"could not touch remote run stage {self.root}")
 
     def prepare_result_view_slot(
         self,
@@ -1297,9 +1276,7 @@ finally:
             ["python3", "-c", script, str(self.root), view_id, "1" if reuse else "0"]
         )
         if result.returncode == 44:
-            raise StateUnavailable(
-                result.stderr.strip() or f"remote run workspace {self.workspace} is unavailable"
-            )
+            raise _ssh_failure(result, f"remote run workspace {self.workspace} is unavailable")
         if result.returncode == 45:
             raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
         if result.returncode == 46:
@@ -1307,9 +1284,7 @@ finally:
         if result.returncode == 47:
             raise FileExistsError(f"remote result view slot already exists: {view_id}")
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not prepare remote result view slot {view_id}"
-            )
+            raise _ssh_failure(result, f"could not prepare remote result view slot {view_id}")
         return target
 
     def list_result_view_files(self, view_id: str) -> list[tuple[str, int]]:
@@ -1354,17 +1329,13 @@ finally:
 """
         result = self._ssh(["python3", "-c", script, str(self.root), view_id])
         if result.returncode == 44:
-            raise StateUnavailable(
-                result.stderr.strip() or f"remote run workspace {self.workspace} is unavailable"
-            )
+            raise _ssh_failure(result, f"remote run workspace {self.workspace} is unavailable")
         if result.returncode == 45:
             raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
         if result.returncode == 46:
             raise ValueError(f"remote result view slot contains an unsafe entry: {view_id}")
         if result.returncode:
-            raise StateUnavailable(
-                result.stderr.strip() or f"could not list remote result view slot {view_id}"
-            )
+            raise _ssh_failure(result, f"could not list remote result view slot {view_id}")
         try:
             values = json.loads(result.stdout)
             files = [(str(name), int(size)) for name, size in values]
@@ -1434,7 +1405,7 @@ finally:
         if result.returncode == 47:
             raise ValueError(f"remote result view file exceeds its byte limit: {view_id}/{name}")
         if result.returncode:
-            raise StateUnavailable(detail or f"could not read remote result view {view_id}/{name}")
+            raise _ssh_failure(result, f"could not read remote result view {view_id}/{name}")
         return result.stdout
 
     def _ssh(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:

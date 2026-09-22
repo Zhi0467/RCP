@@ -240,3 +240,68 @@ def test_opening_a_stage_names_a_lost_link_only_from_ssh(
     with pytest.raises(StateUnavailable) as caught:
         stage.open("op-open")
     assert isinstance(caught.value, StateUnreachable) is (outcome == "exit_255")
+
+
+@pytest.mark.parametrize("outcome", ["exit_255", "exit_1", "no_verdict"])
+def test_a_workspace_listing_names_a_lost_link_only_from_ssh(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """A watcher wake lost its link here while it cleared the last turn's
+    mailbox. ssh left no stderr, and the untyped failure was never reattempted."""
+
+    from rcp.transport import run_stage as run_stage_module
+
+    stage = RemoteRunStage(HOST)
+    stage.root = PurePosixPath("/tmp/rcp-run.test")
+
+    def ssh(arguments):
+        if outcome == "no_verdict":
+            return run_stage_module._SshNoVerdict([], 255, "", "ssh could not start")
+        return subprocess.CompletedProcess(arguments, 255 if outcome == "exit_255" else 1, "", "")
+
+    monkeypatch.setattr(stage, "_ssh", ssh)
+    with pytest.raises(StateUnavailable) as caught:
+        stage.list_workspace_entries()
+    assert isinstance(caught.value, StateUnreachable) is (outcome == "exit_255")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [StateUnreachable("link lost"), StateUnavailable("workspace refused")]
+)
+async def test_a_failed_experiment_stage_preparation_marks_only_a_lost_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    from rcp.runs.tasks import experiment_loop as experiment_loop_tasks
+
+    request = _request().model_copy(update={"patch_kind": "experiment_loop"})
+    monkeypatch.setattr(
+        experiment_loop_tasks,
+        "_resolve_work_execution",
+        lambda _service, resolved, _execution: SimpleNamespace(request=resolved),
+    )
+
+    async def stage_work_turn(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(experiment_loop_tasks, "_stage_work_turn", stage_work_turn)
+    execution = SimpleNamespace(
+        store=AppStore(tmp_path / "state.sqlite3"),
+        operation_id="op-wake",
+        continuation="watcher_wake",
+        stage_unreachable=False,
+    )
+
+    frames = [
+        frame
+        async for frame in experiment_loop_tasks.stream_experiment_loop_task(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            SimpleNamespace(),  # type: ignore[arg-type]
+            request,
+            tmp_path,
+            execution=execution,  # type: ignore[arg-type]
+        )
+    ]
+
+    assert len(frames) == 1 and str(failure) in frames[0]
+    assert execution.stage_unreachable is (type(failure) is StateUnreachable)

@@ -397,7 +397,9 @@ def _experiment_recommendation(
     if episode is not None and episode.wrapup_state == "legacy_unavailable":
         return "none"
     if health == "failed":
-        return "none"
+        # An ended failure is past recovering in place; what moves the work on is
+        # the control the card offers, Add turns or Start new episode.
+        return "start_episode" if control.ready else "none"
     if active:
         return "wait"
     # Retry stays available, because signing in is what makes it work and

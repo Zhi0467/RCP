@@ -1979,10 +1979,18 @@ AGENT_TASK_TRANSITIONS: dict[AgentTaskStatus, frozenset[AgentTaskStatus]] = {
 }
 
 _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE = "experiment_episode_context_candidate"
+# Contracts that are bookkeeping rather than a prompt the provider was sent. An
+# attempt with none but these never composed its launch, so there is nothing a
+# recovery could continue from.
+_NON_PROMPT_CONTRACT_ROLES = frozenset(
+    {"chat_prompt_state", _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE}
+)
+# An ended episode shows these next to Add turns and Start new episode, and a live
+# one next to Stop loop, so the advice has to hold in both.
+_START_NEW_EPISODE = "Stop the loop if it is still running, then start a new episode."
 _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC = (
-    "This Experiment-loop turn cannot be resumed or retried because its pre-migration "
-    "root has no retained episode context candidate. Use Stop loop and press Run to start "
-    "a fresh episode."
+    "This Experiment-loop turn cannot be resumed or retried because it was launched by an "
+    "older RCP that did not retain its episode context. " + _START_NEW_EPISODE
 )
 
 

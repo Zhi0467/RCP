@@ -80,6 +80,26 @@ def test_a_revoked_login_asks_for_a_sign_in_rather_than_a_retry() -> None:
     assert recommendation == "reauthenticate_provider"
 
 
+@pytest.mark.parametrize(("ready", "expected"), [(True, "start_episode"), (False, "none")])
+def test_an_ended_failure_recommends_the_controls_the_card_offers(
+    ready: bool, expected: str
+) -> None:
+    """The card offers Add turns and Start new episode, so "Episode ended" is no next step."""
+
+    control = _control(None).model_copy(update={"ready": ready})
+    recommendation = _experiment_recommendation(
+        control,
+        None,
+        "failed",
+        active=False,
+        awaiting_human=False,
+        task_control=None,
+        revoked_login=False,
+    )
+
+    assert recommendation == expected
+
+
 def test_a_live_turn_is_still_only_worth_waiting_for() -> None:
     """An active turn outranks a stale failure kind from an earlier attempt."""
 

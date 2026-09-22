@@ -11,12 +11,12 @@ owns the launch gate and the request decoding these need.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import classify_terminal_error
 from rcp.runs.provider_process import require_remote_provider_quiescence
-from rcp.runs.task_policy import AgentTaskRequest, skill_update
+from rcp.runs.task_policy import AgentTaskContinuation, AgentTaskRequest, skill_update
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskRecord
@@ -134,6 +134,44 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
             # temporarily unreachable remote stage remains retryable on the
             # next reconciliation rather than preventing the app from opening.
             continue
+
+
+def experiment_rerun_continuation(
+    tasks: BackgroundAgentTasks,
+    record: AgentTaskRecord,
+    request: AgentTaskRequest,
+    continuation: AgentTaskContinuation,
+) -> AgentTaskContinuation:
+    """Run a recovery of a turn that never composed its launch as that turn again.
+
+    A watcher wake whose link dropped while its stage was prepared sent the
+    provider nothing, so there is no prompt to resume and no context to keep.
+    Its recovery is still the same invocation, and runs as the wake it recovers.
+    """
+
+    if (
+        continuation not in {"resume", "retry"}
+        or not isinstance(request, RunRequest)
+        or request.patch_kind != "experiment_loop"
+        or not tasks.store.experiment_lineage_never_composed(record.operation_id)
+    ):
+        return continuation
+    root = record
+    while root.parent_operation_id is not None:
+        parent = tasks.store.agent_task(root.parent_operation_id)
+        if parent is None:
+            return continuation
+        root = parent
+    cause = tasks.store.agent_task_continuation_cause(root.operation_id)
+    if cause not in {"fresh", "watcher_wake"}:
+        return continuation
+    tasks.store.record_agent_task_receipt(
+        record.operation_id,
+        "experiment_uncomposed_rerun",
+        {"recovered_continuation": continuation, "continuation": cause},
+        tier="summary",
+    )
+    return cast(AgentTaskContinuation, cause)
 
 
 def retry_experiment_loop(

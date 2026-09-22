@@ -14,6 +14,8 @@ from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
+    _NON_PROMPT_CONTRACT_ROLES,
+    _START_NEW_EPISODE,
     AgentTaskAdmissionConflict,
     AgentTaskRecord,
     AutoResearchChildExperimentRecord,
@@ -1819,12 +1821,102 @@ class ExperimentStoreMixin:
         with self.connection() as connection:
             return self._experiment_episode_recovery_context_problem(connection, operation_id)
 
+    def experiment_episode_context_root(self, operation_id: str) -> str | None:
+        """Name the attempt whose episode context a recovery of this lineage keeps.
+
+        That is the earliest attempt that recorded a candidate, which each
+        composed launch does just before it builds its prompt.
+        """
+
+        with self.connection() as connection:
+            lineage, problem = self._experiment_task_lineage(connection, operation_id)
+            if problem is not None:
+                raise ValueError(problem)
+            return self._first_attempt_with_contract(connection, lineage, candidate=True)
+
+    def experiment_lineage_never_composed(self, operation_id: str) -> bool:
+        """Whether no attempt in this lineage got far enough to send the provider anything."""
+
+        with self.connection() as connection:
+            lineage, problem = self._experiment_task_lineage(connection, operation_id)
+            return problem is None and self._lineage_never_composed(connection, lineage)
+
+    @staticmethod
+    def _experiment_task_lineage(
+        connection: sqlite3.Connection,
+        operation_id: str,
+    ) -> tuple[list[str], str | None]:
+        """Return the lineage oldest attempt first, or the problem that broke the walk."""
+
+        lineage: list[str] = []
+        current_id = operation_id
+        seen: set[str] = set()
+        while True:
+            if current_id in seen:
+                return [], (
+                    "This Experiment-loop turn cannot be resumed or retried because its task "
+                    "lineage contains a cycle. " + _START_NEW_EPISODE
+                )
+            seen.add(current_id)
+            row = connection.execute(
+                "SELECT parent_operation_id FROM graph_runs WHERE operation_id = ?",
+                (current_id,),
+            ).fetchone()
+            if row is None:
+                return [], (
+                    "This Experiment-loop turn cannot be resumed or retried because its task "
+                    "lineage is incomplete. " + _START_NEW_EPISODE
+                )
+            lineage.append(current_id)
+            if row["parent_operation_id"] is None:
+                lineage.reverse()
+                return lineage, None
+            current_id = str(row["parent_operation_id"])
+
+    @staticmethod
+    def _first_attempt_with_contract(
+        connection: sqlite3.Connection,
+        lineage: list[str],
+        *,
+        candidate: bool,
+    ) -> str | None:
+        """The oldest attempt holding a context candidate, or else any prompt contract."""
+
+        roles = sorted(_NON_PROMPT_CONTRACT_ROLES)
+        clause = "role = ?" if candidate else f"role NOT IN ({', '.join('?' for _ in roles)})"
+        values = (_EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,) if candidate else tuple(roles)
+        for current_id in lineage:
+            found = connection.execute(
+                f"SELECT 1 FROM graph_run_contracts WHERE operation_id = ? AND {clause} LIMIT 1",
+                (current_id, *values),
+            ).fetchone()
+            if found is not None:
+                return current_id
+        return None
+
+    @staticmethod
+    def _lineage_never_composed(connection: sqlite3.Connection, lineage: list[str]) -> bool:
+        """No candidate and no prompt anywhere: every attempt failed before composing.
+
+        A watcher wake whose link dropped while its stage was prepared is one.
+        It sent the provider nothing, so there is no context to keep and no
+        prompt to continue.
+        """
+
+        return all(
+            ExperimentStoreMixin._first_attempt_with_contract(
+                connection, lineage, candidate=candidate
+            )
+            is None
+            for candidate in (True, False)
+        )
+
     @staticmethod
     def _experiment_episode_recovery_context_problem(
         connection: sqlite3.Connection,
         operation_id: str,
     ) -> str | None:
-        """Validate the immutable candidate on an Experiment invocation's lineage root."""
+        """Validate the immutable candidate on an Experiment lineage's context root."""
 
         unrecoverable = connection.execute(
             """
@@ -1844,39 +1936,25 @@ class ExperimentStoreMixin:
                 return "This Experiment-loop turn cannot continue: " + diagnostic.strip()
             return "This Experiment-loop turn cannot continue because its output was unreadable."
 
-        current_id = operation_id
-        seen: set[str] = set()
-        while True:
-            if current_id in seen:
-                return (
-                    "This Experiment-loop turn cannot be resumed or retried because its task "
-                    "lineage contains a cycle. Use Stop loop and press Run to start a fresh "
-                    "episode."
-                )
-            seen.add(current_id)
-            row = connection.execute(
-                "SELECT parent_operation_id FROM graph_runs WHERE operation_id = ?",
-                (current_id,),
-            ).fetchone()
-            if row is None:
-                return (
-                    "This Experiment-loop turn cannot be resumed or retried because its task "
-                    "lineage is incomplete. Use Stop loop and press Run to start a fresh episode."
-                )
-            parent_id = row["parent_operation_id"]
-            if parent_id is None:
-                break
-            current_id = str(parent_id)
-
+        lineage, problem = ExperimentStoreMixin._experiment_task_lineage(connection, operation_id)
+        if problem is not None:
+            return problem
+        if ExperimentStoreMixin._lineage_never_composed(connection, lineage):
+            # Nothing was sent, so there is no context to keep: recovery re-runs
+            # the turn and records the context that run sends.
+            return None
+        context_root = ExperimentStoreMixin._first_attempt_with_contract(
+            connection, lineage, candidate=True
+        )
+        if context_root is None:
+            return _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC
         contract = connection.execute(
             """
             SELECT content FROM graph_run_contracts
             WHERE operation_id = ? AND role = ?
             """,
-            (current_id, _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE),
+            (context_root, _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE),
         ).fetchone()
-        if contract is None:
-            return _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC
         try:
             candidate = json.loads(contract["content"])
         except (json.JSONDecodeError, TypeError):
@@ -1884,8 +1962,7 @@ class ExperimentStoreMixin:
         if not isinstance(candidate, dict):
             return (
                 "This Experiment-loop turn cannot be resumed or retried because its retained "
-                "episode context candidate is invalid. Use Stop loop and press Run to start a "
-                "fresh episode."
+                "episode context candidate is invalid. " + _START_NEW_EPISODE
             )
         return None
 

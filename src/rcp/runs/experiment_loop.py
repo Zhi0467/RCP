@@ -1271,15 +1271,17 @@ def prepare_experiment_episode_context_candidate(
 
     Resume and in-session Retry keep their original narrow contract, so they must
     commit the originating invocation's candidate rather than whatever happens to
-    be current when recovery finishes. Fresh human turns and automatic wakes each
+    be current when recovery finishes. The originating invocation is the first
+    attempt that recorded a candidate. Fresh human turns and automatic wakes each
     establish their own immutable candidate.
     """
 
     if execution.continuation in {"resume", "retry"}:
-        root_operation_id = root_experiment_loop_operation_id(execution)
-        content = execution.store.agent_task_contract(
-            root_operation_id,
-            _EPISODE_CONTEXT_CANDIDATE_ROLE,
+        context_root = execution.store.experiment_episode_context_root(execution.operation_id)
+        content = (
+            execution.store.agent_task_contract(context_root, _EPISODE_CONTEXT_CANDIDATE_ROLE)
+            if context_root is not None
+            else None
         )
         if content is None:
             raise ValueError(

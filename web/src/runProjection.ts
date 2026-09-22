@@ -134,7 +134,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
     keep_loop: "Keep loop running; check now if needed",
     start_episode:
-      run.health === "paused_at_limit"
+      run.health === "paused_at_limit" || run.control.episode?.can_continue
         ? "Add turns or start a new episode"
         : run.control.episode_id
           ? "Start a new episode"

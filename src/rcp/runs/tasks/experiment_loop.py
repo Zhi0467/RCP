@@ -107,6 +107,7 @@ from rcp.runs.shared import (
     _stage_task_input,
     _swept_stage_root,
     _task_token,
+    note_link_lost_before_provider,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work import (
@@ -2198,6 +2199,7 @@ async def stream_experiment_loop_task(
                 execution=execution,
                 primary_error=exc,
             )
+        note_link_lost_before_provider(execution, exc)
         if isinstance(exc, (OSError, ReplayHalted, StateUnavailable, ValueError)):
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -2467,6 +2469,7 @@ async def _stream_work_graph_repair(
                 execution=execution,
                 primary_error=exc,
             )
+        note_link_lost_before_provider(execution, exc)
         if isinstance(exc, (OSError, ReplayHalted, StateUnavailable, ValueError)):
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return

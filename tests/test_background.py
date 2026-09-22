@@ -3087,6 +3087,32 @@ def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) ->
     assert store.agent_task_has_receipt("exhausted", "transport_auto_retry_exhausted")
 
 
+def test_a_reattempt_in_a_short_wake_waits_without_spending_its_attempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A lid-closed laptop wakes for seconds; a launch then loses its link again."""
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    _transport_failed_task(store, operation_id="dropped")
+    scheduled: list[tuple[str, int, float | None]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt, delay=None: scheduled.append(
+            (operation_id, attempt, delay)
+        ),
+    )
+    monkeypatch.setattr(background_module, "seconds_until_automatic_launch", lambda: 25.0)
+    monkeypatch.setattr(
+        tasks, "retry", lambda *_args, **_kwargs: pytest.fail("launched in a short wake")
+    )
+
+    tasks._run_transport_retry("dropped", attempt=1)
+
+    assert scheduled == [("dropped", 1, 25.0)]
+
+
 def test_shutdown_cancels_a_pending_reattempt(tmp_path: Path) -> None:
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
