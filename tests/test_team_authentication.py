@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
+from rcp.artifacts import VIEWER_MUTATION_INIT
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,
@@ -940,6 +941,29 @@ def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_pat
     assert fresh_client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
     assert store.space_kind == "team"
     assert len(store.space_users()) == 1
+
+
+def test_artifact_viewer_keep_and_save_requests_pass_the_team_json_guard(tmp_path) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    client = TestClient(create_app(data_dir=tmp_path), base_url="https://team.test")
+    token = client.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()["token"]
+    assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
+    project = f"/api/projects/{uuid.uuid4()}"
+    origin = {"Origin": "https://team.test"}
+    for path in (
+        f"{project}/episodes/{uuid.uuid4()}/report/save",
+        f"{project}/tasks/{uuid.uuid4()}/artifacts/{uuid.uuid4()}/keep",
+    ):
+        assert client.post(path, headers=origin).status_code == 415
+        viewer = client.request(
+            VIEWER_MUTATION_INIT["method"],
+            path,
+            headers={**origin, **VIEWER_MUTATION_INIT["headers"]},
+            content=VIEWER_MUTATION_INIT["body"],
+        )
+        assert viewer.status_code != 415, viewer.text
 
 
 def test_authenticated_team_mutation_accepts_the_desktop_https_origin_over_its_tunnel(

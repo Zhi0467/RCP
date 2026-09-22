@@ -536,10 +536,24 @@ def _viewer_script() -> str:
     return importlib.resources.files("rcp").joinpath("artifact_viewer.js").read_text("utf-8")
 
 
+# Team servers accept authenticated mutations only as JSON (the CSRF guard in
+# rcp.api.app), so the viewer's bodiless POSTs still declare an empty JSON body.
+VIEWER_MUTATION_INIT = {
+    "method": "POST",
+    "credentials": "same-origin",
+    "headers": {"Content-Type": "application/json"},
+    "body": "{}",
+}
+_VIEWER_MUTATION_INIT_JS = json.dumps(VIEWER_MUTATION_INIT)
+
 _KEEP_SAVE_HANDLERS_JS = (
     # Shared by both viewer shells; each defines `config` with keepUrl/saveUrl and `notice`.
-    "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,{method:'POST',credentials:'same-origin'});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
-    "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,{method:'POST',credentials:'same-origin'});if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
+    "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
+    + _VIEWER_MUTATION_INIT_JS
+    + ");if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
+    "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,"
+    + _VIEWER_MUTATION_INIT_JS
+    + ");if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
 )
 
 
