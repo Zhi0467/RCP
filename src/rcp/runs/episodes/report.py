@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.storage import AgentTaskRecord
@@ -30,6 +31,10 @@ def start_episode_report(
 ) -> AgentTaskRecord | None:
     """Launch or restart the one durable hidden allocation for an episode."""
 
+    if seconds_until_automatic_launch() > 0:
+        # A report launched in a short wake loses its link and can spend its
+        # allocation. The episode stays wrapping up, and reconciliation asks again.
+        return None
     store = tasks.store
     episode = store.episode(episode_id)
     if episode is None:

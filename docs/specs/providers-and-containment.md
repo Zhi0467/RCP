@@ -1143,12 +1143,15 @@ as a wake, and records the context that run sends; the child carries an
 `experiment_uncomposed_rerun` receipt. A lineage that composed a prompt but kept
 no candidate is legacy and still refuses recovery.
 
-Automatic launches wait until the machine has stayed awake long enough to
+New automatic launches wait until the machine has stayed awake long enough to
 finish one (`AUTOMATIC_LAUNCH_AWAKE_SECONDS`). A laptop sleeping with its lid
 closed wakes for a few seconds at a time, and a launch started in one of those
 wakes loses its link partway through. Watcher delivery leaves a completed group
-for the next poll, and a transport reattempt re-arms its wait without spending
-the attempt. Sleep is read from two monotonic clocks, one that counts time
+for the next poll; a transport reattempt re-arms its wait without spending the
+attempt; an episode report stays wrapping up for the next reconciliation; and
+Auto-research mail and lifecycle wakes leave their inputs pending for the next
+pass. Re-dispatching a wake an earlier pass already admitted is not held, and
+falls back on the lost-link reattempt. Sleep is read from two monotonic clocks, one that counts time
 asleep and one that does not, named per platform in `rcp.machine_sleep`: on
 macOS `CLOCK_MONOTONIC` counts sleep and `CLOCK_UPTIME_RAW` skips it, on Linux
 `CLOCK_BOOTTIME` counts it and `CLOCK_MONOTONIC` skips it. A platform with no

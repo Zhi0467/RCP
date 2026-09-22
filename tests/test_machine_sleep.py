@@ -81,3 +81,41 @@ def test_a_pair_that_stops_behaving_as_named_turns_detection_off() -> None:
 )
 def test_this_machine_resolves_its_named_pair() -> None:
     assert AwakeStreak().awake_seconds() is not None
+
+
+class _Untouchable:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"a held launch read {name}")
+
+
+@pytest.mark.parametrize(
+    ("module_name", "call"),
+    [
+        (
+            "rcp.runs.episodes.report",
+            lambda module: module.start_episode_report(_Untouchable(), "e"),
+        ),
+        (
+            "rcp.runs.auto_research_delivery",
+            lambda module: module.deliver_pending_auto_research_lifecycle(
+                _Untouchable(), episode_id="e"
+            ),
+        ),
+        (
+            "rcp.runs.auto_research_delivery",
+            lambda module: module.deliver_pending_auto_research_mail(
+                _Untouchable(), episode_id="e", recipient_task_id="actor"
+            ),
+        ),
+    ],
+)
+def test_automatic_owner_launches_leave_their_inputs_for_a_later_pass(
+    monkeypatch: pytest.MonkeyPatch, module_name: str, call
+) -> None:
+    """An episode report launched in a 21 s wake failed its rsync with 255."""
+
+    import importlib
+
+    module = importlib.import_module(module_name)
+    monkeypatch.setattr(module, "seconds_until_automatic_launch", lambda: 25.0)
+    assert call(module) is None

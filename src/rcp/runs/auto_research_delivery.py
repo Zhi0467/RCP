@@ -10,6 +10,7 @@ from rcp.limits import (
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS,
 )
+from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_work_spawned,
@@ -268,9 +269,12 @@ def deliver_pending_auto_research_lifecycle(
     """Atomically claim lifecycle facts and pending root mail into one B wake.
 
     Lifecycle delivery is root-only. A busy or not-yet-checkpointed root, a
-    stopped parent, or an exhausted B allowance leaves both inputs unchanged.
+    stopped parent, an exhausted B allowance, or a machine that only just woke
+    leaves both inputs unchanged.
     """
 
+    if seconds_until_automatic_launch() > 0:
+        return None
     store = background.store
     episode = store.episode(episode_id)
     if episode is None or episode.mode != "auto_research":
@@ -448,10 +452,12 @@ def deliver_pending_auto_research_mail(
 ) -> str | None:
     """Atomically claim one recipient's pending batch and start its saved actor.
 
-    Busy, not-yet-checkpointed, stopped, and exhausted actors leave the durable
-    messages untouched for a later settlement pass.
+    Busy, not-yet-checkpointed, stopped, and exhausted actors, and a machine that
+    only just woke, leave the durable messages untouched for a later pass.
     """
 
+    if seconds_until_automatic_launch() > 0:
+        return None
     delivery = pending_auto_research_mail(
         background,
         episode_id=episode_id,
