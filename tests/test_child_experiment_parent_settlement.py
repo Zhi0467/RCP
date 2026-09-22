@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
 
@@ -19,6 +18,7 @@ from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.storage import WatcherContinuation
 
+from .helpers import record_launched_experiment_turn
 from .test_auto_research_children_storage import _experiment_route, _experiment_task
 from .test_auto_research_wrapup import _episode
 from .test_watchers import _record
@@ -37,12 +37,7 @@ def _parent_with_child(tmp_path):
     store.create_experiment_episode_with_invocation(
         child, auto_research_route=_experiment_route(store, parent, root, child)
     )
-    store.record_agent_task_contract(
-        child.operation_id,
-        "experiment_episode_context_candidate",
-        "{}",
-        hashlib.sha256(b"{}").hexdigest(),
-    )
+    record_launched_experiment_turn(store, child.operation_id)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     return store, parent, root, child
 

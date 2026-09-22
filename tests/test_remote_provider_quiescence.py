@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shlex
 import sys
 
@@ -12,6 +11,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.storage import AppStore
 
+from .helpers import record_launched_experiment_turn
 from .test_experiment_episode_storage import _admit_root
 from .test_remote_provider_receipts import _store
 
@@ -49,12 +49,7 @@ def test_experiment_retry_checks_remote_pass_before_admission(
     store = AppStore(tmp_path / "state.sqlite3")
     episode_id, root = _admit_root(store)
     store.checkpoint_agent_task(root.operation_id, stage_host="remote", stage_root="/stage")
-    store.record_agent_task_contract(
-        root.operation_id,
-        "experiment_episode_context_candidate",
-        "{}",
-        hashlib.sha256(b"{}").hexdigest(),
-    )
+    record_launched_experiment_turn(store, root.operation_id)
     store.begin_remote_provider_pass(root.operation_id, "remote", "/stage", "/stage/one.pid")
     store.fail_agent_task(root.operation_id, "session limit")
     reopened = AppStore(tmp_path / "state.sqlite3")
