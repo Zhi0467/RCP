@@ -2,7 +2,7 @@
 id: experiment-causality
 kind: skill
 label: Experiment causality
-version: 1.2.0
+version: 1.3.0
 description: Plan, repair, or audit experiment dependencies by tracing input gates and separating intended empirical handoffs from observed Evidence.
 dependencies:
 ---
@@ -14,11 +14,9 @@ what is planned, what has been observed, and what still needs a choice or an ext
 
 ## Set authority first
 
-Use the authority and graph boundary in the current task contract. In a read-only audit, including
-Research graph audit, report findings only. When construction or repair is authorized, contribute
-only to that task's Patch. Decision choices, standing, and lifecycle updates follow that contract;
-this skill grants none. Changes to existing ResearchQuestions or Hypotheses always use a Proposal,
-even when new Evidence motivates the change. No agent may approve a Proposal.
+Use the authority and graph boundary in the current task contract; this skill grants none. In a
+read-only audit, including Research graph audit, report findings only. When construction or
+repair is authorized, contribute only to that task's Patch.
 
 ## Trace each main Experiment
 
@@ -28,10 +26,11 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
    work, existing Evidence, or a new empirical result.
 3. **Plan empirical work without inventing its result.** Create or reuse the smallest bounded
    precursor Experiment when a new observation is needed. Name the downstream gate and the
-   intended observation in its design or current summary. Connect the main Experiment to its
+   intended observation in its design or current summary, with the `proxies`, `limitations`, and
+   `expected_outcomes` that observation will be read against. Connect the main Experiment to its
    actual gate now. Keep the gate unresolved and create no Evidence for an unrun Experiment.
 4. **Record the observed handoff.** When that precursor yields a result, inspect it, record its
-   Evidence, and connect:
+   Evidence, set the `produces` edge's `expectation` against the planned outcomes, and connect:
 
    ```text
    precursor Experiment -> produces -> Evidence
@@ -40,8 +39,7 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
    main Experiment -> governed_by or blocked_by -> downstream gate
    ```
 
-   Use only the applicable Evidence-to-gate edge. `informs` does not choose a Decision; `addresses`
-   does not change Blocker status.
+   Use only the applicable Evidence-to-gate edge.
 5. **Recurse through the precursor.** Identify its genuine input Decisions and Blockers, classify
    their resolution sources, and repeat only for empirical gates. Never move a gate that the
    precursor will settle backward into that precursor's inputs.
@@ -51,18 +49,12 @@ even when new Evidence motivates the change. No agent may approve a Proposal.
 
 ## Smoke and validation Experiments
 
-An Experiment whose objective is to verify infrastructure, integration, or recovery is itself
-the resolution path for that uncertainty. Its unpinned parameters, unbuilt images, and unrun checks
-are steps of its own work. Write them into `design`, `expected_outcomes`, and
-`interpretation_rules` so the episode can start and perform them. An open Blocker reached through
-`blocked_by` keeps RCP from starting the Experiment, so the smoke itself carries `blocked_by` only
-for a constraint the run cannot remove, such as a credential nobody has granted or a hardware
-allocation, with a `resolution_condition` that does not require running the smoke.
-
-The unverified infrastructure remains a genuine gate for any downstream main Experiment that
-depends on it. Keep that Blocker, connect the main Experiment to it with `blocked_by`, name the
-smoke as the precursor in the Blocker's `resolution_condition`, and connect the smoke's Evidence to
-it with `addresses` once the smoke has run. The gate moves off the precursor, not out of the graph.
+The graph rules' causal check says what a smoke Experiment may be blocked by. When tracing, apply
+it in both directions: its own setup steps are never its gates, and the unverified infrastructure
+remains a genuine gate for any downstream main Experiment that depends on it. Keep that Blocker on
+the main Experiment, name the smoke as the precursor in the Blocker's `resolution_condition`, and
+connect the smoke's Evidence to it with `addresses` once the smoke has run. The gate moves off the
+precursor, not out of the graph.
 
 ## Check the complete action program
 

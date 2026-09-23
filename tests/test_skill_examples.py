@@ -51,6 +51,9 @@ def test_causality_examples_plan_then_observe_without_choosing_the_gate() -> Non
         ("ev/duration-calibration", "informs", "dec/measurement-duration"),
     }
     assert all(edge.assessment is None for edge in state.edges.values())
+    assert state.nodes["exp/calibrate-duration"].proxies[0].measure
+    produces = next(edge for edge in state.edges.values() if edge.relation == "produces")
+    assert produces.expectation == "matched"
 
 
 def test_causality_example_choice_requires_orchestrator_authority() -> None:

@@ -2,7 +2,7 @@
 id: graph-audit
 kind: skill
 label: Graph audit
-version: 3.1.0
+version: 3.2.0
 description: Audit a research graph when asked for a read-only structural review of claims, relations, node identity, lifecycle consistency, or rendered summaries; report defects without editing canonical state.
 dependencies:
 ---
@@ -33,8 +33,13 @@ uses `governed_by` or `blocked_by` only for genuine input gates. Check complete 
 than treating every Experiment without a Hypothesis or Decision as an orphan. On each
 Evidence-to-Hypothesis epistemic edge, verify that the relation states direction and the assessment
 separately states relevance, weight, optional scope, and qualifications. The same Evidence may bear
-differently on different Hypotheses. Flag an assessment attached to Hypothesis-to-Hypothesis
-`contradicts`, `produces`, `informs`, `addresses`, or another non-applicable relation.
+differently on different Hypotheses. Flag an assessment on a relation that does not carry one.
+
+**Proxies read as the real quantity.** Flag a claim stated about what a proxy stands for when its
+Evidence measured only the proxy and says nothing of how well the proxy holds. Flag Experiment
+`limitations` that the Evidence qualifications or `research.md` silently drop. Flag a `produces`
+`expectation` that the observation and the Experiment's `expected_outcomes` do not bear out, and a
+`diverged` result read as neither a protocol defect nor a finding.
 
 **Missing truthful roles.** Flag Evidence with no provenance, a missing known producing Experiment,
 or a methodological `result` or `diagnostic` role that conflicts with its observation; a
@@ -67,10 +72,8 @@ Name the smallest correction and who has authority to make it.
 Briefly list the important paths verified as coherent.
 ```
 
-Separate observation from recommendation. Existing ResearchQuestion and Hypothesis changes require
-Proposals; approval remains human-owned. Identify authority for Decision choice, standing, and
-lifecycle updates from the current task contract and graph rules. The report grants no authority
-to perform its suggestions.
+Separate observation from recommendation. Identify who may make each suggested change from the
+current task contract. The report grants no authority to perform its suggestions.
 
 ## Boundaries
 

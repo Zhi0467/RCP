@@ -2,7 +2,7 @@
 id: evidence-triage
 kind: skill
 label: Evidence triage
-version: 3.1.0
+version: 3.2.0
 description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
@@ -33,48 +33,31 @@ effects they did not test.
 If the interpretation merely repeats the observation, consider keeping the information in the
 Experiment summary instead of creating Evidence.
 
+When the producing Experiment lists `proxies`, observe the measure and interpret what it licenses
+about the quantity it stands for only as far as the proxy holds. Carry the Experiment's
+`limitations` that bear on a claim into that edge's qualifications.
+
 ## Choose fields deliberately
 
-- Set `origin` explicitly: `internal_run`, `external_publication`, `external_instance`, `analytic`,
-  or `unknown` only when provenance truly cannot be classified.
-- Set methodological `role` to `result` for an ordinary empirical, analytic, or external
-  observation. Use `diagnostic` when the observation primarily localizes, disambiguates, or debugs
-  a phenomenon. Role says what kind of observation this is, not how strongly it bears on a claim.
-  Never author the retired node-global `strength` or replay-only `legacy_strength` fields.
-- Set `validity` to `valid`, `qualified`, `invalid`, or `superseded` based on the observation's
-  methodological limits. A completed calibration can be valid within its measured scope. An
-  incomplete run may justify only a qualified snapshot; it does not establish the missing result.
+The graph rules define `origin`, `role`, and `validity`. Decide them from the observation, not from
+the claim it will support. A completed calibration can be valid within its measured scope; an
+incomplete run may justify only a qualified snapshot and does not establish the missing result.
 
 ## Assess each Hypothesis relation
 
-For every new Evidence-to-Hypothesis `supports`, `weakens`, `refutes`, `inconclusive`, or
-Evidence-sourced `contradicts` edge, write one claim-relative `assessment`:
+Write one claim-relative `assessment` on every new edge the graph rules say requires one. Calibrate
+it honestly for that claim alone: the same Evidence may have different relevance, weight, scope,
+and qualifications for different Hypotheses. Historical unassessed relations remain readable, but
+never use that compatibility to omit an assessment from a new applicable edge.
 
-- `relevance`: `direct`, `indirect`, or `contextual`;
-- `weight`: `limited`, `moderate`, or `strong`;
-- optional `scope`: the bounded population, regime, condition, subclaim, or setting covered; and
-- `qualifications`: concrete limitations or caveats, with an empty list only when none apply.
+## Keep action handoffs separate
 
-The relation states direction; do not repeat support or opposition inside the assessment. The same
-Evidence may have different relevance, weight, scope, and qualifications for different Hypotheses.
-Historical unassessed relations remain readable, but never use that compatibility to omit an
-assessment from a new applicable edge. Do not attach an Evidence assessment to a
-Hypothesis-to-Hypothesis `contradicts` edge or any action, seam, meta, or custom relation.
-
-## Preserve action semantics and authority
-
-- Use `informs` when Evidence bears on a Decision. The edge does not select an option or close the
-  Decision; selection is a separate action under the current task's authority. It carries no
-  Evidence-to-Hypothesis assessment.
-- Use `addresses` when Evidence bears on whether a Blocker is cleared, preserved, or narrowed. The
-  edge does not itself change Blocker status; the lifecycle record carries that consequence. It
-  carries no Evidence-to-Hypothesis assessment.
-- Use `supports`, `weakens`, `refutes`, `inconclusive`, or `contradicts` only when the Evidence
-  bears on a Hypothesis, and calibrate its claim-relative assessment honestly. Do not use a smoke
-  or calibration result on downstream science merely because it enables the main run.
-- Keep Experiment `produces` Evidence separate from the Evidence handoff to a Decision or Blocker.
-  Before the result exists, record the intended observation in the Experiment plan, not an Evidence
-  node or a `produces` edge.
+- An `informs` or `addresses` edge records that Evidence bears on a gate. The choice or lifecycle
+  change it motivates is a separate action under the current task's authority.
+- Do not use a smoke or calibration result on downstream science merely because it enables the
+  main run.
+- Set the `produces` edge's `expectation` by comparing the observation with the `expected_outcomes`
+  written before the run, not with a reading formed after seeing the result.
 
 ## Check claim boundaries and citations
 

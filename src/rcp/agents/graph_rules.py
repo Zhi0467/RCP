@@ -75,8 +75,7 @@ _EDIT_METHOD = """Editing the graph:
 These are methods for authorized graph changes, not additional graph or filesystem authority.
 - If the active ontology cannot express a needed node or edge, state that plainly
   in the final answer, name the missing vocabulary, and continue with the records that can be
-  expressed. Do not create a node for the gap; an agent may neither apply nor propose `set_ontology`
-  or use a definition that is not already active.
+  expressed. Do not create a node for the gap or use a definition that is not already active.
 - Keep node prose concise. When a useful durable design, plan, result, or handoff already exists or
   is naturally produced within the task, cite its exact repository-relative path and purpose in an
   allowed field. Never create a ceremonial file for this rule; temporary previews are not durable

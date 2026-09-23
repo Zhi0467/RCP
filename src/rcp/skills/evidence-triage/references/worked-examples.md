@@ -58,6 +58,22 @@ live state or a completed result.
 The relation supplies direction. Each assessment separately records directness, weight, scope, and
 caveats for its own claim; neither assessment becomes a global property of the Evidence node.
 
+## A proxy result that diverged
+
+> **experiment** `proxies`: sleep quality, measured as hours in bed from a phone log.
+> `limitations`: naps are not logged. `expected_outcomes`: hours in bed rise after the change.
+> **observation** Logged hours in bed fell by 20 minutes per night over two weeks.
+> **interpretation** Time in bed fell. The log cannot show whether sleep quality changed, and
+> unlogged naps may have replaced some night sleep.
+> **role** result  **validity** valid  **origin** internal_run
+> **relations** `produces` with `expectation: diverged`; `weakens` the sleep-quality Hypothesis with
+> `relevance: indirect`, `weight: limited`, and `qualifications: ["Measures time in bed, not sleep
+> quality.", "Naps are not logged."]`.
+
+The observation stays in the measure's terms. The divergence is named on `produces`, and the
+assessment carries the proxy gap and the Experiment's limitation instead of claiming the quality
+itself fell.
+
 ## A citation must carry its claim
 
 > **observation** Peak memory remained below the configured limit.
