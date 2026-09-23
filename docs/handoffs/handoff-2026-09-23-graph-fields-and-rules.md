@@ -8,7 +8,46 @@ current behavior after the change is in
 [graph, history, and transitions](../specs/graph-history-and-transitions.md#product-ontology)
 and [graph rules in task contracts](../specs/providers-and-containment.md#graph-rules-in-task-contracts).
 
-Close this handoff when all three slices are merged and the checks below pass.
+Delete this handoff when all three slices are merged and the checks below pass.
+
+## Design review, 2026-09-23
+
+A read-only Codex xhigh review of this plan found one blocker and three major
+gaps. Each is folded into the slices below:
+
+1. **Blocker.** Custom-field collision checks reserve every core field name, and
+   they run on replay. A project whose history defines a custom field named
+   `proxies` or `limitations` would stop replaying. Replay keeps accepting
+   those two names; only new ontology changes are refused.
+2. Canonical `core/operations.py` `NewEdge` forbids extra fields, so
+   `expectation` must be added there too, not only on `Edge` and the agent
+   schema. Human Sync, agent preparation, branch merge, and replay need
+   round-trip coverage.
+3. Web draft persistence (`humanDraft.ts`) rebuilds edges from an explicit field
+   list and has no draft value type for proxy records. The node editor, the
+   detail drawer, and the relation map need a proxy editor and readable
+   presentation.
+4. The chat key is checked in a third place (`runs/chat.py`, retained Patch
+   reuse), and the master context embeds both Discuss and Work, so the digest
+   must cover every rendering and not depend on the turn's mode. Continuation
+   builders and their callers are enumerated below, including ontology-flag
+   propagation.
+5. Minor: relation layers are derived per edge from endpoint types. The table
+   renders the derived layer, keeps `same_type`, and states assessment
+   applicability per endpoint pair.
+
+## Version bumps this change needs
+
+- `CHAT_MASTER_CONTEXT_VERSION`, once, in slice 1. From slice 2 the key also
+  carries the rules digest, so later rule edits need no manual bump.
+- `AGENT_GRAPH_AUTHORITY_POLICY_VERSION` in slice 3 if the authority body text
+  changes; its digest already follows the text.
+- Each edited skill's `version`, and the workflow's dependency pins, in slice 3.
+- No server upgrade fixture: the new fields are optional with defaults, so no
+  earlier persisted shape stops being current. The existing boundary fixtures
+  are run to prove it.
+- No team-shell protocol change: the native entrance does not carry graph
+  shapes. No release version bump; that is its own pull request.
 
 ## Settled decisions
 
@@ -55,9 +94,8 @@ Files: `core/models.py`, `agents/schema.py`, new `agents/graph_rules.py`,
 `agents/prompts.py`, `agents/auto_research_prompt.py`,
 `agents/experiment_loop_prompt.py`, `agents/branch_merge_prompt.py`,
 `core/validation/ops.py`, `runs/experiment_loop.py` (episode receipt),
-`core/research_md.py` if it renders Experiment design fields, `web/src/types.ts`,
-`web/src/nodeEditing.ts`, `web/src/nodePresentation.ts`, the edge editor in
-`web/src/components/GraphEditingControls.tsx`.
+`core/operations.py`, `core/ontology.py`, `core/research_md.py`,
+`history/delta.py`, and the web files listed below.
 
 - Add `ExperimentProxy`, `Experiment.proxies`, `Experiment.limitations`,
   `Edge.expectation`, and their agent-schema counterparts. Old graphs load with
@@ -66,7 +104,14 @@ Files: `core/models.py`, `agents/schema.py`, new `agents/graph_rules.py`,
   allowlist is already an allowlist and does not change. The episode receipt
   snapshots both fields beside `expected_outcomes`.
 - Validation accepts `expectation` only on `produces`, and on human and agent
-  edges alike.
+  edges alike. It is added to `Edge`, canonical `NewEdge`, and agent `NewEdge`,
+  and omitted from serialized historical operations that lack it.
+- Ontology collision checks accept historical custom fields named `proxies` or
+  `limitations` on replay and refuse them for new ontology changes.
+- Web: `types.ts`, `humanDraft.ts` (edge fields and a proxy draft value),
+  `nodeEditing.ts` and `DetailDrawer.tsx` (a proxy-pair editor),
+  `nodePresentation.ts` and `RelationMap.tsx` (readable proxies and edge
+  expectation), and the edge editor in `GraphEditingControls.tsx`.
 - `graph_rules()` renders, per node type, each field with its description;
   the relation table with endpoints, layer, description, and whether an
   assessment is required; id prefixes; the ontology extension rules when
@@ -93,7 +138,15 @@ Files: `agents/graph_rules.py`, `agents/prompts.py` (`continuation_task_contract
   digest differs. Remove the stale migration preface.
 - Corrections that carry a Patch repeat the block rather than only the causal
   check.
-- The chat `contract_key` includes the digest.
+- The chat `contract_key` includes one digest over every graph-rules
+  rendering, independent of the turn's mode. `discuss.py`, `work.py`, and the
+  retained-Patch check in `chat.py` build it from one function.
+- Continuation builders that carry a Patch and repeat the block:
+  `continuation_task_contract` (resume, retry, both Patch corrections),
+  `retry_handoff_task_contract`, `branch_merge_correction_contract`, the
+  Experiment-loop Patch correction, and the child Work wake in
+  `runs/tasks/auto_research_child_work.py`. Their callers pass the ontology
+  extension flag (`runs/tasks/graph.py` retry handoff and correction included).
 - Human-started graph repair renders a current contract.
 
 ## Slice 3: authority cleanup and skills
@@ -130,5 +183,7 @@ under `skills/`, their `references/worked-examples.md`, and
   changes the chat contract key; `expectation` is refused off `produces`; an old
   graph without the new fields loads and replays.
 - Web: the affected `web/tests/*.test.mjs` and `npm --prefix web run build`.
+- The server upgrade fixture tests pass unchanged.
 - Served-app journey on a throwaway data directory: edit an Experiment's proxies
-  and limitations, add a `produces` edge with `expectation`, and read both back.
+  and limitations, add a `produces` edge with `expectation`, reload before Sync,
+  then Sync, and read both back on the node and the edge.
