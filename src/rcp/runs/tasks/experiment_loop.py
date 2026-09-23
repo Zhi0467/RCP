@@ -1106,6 +1106,7 @@ def _watch_correction_contract(
         patch_path=launch_turn.patch_inputs.patch_path,
         output_schema_path=launch_turn.patch_inputs.schema_path,
         validator_command=validator_command,
+        ontology_extensions=launch_turn.context.ontology_extensions,
     )
 
 
@@ -1541,6 +1542,7 @@ async def _apply_experiment_loop_turn(
                     watch_path=launch_turn.patch_inputs.watch_path,
                     validator_command=loop_validator_command,
                     output_schema_path=launch_turn.patch_inputs.schema_path,
+                    ontology_extensions=launch_turn.context.ontology_extensions,
                 )
                 correction_path, correction_prompt = _stage_task_contract(
                     turn.local_stage,
@@ -2449,6 +2451,7 @@ async def _stream_work_graph_repair(
             validator_command=validator_command,
             output_schema_path=patch_inputs.schema_path,
             write_scope=write_scope,
+            ontology_extensions=context.ontology_extensions,
         )
         contract_path, prompt = _stage_task_contract(
             local_stage,

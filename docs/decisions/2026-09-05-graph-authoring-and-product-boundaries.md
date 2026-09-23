@@ -38,6 +38,6 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   safety procedure without suggesting that matching `space_id` detects an older
   snapshot. See [server operations](../specs/server-and-machine-operations.md#backup-and-restore).
 
-The superseded register is [historical evidence only](../archive/open-questions-2026-09-05.md).
+The superseded register was deleted; git history holds it.
 Do not restore its unresolved statuses as current instructions. Future feature
 work requires concrete scope and its owning specification, not a revived register.

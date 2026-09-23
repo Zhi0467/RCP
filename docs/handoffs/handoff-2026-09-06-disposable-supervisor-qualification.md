@@ -9,8 +9,8 @@ their scope, recording that distinction explicitly.
 
 The [operations spec](../specs/server-and-machine-operations.md) and
 [supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-own current behavior. The [closed deployment handoff](../archive/handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md#production-closeout-2026-09-06)
-contains historical implementation and redacted production receipts.
+own current behavior. The closed deployment handoff, with its historical
+implementation and redacted production receipts, is in git history.
 
 ## Executed proof
 

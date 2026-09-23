@@ -168,7 +168,6 @@ Current sources have this precedence:
 4. Active [`handoffs/`](handoffs/README.md) authorize and scope work not yet
    implemented. A human-confirmed, ready handoff need not be reconfirmed, but it
    may not silently change current design.
-5. [`archive/`](archive/) is historical and non-authoritative.
 
 [`server.md`](server.md), [`device-pairing.md`](device-pairing.md), and
 [`desktop.md`](desktop.md) are operator and

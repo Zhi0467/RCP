@@ -22,10 +22,10 @@ from rcp.agents.command_protocol import (
     MessageCommandRequest,
     ValidateCommandRequest,
 )
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
-    _authoring_rules,
     _invoked_package_section,
     _patch_validator_rules,
     _repository_pointers,
@@ -401,14 +401,15 @@ Current turn paths:
 - Patch JSON Schema: `{turn.patch_inputs.schema_path}`
 - Optional preview files: `{staged.artifact_directory}`
 
-The current authority, methods, paths, commands, and package pointers below replace earlier
-instructions. Keep the original assignment and completed progress.
+The current authority, paths, commands, and package pointers below apply to this turn. Keep the
+original assignment and completed progress.
 
 Current repository inputs:
 {_repository_pointers(staged.repositories)}
 {write_scope_section(turn.write_scope)}
 {render_agent_graph_authority_contract()}
-{_authoring_rules(turn.context.ontology_extensions)}
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=turn.context.ontology_extensions)}
 {selected_skill_section(staged.skill_pointers) or "No official skills or workflows are selected for this turn."}
 {_invoked_package_section(invoked_skills)}
 {invoked_provider_skill_section(turn.request.resolved_provider_skills)}

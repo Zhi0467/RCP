@@ -140,56 +140,210 @@ class ExperimentAttempt(BaseModel):
 class BaseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
-    title: str
+    id: str = Field(
+        description="Stable identity. Reuse an existing node's id rather than recreating it."
+    )
+    title: str = Field(description="A short reader-facing name, in ordinary language.")
     extension_type: str | None = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+        description="The active custom type this node specializes, or null for a base node.",
     )
-    extension_fields: dict[str, str | float | bool | list[str]] = Field(default_factory=dict)
-    standing: Standing = Standing.ASSERTED
-    created_rev: int = 0
-    updated_rev: int = 0
-    source_refs: list[SourceRef] = Field(default_factory=list)
+    extension_fields: dict[str, str | float | bool | list[str]] = Field(
+        default_factory=dict,
+        description="Values for the custom type's own fields; base fields never go here.",
+    )
+    standing: Standing = Field(
+        default=Standing.ASSERTED,
+        description=(
+            "Review standing: `asserted` (not yet reviewed), `accepted`, or `contested`. "
+            "Editing accepted ordinary content returns it to `asserted`."
+        ),
+    )
+    created_rev: int = Field(default=0, description="Revision that created the node.")
+    updated_rev: int = Field(default=0, description="Revision that last changed the node.")
+    source_refs: list[SourceRef] = Field(
+        default_factory=list,
+        description=(
+            "Exact provider records that support this node. Each `excerpt` must itself contain "
+            "the claim, not merely come from the same conversation."
+        ),
+    )
 
 
 class ResearchQuestion(BaseNode):
     type: Literal["research_question"]
-    question: str
-    motivation: str = ""
-    scope: str = ""
-    status: Literal["open", "answered", "abandoned", "superseded"] = "open"
+    question: str = Field(description="The question the project is trying to answer.")
+    motivation: str = Field(default="", description="Why answering it matters to the project.")
+    scope: str = Field(
+        default="",
+        description=(
+            "What the question covers and what it leaves out, such as the population, setting, "
+            "or time range. Hypotheses and Experiments under it stay inside this boundary."
+        ),
+    )
+    status: Literal["open", "answered", "abandoned", "superseded"] = Field(
+        default="open", description="Whether the question is still being pursued."
+    )
 
 
 class Hypothesis(BaseNode):
     type: Literal["hypothesis"]
-    statement: str
-    rationale: str = ""
-    predictions: list[str] = Field(default_factory=list)
-    scope: str = ""
+    statement: str = Field(
+        description=(
+            "A claim that some observation could show to be false, stated specifically. Name the "
+            "observation that would show it false."
+        )
+    )
+    rationale: str = Field(
+        default="",
+        description=(
+            "Why the claim is worth testing, written before evidence bears on it. Reasoning, "
+            "not evidence."
+        ),
+    )
+    predictions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What should be true in the world if the claim holds, independent of how any one "
+            "Experiment measures it; each one is an observation that would count against the "
+            "claim if it failed. Written before results exist."
+        ),
+    )
+    scope: str = Field(
+        default="",
+        description=(
+            "The boundary within which the claim is meant to hold. Write it only when a cited "
+            "`source_refs[].excerpt` states that boundary; otherwise leave it empty and say so "
+            "in the final answer. Never infer it, and never create a Blocker or Decision for a "
+            "missing boundary."
+        ),
+    )
     status: Literal["proposed", "active", "supported", "weakened", "rejected", "superseded"] = (
-        "proposed"
+        Field(
+            default="proposed",
+            description=(
+                "Where the claim stands against its evidence. A change names the "
+                "Evidence-to-Hypothesis edge that caused it."
+            ),
+        )
     )
 
 
 class Decision(BaseNode):
     type: Literal["decision"]
-    question: str
-    options: list[str] = Field(default_factory=list)
-    selected_option: str | None = None
-    rationale: str | None = None
-    consequences: list[str] = Field(default_factory=list)
-    status: Literal["open", "ready", "decided", "revisit", "superseded"] = "open"
+    question: str = Field(description="The choice that governs how research proceeds.")
+    options: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The alternatives the chooser selects among. Investigate each with the same care and "
+            "write each as a complete choice a reader could act on alone, at the same level of "
+            'detail. Never pad with an underspecified or "leave it open" option, and never '
+            "signal a preference through order, length, or wording."
+        ),
+    )
+    selected_option: str | None = Field(
+        default=None, description="The chosen option, exactly as written in `options`."
+    )
+    rationale: str | None = Field(
+        default=None,
+        description=(
+            "What the choice turns on and any leaning. If only one option survives "
+            "investigation, say so here instead of inventing alternatives."
+        ),
+    )
+    consequences: list[str] = Field(
+        default_factory=list,
+        description="What changes in the research once the choice is made.",
+    )
+    status: Literal["open", "ready", "decided", "revisit", "superseded"] = Field(
+        default="open",
+        description=(
+            "`open` while facts are missing; `ready` once the choice is makeable from facts "
+            "checked with the task's inputs, including operational state when that decides it, "
+            "and without waiting for Experiments it governs; `decided` once chosen; `revisit` "
+            "only when new evidence undermines a settled choice."
+        ),
+    )
+
+
+class ExperimentProxy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stands_for: str = Field(
+        min_length=1, description="The quantity the research cares about, such as caffeine intake."
+    )
+    measure: str = Field(
+        min_length=1,
+        description=(
+            "What is actually measured in its place, such as self-reported cups of coffee per week."
+        ),
+    )
+
+    @field_validator("stands_for", "measure", mode="before")
+    @classmethod
+    def normalize_side(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("each side of a proxy must not be blank")
+        return normalized
 
 
 class Experiment(BaseNode):
     type: Literal["experiment"]
-    objective: str
-    design: str = ""
-    expected_outcomes: list[str] = Field(default_factory=list)
-    interpretation_rules: list[str] = Field(default_factory=list)
-    completion_criteria: list[str] = Field(default_factory=list)
-    invocation_ceiling: int = Field(default=5, ge=1)
+    objective: str = Field(description="What this bounded test is meant to establish.")
+    design: str = Field(
+        default="",
+        description=(
+            "The protocol: how data will be collected and what runs, in enough detail to repeat. "
+            "Written before results exist."
+        ),
+    )
+    proxies: list[ExperimentProxy] = Field(
+        default_factory=list,
+        description=(
+            "Each measurable stand-in the design uses, as what it stands for and what is "
+            "measured. List every stand-in the design measures in place of the quantity the claim "
+            "is about; leave it empty only when the design measures that quantity directly. "
+            "Written with the design."
+        ),
+    )
+    limitations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What the proxies and the protocol miss or exclude, such as a source not counted or "
+            "a group left out. Written with the design."
+        ),
+    )
+    expected_outcomes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What this measurement should show if the tested claim holds, in the proxies' terms. "
+            "Written before results exist."
+        ),
+    )
+    interpretation_rules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Pre-committed rules for reading results: if this is observed, it means that. "
+            "Written before results exist; reading an actual result belongs in "
+            "`Evidence.interpretation`."
+        ),
+    )
+    completion_criteria: list[str] = Field(
+        default_factory=list,
+        description="What must be recorded for the Experiment to count as finished.",
+    )
+    invocation_ceiling: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "The default number of agent invocations one episode of this Experiment may spend. "
+            "A human Run may pin a different count for that episode."
+        ),
+    )
     status: Literal[
         "proposed",
         "designing",
@@ -201,12 +355,41 @@ class Experiment(BaseNode):
         "unspecified",
         "abandoned",
         "superseded",
-    ] = "proposed"
-    attempts: list[ExperimentAttempt] = Field(default_factory=list)
-    current_summary: str = ""
-    next_action: str | None = None
-    current_summary_stale: bool = False
-    next_action_stale: bool = False
+    ] = Field(
+        default="proposed",
+        description=(
+            "The Experiment's current phase. When new work reopens a completed Experiment, change "
+            "`status`, `current_summary`, and `next_action` together; a clarification alone does "
+            "not reopen it. `unspecified` is a compatibility reading of old history and is never "
+            "written."
+        ),
+    )
+    attempts: list[ExperimentAttempt] = Field(
+        default_factory=list,
+        description=(
+            "Ordered ledger of this Experiment's attempts: purpose, configuration, job "
+            "references, status, and outcome."
+        ),
+    )
+    current_summary: str = Field(
+        default="",
+        description=(
+            "Short orientation on where the Experiment stands now. Not a substitute for the "
+            "attempt ledger or for Evidence."
+        ),
+    )
+    next_action: str | None = Field(
+        default=None,
+        description="The concrete next step, or null when nothing remains.",
+    )
+    current_summary_stale: bool = Field(
+        default=False,
+        description="True when a later graph change may have outdated `current_summary`.",
+    )
+    next_action_stale: bool = Field(
+        default=False,
+        description="True when a later graph change may have outdated `next_action`.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -228,28 +411,79 @@ CLOSED_EXPERIMENT_STATUSES = frozenset({"completed", "abandoned", "superseded"})
 
 class Evidence(BaseNode):
     type: Literal["evidence"]
-    observation: str
-    interpretation: str = ""
-    role: Literal["result", "diagnostic"] = "result"
-    legacy_strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] | None = (
-        None
+    observation: str = Field(
+        description=(
+            "What the artifact or record directly states: run, step, value, absence, and time "
+            "boundary. Written after the result exists."
+        )
     )
-    validity: Literal["valid", "qualified", "invalid", "superseded"] = "valid"
+    interpretation: str = Field(
+        default="",
+        description=(
+            "What the observation licenses here and, when useful, what it does not. Written "
+            "after the result exists."
+        ),
+    )
+    role: Literal["result", "diagnostic"] = Field(
+        default="result",
+        description=(
+            "`result` for an ordinary observation; `diagnostic` when it mainly localizes, "
+            "disambiguates, or debugs a phenomenon. Role is not evidential weight."
+        ),
+    )
+    legacy_strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] | None = (
+        Field(
+            default=None,
+            description=(
+                "A retired node-wide strength label kept only for old history. Never write it, "
+                "and never read it as an edge weight."
+            ),
+        )
+    )
+    validity: Literal["valid", "qualified", "invalid", "superseded"] = Field(
+        default="valid",
+        description=(
+            "Methodological soundness within the observation's own limits. An incomplete run may "
+            "justify only a `qualified` snapshot."
+        ),
+    )
     origin: Literal[
         "internal_run", "external_publication", "external_instance", "analytic", "unknown"
-    ] = "unknown"
-    artifact_refs: list[str] = Field(default_factory=list)
+    ] = Field(
+        default="unknown",
+        description=(
+            "Where the observation came from: `internal_run` for a project run, "
+            "`external_publication` for a publication, `external_instance` for another RCP "
+            "instance, `analytic` for a derivation, `unknown` only when it cannot be classified. "
+            "Set it explicitly. `internal_run` Evidence connects to its producing Experiment; "
+            "external or analytic Evidence needs no invented Experiment or conversation source."
+        ),
+    )
+    artifact_refs: list[str] = Field(
+        default_factory=list,
+        description="Paths to the primary artifacts the observation comes from.",
+    )
 
 
 class Blocker(BaseNode):
     type: Literal["blocker"]
-    description: str
+    description: str = Field(description="The concrete impediment and what it stops.")
     blocker_type: Literal[
         "scientific", "design", "data", "implementation", "infrastructure", "unknown"
-    ] = "unknown"
-    status: Literal["open", "resolved", "superseded"] = "open"
-    resolution_condition: str = ""
-    recommended_action: str | None = None
+    ] = Field(default="unknown", description="What kind of impediment it is.")
+    status: Literal["open", "resolved", "superseded"] = Field(
+        default="open", description="Only an `open` Blocker gates anything."
+    )
+    resolution_condition: str = Field(
+        default="",
+        description=(
+            "The observable condition that clears it. It never amounts to running the "
+            "Experiment the Blocker stops."
+        ),
+    )
+    recommended_action: str | None = Field(
+        default=None, description="The step most likely to meet the resolution condition."
+    )
 
 
 ProjectNode = Annotated[
@@ -274,6 +508,8 @@ HUMAN_EDITABLE_NODE_FIELDS: dict[str, frozenset[str]] = {
             # invocation-budget rename. New output uses invocation_ceiling.
             "attempt_ceiling",
             "invocation_ceiling",
+            "proxies",
+            "limitations",
             "current_summary",
             "next_action",
         }
@@ -307,6 +543,7 @@ BaseRelation = Literal[
     "supersedes",
     "duplicate_of",
 ]
+EdgeExpectation = Literal["matched", "diverged", "no_expectation"]
 RelationLayer = Literal["epistemic", "action", "seam", "meta"]
 ALL_NODE_TYPES: frozenset[str] = frozenset(
     {"research_question", "hypothesis", "decision", "experiment", "evidence", "blocker"}
@@ -371,53 +608,141 @@ class RelationSpec:
     target_types: frozenset[str]
     layer: RelationLayer
     same_type: bool = False
+    description: str = ""
 
 
 RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
     "has_subquestion": RelationSpec(
-        frozenset({"research_question"}), frozenset({"research_question"}), "epistemic"
+        frozenset({"research_question"}),
+        frozenset({"research_question"}),
+        "epistemic",
+        description="The target question is part of answering the source question. Split a question when its parts can be pursued separately; Hypotheses and Decisions then hang off the narrowest question they serve.",
     ),
     "has_hypothesis": RelationSpec(
-        frozenset({"research_question"}), frozenset({"hypothesis"}), "epistemic"
+        frozenset({"research_question"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The Hypothesis is a candidate answer to the question. Every Hypothesis serves at least one question, and rival Hypotheses may share one. Create this edge in the Patch that creates the Hypothesis, because adding it to an existing Hypothesis is a protected change.",
     ),
-    "supports": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
-    "weakens": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
-    "refutes": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
-    "inconclusive": RelationSpec(frozenset({"evidence"}), frozenset({"hypothesis"}), "epistemic"),
+    "supports": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The Evidence makes the claim more likely. One Evidence node often bears on several Hypotheses, each through its own edge.",
+    ),
+    "weakens": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The Evidence makes the claim less likely without ruling it out.",
+    ),
+    "refutes": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The Evidence rules the claim out within its scope.",
+    ),
+    "inconclusive": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The Evidence bears on the claim but settles nothing either way. Use it rather than leaving Evidence from an Experiment that tests the claim unconnected to it.",
+    ),
     "contradicts": RelationSpec(
-        frozenset({"evidence", "hypothesis"}), frozenset({"hypothesis"}), "epistemic"
+        frozenset({"evidence", "hypothesis"}),
+        frozenset({"hypothesis"}),
+        "epistemic",
+        description="The source, Evidence or another Hypothesis, is incompatible with the claim. Between Hypotheses it marks rival answers that cannot both hold.",
     ),
-    "tests": RelationSpec(frozenset({"experiment"}), frozenset({"hypothesis"}), "seam"),
-    "produces": RelationSpec(frozenset({"experiment"}), frozenset({"evidence"}), "seam"),
-    "informs": RelationSpec(frozenset({"evidence"}), frozenset({"decision"}), "action"),
-    "addresses": RelationSpec(frozenset({"evidence"}), frozenset({"blocker"}), "action"),
+    "tests": RelationSpec(
+        frozenset({"experiment"}),
+        frozenset({"hypothesis"}),
+        "seam",
+        description="The Experiment can tell whether the claim holds: its expected outcomes differ depending on whether the claim is true. Evidence it produces connects back to each Hypothesis it tests with `supports`, `weakens`, `refutes`, or `inconclusive`. An Experiment that serves only a Decision or Blocker needs no `tests` edge.",
+    ),
+    "produces": RelationSpec(
+        frozenset({"experiment"}),
+        frozenset({"evidence"}),
+        "seam",
+        description="The Experiment generated this Evidence. Create it only once the observation exists; before that, the intended observation belongs in the Experiment's design.",
+    ),
+    "informs": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"decision"}),
+        "action",
+        description="The Evidence bears on the choice, for example by ruling an option out or making a tradeoff concrete. It neither selects an option nor closes the Decision.",
+    ),
+    "addresses": RelationSpec(
+        frozenset({"evidence"}),
+        frozenset({"blocker"}),
+        "action",
+        description="The Evidence bears on whether the Blocker is cleared, kept, or narrowed. It does not change the Blocker's status.",
+    ),
     "has_decision": RelationSpec(
-        frozenset({"research_question"}), frozenset({"decision"}), "action"
+        frozenset({"research_question"}),
+        frozenset({"decision"}),
+        "action",
+        description="The choice belongs to the question: answering the question depends on making it. A Decision that matters only as an Experiment's input may connect through `governed_by` alone.",
     ),
-    "governed_by": RelationSpec(frozenset({"experiment"}), frozenset({"decision"}), "action"),
+    "governed_by": RelationSpec(
+        frozenset({"experiment"}),
+        frozenset({"decision"}),
+        "action",
+        description="The Decision is a genuine input to the Experiment. A Decision the Experiment's results are meant to settle is downstream, not an input.",
+    ),
     "blocked_by": RelationSpec(
         frozenset({"experiment", "decision", "research_question"}),
         frozenset({"blocker"}),
         "action",
+        description="The open Blocker keeps the source from proceeding; a blocked Experiment cannot start. Connect the Blocker to each question, Decision, or Experiment it actually stops; a Blocker that stops nothing is a note, not a Blocker.",
     ),
-    "requires_decision": RelationSpec(frozenset({"blocker"}), frozenset({"decision"}), "action"),
-    "supersedes": RelationSpec(ALL_NODE_TYPES, ALL_NODE_TYPES, "meta", same_type=True),
-    "duplicate_of": RelationSpec(ALL_NODE_TYPES, ALL_NODE_TYPES, "meta", same_type=True),
+    "requires_decision": RelationSpec(
+        frozenset({"blocker"}),
+        frozenset({"decision"}),
+        "action",
+        description="Clearing the Blocker needs this choice rather than an observation. A Blocker that an observation can clear receives that Evidence through `addresses` instead.",
+    ),
+    "supersedes": RelationSpec(
+        ALL_NODE_TYPES,
+        ALL_NODE_TYPES,
+        "meta",
+        same_type=True,
+        description="The source replaces the target, which stays in history.",
+    ),
+    "duplicate_of": RelationSpec(
+        ALL_NODE_TYPES,
+        ALL_NODE_TYPES,
+        "meta",
+        same_type=True,
+        description="The source is the same entity as the target.",
+    ),
 }
 
 
 class EvidenceAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    relevance: Literal["direct", "indirect", "contextual"]
-    weight: Literal["limited", "moderate", "strong"]
-    scope: str | None = Field(default=None, max_length=EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH)
+    relevance: Literal["direct", "indirect", "contextual"] = Field(
+        description="How directly the observation bears on this claim."
+    )
+    weight: Literal["limited", "moderate", "strong"] = Field(
+        description="How much the observation should move belief in this claim."
+    )
+    scope: str | None = Field(
+        default=None,
+        max_length=EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH,
+        description="The bounded population, regime, condition, subclaim, or setting covered.",
+    )
     qualifications: list[
         Annotated[
             str,
             Field(min_length=1, max_length=EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH),
         ]
-    ] = Field(default_factory=list, max_length=EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS)
+    ] = Field(
+        default_factory=list,
+        max_length=EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS,
+        description="Concrete limitations or caveats; empty only when none apply.",
+    )
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -459,14 +784,37 @@ class Edge(BaseModel):
     # and so cannot run inside this validator.
     model_config = ConfigDict(extra="forbid")
 
-    id: str
-    source: str
-    target: str
-    relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    layer: RelationLayer
-    explanation: str = ""
-    assessment: EvidenceAssessment | None = None
-    created_rev: int = 0
+    id: str = Field(
+        description="Stable edge identity, by default `<source>::<relation>::<target>`."
+    )
+    source: str = Field(description="Id of the node the relation starts from.")
+    target: str = Field(description="Id of the node the relation points to.")
+    relation: str = Field(
+        pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
+        description="The relation name; its legal endpoints are listed with the relations.",
+    )
+    layer: RelationLayer = Field(
+        description="Derived by RCP from the relation and the endpoint types; never written."
+    )
+    explanation: str = Field(
+        default="", description="Why the relation holds, in a sentence a reader can check."
+    )
+    assessment: EvidenceAssessment | None = Field(
+        default=None,
+        description=(
+            "How this Evidence bears on this particular Hypothesis. The relation already states "
+            "direction; the same Evidence may bear differently on another Hypothesis."
+        ),
+    )
+    expectation: EdgeExpectation | None = Field(
+        default=None,
+        description=(
+            "Whether the result `matched` or `diverged` from the producing Experiment's "
+            "`expected_outcomes`, or `no_expectation` when none applied. Name the outcome in "
+            "`explanation`. A diverged result is either a protocol defect or the finding."
+        ),
+    )
+    created_rev: int = Field(default=0, description="Revision that created the edge.")
 
     @model_validator(mode="before")
     @classmethod

@@ -4,6 +4,7 @@ import { api } from "../api";
 import { errorMessage } from "../errors";
 import type {
   Edge,
+  EdgeExpectation,
   EvidenceAssessment,
   GraphEditOptions,
   NewNode,
@@ -58,12 +59,14 @@ export const GraphEditingControls = memo(function GraphEditingControls({
   const [relevance, setRelevance] = useState<EvidenceAssessment["relevance"] | "">("");
   const [weight, setWeight] = useState<EvidenceAssessment["weight"] | "">("");
   const [qualifications, setQualifications] = useState("");
+  const [expectation, setExpectation] = useState<EdgeExpectation | "">("");
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   useEffect(() => {
     setRelevance("");
     setWeight("");
     setQualifications("");
+    setExpectation("");
   }, [projectId, source, target, relation]);
   useEffect(() => {
     if (!connection) return;
@@ -118,6 +121,7 @@ export const GraphEditingControls = memo(function GraphEditingControls({
         .map((item) => ({
           name: item.name,
           assessment_required_for: [],
+          accepts_expectation: false,
         })),
     ],
     [options, graph.ontology.relations],
@@ -239,6 +243,7 @@ export const GraphEditingControls = memo(function GraphEditingControls({
                       },
                     }
                   : {}),
+                ...(selectedRelation?.accepts_expectation && expectation ? { expectation } : {}),
               });
               setExplanation("");
             }}
@@ -288,10 +293,27 @@ export const GraphEditingControls = memo(function GraphEditingControls({
                 <textarea
                   value={explanation}
                   rows={2}
+                  required={expectation === "matched" || expectation === "diverged"}
                   disabled={mutationsDisabled}
                   onChange={(event) => setExplanation(event.target.value)}
                 />
               </label>
+              {selectedRelation?.accepts_expectation && (
+                <label>
+                  Expectation
+                  <select
+                    aria-label="Expectation"
+                    value={expectation}
+                    disabled={mutationsDisabled}
+                    onChange={(event) => setExpectation(event.target.value as EdgeExpectation | "")}
+                  >
+                    <option value="">Not recorded</option>
+                    <option value="matched">Matched expected outcomes</option>
+                    <option value="diverged">Diverged from expected outcomes</option>
+                    <option value="no_expectation">No expected outcome applied</option>
+                  </select>
+                </label>
+              )}
               {needsAssessment && (
                 <>
                   <label>

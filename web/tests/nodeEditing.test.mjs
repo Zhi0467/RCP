@@ -40,6 +40,8 @@ test("editable fields mirror the human-editable allowlist for every node type", 
     "title",
     "objective",
     "design",
+    "proxies",
+    "limitations",
     "expected_outcomes",
     "interpretation_rules",
     "completion_criteria",
@@ -55,6 +57,31 @@ test("editable fields mirror the human-editable allowlist for every node type", 
     "resolution_condition",
     "recommended_action",
   ]);
+});
+
+test("proxy edits round-trip and drop blank rows", () => {
+  const experiment = {
+    ...hypothesis,
+    type: "experiment",
+    objective: "Measure caffeine and time to degree",
+    invocation_ceiling: 5,
+    proxies: [{ stands_for: "caffeine intake", measure: "cups of coffee per week" }],
+    limitations: [],
+  };
+  const draft = nodeEditDraft(experiment);
+  assert.deepEqual(changedNodeFields(experiment, draft), {});
+
+  const rows = [
+    ...JSON.parse(draft.proxies),
+    { stands_for: " productivity ", measure: " months to degree " },
+    { stands_for: "", measure: "" },
+  ];
+  assert.deepEqual(changedNodeFields(experiment, { ...draft, proxies: JSON.stringify(rows) }), {
+    proxies: [
+      { stands_for: "caffeine intake", measure: "cups of coffee per week" },
+      { stands_for: "productivity", measure: "months to degree" },
+    ],
+  });
 });
 
 test("only queued Decisions expose a human-editable queue status", () => {

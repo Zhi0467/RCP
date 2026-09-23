@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
-ARCHIVED_ACCEPTANCE = DOCS / "archive" / "acceptance"
 
 EXPECTED_SPECS = {
     "compute-jobs.md",
@@ -29,16 +28,6 @@ EXPECTED_CURRENT_FILES = {
     "tests/test_documentation.py",
 }
 
-EXPECTED_ARCHIVED_DESIGN_FILES = {
-    "identity-permissions-and-agent-profiles.md",
-    "research-control-panel-blueprint-v0.64-pre-modular.md",
-    "spaces-and-project-homes.md",
-    "team-api-compatibility.md",
-    "team-authentication-and-membership.md",
-    "team-modules-README.md",
-    "team-server-operations.md",
-}
-
 REQUIRED_IMPLEMENTATION_FILES = {
     "src/rcp/agents/branch_merge_prompt.py",
     "src/rcp/agents/write_scope.py",
@@ -54,32 +43,13 @@ REQUIRED_IMPLEMENTATION_FILES = {
     "web/src/projectTransition.ts",
 }
 
-EXPECTED_2026_08_17_HANDOFFS = {
-    "handoff-2026-08-17-auto-research-graph-branches.md",
-    "handoff-2026-08-17-documentation-model-and-archive.md",
-    "handoff-2026-08-17-evidence-assessments.md",
-    "handoff-2026-08-17-graph-transition-manager-implementation.md",
-    "handoff-2026-08-17-graph-transition-manager.md",
-    "handoff-2026-08-17-project-write-containment.md",
-    "handoff-2026-08-17-typed-graph-operations.md",
-}
-
-EXPECTED_DISPATCH_BUNDLE = EXPECTED_2026_08_17_HANDOFFS - {
-    "handoff-2026-08-17-graph-transition-manager.md"
-} | {
-    "README.md",
-    "master-prompt-implement-2026-08-17-design-handoffs.md",
-}
-
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^]]*]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 
 
 def _current_markdown() -> list[Path]:
     files = [ROOT / "AGENTS.md", ROOT / "README.md"]
-    files.extend(
-        path for path in DOCS.rglob("*.md") if "archive" not in path.relative_to(DOCS).parts
-    )
+    files.extend(DOCS.rglob("*.md"))
     return sorted(files)
 
 
@@ -112,7 +82,7 @@ def _local_links(path: Path) -> list[str]:
     return links
 
 
-def test_current_documentation_layout_and_archives_are_complete() -> None:
+def test_current_documentation_layout_is_complete() -> None:
     missing_current = [path for path in EXPECTED_CURRENT_FILES if not (ROOT / path).is_file()]
     assert not missing_current, f"missing current documentation: {sorted(missing_current)}"
 
@@ -121,28 +91,7 @@ def test_current_documentation_layout_and_archives_are_complete() -> None:
     assert not (DOCS / "design").exists()
     assert {path.name for path in (DOCS / "specs").glob("*.md")} == EXPECTED_SPECS
 
-    blueprint = (
-        DOCS / "archive" / "design" / "research-control-panel-blueprint-v0.64-pre-modular.md"
-    )
-    assert blueprint.is_file()
-    assert "**Version:** 0.64" in blueprint.read_text()
-    assert {
-        path.name for path in (DOCS / "archive" / "design").glob("*.md")
-    } >= EXPECTED_ARCHIVED_DESIGN_FILES
-    assert (ARCHIVED_ACCEPTANCE / "README.md").is_file()
-
-    archived_handoffs = DOCS / "archive" / "handoffs"
-    assert {
-        path.name for path in archived_handoffs.glob("handoff-2026-08-17-*.md")
-    } >= EXPECTED_2026_08_17_HANDOFFS
-    bundle = archived_handoffs / "rcp_dispatch_handoffs_2026-08-17"
-    assert {path.name for path in bundle.glob("*.md")} == EXPECTED_DISPATCH_BUNDLE
-
-    for handoff in EXPECTED_DISPATCH_BUNDLE - {
-        "README.md",
-        "master-prompt-implement-2026-08-17-design-handoffs.md",
-    }:
-        assert (bundle / handoff).read_bytes() == (archived_handoffs / handoff).read_bytes()
+    assert not (DOCS / "archive").exists()
 
 
 def test_required_implementation_inventory_is_present() -> None:

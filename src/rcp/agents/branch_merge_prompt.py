@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
-from rcp.agents.prompts import _authoring_rules
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 
 
 def branch_merge_task_contract(
@@ -53,7 +53,7 @@ Preserve compatible main-side changes. If the intended outcome cannot be represe
 leave a precise diagnostic in your final response and do not invent authority.
 
 {orchestrator_graph_authority_contract()}
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
 The exact review policy used by validation is:
 ```json
@@ -113,6 +113,7 @@ def branch_merge_correction_contract(
     patch_path: str,
     diagnostics_path: str,
     validator_command: str,
+    ontology_extensions: bool,
 ) -> str:
     """Request one bounded scratch-only correction in the same native session."""
 
@@ -136,6 +137,9 @@ Read the diagnostic, rewrite `{patch_path}` with a different valid
 orchestrator semantic Patch, and run the validator command before finishing. Do not repeat or
 perform any operational side effect. Do not add RCP bookkeeping or branch provenance, inspect
 repositories, write watcher/artifact files, or write canonical state.
+
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 
@@ -182,8 +186,9 @@ still graph-only: perform no operational side effects, inspect no repositories, 
 watcher, artifact, or canonical-state files. RCP supplies all provenance and commits atomically
 or commits nothing.
 
-The replacement context and current authoring rules supersede earlier graph and schema instructions.
-{_authoring_rules(ontology_extensions)}
+The replacement context supersedes the earlier one, and the schema instructions above apply now.
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 

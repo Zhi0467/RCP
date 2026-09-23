@@ -17,6 +17,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
@@ -3188,6 +3189,8 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     )
     assert package_path in fresh
     assert package_path in continuation
+    rules = graph_rules(edits=True, ontology_extensions=False)
+    assert rules in fresh and rules in continuation
 
 
 def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:

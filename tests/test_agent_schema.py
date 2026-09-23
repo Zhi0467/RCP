@@ -319,6 +319,46 @@ def test_agent_schema_advertises_thin_project_glossary_writes(profile) -> None:
     assert '"upsert_glossary"' in json.dumps(agent_output_schema(profile=profile))
 
 
+def test_agent_patch_keeps_experiment_proxies_and_produces_expectation() -> None:
+    proxy = {"stands_for": "caffeine intake", "measure": "cups of coffee per week"}
+    operations = [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "exp/coffee",
+                    "type": "experiment",
+                    "title": "Coffee survey",
+                    "objective": "Relate coffee to time to degree.",
+                    "proxies": [proxy],
+                    "limitations": ["Tea is not counted."],
+                }
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [
+                {
+                    "source": "exp/coffee",
+                    "target": "ev/outlier",
+                    "relation": "produces",
+                    "expectation": "matched",
+                }
+            ],
+        },
+    ]
+    draft = parse_agent_patch_json(json.dumps({"summary": "Recorded a survey.", "ops": operations}))
+
+    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+
+    assert patch.ops[0].nodes[0].proxies[0].model_dump() == proxy
+    assert patch.ops[1].edges[0].expectation == "matched"
+
+    operations[0]["nodes"][0]["proxies"] = [{**proxy, "stands_for": "  "}]
+    with pytest.raises(ValueError):
+        parse_agent_patch_json(json.dumps({"summary": "Recorded a survey.", "ops": operations}))
+
+
 @pytest.mark.parametrize(
     "term",
     [

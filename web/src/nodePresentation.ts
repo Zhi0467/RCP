@@ -20,6 +20,8 @@ export const humanFieldLabels: Record<string, string> = {
   interpretation: "What it means",
   scope: "Scope",
   design: "How it will be tested",
+  proxies: "What is measured in place of what",
+  limitations: "What the measurement misses",
   current_summary: "Where things stand",
   next_action: "Next action",
   predictions: "What should happen if this is right",
@@ -48,6 +50,8 @@ const contextOrder = [
   "legacy_strength",
   "scope",
   "design",
+  "proxies",
+  "limitations",
   "current_summary",
   "next_action",
   "predictions",
@@ -67,11 +71,16 @@ export function presentNode(node: GraphNode) {
     if (node.type === "decision" && (field === "options" || field === "selected_option")) {
       return [];
     }
-    return readableValue(node[field])
-      ? [{ key: field, label: humanFieldLabels[field] ?? humanize(field), value: node[field] }]
+    const raw = field === "proxies" ? proxyLines(node.proxies) : node[field];
+    return readableValue(raw)
+      ? [{ key: field, label: humanFieldLabels[field] ?? humanize(field), value: raw }]
       : [];
   });
   return { key, label: humanFieldLabels[key], value, context };
+}
+
+function proxyLines(proxies: GraphNode["proxies"]): string[] {
+  return (proxies ?? []).map((proxy) => `${proxy.stands_for}, measured as ${proxy.measure}`);
 }
 
 export function nodeTypeLabel(node: GraphNode): string {

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from rcp.core.models import RELATION_SPEC
 from rcp.core.validation.constants import NODE_PREFIXES
-from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR
+from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR, EXPECTATION_RELATIONS
 from tests.helpers import create_named_app
 
 
@@ -65,6 +65,62 @@ def test_human_nodes_edges_preview_sync_remove_preserve_history(manifest, tmp_pa
     assert [patch.model_dump(mode="json") for patch in history.load_patches()][:-1] == prefix
 
 
+def test_experiment_proxies_and_produces_expectation_sync_and_replay(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    base = f"/api/projects/{app.state.default_project_id}/sync"
+    history = app.state.service.history
+    proxy = {"stands_for": "caffeine intake", "measure": "cups of coffee per week"}
+    draft = {
+        "base_revision": history.state().revision,
+        "custom_nodes": [
+            {
+                "id": "exp/coffee",
+                "type": "experiment",
+                "title": "Coffee survey",
+                "objective": "Relate coffee to time to degree.",
+                "proxies": [proxy],
+                "limitations": ["Tea is not counted."],
+            },
+            {
+                "id": "ev/outlier",
+                "type": "evidence",
+                "title": "Outlier",
+                "observation": "One student at 60 cups finished in 19 months.",
+                "origin": "internal_run",
+            },
+        ],
+        "added_edges": [
+            {
+                "source": "exp/coffee",
+                "target": "ev/outlier",
+                "relation": "produces",
+                "expectation": "diverged",
+            }
+        ],
+    }
+    for misplaced_edge in (
+        {**draft["added_edges"][0], "relation": "tests"},
+        {**draft["added_edges"][0], "source": "ev/outlier", "target": "exp/coffee"},
+    ):
+        refused = client.post(f"{base}/preview", json={**draft, "added_edges": [misplaced_edge]})
+        assert refused.status_code == 422
+        codes = {item["code"] for item in refused.json()["detail"]}
+        assert "inapplicable-edge-expectation" in codes
+    unexplained = client.post(f"{base}/preview", json=draft)
+    assert unexplained.status_code == 422
+    assert "unexplained-edge-expectation" in {item["code"] for item in unexplained.json()["detail"]}
+
+    draft["added_edges"][0]["explanation"] = "Expected more coffee to mean a longer degree."
+
+    committed = client.post(base, json=draft)
+    assert committed.status_code == 200, committed.text
+    graph = committed.json()
+    assert graph["nodes"]["exp/coffee"]["proxies"] == [proxy]
+    assert graph["edges"]["exp/coffee::produces::ev/outlier"]["expectation"] == "diverged"
+    assert history.materialize(write_outputs=False).state == history.state()
+
+
 def test_edge_replacement_stale_draft_and_invalid_endpoint_are_atomic(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
@@ -110,7 +166,8 @@ def test_graph_edit_options_are_backend_owned(manifest, tmp_path, monkeypatch):
     assert {item["name"] for item in response.json()["relations"]} == set(RELATION_SPEC)
     assert response.json()["node_prefixes"] == NODE_PREFIXES
     for item in response.json()["relations"]:
-        assert set(item) == {"name", "assessment_required_for"}
+        assert set(item) == {"name", "assessment_required_for", "accepts_expectation"}
+        assert item["accepts_expectation"] is (item["name"] in EXPECTATION_RELATIONS)
         assert {
             (pair["source_type"], pair["target_type"]) for pair in item["assessment_required_for"]
         } == set(ASSESSMENT_REQUIRED_FOR.get(item["name"], ()))
@@ -284,7 +341,9 @@ def test_preview_and_sync_publish_same_final_quality_flags_without_preview_write
     assert messages[: len(previous)] == previous
     new = messages[len(previous) :]
     assert {message["code"] for message in new} == (
-        set() if connect else {"isolated-operational-node", "internal-evidence-without-experiment"}
+        {"evidence-bears-on-nothing"}
+        if connect
+        else {"isolated-operational-node", "internal-evidence-without-experiment"}
     )
     synced = client.post(base, json=request)
     assert synced.status_code == 200, synced.text

@@ -37,7 +37,7 @@ from rcp.core.operations import (
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
 
-AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v1"
+AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
 
 AgentProfile = Literal["ordinary", "orchestrator"]
 DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
@@ -459,7 +459,8 @@ Proposal-only changes:
 Human-only authority:
 - Agents never set `standing`, approve, or reject Proposals; they may withdraw any pending Proposal
   with `withdraw_proposals` when obsolete or duplicated. Withdrawal applies no semantic operations.
-  Agents may not change project configuration or authorize an Experiment **Run**. Approval never
+  Agents may not change project configuration or the ontology, and may neither apply nor propose
+  `set_ontology`. Agents may not authorize an Experiment **Run**. Approval never
   launches or resumes an Experiment. Only the human pressing **Run** grants RCP permission to
   launch. A human request cannot delegate these actions."""
 

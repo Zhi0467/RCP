@@ -25,7 +25,7 @@ from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
 from rcp.agents.prompts import (
-    CHAT_MASTER_CONTEXT_VERSION,
+    chat_master_contract_key,
     invoked_package_pointers,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -258,7 +258,7 @@ def _prepare_work_chat_prompt(
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
+        contract_key=chat_master_contract_key(),
         values=stable_values,
     )
     execution_instructions_path = _stage_task_input(
@@ -1254,6 +1254,7 @@ def _patch_correction_contract(
         patch_path=turn.patch_inputs.patch_path,
         diagnostics_path=diagnostics_path,
         validator_command=validator_command,
+        ontology_extensions=turn.context.ontology_extensions,
     )
 
 
@@ -2517,6 +2518,7 @@ async def _stream_work_graph_repair(
             patch_path=patch_path,
             diagnostics_path=diagnostics_path,
             validator_command=validator_command,
+            ontology_extensions=context.ontology_extensions,
         )
         contract_path, prompt = _stage_task_contract(
             local_stage,

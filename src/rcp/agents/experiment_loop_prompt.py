@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
-    _RETAINED_LOCAL_CAUSAL_CHECK,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
-    _authoring_rules,
+    REPLY_STYLE,
     _invoked_package_section,
     _patch_validator_rules,
     _pointer,
@@ -242,8 +242,8 @@ Operational method:
   write boundary. For a non-empty host, use the path on that host over SSH rather than copying the
   repository locally.
 {write_boundary}
-- Read `AGENTS.md` and `CLAUDE.md` at each repository root before changing it, and apply them as
-  local method constraints under this contract. Never create, edit, move, or delete `.research` or
+- Read `AGENTS.md` at each repository root before changing it, and follow it as local method
+  under this contract. Never create, edit, move, or delete `.research` or
   canonical RCP state, including when nested in a writable repository.
 - After inspection, choose the scientifically meaningful next action: continue execution, diagnose
   and repair a mechanical fault, record or close attempts, create Evidence, queue a Decision,
@@ -383,10 +383,12 @@ Graph reflection and authority:
 
 {_patch_validator_rules(validator_command)}
 
+{REPLY_STYLE}
+
 Reply and artifacts:
-- The final assistant message is the complete independent Markdown reply the human reads. State
-  actions, outcomes, watcher interpretation, attempt decisions, repository changes, failures,
-  whether the episode pauses or finishes, and remaining uncertainty.
+- The final assistant message is the complete independent Markdown reply the human reads. Say
+  whether the episode pauses or finishes, and never present a submission or watcher completion as
+  a scientific result.
 - Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
   suffix to point at one line of a repository file. Only an authorized repository file or a file
   you wrote in the artifact directory opens in RCP's bounded preview; a relative path, a line
@@ -398,7 +400,7 @@ Reply and artifacts:
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
 
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 
@@ -516,10 +518,12 @@ loop, never a different conversation, and only while the episode remains authori
 RCP runs watcher commands on {_watcher_execution_host(execution_host)}.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_authoring_rules(ontology_extensions)}
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_patch_validator_rules(validator_command)}
-Your Markdown reply is independent from both files. State the observations, actions, chosen
-handoff, and uncertainty; do not report a submission or watcher completion as scientific success.
+{REPLY_STYLE}
+Your Markdown reply is independent from both files. Say which handoff you chose, and never present
+a submission or watcher completion as a scientific result.
 """
 
 
@@ -586,8 +590,8 @@ def experiment_loop_continuation_contract(
 
 {_invoked_package_section(invoked_skill_pointers)}
 
-Retain the original objective, attempt ledger, and progress in this native session. The current
-authority, methods, paths, and execution instructions here replace earlier versions. Read the
+Retain the original objective, attempt ledger, and progress in this native session. The paths and
+execution instructions here apply to this invocation, and the authority below is restated. Read the
 original contract only as needed for unchanged attempt and watcher rules, and read the fresh
 control delta before acting. It preserves the same
 episode and invocation number while refreshing phase, live drift, remaining budget, delivered
@@ -600,7 +604,8 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
   continuations; resume operational work only within the current authority below.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_authoring_rules(ontology_extensions)}
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
 {_patch_validator_rules(validator_command)}
@@ -618,6 +623,7 @@ def experiment_loop_watcher_correction_contract(
     patch_path: str,
     output_schema_path: str,
     validator_command: str,
+    ontology_extensions: bool,
 ) -> str:
     """Repair the mandatory loop watcher handoff without repeating operational work."""
 
@@ -664,9 +670,11 @@ repaired.
 {_EXTERNAL_WATCHER_FORMS}
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
+
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 
@@ -718,6 +726,7 @@ def experiment_loop_patch_correction_contract(
     patch_path: str,
     watch_path: str,
     validator_command: str,
+    ontology_extensions: bool,
     output_schema_path: str | None = None,
     write_scope: ProjectWriteScope | None = None,
 ) -> str:
@@ -747,7 +756,9 @@ the Patch was rewritten.
 
 {write_scope_section(write_scope) if write_scope is not None else ""}
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
+
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """

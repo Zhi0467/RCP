@@ -44,10 +44,17 @@ BASE_FIELD_NAMES = frozenset(
     )
     for field in model.model_fields
 )
+# Base fields added after projects could already declare custom fields. A historical
+# custom field with one of these names stays replayable; a new ontology may not use it.
+LATER_BASE_FIELD_NAMES = frozenset({"proxies", "limitations"})
 
 
 def validate_ontology_structure(
-    ontology: OntologyState, report: ValidationReport, revision: int | None
+    ontology: OntologyState,
+    report: ValidationReport,
+    revision: int | None,
+    *,
+    replay: bool = False,
 ) -> None:
     custom_types = {item.name: item for item in ontology.types}
     known_types = ALL_NODE_TYPES | custom_types.keys()
@@ -75,7 +82,7 @@ def validate_ontology_structure(
                 f"Field {item.owner_type}.{item.name} has no known owner type.",
                 revision,
             )
-        if item.name in BASE_FIELD_NAMES:
+        if item.name in BASE_FIELD_NAMES and not (replay and item.name in LATER_BASE_FIELD_NAMES):
             report.reject(
                 "base-ontology-collision",
                 f"Custom field {item.owner_type}.{item.name} collides with an immutable base field.",
@@ -357,12 +364,20 @@ def edge_layer(
     `declared` is the fallback for an endpoint whose type is not resolvable yet
     — an edge naming a node created later in the same patch, for instance.
     """
+    types = []
+    for node_id in (source_id, target_id):
+        node = state.nodes.get(node_id) if isinstance(node_id, str) else None
+        types.append(getattr(node, "type", None))
+    return type_pair_layer(types[0], types[1], declared)
+
+
+def type_pair_layer(source_type: object, target_type: object, declared: str) -> str:
+    """The layer `edge_layer` derives for these base endpoint types."""
+
     if declared == "meta":
         return declared
     layers: list[str] = []
-    for node_id in (source_id, target_id):
-        node = state.nodes.get(node_id) if isinstance(node_id, str) else None
-        base_type = getattr(node, "type", None)
+    for base_type in (source_type, target_type):
         layer = BASE_TYPE_LAYERS.get(base_type) if isinstance(base_type, str) else None
         if layer is None:
             return declared

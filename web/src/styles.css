@@ -13728,3 +13728,26 @@ details[open] > .view-disclosure-summary > svg:last-child {
     overflow-y: auto;
   }
 }
+.node-edit-field > .proxy-rows {
+  color: inherit;
+  display: grid;
+  font-size: inherit;
+  font-weight: inherit;
+  gap: 7px;
+  justify-items: start;
+  letter-spacing: normal;
+  margin-bottom: 0;
+  text-transform: none;
+}
+.proxy-row {
+  align-items: center;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  width: 100%;
+}
+.node-edit-field .proxy-row input {
+  font-size: 13px;
+  font-weight: 450;
+  height: 34px;
+}

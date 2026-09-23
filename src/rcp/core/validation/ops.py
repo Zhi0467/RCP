@@ -81,6 +81,7 @@ EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
 ASSESSMENT_REQUIRED_FOR = {
     relation: frozenset({("evidence", "hypothesis")}) for relation in EVIDENCE_HYPOTHESIS_RELATIONS
 }
+EXPECTATION_RELATIONS = frozenset({"produces"})
 
 
 def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
@@ -326,6 +327,28 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
                 f"Relation {relation!r} requires Evidence -> Hypothesis"
                 + (" or Hypothesis -> Hypothesis" if relation == "contradicts" else "")
                 + f" endpoints, not {source_type} -> {target_type}.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
+        if edge.expectation is not None and (
+            relation not in EXPECTATION_RELATIONS
+            or (source_type is not None and source_type != "experiment")
+            or (target_type is not None and target_type != "evidence")
+        ):
+            ctx.report.reject(
+                "inapplicable-edge-expectation",
+                f"Edge {edge_id!r} may carry an expectation only on an Experiment `produces` "
+                "Evidence relation.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
+        if edge.expectation in {"matched", "diverged"} and not edge.explanation.strip():
+            ctx.report.reject(
+                "unexplained-edge-expectation",
+                f"Edge {edge_id!r} records a {edge.expectation!r} expectation; its explanation "
+                "must name the expected outcome being judged.",
                 ctx.revision,
                 related_node_ids=[source_id, target_id],
                 related_edge_ids=[edge_id],
@@ -880,7 +903,7 @@ def depends_set_project_truth_scope(
 
 def validate_set_ontology(op: SetOntologyOperation, ctx: OpContext) -> Any:
     ontology = op.ontology
-    validate_ontology_structure(ontology, ctx.report, ctx.revision)
+    validate_ontology_structure(ontology, ctx.report, ctx.revision, replay=ctx.mode == "replay")
     if ctx.patch.kind != "approval":
         ctx.report.reject(
             "agent-set-ontology",

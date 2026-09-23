@@ -16,12 +16,21 @@ from pydantic import (
 
 from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS, AgentProfile
 from rcp.core.models import (
+    Blocker,
+    Decision,
+    Edge,
+    EdgeExpectation,
+    Evidence,
     EvidenceAssessment,
+    Experiment,
     ExperimentAttempt,
     ExperimentAttemptDebug,
     ExperimentDecisionPin,
+    ExperimentProxy,
     GatedCard,
+    Hypothesis,
     Patch,
+    ResearchQuestion,
     SourceRef,
 )
 from rcp.core.operations import GraphOperation, HumanEditCause, NewGlossaryTerm, operation_dict
@@ -88,6 +97,10 @@ class AgentEvidenceAssessment(EvidenceAssessment):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class AgentExperimentProxy(ExperimentProxy):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
 class AgentNode(_StrictModel):
     id: str = Field(pattern=rf"^{_NODE_ID}$")
     title: str
@@ -130,6 +143,8 @@ class AgentExperiment(AgentNode):
     type: Literal["experiment"]
     objective: str
     design: str = ""
+    proxies: list[AgentExperimentProxy] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     expected_outcomes: list[str] = Field(default_factory=list)
     interpretation_rules: list[str] = Field(default_factory=list)
     completion_criteria: list[str] = Field(default_factory=list)
@@ -191,6 +206,7 @@ class NewEdge(_StrictModel):
     relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     explanation: str = ""
     assessment: AgentEvidenceAssessment | None = None
+    expectation: EdgeExpectation | None = None
 
 
 class EvidenceEdgeCause(_StrictModel):
@@ -495,8 +511,32 @@ class OrchestratorAgentPatch(_StrictModel):
         return self
 
 
+# Agent-facing shapes restate the core fields they accept; their meaning stays on the
+# core model, so the schema borrows each description instead of repeating it.
+_DESCRIBED_BY: dict[str, type[BaseModel]] = {
+    "AgentResearchQuestion": ResearchQuestion,
+    "AgentHypothesis": Hypothesis,
+    "AgentDecision": Decision,
+    "AgentExperiment": Experiment,
+    "AgentEvidence": Evidence,
+    "AgentBlocker": Blocker,
+    "AgentExperimentProxy": ExperimentProxy,
+    "AgentEvidenceAssessment": EvidenceAssessment,
+    "NewEdge": Edge,
+}
+
+
 def agent_output_schema(*, profile: AgentProfile = "ordinary") -> dict[str, object]:
-    return _agent_patch_model(profile).model_json_schema()
+    schema = _agent_patch_model(profile).model_json_schema()
+    definitions = schema.get("$defs")
+    if isinstance(definitions, dict):
+        for name, core in _DESCRIBED_BY.items():
+            properties = definitions.get(name, {}).get("properties", {})
+            for field_name, field_schema in properties.items():
+                field = core.model_fields.get(field_name)
+                if field is not None and field.description:
+                    field_schema.setdefault("description", field.description)
+    return schema
 
 
 def parse_agent_patch_json(

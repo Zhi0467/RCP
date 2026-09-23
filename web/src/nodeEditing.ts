@@ -1,9 +1,15 @@
-import type { GraphNode, OntologyFieldDefinition, OntologyState } from "./types";
+import type {
+  ExperimentProxy,
+  ExtensionFieldValue,
+  GraphNode,
+  OntologyFieldDefinition,
+  OntologyState,
+} from "./types";
 
 export interface NodeEditField {
   key: string;
   label: string;
-  kind: "text" | "multiline" | "list" | "number" | "boolean" | "select";
+  kind: "text" | "multiline" | "list" | "proxies" | "number" | "boolean" | "select";
   options?: { value: string; label: string }[];
   nullable?: boolean;
   min?: number;
@@ -48,6 +54,8 @@ const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
     title,
     { key: "objective", label: "Objective", kind: "multiline" },
     { key: "design", label: "Design", kind: "multiline" },
+    { key: "proxies", label: "Proxies", kind: "proxies" },
+    { key: "limitations", label: "Limitations", kind: "list" },
     { key: "expected_outcomes", label: "Expected outcomes", kind: "list" },
     { key: "interpretation_rules", label: "Interpretation rules", kind: "list" },
     { key: "completion_criteria", label: "Completion criteria", kind: "list" },
@@ -117,10 +125,7 @@ export function changedNodeFields(
   node: GraphNode,
   draft: Record<string, string>,
   ontology?: OntologyState,
-): Record<
-  string,
-  string | number | boolean | string[] | Record<string, string | number | boolean | string[]> | null
-> {
+): Record<string, FieldValue | Record<string, string | number | boolean | string[]>> {
   const fields = editableNodeFields(node, ontology);
   const baseChanges = Object.fromEntries(
     fields
@@ -143,35 +148,55 @@ export function changedNodeFields(
     if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) {
       delete extension_fields[field.extensionName!];
     } else {
-      extension_fields[field.extensionName!] = value;
+      // Extension fields are never proxy lists; their kinds come from the ontology.
+      extension_fields[field.extensionName!] = value as ExtensionFieldValue;
     }
   }
   return { ...baseChanges, extension_fields };
 }
 
-function normalizeCurrent(
-  field: NodeEditField,
-  value: unknown,
-): string | number | boolean | string[] | null {
+type FieldValue = string | number | boolean | string[] | ExperimentProxy[] | null;
+
+/** The draft form of a proxy list: one row per proxy, blank rows allowed while editing. */
+export function proxyDraftRows(value: string): ExperimentProxy[] {
+  try {
+    const parsed: unknown = JSON.parse(value || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map((row) => ({
+          stands_for: typeof row?.stands_for === "string" ? row.stands_for : "",
+          measure: typeof row?.measure === "string" ? row.measure : "",
+        }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function proxyValue(rows: ExperimentProxy[]): ExperimentProxy[] {
+  return rows
+    .map((row) => ({ stands_for: row.stands_for.trim(), measure: row.measure.trim() }))
+    .filter((row) => row.stands_for || row.measure);
+}
+
+function normalizeCurrent(field: NodeEditField, value: unknown): FieldValue {
   if (field.kind === "list")
     return arrayValue(value)
       .map((item) => item.trim())
       .filter(Boolean);
+  if (field.kind === "proxies") return proxyValue(proxyDraftRows(JSON.stringify(value ?? [])));
   if (field.kind === "number") return typeof value === "number" ? value : null;
   if (field.kind === "boolean") return typeof value === "boolean" ? value : null;
   return normalizeField(field, stringValue(value));
 }
 
-function normalizeField(
-  field: NodeEditField,
-  value: string,
-): string | number | boolean | string[] | null {
+function normalizeField(field: NodeEditField, value: string): FieldValue {
   if (field.kind === "list") {
     return value
       .split(/\r?\n/)
       .map((item) => item.trim())
       .filter(Boolean);
   }
+  if (field.kind === "proxies") return proxyValue(proxyDraftRows(value));
   if (field.nullable && value.trim() === "") return null;
   if (field.kind === "number") return Number(value);
   if (field.kind === "boolean") return value === "true";
@@ -187,15 +212,13 @@ function stringValue(value: unknown): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
-function equalValues(
-  left: string | number | boolean | string[] | null,
-  right: string | number | boolean | string[] | null,
-): boolean {
+function equalValues(left: FieldValue, right: FieldValue): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function draftValue(field: NodeEditField, value: unknown): string {
   if (field.kind === "list") return arrayValue(value).join("\n");
+  if (field.kind === "proxies") return JSON.stringify(proxyDraftRows(JSON.stringify(value ?? [])));
   if (field.kind === "boolean") return typeof value === "boolean" ? String(value) : "";
   return stringValue(value);
 }

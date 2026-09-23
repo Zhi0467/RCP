@@ -10,7 +10,8 @@ real work; the example observations and artifact path are fictional.
 The main comparison needs a measurement duration. A short calibration will measure repeatability
 at two durations. No calibration has run, so the Patch records an open Decision and two proposed
 Experiments. The precursor's design names its intended handoff; there is no future Evidence node.
-The Decision governs the main comparison, not the calibration that will inform it.
+The Decision governs the main comparison, not the calibration that will inform it. The design
+names what the spread stands for, what it misses, and what it should show before any run.
 
 ```json
 {
@@ -25,6 +26,11 @@ The Decision governs the main comparison, not the calibration that will inform i
           "title": "Calibrate measurement duration",
           "objective": "Measure repeatability at the candidate durations.",
           "design": "Repeat three measurements at each duration; use their spread to inform dec/measurement-duration.",
+          "proxies": [
+            {"stands_for": "Measurement repeatability", "measure": "Relative spread across three repetitions"}
+          ],
+          "limitations": ["Three back-to-back repetitions cannot show drift across a longer session."],
+          "expected_outcomes": ["Spread is smaller at 10 seconds than at 5 seconds."],
           "completion_criteria": ["Record all six measurements and compare their spread."],
           "status": "proposed"
         },
@@ -67,7 +73,8 @@ measurement. A generic isolation advisory does not justify inventing Evidence to
 
 The calibration has now completed. In this example, `repo/runs/calibration/summary.json` contains
 all six measurements and reports 4% spread at five seconds and 1% at ten seconds. Record that
-bounded result, complete the calibration, and make the Decision ready. The main comparison remains
+bounded result, mark the `produces` edge `matched` against the planned expected outcome, complete
+the calibration, and make the Decision ready. The main comparison remains
 proposed; its completion is not a prerequisite for the choice that lets it start.
 
 ```json
@@ -98,7 +105,8 @@ proposed; its completion is not a prerequisite for the choice that lets it start
           "source": "exp/calibrate-duration",
           "target": "ev/duration-calibration",
           "relation": "produces",
-          "explanation": "The completed calibration generated these six measurements."
+          "expectation": "matched",
+          "explanation": "The completed calibration generated these six measurements; spread fell at 10 seconds as expected."
         },
         {
           "source": "ev/duration-calibration",

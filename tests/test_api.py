@@ -8404,6 +8404,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
         "skill/experiment-causality/SKILL.md",
         "skill/experiment-causality/references/worked-examples.md",
         "skill/graph-audit/SKILL.md",
+        "skill/graph-audit/references/structures.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]
     # The contract points at the staged folders; the bodies stay on disk.
