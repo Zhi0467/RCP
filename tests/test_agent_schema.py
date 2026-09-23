@@ -354,6 +354,10 @@ def test_agent_patch_keeps_experiment_proxies_and_produces_expectation() -> None
     assert patch.ops[0].nodes[0].proxies[0].model_dump() == proxy
     assert patch.ops[1].edges[0].expectation == "matched"
 
+    operations[0]["nodes"][0]["proxies"] = [{**proxy, "stands_for": "  "}]
+    with pytest.raises(ValueError, match="proxy must not be blank"):
+        parse_agent_patch_json(json.dumps({"summary": "Recorded a survey.", "ops": operations}))
+
 
 @pytest.mark.parametrize(
     "term",

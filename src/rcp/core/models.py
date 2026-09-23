@@ -276,6 +276,16 @@ class ExperimentProxy(BaseModel):
         ),
     )
 
+    @field_validator("stands_for", "measure", mode="before")
+    @classmethod
+    def normalize_side(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("each side of a proxy must not be blank")
+        return normalized
+
 
 class Experiment(BaseNode):
     type: Literal["experiment"]
