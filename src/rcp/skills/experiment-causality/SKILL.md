@@ -2,7 +2,7 @@
 id: experiment-causality
 kind: skill
 label: Experiment causality
-version: 1.3.0
+version: 1.4.0
 description: Plan, repair, or audit experiment dependencies by tracing input gates and separating intended empirical handoffs from observed Evidence.
 dependencies:
 ---
@@ -49,9 +49,10 @@ repair is authorized, contribute only to that task's Patch.
 
 ## Smoke and validation Experiments
 
-The graph rules' causal check says what a smoke Experiment may be blocked by. When tracing, apply
-it in both directions: its own setup steps are never its gates, and the unverified infrastructure
-remains a genuine gate for any downstream main Experiment that depends on it. Keep that Blocker on
+A smoke Experiment verifies infrastructure, integration, or recovery, so its own setup steps are
+never its gates; it carries `blocked_by` only for a constraint the run cannot remove. The
+unverified infrastructure remains a genuine gate for any downstream main Experiment that depends
+on it. Keep that Blocker on
 the main Experiment, name the smoke as the precursor in the Blocker's `resolution_condition`, and
 connect the smoke's Evidence to it with `addresses` once the smoke has run. The gate moves off the
 precursor, not out of the graph.

@@ -190,7 +190,10 @@ class ResearchQuestion(BaseNode):
 class Hypothesis(BaseNode):
     type: Literal["hypothesis"]
     statement: str = Field(
-        description="A claim that some observation could show to be false, stated specifically."
+        description=(
+            "A claim that some observation could show to be false, stated specifically. Name the "
+            "observation that would show it false."
+        )
     )
     rationale: str = Field(
         default="",
@@ -203,7 +206,8 @@ class Hypothesis(BaseNode):
         default_factory=list,
         description=(
             "What should be true in the world if the claim holds, independent of how any one "
-            "Experiment measures it. Written before results exist."
+            "Experiment measures it; each one is an observation that would count against the "
+            "claim if it failed. Written before results exist."
         ),
     )
     scope: str = Field(
@@ -301,7 +305,9 @@ class Experiment(BaseNode):
         default_factory=list,
         description=(
             "Each measurable stand-in the design uses, as what it stands for and what is "
-            "measured. Written with the design."
+            "measured. List every stand-in the design measures in place of the quantity the claim "
+            "is about; leave it empty only when the design measures that quantity directly. "
+            "Written with the design."
         ),
     )
     limitations: list[str] = Field(

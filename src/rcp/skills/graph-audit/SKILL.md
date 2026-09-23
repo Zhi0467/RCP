@@ -2,7 +2,7 @@
 id: graph-audit
 kind: skill
 label: Graph audit
-version: 3.2.0
+version: 3.3.0
 description: Audit a research graph when asked for a read-only structural review of claims, relations, node identity, lifecycle consistency, or rendered summaries; report defects without editing canonical state.
 dependencies:
 ---
@@ -27,13 +27,17 @@ Evidence-to-Hypothesis edge missing its claim-relative assessment, or prose that
 scope or qualifications. Treat a historical unassessed edge as legacy uncertainty, never as an
 implicit weight.
 
-**Relations hiding their reasoning.** Require an explanation of why a relation holds. Check that
-an Experiment `tests` a Hypothesis it can discriminate, `produces` the Evidence it generated, and
-uses `governed_by` or `blocked_by` only for genuine input gates. Check complete action chains rather
-than treating every Experiment without a Hypothesis or Decision as an orphan. On each
-Evidence-to-Hypothesis epistemic edge, verify that the relation states direction and the assessment
-separately states relevance, weight, optional scope, and qualifications. The same Evidence may bear
-differently on different Hypotheses. Flag an assessment on a relation that does not carry one.
+**Untestable claims.** Flag a Hypothesis that no observation could show false, including one that
+only answers its ResearchQuestion yes or no, or whose predictions restate the statement. Flag an
+Experiment that `tests` a Hypothesis without `expected_outcomes` written before its results, and a
+design that measures a stand-in for the claim's quantity without listing it in `proxies`.
+
+**Relations hiding their reasoning.** Require an explanation of why each relation holds.
+- An Experiment `tests` a Hypothesis it can discriminate and `produces` the Evidence it generated.
+- `governed_by` and `blocked_by` mark genuine input gates only. Check complete action chains rather
+  than treating every Experiment without a Hypothesis or Decision as an orphan.
+- Each assessment is calibrated for its own Hypothesis; the same Evidence may bear differently on
+  another. Flag an assessment on a relation that does not carry one.
 
 **Proxies read as the real quantity.** Flag a claim stated about what a proxy stands for when its
 Evidence measured only the proxy and says nothing of how well the proxy holds. Flag Experiment
@@ -45,8 +49,7 @@ Evidence measured only the proxy and says nothing of how well the proxy holds. F
 or a methodological `result` or `diagnostic` role that conflicts with its observation; a
 Blocker that blocks nothing; or an Experiment with no stated test or role in an action plan. A planned
 precursor can name its intended downstream gate in its design until an observation exists; do not
-require future Evidence or a `produces` edge. Never interpret a legacy global strength label as a
-current edge weight. Accept honest isolation such as a newly recorded observation awaiting placement.
+require future Evidence or a `produces` edge. Accept honest isolation such as a newly recorded observation awaiting placement.
 
 **Split identity.** Flag duplicate nodes that divide one entity's claims, evidence, or action
 relations. Prefer reusing an existing identity over adding a near-copy.

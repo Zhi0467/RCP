@@ -69,6 +69,11 @@ _EDIT_METHOD = """Editing the graph:
 - If the active ontology cannot express a needed node or edge, say so in the final answer, name the
   missing vocabulary, and record what can be expressed. Do not create a node for the gap or use a
   definition that is not active.
+- Write each Hypothesis as a claim an observation could show false, narrower than the
+  ResearchQuestion it serves. For the question "Can we build a better model?", the answer "Yes, we
+  can build a better model" is not a Hypothesis: failing to build one would not show that it cannot
+  be built, and success would come from testing narrower claims. Write those instead, such as
+  "Adding retrieval lowers held-out error on long documents."
 - Keep node prose concise. When a durable design, plan, result, or handoff file already exists or
   the task naturally produces one, cite its repository-relative path in an allowed field. Do not
   create a file only to cite it; a preview artifact is not durable.

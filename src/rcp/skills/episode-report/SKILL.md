@@ -2,7 +2,7 @@
 id: episode-report
 kind: skill
 label: Episode report
-version: 1.2.0
+version: 1.3.0
 description: Create the required durable visual HTML wrap-up for an RCP episode, explaining its work, evidence, limits, ending, and next human decision without changing project or graph state.
 dependencies:
 ---
@@ -47,8 +47,9 @@ research, transcript, or repository context during wrap-up.
 ## Experiment-loop guide
 
 For an `experiment_loop` episode, emphasize the objective, method and relevant
-configuration, scientifically meaningful attempts, observations, evidence,
-failure analysis, limitations, and the exact completion or human-authority pause.
+configuration, what was measured and what it stood for, scientifically
+meaningful attempts, observations, evidence, failure analysis, limitations, and
+the exact completion or human-authority pause.
 End with the next falsifying test or human decision that the evidence supports.
 
 ## Auto-research guide

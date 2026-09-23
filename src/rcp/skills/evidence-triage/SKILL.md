@@ -2,7 +2,7 @@
 id: evidence-triage
 kind: skill
 label: Evidence triage
-version: 3.2.0
+version: 3.3.0
 description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
@@ -61,8 +61,7 @@ never use that compatibility to omit an assessment from a new applicable edge.
 
 ## Check claim boundaries and citations
 
-Do not infer `Hypothesis.scope`; populate it only from that Hypothesis's cited material. Do not turn
-a proposal, recommendation, or “should” statement into Evidence.
+Do not turn a proposal, recommendation, or “should” statement into Evidence.
 
 Read every `source_refs[].excerpt`. Confirm that it contains the claimed observation rather than
 merely coming from the same conversation. If one excerpt could support several unrelated Evidence
