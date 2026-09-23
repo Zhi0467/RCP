@@ -14,6 +14,7 @@ import {
   pinApiInstance,
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
+  registerTransportFailureHandler,
   removeChatAttachment,
   steerChatTurn,
   TEAM_SHELL_PROTOCOL_HEADER,
@@ -150,6 +151,28 @@ test("a failed mutation runs the registered identity verifier once", async () =>
     assert.equal(checkedPath, "/api/projects/demo/sync");
   } finally {
     registerMutationFailureHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a read that never reaches the backend reports a transport failure; an abort does not", async () => {
+  const originalFetch = globalThis.fetch;
+  let failures = 0;
+  registerTransportFailureHandler(() => {
+    failures += 1;
+  });
+  try {
+    globalThis.fetch = async () => {
+      throw new TypeError("Load failed");
+    };
+    await assert.rejects(api("/api/projects/demo/episodes"), TypeError);
+    globalThis.fetch = async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    };
+    await assert.rejects(api("/api/projects/demo/episodes"), DOMException);
+    assert.equal(failures, 1);
+  } finally {
+    registerTransportFailureHandler(null);
     globalThis.fetch = originalFetch;
   }
 });

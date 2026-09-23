@@ -7,10 +7,12 @@ import {
   pinApiInstance,
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
+  registerTransportFailureHandler,
 } from "../api";
 import {
   BACKEND_IDENTITY_EVENT,
   establishBackendIdentity,
+  recoverTeamTransport,
   reverifyBackendIdentity,
   verifyIdentityAfterMutationFailure,
   type BackendIdentityEventDetail,
@@ -86,9 +88,13 @@ export function useActorIdentity() {
     };
     window.addEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
     registerMutationFailureHandler(verifyIdentityAfterMutationFailure);
+    registerTransportFailureHandler(() => {
+      if (verifiedHealthRef.current?.space_kind === "team") void recoverTeamTransport();
+    });
     void establishBackendIdentity();
     return () => {
       registerMutationFailureHandler(null);
+      registerTransportFailureHandler(null);
       window.removeEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
     };
   }, []);

@@ -218,6 +218,42 @@ export async function verifyIdentityAfterMutationFailure(path: string): Promise<
   await reverifyBackendIdentity("mutation-failure");
 }
 
+const TEAM_TRANSPORT_RETRY_INITIAL_MS = 2_000;
+const TEAM_TRANSPORT_RETRY_MAX_MS = 60_000;
+let teamTransportRecovery: Promise<void> | null = null;
+
+// A team page reaches its server only through the desktop-owned SSH tunnel,
+// which closes its origin port when SSH ends (sleep, network change). The page
+// reconnects its own saved row through the native Reconnect command, which
+// reuses a healthy tunnel and validates the saved space, and then reverifies
+// (never replaces) the accepted backend identity. One recovery runs at a time.
+export function recoverTeamTransport(
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<void> {
+  if (!isDesktopRuntime()) return Promise.resolve();
+  teamTransportRecovery ??= reconnectTeamUntilVerified(wait).finally(() => {
+    teamTransportRecovery = null;
+  });
+  return teamTransportRecovery;
+}
+
+async function reconnectTeamUntilVerified(wait: (ms: number) => Promise<void>): Promise<void> {
+  let delay = TEAM_TRANSPORT_RETRY_INITIAL_MS;
+  for (;;) {
+    try {
+      await invokeDesktop<DesktopStatus>("desktop_reconnect_backend");
+      // A result with health is final either way: verified, or a changed backend.
+      if ((await reverifyBackendIdentity("team-transport-recovered")).health) return;
+    } catch (error) {
+      console.warn(
+        `Team server is unreachable; retrying in ${delay / 1000}s: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    await wait(delay);
+    delay = Math.min(delay * 2, TEAM_TRANSPORT_RETRY_MAX_MS);
+  }
+}
+
 export async function desktopStatus(): Promise<DesktopStatus | null> {
   if (!isDesktopRuntime()) return null;
   return invokeDesktop<DesktopStatus>("desktop_status");

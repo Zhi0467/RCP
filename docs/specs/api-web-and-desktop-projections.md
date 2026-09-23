@@ -441,7 +441,12 @@ admission only when the app returns to service. A cleanup failure keeps the
 unconfirmed child record for retry while its supervisor remains live and for
 diagnostics otherwise, instead of forgetting ownership. The personal origin may
 connect any saved row, while a team origin may reconnect only its own exact row.
-None of these operations signal or restart the remote RCP service.
+A team page whose request never reaches its backend (the SSH tunnel ended, for
+example across sleep) uses that right itself: one recovery at a time calls the
+native Reconnect with a capped backoff until it succeeds, then reverifies,
+never replaces, the accepted backend identity, so the page recovers in place and
+a changed backend still stops it. None of these operations signal or restart the
+remote RCP service.
 
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
