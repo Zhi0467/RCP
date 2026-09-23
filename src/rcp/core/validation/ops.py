@@ -340,6 +340,15 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
                 related_node_ids=[source_id, target_id],
                 related_edge_ids=[edge_id],
             )
+        if edge.expectation in {"matched", "diverged"} and not edge.explanation.strip():
+            ctx.report.reject(
+                "unexplained-edge-expectation",
+                f"Edge {edge_id!r} records a {edge.expectation!r} expectation; its explanation "
+                "must name the expected outcome being judged.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
         if edge.assessment is not None and not assessment_applies:
             ctx.report.reject(
                 "inapplicable-evidence-assessment",

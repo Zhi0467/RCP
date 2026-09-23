@@ -103,6 +103,11 @@ def test_experiment_proxies_and_produces_expectation_sync_and_replay(manifest, t
     refused = client.post(f"{base}/preview", json=misplaced)
     assert refused.status_code == 422
     assert "inapplicable-edge-expectation" in {item["code"] for item in refused.json()["detail"]}
+    unexplained = client.post(f"{base}/preview", json=draft)
+    assert unexplained.status_code == 422
+    assert "unexplained-edge-expectation" in {item["code"] for item in unexplained.json()["detail"]}
+
+    draft["added_edges"][0]["explanation"] = "Expected more coffee to mean a longer degree."
 
     committed = client.post(base, json=draft)
     assert committed.status_code == 200, committed.text

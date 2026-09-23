@@ -293,6 +293,7 @@ export const GraphEditingControls = memo(function GraphEditingControls({
                 <textarea
                   value={explanation}
                   rows={2}
+                  required={expectation === "matched" || expectation === "diverged"}
                   disabled={mutationsDisabled}
                   onChange={(event) => setExplanation(event.target.value)}
                 />
