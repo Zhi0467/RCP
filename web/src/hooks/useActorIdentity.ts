@@ -14,6 +14,7 @@ import {
   establishBackendIdentity,
   recoverTeamTransport,
   reverifyBackendIdentity,
+  TEAM_TRANSPORT_RECOVERED,
   verifyIdentityAfterMutationFailure,
   type BackendIdentityEventDetail,
 } from "../desktopRuntime";
@@ -26,6 +27,7 @@ export function useActorIdentity() {
   const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
   const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
   const [actorIdentityChecked, setActorIdentityChecked] = useState(false);
+  const [identityRetry, setIdentityRetry] = useState(0);
   const [teamSessionRequired, setTeamSessionRequired] = useState(false);
   const [actorNamePromptOpen, setActorNamePromptOpen] = useState(false);
   const [actorNameDraft, setActorNameDraft] = useState("");
@@ -85,6 +87,10 @@ export function useActorIdentity() {
         setVerifiedHealth(detail.health);
         if (detail.ok) pinApiInstance(detail.health.instance_id);
       }
+      // An identity read the dropped tunnel failed is not retried by anything else.
+      if (detail.ok && detail.reason === TEAM_TRANSPORT_RECOVERED && !actorIdentityRef.current) {
+        setIdentityRetry((count) => count + 1);
+      }
     };
     window.addEventListener(BACKEND_IDENTITY_EVENT, onIdentity);
     registerMutationFailureHandler(verifyIdentityAfterMutationFailure);
@@ -138,7 +144,13 @@ export function useActorIdentity() {
     return () => {
       stopped = true;
     };
-  }, [identityIssue, identityReady, verifiedHealth?.space_id, verifiedHealth?.space_kind]);
+  }, [
+    identityIssue,
+    identityReady,
+    identityRetry,
+    verifiedHealth?.space_id,
+    verifiedHealth?.space_kind,
+  ]);
 
   const adoptTeamIdentity = useCallback((identity: IdentityResponse) => {
     setActorIdentity(identity);
