@@ -272,8 +272,9 @@ Worker coordination:
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client)}
 {_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path, validator_command=validator_command)}
-Finish each turn with a concise Markdown account of work performed, concrete outcomes, failures,
-and the next useful continuation. Do not claim that RCP accepted a Patch until RCP says so.
+{REPLY_STYLE}
+Finish each turn with that reply, including the next useful continuation. Do not claim that RCP
+accepted a Patch until RCP says so.
 """
 
 
@@ -408,8 +409,9 @@ file, graph-condition, worker-seating, and no-polling rules still apply.
 {_orchestration_progress()}
 
 {_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path, validator_command=validator_command)}
-Finish with a concise Markdown account of this turn's work, outcomes, failures, and next useful
-continuation. Do not claim that RCP accepted a Patch until RCP says so.
+{REPLY_STYLE}
+Finish with that reply, including the next useful continuation. Do not claim that RCP accepted a
+Patch until RCP says so.
 """
 
 
