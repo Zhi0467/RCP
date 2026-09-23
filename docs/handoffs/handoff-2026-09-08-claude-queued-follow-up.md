@@ -7,8 +7,7 @@ injection, runtime-owned composer wording, honest first-error diagnostics, and c
 readiness. Remaining work is the external live-steering drive and checks blocked
 by this execution sandbox; no real-provider or SSH pass is claimed.
 
-This replaces the materially different
-[archived steering handoff](../archive/handoffs/handoff-2026-09-05-live-provider-steering.md).
+This replaces a materially different earlier steering handoff, now deleted.
 Current behavior belongs in
 [providers and containment](../specs/providers-and-containment.md#live-human-steering).
 

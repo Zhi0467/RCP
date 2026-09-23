@@ -10,8 +10,8 @@
 The backend structural refactor is closed. It achieved explicit route ownership,
 durable task admission and ID-only launch, side-effect-free engine construction,
 explicit startup reconciliation, and named task/episode policy owners. The old
-work order, pickup handoff, and architecture audit are archived as historical
-evidence rather than left as active instructions.
+work order, pickup handoff, and architecture audit were removed rather than
+left as active instructions.
 
 The remaining coupling is accepted deliberately:
 
@@ -76,5 +76,5 @@ mappings assembled outside the row decoder use the same migration helper.
 - Private-looking cross-module calls that implement this accepted boundary are
   not, by themselves, unfinished refactor work.
 - Future structural work requires measured evidence, not file size alone.
-- Completed implementation plans must be archived promptly so an agent never
+- Completed implementation plans must be deleted promptly so an agent never
   receives obsolete work as active authority.

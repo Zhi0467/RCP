@@ -30,9 +30,8 @@ Cancel, unobservable-work degradation, the served-browser drive, and the slow
 staged-command deadline. Those and the release promotion are the open work.
 Close this handoff after that remaining live journey is resolved.
 
-The former compute-runner plan is
-[archived](../archive/handoffs/handoff-2026-09-06-compute-runner.md). It is evidence
-for the process-survival problem, not implementation authority. Current behavior
+The former compute-runner plan was deleted; git history holds it as evidence for
+the process-survival problem, not implementation authority. Current behavior
 belongs to the [compute jobs spec](../specs/compute-jobs.md) and
 [watcher spec](../specs/conversations-episodes-and-watchers.md).
 

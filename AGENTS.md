@@ -15,7 +15,6 @@ Current authority, highest first:
 2. The applicable file in [`docs/specs/`](docs/specs/) for current behavior.
 3. Active decisions for rationale that remains easy to regress.
 4. Active handoffs for human-confirmed work that is not yet complete.
-5. [`docs/archive/`](docs/archive/) for history only.
 
 Read the sources relevant to the affected behavior. A typo or formatting fix
 does not require a design review. Report contradictions instead of silently
@@ -133,10 +132,11 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 - When a handoff decision changes, update its plan and status in the same commit.
   Rejected work is closed, not “not done.” Never leave mutually contradictory
   old and new plans active in one file.
-- When work completes, is rejected, superseded, or abandoned, archive the handoff
-  immediately. If later work materially changes scope, archive the predecessor
-  and create a new handoff rather than appending a second plan.
-- Archived material is evidence only and must never be cited as current authority.
+- When work completes, is rejected, superseded, or abandoned, delete the handoff
+  in the same change. If later work materially changes scope, delete the
+  predecessor and create a new handoff rather than appending a second plan.
+  Git history is the record; rationale that must outlive the work goes in a
+  decision record.
 - Delete stale instructions; avoid caveats and rules duplicated across AGENTS, specs, and handoffs.
 
 ## Conventions and local facts
