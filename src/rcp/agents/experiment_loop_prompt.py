@@ -619,6 +619,7 @@ def experiment_loop_watcher_correction_contract(
     patch_path: str,
     output_schema_path: str,
     validator_command: str,
+    ontology_extensions: bool,
 ) -> str:
     """Repair the mandatory loop watcher handoff without repeating operational work."""
 
@@ -667,6 +668,9 @@ repaired.
 {_EXPERIMENT_GRAPH_AUTHORITY}
 
 {_patch_validator_rules(validator_command)}
+
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 

@@ -1106,6 +1106,7 @@ def _watch_correction_contract(
         patch_path=launch_turn.patch_inputs.patch_path,
         output_schema_path=launch_turn.patch_inputs.schema_path,
         validator_command=validator_command,
+        ontology_extensions=launch_turn.context.ontology_extensions,
     )
 
 

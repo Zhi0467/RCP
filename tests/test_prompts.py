@@ -10,6 +10,7 @@ from rcp.agents import validate_work_patch
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_task_contract,
+    experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import PromptFactory
@@ -604,6 +605,16 @@ def test_experiment_retry_preserves_fresh_control_path() -> None:
 
     assert "/stage/inputs/experiment-control-retry.json" in retry
     assert REPEATED_RULES_NOTE in retry
+    watcher_correction = experiment_loop_watcher_correction_contract(
+        original_contract_path="/stage/inputs/task-initial.md",
+        diagnostics_path="/stage/inputs/watch.json",
+        watch_path="/stage/watch.json",
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/inputs/patch-schema.json",
+        validator_command="python /stage/validator.py /stage/patch.json",
+        ontology_extensions=False,
+    )
+    assert graph_rules(edits=True, ontology_extensions=False) in watcher_correction
 
 
 def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> None:
