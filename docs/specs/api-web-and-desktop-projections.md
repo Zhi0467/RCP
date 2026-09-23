@@ -444,8 +444,8 @@ connect any saved row, while a team origin may reconnect only its own exact row.
 A team page whose request never reaches its backend (the SSH tunnel ended, for
 example across sleep) uses that right itself: one recovery at a time calls the
 native Reconnect with a capped backoff until it succeeds, then reverifies,
-never replaces, the accepted backend identity, so the page recovers in place and
-a changed backend still stops it. None of these operations signal or restart the
+never replaces, the accepted backend identity and reloads the active project or
+project index, so the page recovers in place and a changed backend still stops it. None of these operations signal or restart the
 remote RCP service.
 
 Every saved space receives a stable, distinct loopback origin. Different ports

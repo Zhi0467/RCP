@@ -155,7 +155,7 @@ test("a failed mutation runs the registered identity verifier once", async () =>
   }
 });
 
-test("a read that never reaches the backend reports a transport failure; an abort does not", async () => {
+test("a read that loses its transport reports it; an abort or a parse error does not", async () => {
   const originalFetch = globalThis.fetch;
   let failures = 0;
   registerTransportFailureHandler(() => {
@@ -171,6 +171,20 @@ test("a read that never reaches the backend reports a transport failure; an abor
     };
     await assert.rejects(api("/api/projects/demo/episodes"), DOMException);
     assert.equal(failures, 1);
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new TypeError("Load failed"));
+          },
+        }),
+        { status: 200 },
+      );
+    await assert.rejects(api("/api/projects/demo/episodes"), TypeError);
+    assert.equal(failures, 2, "a body cut off mid-read is a transport failure");
+    globalThis.fetch = async () => new Response("not json", { status: 200 });
+    await assert.rejects(api("/api/projects/demo/episodes"), SyntaxError);
+    assert.equal(failures, 2, "a parse error is not");
   } finally {
     registerTransportFailureHandler(null);
     globalThis.fetch = originalFetch;

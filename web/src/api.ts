@@ -100,7 +100,7 @@ export async function api<T>(
         await notifyMutationFailure(path);
         throw error;
       }
-      if (response.ok) return response.json() as Promise<T>;
+      if (response.ok) return readJson<T>(response);
       const retryBody = await response.json().catch(() => ({ detail: response.statusText }));
       await notifyMutationFailure(path);
       throw apiError(response.status, retryBody);
@@ -108,7 +108,17 @@ export async function api<T>(
     if (mutation) await notifyMutationFailure(path);
     throw apiError(response.status, body);
   }
-  return response.json() as Promise<T>;
+  return readJson<T>(response);
+}
+
+// A body can also be cut off by a dropped transport; a parse error cannot.
+async function readJson<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof TypeError) notifyTransportFailure(error);
+    throw error;
+  }
 }
 
 export function isMutationRequest(init?: RequestInit): boolean {

@@ -218,6 +218,7 @@ export async function verifyIdentityAfterMutationFailure(path: string): Promise<
   await reverifyBackendIdentity("mutation-failure");
 }
 
+export const TEAM_TRANSPORT_RECOVERED = "team-transport-recovered";
 const TEAM_TRANSPORT_RETRY_INITIAL_MS = 2_000;
 const TEAM_TRANSPORT_RETRY_MAX_MS = 60_000;
 let teamTransportRecovery: Promise<void> | null = null;
@@ -243,7 +244,7 @@ async function reconnectTeamUntilVerified(wait: (ms: number) => Promise<void>): 
     try {
       await invokeDesktop<DesktopStatus>("desktop_reconnect_backend");
       // A result with health is final either way: verified, or a changed backend.
-      if ((await reverifyBackendIdentity("team-transport-recovered")).health) return;
+      if ((await reverifyBackendIdentity(TEAM_TRANSPORT_RECOVERED)).health) return;
     } catch (error) {
       console.warn(
         `Team server is unreachable; retrying in ${delay / 1000}s: ${error instanceof Error ? error.message : String(error)}`,
