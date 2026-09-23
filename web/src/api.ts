@@ -32,8 +32,10 @@ import type {
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
+type TransportFailureHandler = () => void;
 
 let mutationFailureHandler: MutationFailureHandler | null = null;
+let transportFailureHandler: TransportFailureHandler | null = null;
 let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
@@ -77,11 +79,12 @@ export async function api<T>(
   try {
     response = await request();
   } catch (error) {
+    notifyTransportFailure(error);
     if (mutation) await notifyMutationFailure(path);
     throw error;
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    const body = await readErrorBody(response);
     if (
       mutation &&
       options.retryIdentity !== false &&
@@ -93,18 +96,33 @@ export async function api<T>(
       try {
         response = await request();
       } catch (error) {
+        notifyTransportFailure(error);
         await notifyMutationFailure(path);
         throw error;
       }
-      if (response.ok) return response.json() as Promise<T>;
-      const retryBody = await response.json().catch(() => ({ detail: response.statusText }));
+      if (response.ok) return readJson<T>(response);
+      const retryBody = await readErrorBody(response);
       await notifyMutationFailure(path);
       throw apiError(response.status, retryBody);
     }
     if (mutation) await notifyMutationFailure(path);
     throw apiError(response.status, body);
   }
-  return response.json() as Promise<T>;
+  return readJson<T>(response);
+}
+
+// A body can also be cut off by a dropped transport; a parse error cannot.
+async function readJson<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof TypeError) notifyTransportFailure(error);
+    throw error;
+  }
+}
+
+function readErrorBody(response: Response): Promise<unknown> {
+  return readJson(response).catch(() => ({ detail: response.statusText }));
 }
 
 export function isMutationRequest(init?: RequestInit): boolean {
@@ -113,6 +131,16 @@ export function isMutationRequest(init?: RequestInit): boolean {
 
 export function registerMutationFailureHandler(handler: MutationFailureHandler | null): void {
   mutationFailureHandler = handler;
+}
+
+/** Called, without waiting, whenever a request never reached the backend. */
+export function registerTransportFailureHandler(handler: TransportFailureHandler | null): void {
+  transportFailureHandler = handler;
+}
+
+function notifyTransportFailure(error: unknown): void {
+  if (error instanceof DOMException && error.name === "AbortError") return;
+  transportFailureHandler?.();
 }
 
 export function registerIdentityNameRequiredHandler(

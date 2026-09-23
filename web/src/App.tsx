@@ -70,12 +70,15 @@ import {
   stopEpisode,
 } from "./api";
 import {
+  BACKEND_IDENTITY_EVENT,
   backendReconnectLabel,
   desktopShowReady,
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
   returnDesktopToPersonal,
+  TEAM_TRANSPORT_RECOVERED,
+  type BackendIdentityEventDetail,
   type DesktopUpdate,
 } from "./desktopRuntime";
 import {
@@ -1631,30 +1634,34 @@ export default function App() {
     if (!desktop) return;
     let stopped = false;
     const cleanups: Array<() => void> = [];
+    // Reload what the window shows: the active project, or the project index.
+    const reloadVisibleState = async () => {
+      const activeId = getActiveProjectId();
+      if (activeId) {
+        const visibleProjectId = activeId;
+        const nextTasks = await api<AgentTask[]>(
+          `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
+        );
+        if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks);
+        setProjectReconciliation("reconciling");
+        void reloadRef.current(false).catch((error) => {
+          if (!isActiveProject(visibleProjectId) || stopped) return;
+          setProjectReconciliation("failed");
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } else {
+        const nextProjects = await api<ProjectCard[]>("/api/projects");
+        if (!stopped) replaceProjects(nextProjects);
+      }
+    };
     const prepareShow = async () => {
       try {
         const identity = await reverifyIdentity("prepare-show");
         if (identity.ok) {
-          const activeId = getActiveProjectId();
-          if (activeId) {
-            const visibleProjectId = activeId;
-            const nextTasks = await api<AgentTask[]>(
-              `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
-            );
-            if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks);
-            setProjectReconciliation("reconciling");
-            void reloadRef.current(false).catch((error) => {
-              if (!isActiveProject(visibleProjectId) || stopped) return;
-              setProjectReconciliation("failed");
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-            });
-          } else {
-            const nextProjects = await api<ProjectCard[]>("/api/projects");
-            if (!stopped) replaceProjects(nextProjects);
-          }
+          await reloadVisibleState();
           await refreshDesktopUpdate();
         }
       } catch (error) {
@@ -1695,6 +1702,22 @@ export default function App() {
         }
       }
     });
+    // Loads that failed while the team tunnel was down are not polled again.
+    const onTeamTransportRecovered = (event: Event) => {
+      const detail = (event as CustomEvent<BackendIdentityEventDetail>).detail;
+      if (stopped || !detail.ok || detail.reason !== TEAM_TRANSPORT_RECOVERED) return;
+      void reloadVisibleState().catch((error) => {
+        if (!stopped)
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+      });
+    };
+    window.addEventListener(BACKEND_IDENTITY_EVENT, onTeamTransportRecovered);
+    cleanups.push(() =>
+      window.removeEventListener(BACKEND_IDENTITY_EVENT, onTeamTransportRecovered),
+    );
     void refreshDesktopUpdate();
     return () => {
       stopped = true;

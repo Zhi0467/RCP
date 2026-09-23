@@ -14,6 +14,7 @@ import {
   pinApiInstance,
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
+  registerTransportFailureHandler,
   removeChatAttachment,
   steerChatTurn,
   TEAM_SHELL_PROTOCOL_HEADER,
@@ -150,6 +151,53 @@ test("a failed mutation runs the registered identity verifier once", async () =>
     assert.equal(checkedPath, "/api/projects/demo/sync");
   } finally {
     registerMutationFailureHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a read that loses its transport reports it; an abort or a parse error does not", async () => {
+  const originalFetch = globalThis.fetch;
+  let failures = 0;
+  registerTransportFailureHandler(() => {
+    failures += 1;
+  });
+  try {
+    globalThis.fetch = async () => {
+      throw new TypeError("Load failed");
+    };
+    await assert.rejects(api("/api/projects/demo/episodes"), TypeError);
+    globalThis.fetch = async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    };
+    await assert.rejects(api("/api/projects/demo/episodes"), DOMException);
+    assert.equal(failures, 1);
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new TypeError("Load failed"));
+          },
+        }),
+        { status: 200 },
+      );
+    await assert.rejects(api("/api/projects/demo/episodes"), TypeError);
+    assert.equal(failures, 2, "a body cut off mid-read is a transport failure");
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new TypeError("Load failed"));
+          },
+        }),
+        { status: 500 },
+      );
+    await assert.rejects(api("/api/projects/demo/episodes"), ApiError);
+    assert.equal(failures, 3, "so is a cut-off error body");
+    globalThis.fetch = async () => new Response("not json", { status: 200 });
+    await assert.rejects(api("/api/projects/demo/episodes"), SyntaxError);
+    assert.equal(failures, 3, "a parse error is not");
+  } finally {
+    registerTransportFailureHandler(null);
     globalThis.fetch = originalFetch;
   }
 });

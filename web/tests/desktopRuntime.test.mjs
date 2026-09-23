@@ -19,6 +19,7 @@ import {
   openDesktopProjectTransferTerminal,
   openEpisodeReportFromLink,
   prepareDesktopProjectTransfer,
+  recoverTeamTransport,
   readDesktopTargetProjectProvisioningOptions,
   reverifyBackendIdentity,
   runDesktopIncomingProjectProvision,
@@ -163,6 +164,77 @@ test("a desktop host that disagrees with health stops the window, however famili
     assert.match(result.message, /instance instance-a became instance-b/);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("a team page reconnects its own tunnel with backoff but never accepts a changed backend", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const originalWarn = console.warn;
+  let served = identity;
+  let tunnelUp = true;
+  let reconnectFailures = 0;
+  let nativeRefusal = null;
+  const waits = [];
+  globalThis.fetch = async () => {
+    if (!tunnelUp) throw new TypeError("Load failed");
+    return new Response(
+      JSON.stringify({
+        status: "ok",
+        ...served,
+        pid: 42,
+        owner_kind: "desktop",
+        active_agent_tasks: 0,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    invoke: async (command) => {
+      if (command === "desktop_reconnect_backend") {
+        if (reconnectFailures-- > 0)
+          throw new Error("the SSH tunnel ended before its local HTTPS proxy started");
+        tunnelUp = true;
+        if (nativeRefusal) throw new Error(nativeRefusal);
+      }
+      return {
+        desktop: true,
+        base_url: "https://rcp-a.rcp.localhost:57276",
+        owner_kind: "team",
+        ...served,
+      };
+    },
+  };
+  globalThis.window = desktopWindow;
+  console.warn = () => {};
+  const results = [];
+  desktopWindow.addEventListener("rcp:backend-identity", (event) => results.push(event.detail));
+  const recover = () => recoverTeamTransport(async (ms) => void waits.push(ms));
+  try {
+    assert.equal((await establishBackendIdentity()).ok, true);
+
+    tunnelUp = false;
+    reconnectFailures = 2;
+    await recover();
+    assert.deepEqual(waits, [2000, 4000]);
+    assert.equal(results.at(-1).ok, true);
+
+    served = { ...identity, instance_id: "instance-b" };
+    await recover();
+    assert.deepEqual(waits, [2000, 4000], "a changed backend ends recovery instead of retrying");
+    assert.equal(results.at(-1).ok, false);
+    assert.match(results.at(-1).message, /instance instance-a became instance-b/);
+
+    nativeRefusal = "the team server belongs to a different space";
+    await recover();
+    assert.deepEqual(waits, [2000, 4000], "a native refusal of an answering backend ends recovery");
+    assert.equal(results.at(-1).ok, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
   }
