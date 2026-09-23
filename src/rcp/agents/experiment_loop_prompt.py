@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
-    _RETAINED_LOCAL_CAUSAL_CHECK,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
-    _authoring_rules,
     _invoked_package_section,
     _patch_validator_rules,
     _pointer,
@@ -398,7 +397,7 @@ Reply and artifacts:
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
 
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 
@@ -516,7 +515,7 @@ loop, never a different conversation, and only while the episode remains authori
 RCP runs watcher commands on {_watcher_execution_host(execution_host)}.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_patch_validator_rules(validator_command)}
 Your Markdown reply is independent from both files. State the observations, actions, chosen
 handoff, and uncertainty; do not report a submission or watcher completion as scientific success.
@@ -600,7 +599,7 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
   continuations; resume operational work only within the current authority below.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
 {_patch_validator_rules(validator_command)}
@@ -664,7 +663,6 @@ repaired.
 {_EXTERNAL_WATCHER_FORMS}
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """
@@ -747,7 +745,6 @@ the Patch was rewritten.
 
 {write_scope_section(write_scope) if write_scope is not None else ""}
 {_EXPERIMENT_GRAPH_AUTHORITY}
-{_RETAINED_LOCAL_CAUSAL_CHECK}
 
 {_patch_validator_rules(validator_command)}
 """

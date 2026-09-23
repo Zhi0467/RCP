@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
-from rcp.agents.prompts import _authoring_rules
+from rcp.agents.graph_rules import graph_rules
 
 
 def branch_merge_task_contract(
@@ -53,7 +53,7 @@ Preserve compatible main-side changes. If the intended outcome cannot be represe
 leave a precise diagnostic in your final response and do not invent authority.
 
 {orchestrator_graph_authority_contract()}
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
 The exact review policy used by validation is:
 ```json
@@ -183,7 +183,7 @@ watcher, artifact, or canonical-state files. RCP supplies all provenance and com
 or commits nothing.
 
 The replacement context and current authoring rules supersede earlier graph and schema instructions.
-{_authoring_rules(ontology_extensions)}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
 

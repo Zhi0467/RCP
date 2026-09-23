@@ -232,6 +232,17 @@ def test_base_ontology_cannot_be_redefined() -> None:
     assert "base-ontology-collision" in _codes(report)
 
 
+def test_history_may_keep_a_custom_field_that_a_later_base_field_now_names() -> None:
+    historical = _ontology()
+    historical["fields"][0]["name"] = "limitations"
+
+    assert "base-ontology-collision" in _codes(
+        validate_patch(GraphState(), _set_ontology(1, historical), [])
+    )
+    replayed = materialize_patches([_set_ontology(1, historical)], ["repo"]).state
+    assert replayed.replay_status == "complete"
+
+
 def test_new_nodes_validate_required_fields_kinds_and_custom_prefix() -> None:
     state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
     missing = _custom_node()

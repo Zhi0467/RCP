@@ -11,6 +11,7 @@ import {
   changedNodeFields,
   editableNodeFields,
   nodeEditDraft,
+  proxyDraftRows,
   type NodeEditField,
 } from "../nodeEditing";
 import type { DraftNodeChange, DraftNodeValue } from "../humanDraft";
@@ -24,6 +25,7 @@ import type {
   OntologyState,
   ValidationMessage,
 } from "../types";
+import { ProxyRowsEditor } from "./ProxyRowsEditor";
 import { RelationMap } from "./RelationMap";
 
 interface Props {
@@ -397,7 +399,21 @@ export function DetailDrawer({
                     {field.kind === "list" ? " · one item per line" : ""}
                     {field.nullable ? <span className="node-field-optional">Optional</span> : null}
                   </span>
-                  {field.kind === "text" || field.kind === "number" ? (
+                  {field.kind === "proxies" ? (
+                    <>
+                      <ProxyRowsEditor
+                        value={draft[field.key] ?? "[]"}
+                        onChange={(value) =>
+                          setDraft((current) => ({ ...current, [field.key]: value }))
+                        }
+                      />
+                      {editErrors[field.key] && (
+                        <small className="node-edit-error" role="alert">
+                          {editErrors[field.key]}
+                        </small>
+                      )}
+                    </>
+                  ) : field.kind === "text" || field.kind === "number" ? (
                     <>
                       <input
                         type={field.kind === "number" ? "number" : "text"}
@@ -856,6 +872,12 @@ function stagedFieldKeys(entry: DraftNodeChange | undefined, fields: NodeEditFie
 }
 
 function nodeEditFieldError(field: NodeEditField, value: string): string | null {
+  if (field.kind === "proxies") {
+    const partial = proxyDraftRows(value).some(
+      (row) => !row.stands_for.trim() !== !row.measure.trim(),
+    );
+    return partial ? "Fill in both sides of each proxy, or remove it." : null;
+  }
   if (field.kind !== "number") return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return "Enter a number.";

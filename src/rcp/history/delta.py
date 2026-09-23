@@ -808,6 +808,13 @@ def _edge_assessment_sentence(
     source: str,
     target: str,
 ) -> str | None:
+    if edge.expectation is not None:
+        expectation = {
+            "matched": "matched its expected outcomes",
+            "diverged": "diverged from its expected outcomes",
+            "no_expectation": "had no expected outcome to compare against",
+        }[edge.expectation]
+        return f"The result {_quoted(target)} from {_quoted(source)} {expectation}."
     source_node = state.nodes.get(edge.source) or previous_state.nodes.get(edge.source)
     target_node = state.nodes.get(edge.target) or previous_state.nodes.get(edge.target)
     is_evidence_hypothesis = (

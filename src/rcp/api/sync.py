@@ -19,7 +19,7 @@ from rcp.api.identity import IdentityAccess
 from rcp.core.models import RELATION_SPEC
 from rcp.core.transitions import current_project_projection
 from rcp.core.validation.constants import NODE_PREFIXES
-from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR
+from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR, EXPECTATION_RELATIONS
 from rcp.history import PatchRejected, RevisionConflict
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import GraphSyncRequest, NodeEditConflict
@@ -49,6 +49,7 @@ def graph_edit_options(
                     {"source_type": source, "target_type": target}
                     for source, target in sorted(ASSESSMENT_REQUIRED_FOR.get(name, ()))
                 ],
+                "accepts_expectation": name in EXPECTATION_RELATIONS,
             }
             for name in RELATION_SPEC
         ],

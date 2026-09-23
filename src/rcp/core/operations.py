@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from rcp.core.models import (
+    EdgeExpectation,
     EvidenceAssessment,
     OntologyState,
     ProjectNode,
@@ -131,6 +132,7 @@ class NewEdge(_StrictPayload):
     relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
     explanation: str = ""
     assessment: EvidenceAssessment | None = None
+    expectation: EdgeExpectation | None = None
 
     @field_validator("assessment", mode="before")
     @classmethod

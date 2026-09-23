@@ -496,6 +496,14 @@ def experiment_loop_ending_signal(
     selected_decisions = decision_bundle[:_MAX_RECEIPT_DECISIONS]
     method = {
         "design": _receipt_text(control_snapshot.get("design")),
+        "proxies": _receipt_text_list(
+            [
+                f"{proxy.get('stands_for')}: {proxy.get('measure')}"
+                for proxy in control_snapshot.get("proxies") or []
+                if isinstance(proxy, dict)
+            ]
+        ),
+        "limitations": _receipt_text_list(control_snapshot.get("limitations")),
         "expected_outcomes": _receipt_text_list(control_snapshot.get("expected_outcomes")),
         "interpretation_rules": _receipt_text_list(control_snapshot.get("interpretation_rules")),
         "completion_criteria": _receipt_text_list(control_snapshot.get("completion_criteria")),

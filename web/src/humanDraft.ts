@@ -2,6 +2,7 @@ import { graphSessionKey, MAIN_GRAPH } from "./graphTarget";
 import type { GraphTargetRef } from "./types";
 import {
   proposalSemantics,
+  type ExperimentProxy,
   type GraphNode,
   type GraphState,
   type OntologyState,
@@ -15,6 +16,7 @@ export type DraftNodeValue =
   | number
   | boolean
   | string[]
+  | ExperimentProxy[]
   | Record<string, string | number | boolean | string[]>
   | null;
 export type ProposalDecision = "approved" | "rejected";
@@ -620,6 +622,7 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
             relation: edge.relation,
             explanation: edge.explanation,
             ...(edge.assessment ? { assessment: edge.assessment } : {}),
+            ...(edge.expectation ? { expectation: edge.expectation } : {}),
           }))
         : [],
       removed_edge_ids: Array.isArray(parsed.removed_edge_ids)

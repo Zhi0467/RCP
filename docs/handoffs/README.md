@@ -3,7 +3,7 @@
 Active:
 
 - [Graph fields and rules render from the model](handoff-2026-09-23-graph-fields-and-rules.md)
-  — design confirmed 2026-09-23, not yet implemented. Experiment proxies and
+  — design confirmed 2026-09-23; slice 1 implemented, slices 2 and 3 remain. Experiment proxies and
   limitations, a `produces` expectation, field and relation descriptions in
   code rendered into every graph contract, continuations that repeat rules
   unless their digest changed, and trimmed skills. Three slices on one pull

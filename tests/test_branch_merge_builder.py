@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents.branch_merge_prompt import branch_merge_task_contract
+from rcp.agents.graph_rules import graph_rules
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
@@ -758,6 +759,7 @@ def test_merge_contract_cites_the_plan_file_instead_of_inlining_it() -> None:
     assert "/stage/inputs/plan.json" in contract
     assert '"op": "create_nodes"' not in contract
     assert '"path": "nodes/dec/choice/status"' in contract
+    assert graph_rules(edits=True, ontology_extensions=False) in contract
 
 
 def _replace_edge(edge, **changes) -> list[dict]:

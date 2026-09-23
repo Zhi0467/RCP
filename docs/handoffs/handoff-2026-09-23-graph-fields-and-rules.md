@@ -1,8 +1,11 @@
 # Graph fields and rules render from the model
 
 Date: 2026-09-23
-Status: design confirmed by the human 2026-09-23; not yet implemented. Three
-slices land sequentially on one pull request, none optional. The rationale is in
+Status: design confirmed by the human 2026-09-23. Slice 1 is implemented and
+verified: focused and full Python suites, web tests and build, and a served-app
+journey that edited proxies and limitations, staged a `diverged` `produces`
+edge, reloaded before Sync, synced, and read both back. Slices 2 and 3 remain.
+Three slices land sequentially on one pull request, none optional. The rationale is in
 [graph rules render from the model](../decisions/2026-09-23-graph-rules-render-from-the-model.md);
 current behavior after the change is in
 [graph, history, and transitions](../specs/graph-history-and-transitions.md#product-ontology)

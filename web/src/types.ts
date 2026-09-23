@@ -731,6 +731,8 @@ export interface GraphNode {
   legacy_strength?: "diagnostic" | "preliminary" | "supporting" | "confirmatory" | null;
   attempts?: ExperimentAttempt[];
   invocation_ceiling?: number;
+  proxies?: ExperimentProxy[];
+  limitations?: string[];
   completion_criteria?: string[];
   draft_touched?: boolean;
   [key: string]: unknown;
@@ -753,6 +755,14 @@ export type NewNode = Pick<
 >;
 
 export type ExtensionFieldValue = string | number | boolean | string[];
+
+/** One measurable stand-in an Experiment uses for the quantity it cares about. */
+export interface ExperimentProxy {
+  stands_for: string;
+  measure: string;
+}
+
+export type EdgeExpectation = "matched" | "diverged" | "no_expectation";
 
 export interface ExperimentAttempt {
   id: string;
@@ -1001,6 +1011,7 @@ export interface NewEdge {
   relation: string;
   explanation: string;
   assessment?: EvidenceAssessment | null;
+  expectation?: EdgeExpectation | null;
 }
 
 export interface Edge extends NewEdge {
@@ -1012,6 +1023,7 @@ export interface GraphEditOptions {
   relations: Array<{
     name: string;
     assessment_required_for: Array<{ source_type: string; target_type: string }>;
+    accepts_expectation: boolean;
   }>;
 }
 

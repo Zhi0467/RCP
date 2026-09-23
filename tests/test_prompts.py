@@ -11,6 +11,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_task_contract,
 )
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
@@ -81,6 +82,8 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
     assert master.count(skill_path) == 1
     for path in ("/state/graph.json", "/state/research.md", "/state/paper/introduction.md"):
         assert path in master
+    # Discuss and Work share one copy; the editing method is labelled as method, not authority.
+    assert master.count(graph_rules(edits=True, ontology_extensions=True)) == 1
 
 
 def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> None:
@@ -241,6 +244,7 @@ def test_graph_contract_preserves_input_paths_watermark_and_validator_command() 
     assert "/stage/workspace/patch.json" in contract
     assert "/provider/archive/provider-x" in contract
     assert validator_command in contract
+    assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
 def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
@@ -272,6 +276,7 @@ def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
     assert "gpu.example" in contract
     assert "/stage/patch.json" in contract
     assert validator_command in contract
+    assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
 @pytest.mark.asyncio
@@ -463,6 +468,7 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     assert "/stage/inputs/experiment-watchers.json" in contract
     assert execution_instructions in contract
     assert validator_command in contract
+    assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
 def test_provider_switch_recovery_preserves_diagnostics_path(
@@ -507,6 +513,8 @@ def test_discuss_contract_preserves_artifact_path() -> None:
     )
 
     assert "/stage/artifacts" in contract
+    assert graph_rules(edits=False, ontology_extensions=True) in contract
+    assert "Editing the graph:" not in contract
 
 
 def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> None:
@@ -527,6 +535,7 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         invoked_skill_pointers=[invoked],
     )
     assert invoked["path"] in paper
+    assert graph_rules(edits=False, ontology_extensions=False) in paper
     correction = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
         mode="patch_correction",
