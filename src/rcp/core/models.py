@@ -352,8 +352,10 @@ class Experiment(BaseNode):
     ] = Field(
         default="proposed",
         description=(
-            "The Experiment's current phase. `unspecified` is a compatibility reading of old "
-            "history and is never written."
+            "The Experiment's current phase. When new work reopens a completed Experiment, change "
+            "`status`, `current_summary`, and `next_action` together; a clarification alone does "
+            "not reopen it. `unspecified` is a compatibility reading of old history and is never "
+            "written."
         ),
     )
     attempts: list[ExperimentAttempt] = Field(
@@ -447,7 +449,8 @@ class Evidence(BaseNode):
             "Where the observation came from: `internal_run` for a project run, "
             "`external_publication` for a publication, `external_instance` for another RCP "
             "instance, `analytic` for a derivation, `unknown` only when it cannot be classified. "
-            "Set it explicitly."
+            "Set it explicitly. `internal_run` Evidence connects to its producing Experiment; "
+            "external or analytic Evidence needs no invented Experiment or conversation source."
         ),
     )
     artifact_refs: list[str] = Field(

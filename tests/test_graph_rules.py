@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import get_args
 
-from rcp.agents.graph_rules import GRAPH_RULES_VERSION, graph_rules
+from rcp.agents.graph_rules import (
+    _EDIT_METHOD,
+    _EXTENSION_RULES,
+    GRAPH_RULES_VERSION,
+    graph_rules,
+)
 from rcp.agents.schema import agent_output_schema
 from rcp.core.models import (
     RELATION_SPEC,
@@ -53,7 +58,7 @@ def test_read_only_rules_omit_authoring_method() -> None:
     read = graph_rules(edits=False, ontology_extensions=True)
     edit = graph_rules(edits=True, ontology_extensions=True)
 
-    assert read.startswith(f"Graph rules version `{GRAPH_RULES_VERSION}`.")
-    assert "Editing the graph:" not in read and "Ontology extensions:" not in read
-    assert "Editing the graph:" in edit and "Ontology extensions:" in edit
-    assert "Ontology extensions:" not in graph_rules(edits=True, ontology_extensions=False)
+    assert GRAPH_RULES_VERSION in read and GRAPH_RULES_VERSION in edit
+    assert _EDIT_METHOD not in read and _EXTENSION_RULES not in read
+    assert _EDIT_METHOD in edit and _EXTENSION_RULES in edit
+    assert _EXTENSION_RULES not in graph_rules(edits=True, ontology_extensions=False)

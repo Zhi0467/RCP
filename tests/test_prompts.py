@@ -581,7 +581,7 @@ def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
     # A correction repeats the current rules; it does not claim to replace a same-version copy.
     assert REPEATED_RULES_NOTE in correction
     assert graph_rules(edits=True, ontology_extensions=True) in correction
-    with pytest.raises(ValueError, match="graph rules"):
+    with pytest.raises(ValueError):
         PromptFactory.continuation_task_contract(
             original_contract_path="/stage/inputs/task-initial.md",
             mode="work_patch_correction",

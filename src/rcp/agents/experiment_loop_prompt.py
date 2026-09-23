@@ -241,8 +241,8 @@ Operational method:
   write boundary. For a non-empty host, use the path on that host over SSH rather than copying the
   repository locally.
 {write_boundary}
-- Read `AGENTS.md` and `CLAUDE.md` at each repository root before changing it, and apply them as
-  local method constraints under this contract. Never create, edit, move, or delete `.research` or
+- Read `AGENTS.md` at each repository root before changing it, and follow it as local method
+  under this contract. Never create, edit, move, or delete `.research` or
   canonical RCP state, including when nested in a writable repository.
 - After inspection, choose the scientifically meaningful next action: continue execution, diagnose
   and repair a mechanical fault, record or close attempts, create Evidence, queue a Decision,

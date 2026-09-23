@@ -56,56 +56,37 @@ _READING_METHOD = """Reading the graph:
   grows, and a truncated read is indistinguishable from a small graph.
 """
 
-_EXTENSION_RULES = f"""Ontology extensions:
-- This project's supplied graph carries extension definitions in its `ontology` field.
-  Use only its active (non-deprecated) type, field, and relation
-  definitions. The {len(_NODE_MODELS)} base node types and {len(RELATION_SPEC)} base relations above
-  remain available alongside them.
-- An extension node keeps its base shape in `type`, sets `extension_type` to the exact active custom
-  type name, uses `<extension_type>/<kebab-slug>` as its id, and puts only custom field values in
-  `extension_fields`. Never put a custom field at the node's top level. RCP verifies that the custom
-  type's declared `base_type` matches `type`.
-- Obey every active field definition: use its declared `kind`, include every required field, and
-  never write a field whose `agent_writable` value is false. Do not author deprecated types or
-  fields. Custom relations likewise use only active relation definitions and their declared source
-  and target types.
+_EXTENSION_RULES = """Ontology extensions (this project defines custom types in `graph.json`'s `ontology`):
+- Use only active (non-deprecated) custom types, fields, and relations, alongside the base ones above.
+- An extension node keeps its base type in `type`, names the custom type in `extension_type`, uses
+  `<extension_type>/<kebab-slug>` as its id, and puts only custom field values in
+  `extension_fields`, never at the node's top level.
+- Follow each field definition: its `kind`, every required field, and never a field whose
+  `agent_writable` is false. A custom relation connects only its declared source and target types.
 """
 
 _EDIT_METHOD = """Editing the graph:
-These are methods for authorized graph changes, not additional graph or filesystem authority.
-- If the active ontology cannot express a needed node or edge, state that plainly
-  in the final answer, name the missing vocabulary, and continue with the records that can be
-  expressed. Do not create a node for the gap or use a definition that is not already active.
-- Keep node prose concise. When a useful durable design, plan, result, or handoff already exists or
-  is naturally produced within the task, cite its exact repository-relative path and purpose in an
-  allowed field. Never create a ceremonial file for this rule; temporary previews are not durable
-  substitutes. If authorized new work reopens a completed Experiment, update its status,
-  `current_summary`, and `next_action` consistently. A clarification alone need not reopen it.
-- Internal-run Evidence connects to its producing Experiment and carries honest provenance;
-  cite primary artifacts or valid SourceRefs. External or analytic Evidence need not invent an
-  Experiment or conversation source.
+- If the active ontology cannot express a needed node or edge, say so in the final answer, name the
+  missing vocabulary, and record what can be expressed. Do not create a node for the gap or use a
+  definition that is not active.
+- Keep node prose concise. When a durable design, plan, result, or handoff file already exists or
+  the task naturally produces one, cite its repository-relative path in an allowed field. Do not
+  create a file only to cite it; a preview artifact is not durable.
 
-Local causal check for this Patch:
-- Separate an Experiment's inputs from what its results will determine. A Decision or Blocker that
-  the Experiment is meant to settle is downstream, not its own prerequisite.
-- For an empirical gate, identify the precursor Experiment and what observation would inform the
-  Decision or address the Blocker. While that work is planned, describe the intended handoff in the
-  Experiment's design or expected outcomes; do not invent Evidence or result edges.
-- Once an observation exists, connect Experiment `produces` Evidence, then Evidence `informs`
-  Decision or `addresses` Blocker as appropriate. Check edge direction against the actual causal
-  story. These edges do not themselves choose the Decision or change the Blocker's status.
-- An Experiment whose objective is to verify infrastructure, integration, or recovery — a smoke
-  test — is itself how that uncertainty gets resolved. Never block it on the state it exists to
-  show: unpinned launch parameters, an unbuilt image, or an unrun check are steps of its own
-  `design`, `expected_outcomes`, and `interpretation_rules`. An open Blocker reached through
-  `blocked_by` keeps RCP from starting the Experiment, so the smoke carries that edge only for a
-  constraint the run cannot remove itself, such as a missing credential or hardware allocation,
-  with a `resolution_condition` that does not require running the Experiment. The unverified
-  infrastructure may still gate a downstream main Experiment: keep that Blocker, put `blocked_by`
-  on the main Experiment, and let the smoke's Evidence `addresses` it.
-Example: before a calibration, record the planned comparison and unresolved parameter choice.
-After measurements exist, record their bounded Evidence and its `informs` edge to that choice.
-Apply only changes this task authorizes; in a correction, preserve unaffected operations.
+Causal check:
+- Separate an Experiment's inputs from what its results will decide. A Decision or Blocker the
+  Experiment is meant to settle is downstream of it, never its prerequisite.
+- For an empirical gate, find the precursor Experiment and the observation that would settle the
+  gate, and name that handoff in the precursor's design.
+- Check each edge's direction against the actual causal story.
+- A smoke Experiment verifies infrastructure, integration, or recovery, so it is how that
+  uncertainty gets resolved. Its own setup, such as unpinned parameters, an unbuilt image, or an
+  unrun check, belongs in its design, never in a Blocker on it.
+- An open Blocker reached through `blocked_by` stops RCP from starting an Experiment. Give a smoke
+  `blocked_by` only for a constraint the run cannot remove, such as a missing credential or
+  hardware, with a `resolution_condition` that does not require running it.
+- The unverified infrastructure can still gate a downstream main Experiment: that Experiment keeps
+  `blocked_by` the Blocker, and the smoke's Evidence `addresses` it.
 """
 
 
