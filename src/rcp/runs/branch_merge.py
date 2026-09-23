@@ -2268,6 +2268,7 @@ async def stream_branch_merge_run(
             patch_path=_patch_path(stage),
             diagnostics_path=diagnostics_path,
             validator_command=validator_command,
+            ontology_extensions=_has_ontology_extensions(context.main_graph),
         )
         contract_path, prompt = _stage_task_contract(
             stage.local_stage,

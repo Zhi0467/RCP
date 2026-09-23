@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, invoked_package_pointers
+from rcp.agents.prompts import chat_master_contract_key, invoked_package_pointers
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -138,7 +138,7 @@ def _prepare_discuss_chat_prompt(
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}",
+        contract_key=chat_master_contract_key(),
         values=stable_values,
     )
     prompt = PromptFactory.discuss_turn_prompt(

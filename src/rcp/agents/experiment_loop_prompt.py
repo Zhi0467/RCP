@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from rcp.agents.graph_rules import graph_rules
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
@@ -515,6 +515,7 @@ loop, never a different conversation, and only while the episode remains authori
 RCP runs watcher commands on {_watcher_execution_host(execution_host)}.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
+{REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_patch_validator_rules(validator_command)}
 Your Markdown reply is independent from both files. State the observations, actions, chosen
@@ -585,8 +586,8 @@ def experiment_loop_continuation_contract(
 
 {_invoked_package_section(invoked_skill_pointers)}
 
-Retain the original objective, attempt ledger, and progress in this native session. The current
-authority, methods, paths, and execution instructions here replace earlier versions. Read the
+Retain the original objective, attempt ledger, and progress in this native session. The paths and
+execution instructions here apply to this invocation, and the authority below is restated. Read the
 original contract only as needed for unchanged attempt and watcher rules, and read the fresh
 control delta before acting. It preserves the same
 episode and invocation number while refreshing phase, live drift, remaining budget, delivered
@@ -599,6 +600,7 @@ watcher ids, and the current watcher-state path. The paths above replace prior o
   continuations; resume operational work only within the current authority below.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
+{REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_TRANSIENT_OPERATIONAL_FAILURE_RULES}
 
@@ -716,6 +718,7 @@ def experiment_loop_patch_correction_contract(
     patch_path: str,
     watch_path: str,
     validator_command: str,
+    ontology_extensions: bool,
     output_schema_path: str | None = None,
     write_scope: ProjectWriteScope | None = None,
 ) -> str:
@@ -747,4 +750,7 @@ the Patch was rewritten.
 {_EXPERIMENT_GRAPH_AUTHORITY}
 
 {_patch_validator_rules(validator_command)}
+
+{REPEATED_RULES_NOTE}
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """

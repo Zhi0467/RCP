@@ -810,6 +810,7 @@ async def stream_graph_run(
                         original_contract_path=base_contract_path,
                         patch_path=patch_path,
                         validator_command=validator_command,
+                        ontology_extensions=context.ontology_extensions,
                     )
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
@@ -1139,6 +1140,7 @@ async def stream_graph_run(
                 diagnostics_path=diagnostics_path,
                 output_schema_path=schema_path,
                 validator_command=validator_command,
+                ontology_extensions=context.ontology_extensions,
             )
             contract_path, prompt = _stage_task_contract(
                 local_stage,

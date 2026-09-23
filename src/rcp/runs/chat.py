@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import ChatContext, agent_output_schema
 from rcp.agents.command_mailbox import StagedCommandMailbox
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     WritableRepositoryRoot,
@@ -266,7 +266,7 @@ def _retained_chat_patch_values(
     """Reuse an inactive Discuss Patch contract without issuing a credential."""
 
     previous, _ = _committed_chat_prompt_state(execution, request)
-    if previous is None or previous.contract_key != f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}":
+    if previous is None or previous.contract_key != chat_master_contract_key():
         return None
     value = previous.values.get("patch")
     if not isinstance(value, dict):

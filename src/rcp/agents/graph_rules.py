@@ -9,6 +9,7 @@ contract states its own beside this block.
 
 from __future__ import annotations
 
+import hashlib
 import types
 from typing import Literal, Union, get_args, get_origin
 
@@ -109,12 +110,24 @@ Apply only changes this task authorizes; in a correction, preserve unaffected op
 """
 
 
+# Continuations repeat the rules so a long session keeps them. Within one release they are
+# the same rules, so they are not described as a replacement unless the version moved.
+REPEATED_RULES_NOTE = (
+    "The graph rules below repeat the ones this session already holds. They replace the earlier "
+    "graph rules only if their version differs from the one this session last received."
+)
+
+
 def graph_rules(*, edits: bool, ontology_extensions: bool) -> str:
     """Render the graph block: definitions always, authoring method only where edits happen.
 
     Extension rules are authoring rules, so a read-only contract never receives them.
     """
 
+    return f"Graph rules version `{GRAPH_RULES_VERSION}`.\n{_body(edits, ontology_extensions)}"
+
+
+def _body(edits: bool, ontology_extensions: bool) -> str:
     sections = [_graph_fields(), _READING_METHOD]
     if edits and ontology_extensions:
         sections.append(_EXTENSION_RULES)
@@ -210,3 +223,12 @@ def _relation_line(name: str) -> str:
     if name in EXPECTATION_RELATIONS:
         notes.append("It may carry an `expectation`.")
     return f"- `{name}`: {endpoints}. {spec.description}" + "".join(f" {note}" for note in notes)
+
+
+# One version covers every rendering, so a chat whose modes read different renderings
+# still sees a single value, and any change to fields, relations, or method moves it.
+GRAPH_RULES_VERSION = hashlib.sha256(
+    "\0".join(
+        _body(edits, extensions) for edits in (False, True) for extensions in (False, True)
+    ).encode("utf-8")
+).hexdigest()[:16]

@@ -375,6 +375,7 @@ async def stream_auto_research_orchestrator_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
+            ontology_extensions=context.ontology_extensions,
         )
         for frame in settlement.frames:
             yield frame
@@ -622,6 +623,7 @@ async def stream_auto_research_worker_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
+            ontology_extensions=context.ontology_extensions,
         )
         for frame in settlement.frames:
             yield frame
@@ -1698,6 +1700,7 @@ async def _settle_worker_patch(
     native_session_id: str,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
+    ontology_extensions: bool,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
     _profile: Literal["ordinary", "orchestrator"] = "ordinary",
     _capability: Literal["work_auto", "orchestrate"] = "work_auto",
@@ -1850,6 +1853,7 @@ async def _settle_worker_patch(
                 diagnostics_path=diagnostics_path,
                 validator_command=correction_validator_command,
                 output_schema_path=schema_path,
+                ontology_extensions=ontology_extensions,
             )
             correction_contract += (
                 "\nThe current Auto-research command credential permits only Patch validation. "
@@ -2017,6 +2021,7 @@ async def _settle_orchestrator_patch(
     native_session_id: str,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
+    ontology_extensions: bool,
 ) -> _PatchSettlement:
     return await _settle_worker_patch(
         service,
@@ -2034,6 +2039,7 @@ async def _settle_orchestrator_patch(
         native_session_id=native_session_id,
         retry_patch_digest=retry_patch_digest,
         command_dispatcher=command_dispatcher,
+        ontology_extensions=ontology_extensions,
         _actor_role="orchestrator",
         _profile="orchestrator",
         _capability="orchestrate",

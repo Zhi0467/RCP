@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.agents import AgentEvent, AgentProcessControl, prompts
+from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
@@ -136,8 +136,9 @@ def _configure_compute_connections(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stale", ["version", "graph_rules"])
 async def test_contract_version_change_rebootstraps_an_existing_native_chat(
-    manifest, tmp_path
+    manifest, tmp_path, stale
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -175,9 +176,16 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     current = store.chat_session_context("codex", "laptop", session_id)
     assert current is not None
     stale_snapshot = json.loads(current.snapshot_json)
-    stale_version = CHAT_MASTER_CONTEXT_VERSION - 1
+    # A release that only changes graph rules must reach existing chats as surely as a
+    # hand-bumped master-context version does.
+    stale_version = CHAT_MASTER_CONTEXT_VERSION - (stale == "version")
     stale_snapshot["master_context_version"] = stale_version
-    stale_snapshot["contract_key"] = f"chat-master-v{stale_version}"
+    with pytest.MonkeyPatch.context() as older_rules:
+        if stale == "graph_rules":
+            older_rules.setattr(prompts, "GRAPH_RULES_VERSION", "0" * 16)
+        stale_snapshot["contract_key"] = (
+            f"chat-master-v{stale_version}" if stale == "version" else chat_master_contract_key()
+        )
     stale_snapshot["master_context_path"] = f"/stale/chat-master-v{stale_version}.md"
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
     store.commit_chat_session_context(
@@ -219,10 +227,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
     assert committed.protocol_version == CHAT_MASTER_CONTEXT_VERSION
-    assert (
-        json.loads(committed.snapshot_json)["contract_key"]
-        == f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}"
-    )
+    assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key()
 
 
 @pytest.mark.asyncio

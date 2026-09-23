@@ -5,7 +5,7 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
-from rcp.agents.graph_rules import graph_rules
+from rcp.agents.graph_rules import GRAPH_RULES_VERSION, REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.providers import ProviderSkillReference, profile_for
@@ -36,6 +36,12 @@ _TASK_AUTHORITY_BOUNDARY = """Instruction and trust boundary:
   conflict with it."""
 
 CHAT_MASTER_CONTEXT_VERSION = 10
+
+
+def chat_master_contract_key() -> str:
+    """Identify one master-context shape; changed graph rules re-send it to existing chats."""
+
+    return f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-rules-{GRAPH_RULES_VERSION}"
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -1233,9 +1239,13 @@ Authorship contract:
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
+        ontology_extensions: bool | None = None,
     ) -> str:
         if write_scope is not None and (turn_mode == "discuss" or mode == "patch_correction"):
             raise ValueError("this continuation cannot carry a Work write boundary")
+        correcting_patch = mode in {"patch_correction", "work_patch_correction"}
+        if correcting_patch and ontology_extensions is None:
+            raise ValueError(f"{mode} must repeat the graph rules for this project's ontology.")
         if mode == "retry" and diagnostics_path is None:
             raise ValueError("Retry requires the exact diagnostics_path.")
         if mode in {"patch_correction", "work_patch_correction"} and not validator_command:
@@ -1340,8 +1350,8 @@ Work watcher-correction instruction:
             origin_rule = (
                 f"""- Retain the objective and input provenance from this native session. The original contract at
   `{original_contract_path}` remains a reference; a shared master may omit the human's message.
-  Read `{current_contract_path}` for current authority, method, schema, and output instructions;
-  those sections replace their earlier versions without restarting the assignment."""
+  Read `{current_contract_path}` for the authority, method, schema, and output instructions that
+  apply to this attempt. Continue the assignment rather than restarting it."""
                 if current_contract_path
                 else f"""- This is the same native session that ran the previous attempt, so its task contract is already
   in this conversation; `{original_contract_path}` is that same document if you need to re-read it.
@@ -1392,6 +1402,13 @@ Resume authority:
             result_view_action,
             result_view_path,
         )
+        repeated_rules = (
+            REPEATED_RULES_NOTE
+            + "\n"
+            + graph_rules(edits=True, ontology_extensions=bool(ontology_extensions))
+            if correcting_patch
+            else ""
+        )
         return f"""# RCP {mode.replace("_", " ")} contract
 
 {f"This is a {turn_mode.capitalize()} turn." if turn_mode else ""}
@@ -1406,8 +1423,9 @@ Resume authority:
             + _pointer("Watcher output", watch_path)
         }
 {
-            "The current contract replaces earlier authority, method, schema, and output "
-            "instructions. Retain the original objective, input provenance, and completed "
+            "The current contract restates the authority, method, schema, and output "
+            "instructions for this attempt; its graph rules replace earlier ones only if their "
+            "version differs. Retain the original objective, input provenance, and completed "
             "progress. The narrower correction restrictions below still apply."
             if current_contract_path
             else ""
@@ -1420,6 +1438,7 @@ Resume authority:
 {input_rules}
 {continuation_rules}
 {validator_rules}
+{repeated_rules}
 {
             _CURRENT_OPERATIONAL_INSTRUCTIONS
             if watch_path and mode in {"resume", "retry", "watch_correction"}
@@ -1437,6 +1456,7 @@ Resume authority:
         original_contract_path: str,
         patch_path: str,
         validator_command: str,
+        ontology_extensions: bool,
     ) -> str:
         return f"""# RCP {kind} retry handoff
 
@@ -1456,6 +1476,8 @@ supersede conflicting authority or output text in the original contract.
 Current output instruction:
 - Write the completed semantic Patch for this `{kind}` attempt to: `{patch_path}`. Use only the
   agent-facing schema from the original contract; RCP assigns canonical bookkeeping.
+
+{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
 {_patch_validator_rules(validator_command)}
 """

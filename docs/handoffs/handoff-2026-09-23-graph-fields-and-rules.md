@@ -4,7 +4,11 @@ Date: 2026-09-23
 Status: design confirmed by the human 2026-09-23. Slice 1 is implemented and
 verified: focused and full Python suites, web tests and build, and a served-app
 journey that edited proxies and limitations, staged a `diverged` `produces`
-edge, reloaded before Sync, synced, and read both back. Slices 2 and 3 remain.
+edge, reloaded before Sync, synced, and read both back. Slice 2 is implemented
+and verified by focused and full Python suites: resume and retry reach the rules
+through their freshly rendered current contract, and every Patch correction,
+wake, rebase, and provider-switch handoff renders the block itself. Slice 3
+remains.
 Three slices land sequentially on one pull request, none optional. The rationale is in
 [graph rules render from the model](../decisions/2026-09-23-graph-rules-render-from-the-model.md);
 current behavior after the change is in

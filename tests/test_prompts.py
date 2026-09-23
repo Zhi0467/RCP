@@ -11,7 +11,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_task_contract,
 )
-from rcp.agents.graph_rules import graph_rules
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import PromptFactory
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
@@ -469,6 +469,8 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     assert execution_instructions in contract
     assert validator_command in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
+    # A fresh contract states the rules once; only continuations call them a repeat.
+    assert REPEATED_RULES_NOTE not in contract
 
 
 def test_provider_switch_recovery_preserves_diagnostics_path(
@@ -542,6 +544,7 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         patch_path="/stage/patch.json",
         diagnostics_path="/stage/inputs/correction.json",
         validator_command="python /stage/validator.py /stage/patch.json",
+        ontology_extensions=False,
     )
     watcher = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
@@ -568,11 +571,23 @@ def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
         patch_path="/stage/patch.json",
         diagnostics_path="/stage/inputs/correction.json",
         validator_command=validator_command,
+        ontology_extensions=True,
     )
 
     assert validator_command in correction
     assert "/stage/patch.json" in correction
     assert "/stage/inputs/correction.json" in correction
+    # A correction repeats the current rules; it does not claim to replace a same-version copy.
+    assert REPEATED_RULES_NOTE in correction
+    assert graph_rules(edits=True, ontology_extensions=True) in correction
+    with pytest.raises(ValueError, match="graph rules"):
+        PromptFactory.continuation_task_contract(
+            original_contract_path="/stage/inputs/task-initial.md",
+            mode="work_patch_correction",
+            patch_path="/stage/patch.json",
+            diagnostics_path="/stage/inputs/correction.json",
+            validator_command=validator_command,
+        )
 
 
 def test_experiment_retry_preserves_fresh_control_path() -> None:
@@ -588,6 +603,7 @@ def test_experiment_retry_preserves_fresh_control_path() -> None:
     )
 
     assert "/stage/inputs/experiment-control-retry.json" in retry
+    assert REPEATED_RULES_NOTE in retry
 
 
 def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> None:
@@ -619,11 +635,15 @@ def test_retry_handoff_contract_preserves_paths() -> None:
         original_contract_path="/prior/inputs/task-initial.md",
         patch_path="/stage/patch.json",
         validator_command="python /stage/validator.py /stage/patch.json",
+        ontology_extensions=False,
     )
 
     assert "/stage/inputs/task-retry-handoff.json" in contract
     assert "/prior/inputs/task-initial.md" in contract
     assert "/stage/patch.json" in contract
+    # A handoff starts a fresh provider session, so it states the current rules outright.
+    assert graph_rules(edits=True, ontology_extensions=False) in contract
+    assert REPEATED_RULES_NOTE not in contract
 
 
 def test_work_patch_legality_reuses_the_non_ingest_boundary_with_work_wording() -> None:
