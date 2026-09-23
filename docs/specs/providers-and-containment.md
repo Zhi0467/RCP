@@ -382,13 +382,41 @@ pre-prompt provider-runtime fallback above changes none of those bindings and
 resumes the same native session id.
 
 Recovery retains the original assignment and completed native-session progress.
-Current task guidance, graph inputs, output schema and locations, validator, and
-command metadata replace the corresponding earlier instructions. This refresh
+The attempt's graph inputs, output schema and locations, validator, and command
+metadata apply to this attempt. Graph rules are repeated, not replaced: they
+replace earlier text only when their version digest differs from the one the
+session already holds (see
+[graph rules in task contracts](#graph-rules-in-task-contracts)). This refresh
 does not widen the captured task authority or authorize repeating completed
 external effects; historical diagnostics remain failure reports, not policy.
 After a completed Work-like Patch correction, RCP revalidates the retained candidate
 against current state even if its bytes did not change. A stale rejection does not
 require cosmetic edits; current schema and authority validation still govern Apply.
+
+## Graph rules in task contracts
+
+Every contract that reads or writes the research graph includes one rendered
+graph-rules block, and no contract restates field or relation meaning in its own
+prose. The block renders from code: node field descriptions, base relation
+descriptions and endpoints from `RELATION_SPEC`, which relations carry an
+Evidence assessment, id prefixes, and value vocabularies. A read-only contract
+(Discuss, chat) receives the definitions and the method for searching
+`graph.json`. A graph-writing contract also receives the hand-written method
+that spans several nodes: the Experiment input-versus-result causal check and a
+short list of cross-cutting write habits. Ontology extension rules are added
+where the project has extensions.
+
+Authority is not part of the block. Each contract places its own authority
+block beside it: the ordinary agent contract, the orchestrator profile, or the
+Experiment-loop allowlist. A skill may teach method but does not restate the
+block's definitions.
+
+The block carries a version digest over its rendered text. Continuations,
+wakes, corrections, and added turns repeat the block, so a long session keeps
+it, and state that it replaces earlier graph rules only if the digest differs.
+A chat's master-context key includes the digest, so changed rules reach an
+existing chat on its next turn. A human-started graph repair renders the current
+contract rather than relying on the one its session began with.
 
 ## One graph output channel
 

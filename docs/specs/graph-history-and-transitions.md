@@ -22,8 +22,22 @@ Every node has an id, title, ordinary-language content, provenance standing,
 and type-specific fields. Standing is `asserted`, `contested`, or `accepted`
 and belongs to nodes, never edges. `confidence` is not a graph field.
 
-Nested records such as Experiment attempts, sources, Decision options, and
-belief causes are not nodes. Proposal, glossary, ontology, and historical
+An Experiment separates what it measures from what it is about. `proxies` lists
+each measurable stand-in as `{stands_for, measure}`, for example "caffeine
+intake" measured as "self-reported cups of coffee per week". `limitations` is
+one list of what the proxies and the protocol miss, such as "tea is not
+counted" or "students who left are excluded". Both are written with the design,
+before any result exists, and an episode cannot edit them.
+
+Every node field and every base relation carries a description in code. The
+description says what the field means, when it is written, and any method local
+to that field; it never says who may write it, which each task's authority
+contract owns. These descriptions are the only field and relation meanings
+agents receive; see
+[graph rules in task contracts](providers-and-containment.md#graph-rules-in-task-contracts).
+
+Nested records such as Experiment attempts, proxies, sources, Decision options,
+and belief causes are not nodes. Proposal, glossary, ontology, and historical
 Ambiguity records are side-car state. Historical ontology extensions and
 Ambiguities remain replayable; current authoring cannot create Ambiguities and
 Project Settings does not expose ontology authoring.
@@ -79,6 +93,15 @@ include:
 - Experiment `produces` Evidence;
 - Evidence `informs` Decision and `addresses` Blocker; and
 - the Evidence-to-Hypothesis epistemic relations above.
+
+An Experiment `produces` Evidence edge may carry `expectation`: `matched`,
+`diverged`, or `no_expectation`, judged against that Experiment's
+`expected_outcomes`, with the edge `explanation` naming the outcome it is judged
+against. It is claim-relative in the same way as an assessment, which is why it
+sits on the edge and not on Evidence: Evidence may come from no Experiment, or
+from several. Only `produces` accepts it, and `produces` still rejects an
+Evidence assessment. A `diverged` edge is the signal to look closer, because an
+unexpected result is either a defect in the protocol or the finding.
 
 Epistemic and action layers are projections over one graph. Only relations
 whose semantics RCP understands may affect Experiment control. A precursor

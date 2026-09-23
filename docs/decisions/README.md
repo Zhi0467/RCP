@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Graph rules render from the model](2026-09-23-graph-rules-render-from-the-model.md)
+  records why agents learn field and relation meaning from descriptions in code
+  rendered into every graph contract, why authority stays with each call site,
+  and why continuations repeat the rules unless their digest changed.
+
 - [Provider logins are kept alive](2026-09-14-provider-logins-are-kept-alive.md)
   records why every credential gets one refresh path and no needless process
   (Codex per turn under the gate, Claude on a static token), why the shared
