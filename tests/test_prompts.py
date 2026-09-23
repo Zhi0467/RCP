@@ -13,7 +13,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import PromptFactory
+from rcp.agents.prompts import REPLY_STYLE, PromptFactory
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
@@ -85,6 +85,8 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
         assert path in master
     # Discuss and Work share one copy; the editing method is labelled as method, not authority.
     assert master.count(graph_rules(edits=True, ontology_extensions=True)) == 1
+    # Discuss and Work each carry the one shared reply guidance.
+    assert master.count(REPLY_STYLE) == 2
 
 
 def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> None:
@@ -472,6 +474,7 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     assert graph_rules(edits=True, ontology_extensions=True) in contract
     # A fresh contract states the rules once; only continuations call them a repeat.
     assert REPEATED_RULES_NOTE not in contract
+    assert REPLY_STYLE in contract
 
 
 def test_provider_switch_recovery_preserves_diagnostics_path(

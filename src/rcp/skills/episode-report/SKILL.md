@@ -2,7 +2,7 @@
 id: episode-report
 kind: skill
 label: Episode report
-version: 1.3.0
+version: 1.4.0
 description: Create the required durable visual HTML wrap-up for an RCP episode, explaining its work, evidence, limits, ending, and next human decision without changing project or graph state.
 dependencies:
 ---
@@ -19,20 +19,27 @@ so it must make sense without opening the report. For example, “Compaction
 fidelity passes retrieval checks” or “Reset–stream comparison awaits complete
 measurements.” Keep internal identifiers out of the title.
 
-Start with the research outcome in plain language: what question was pursued,
-what changed, what evidence supports that change, and what the human needs to
-decide next. A reader should understand that opening without knowing the task
-ids, internal protocol, or preceding conversation. Use concrete node titles and
-research terms; keep identifiers and execution details in supporting provenance.
-Explain an unfamiliar term when it first matters. Prefer a few short paragraphs
-and direct labels over a dense chronology or a wall of status tables.
+Write it as scientific communication, not an operations log. Start with the
+research outcome in plain language: what question was pursued, what was found,
+what evidence supports it, and what the human needs to decide next. A reader
+should understand that opening in under a minute without knowing the task ids,
+internal protocol, or preceding conversation. Use concrete node titles and
+research terms, and explain an unfamiliar term when it first matters.
 
-Make the report inherently visual. Use an intentional visual hierarchy plus the
-charts, diagrams, timelines, matrices, annotated evidence maps, or other visual
-forms that best expose the episode's structure and conclusions. Do not merely
-decorate a prose memo. Keep every visual honest about missing evidence and
-uncertainty. The HTML must remain useful in RCP's opaque sandbox without network
-resources.
+Keep it short. The main body is the question, the findings with their evidence,
+the limits, and the next decision; a reader should get through it in a few
+screens. Leave out what does not change the reader's understanding: commands,
+job ids, retries, paths, and step-by-step chronology. Put any operational detail
+the human needs to check the work in one collapsed `<details>` appendix at the
+end.
+
+Make the report visual first. Give each main finding a figure, such as a chart
+of the measured values, a before-and-after comparison, a diagram of how the
+Evidence bears on the Hypotheses and Decisions, or a timeline of attempts when
+their order matters. A figure replaces prose and tables rather than decorating
+them. Draw figures with inline SVG or HTML and CSS; keep every one honest about
+missing evidence and uncertainty. The HTML must remain useful in RCP's opaque
+sandbox without network resources.
 
 State why the episode ended and distinguish observations from interpretation.
 If it exhausted its operational ceiling, failed, or paused for human authority,

@@ -9,6 +9,7 @@ from rcp.agents.prompts import (
     _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
+    REPLY_STYLE,
     _invoked_package_section,
     _patch_validator_rules,
     _pointer,
@@ -382,10 +383,12 @@ Graph reflection and authority:
 
 {_patch_validator_rules(validator_command)}
 
+{REPLY_STYLE}
+
 Reply and artifacts:
-- The final assistant message is the complete independent Markdown reply the human reads. State
-  actions, outcomes, watcher interpretation, attempt decisions, repository changes, failures,
-  whether the episode pauses or finishes, and remaining uncertainty.
+- The final assistant message is the complete independent Markdown reply the human reads. Say
+  whether the episode pauses or finishes, and never present a submission or watcher completion as
+  a scientific result.
 - Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
   suffix to point at one line of a repository file. Only an authorized repository file or a file
   you wrote in the artifact directory opens in RCP's bounded preview; a relative path, a line
@@ -518,8 +521,9 @@ RCP runs watcher commands on {_watcher_execution_host(execution_host)}.
 {REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_patch_validator_rules(validator_command)}
-Your Markdown reply is independent from both files. State the observations, actions, chosen
-handoff, and uncertainty; do not report a submission or watcher completion as scientific success.
+{REPLY_STYLE}
+Your Markdown reply is independent from both files. Say which handoff you chose, and never present
+a submission or watcher completion as a scientific result.
 """
 
 

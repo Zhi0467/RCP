@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import selected_skill_section, write_scope_section
+from rcp.agents.prompts import REPLY_STYLE, selected_skill_section, write_scope_section
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
@@ -337,8 +337,9 @@ Coordination:
   idempotency key already embedded in the command prefix if the call must be retried.
 
 {_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path, validator_command=validator_command)}
-Your final assistant message is a concise operational receipt. State what ran, what changed, what
-failed, and what the orchestrator still needs to decide or do.
+{REPLY_STYLE}
+Your final assistant message is read by the orchestrator and the human. Besides the result, say
+what the orchestrator still needs to decide or do.
 """
 
 
@@ -471,6 +472,6 @@ Coordination:
   or wake yourself. There is no blocking primitive.
 
 {_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path, validator_command=validator_command)}
-Your final assistant message is a concise operational receipt. Preserve completed external work;
-do not repeat it merely to improve the reply or graph reflection.
+{REPLY_STYLE}
+Preserve completed external work; do not repeat it merely to improve the reply or graph reflection.
 """
