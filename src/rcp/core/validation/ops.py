@@ -331,7 +331,11 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
                 related_node_ids=[source_id, target_id],
                 related_edge_ids=[edge_id],
             )
-        if edge.expectation is not None and relation not in EXPECTATION_RELATIONS:
+        if edge.expectation is not None and (
+            relation not in EXPECTATION_RELATIONS
+            or (source_type is not None and source_type != "experiment")
+            or (target_type is not None and target_type != "evidence")
+        ):
             ctx.report.reject(
                 "inapplicable-edge-expectation",
                 f"Edge {edge_id!r} may carry an expectation only on an Experiment `produces` "

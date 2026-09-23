@@ -99,10 +99,14 @@ def test_experiment_proxies_and_produces_expectation_sync_and_replay(manifest, t
             }
         ],
     }
-    misplaced = {**draft, "added_edges": [{**draft["added_edges"][0], "relation": "tests"}]}
-    refused = client.post(f"{base}/preview", json=misplaced)
-    assert refused.status_code == 422
-    assert "inapplicable-edge-expectation" in {item["code"] for item in refused.json()["detail"]}
+    for misplaced_edge in (
+        {**draft["added_edges"][0], "relation": "tests"},
+        {**draft["added_edges"][0], "source": "ev/outlier", "target": "exp/coffee"},
+    ):
+        refused = client.post(f"{base}/preview", json={**draft, "added_edges": [misplaced_edge]})
+        assert refused.status_code == 422
+        codes = {item["code"] for item in refused.json()["detail"]}
+        assert "inapplicable-edge-expectation" in codes
     unexplained = client.post(f"{base}/preview", json=draft)
     assert unexplained.status_code == 422
     assert "unexplained-edge-expectation" in {item["code"] for item in unexplained.json()["detail"]}

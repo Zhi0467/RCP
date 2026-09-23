@@ -424,12 +424,14 @@ function RelationPeer({
               <span className="relation-map-edge-warning">
                 <AlertTriangle size={12} />
                 Diverged from expected outcomes
+                {edge.explanation ? ` · ${edge.explanation}` : ""}
               </span>
             ) : edge.expectation ? (
               <span className="relation-map-edge-label">
                 {edge.expectation === "matched"
                   ? "Matched expected outcomes"
                   : "No expected outcome to compare"}
+                {edge.explanation ? ` · ${edge.explanation}` : ""}
               </span>
             ) : null}
             {flags.map((flag, index) => (
