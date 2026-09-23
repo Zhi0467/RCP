@@ -2,7 +2,7 @@
 id: evidence-triage
 kind: skill
 label: Evidence triage
-version: 3.3.0
+version: 3.4.0
 description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
@@ -45,7 +45,9 @@ incomplete run may justify only a qualified snapshot and does not establish the 
 
 ## Assess each Hypothesis relation
 
-Write one claim-relative `assessment` on every new edge the graph rules say requires one. Calibrate
+Connect Evidence to every Hypothesis it bears on, including each one its producing Experiment
+tests; use `inconclusive` when it settles nothing. Write one claim-relative `assessment` on every
+new edge the graph rules say requires one. Calibrate
 it honestly for that claim alone: the same Evidence may have different relevance, weight, scope,
 and qualifications for different Hypotheses. Historical unassessed relations remain readable, but
 never use that compatibility to omit an assessment from a new applicable edge.

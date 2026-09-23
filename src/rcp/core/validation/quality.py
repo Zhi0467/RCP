@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from rcp.core.models import Evidence, Experiment, GraphState
+from rcp.core.models import Evidence, Experiment, GraphState, Hypothesis
 from rcp.core.validation.nodes import normalize_authoring_text
 from rcp.core.validation.report import ValidationReport
 
@@ -56,6 +56,8 @@ def flag_introduced_quality_issues(
         if title:
             titles[(node.type, title)].append(node_id)
 
+    _flag_introduced_structure_issues(initial_state, candidate, report, revision)
+
     for (_node_type, title), node_ids in sorted(titles.items()):
         if len(node_ids) < 2:
             continue
@@ -78,6 +80,87 @@ def flag_introduced_quality_issues(
             revision,
             related_node_ids=node_ids,
         )
+
+
+_EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
+    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
+)
+
+
+def _structure_issues(state: GraphState) -> dict[tuple[str, ...], tuple[str, str, list[str]]]:
+    """Name each common missing link, keyed so an issue already present is not repeated."""
+
+    edges = [
+        edge
+        for edge in state.edges.values()
+        if edge.source in state.nodes and edge.target in state.nodes
+    ]
+    parented = {
+        edge.target
+        for edge in edges
+        if edge.relation == "has_hypothesis"
+        and state.nodes[edge.source].type == "research_question"
+    }
+    tested: dict[str, set[str]] = defaultdict(set)
+    producers: dict[str, set[str]] = defaultdict(set)
+    bears_on: dict[str, set[str]] = defaultdict(set)
+    outgoing: set[str] = set()
+    for edge in edges:
+        source, target = state.nodes[edge.source], state.nodes[edge.target]
+        outgoing.add(edge.source)
+        if edge.relation == "tests" and isinstance(source, Experiment):
+            if isinstance(target, Hypothesis):
+                tested[edge.source].add(edge.target)
+        elif edge.relation == "produces" and isinstance(source, Experiment):
+            if isinstance(target, Evidence):
+                producers[edge.target].add(edge.source)
+        elif edge.relation in _EVIDENCE_HYPOTHESIS_RELATIONS and isinstance(source, Evidence):
+            bears_on[edge.source].add(edge.target)
+
+    issues: dict[tuple[str, ...], tuple[str, str, list[str]]] = {}
+    for node_id, node in state.nodes.items():
+        if isinstance(node, Hypothesis) and node.status != "superseded" and node_id not in parented:
+            issues[("hypothesis-without-question", node_id)] = (
+                "hypothesis-without-question",
+                f"Hypothesis {node_id} answers no ResearchQuestion; review which question it "
+                "serves and connect it with `has_hypothesis`.",
+                [node_id],
+            )
+        if not isinstance(node, Evidence) or node.validity == "superseded":
+            continue
+        unlinked = sorted(
+            (experiment_id, hypothesis_id)
+            for experiment_id in producers.get(node_id, ())
+            for hypothesis_id in tested.get(experiment_id, ())
+            if hypothesis_id not in bears_on.get(node_id, ())
+        )
+        for experiment_id, hypothesis_id in unlinked:
+            issues[("evidence-not-linked-to-tested-hypothesis", node_id, hypothesis_id)] = (
+                "evidence-not-linked-to-tested-hypothesis",
+                f"Evidence {node_id} comes from {experiment_id}, which tests {hypothesis_id}, "
+                "but has no edge to that Hypothesis; review how the result bears on it.",
+                [node_id, hypothesis_id],
+            )
+        if not unlinked and node_id in producers and node_id not in outgoing:
+            issues[("evidence-bears-on-nothing", node_id)] = (
+                "evidence-bears-on-nothing",
+                f"Evidence {node_id} is connected only to the Experiment that produced it; review "
+                "which Hypothesis, Decision, or Blocker it bears on.",
+                [node_id],
+            )
+    return issues
+
+
+def _flag_introduced_structure_issues(
+    initial_state: GraphState,
+    candidate: GraphState,
+    report: ValidationReport,
+    revision: int | None,
+) -> None:
+    previous = _structure_issues(initial_state)
+    for key, (code, message, node_ids) in sorted(_structure_issues(candidate).items()):
+        if key not in previous:
+            report.flag(code, message, revision, related_node_ids=node_ids)
 
 
 def _connections(state: GraphState) -> tuple[set[str], set[str]]:

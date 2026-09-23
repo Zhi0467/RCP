@@ -2,12 +2,12 @@
 id: research-graph-audit
 kind: workflow
 label: Research graph audit
-version: 3.4.0
+version: 3.5.0
 description: Run a deliberate read-only audit of graph structure, experiment action causality, and load bearing Evidence provenance, ending in one prioritized report.
 dependencies:
-- graph-audit@3.3.0
+- graph-audit@3.4.0
 - experiment-causality@1.4.0
-- evidence-triage@3.3.0
+- evidence-triage@3.4.0
 ---
 
 # Research graph audit
@@ -18,8 +18,8 @@ task, and all three passes remain report-only inside this workflow.
 ## Pass 1: broad structure
 
 Apply Graph audit. Read `research.md` before `graph.json` and list the claims and action state a
-reader would believe. Run every Graph audit check, including untestable claims and proxies read as
-the real quantity. Record important paths that are sound.
+reader would believe. Run every Graph audit check, including broken structures, untestable claims,
+and proxies read as the real quantity. Record important paths that are sound.
 
 ## Pass 2: action causality
 

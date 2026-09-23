@@ -526,6 +526,8 @@ def _patch_validator_rules(validator_command: str) -> str:
   Patch is invalid: read the returned diagnostics, correct the same file, and check again. Exit 2
   means RCP is unavailable or the bounded self-check limit was reached; do not treat it as a
   semantic error or loop on it.
+- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
+  or say in the reply why it stands.
 - Each check reads live graph state. A check is advisory until Apply revalidates under the append
   lock, so run it after your final Patch edit before declaring the task complete.
 """
@@ -1267,6 +1269,8 @@ Work graph-correction instruction:
 - Exit 0 means the Patch validates against current canonical state. Exit 1 means the Patch is
   invalid and should be corrected. Exit 2 means RCP is unavailable or the bounded self-check limit
   was reached; do not treat it as a semantic error or loop on it.
+- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
+  or say in the reply why it stands.
 - The check is advisory until Apply revalidates under the append lock.'''
                 if validator_command
                 else ""

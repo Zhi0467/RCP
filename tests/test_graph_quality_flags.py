@@ -83,7 +83,8 @@ def test_later_edge_and_title_edit_use_the_complete_candidate() -> None:
     )
     flags = _flags(_state(), patch)
     assert [(flag.code, flag.related_node_ids) for flag in flags] == [
-        ("isolated-operational-node", ["exp/unrelated"])
+        ("isolated-operational-node", ["exp/unrelated"]),
+        ("evidence-bears-on-nothing", ["ev/result"]),
     ]
 
 
@@ -106,15 +107,53 @@ def test_new_operational_nodes_receive_isolation_advice(node: dict) -> None:
     assert any(flag.code == "isolated-operational-node" for flag in flags)
 
 
-@pytest.mark.parametrize(
-    "node",
-    [
-        {"id": "rq/new", "type": "research_question", "title": "Question", "question": "Why?"},
-        {"id": "hyp/new", "type": "hypothesis", "title": "Claim", "statement": "A causes B."},
-    ],
-)
-def test_new_beliefs_are_not_flagged_as_isolated(node: dict) -> None:
-    assert not _flags(_state(), _patch({"op": "create_nodes", "nodes": [node]}))
+def test_new_beliefs_are_not_flagged_as_isolated_but_a_hypothesis_needs_its_question() -> None:
+    question = {
+        "id": "rq/new",
+        "type": "research_question",
+        "title": "Question",
+        "question": "Why?",
+    }
+    claim = {"id": "hyp/new", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
+    assert not _flags(_state(), _patch({"op": "create_nodes", "nodes": [question]}))
+    orphan = _flags(_state(), _patch({"op": "create_nodes", "nodes": [claim]}))
+    assert [flag.code for flag in orphan] == ["hypothesis-without-question"]
+    answered = _patch(
+        {"op": "create_nodes", "nodes": [question, claim]},
+        {
+            "op": "create_edges",
+            "edges": [{"source": "rq/new", "target": "hyp/new", "relation": "has_hypothesis"}],
+        },
+    )
+    assert not _flags(_state(), answered)
+
+
+def test_produced_evidence_must_bear_on_the_hypothesis_its_experiment_tests() -> None:
+    claim = {"id": "hyp/claim", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
+    question = {"id": "rq/q", "type": "research_question", "title": "Question", "question": "Why?"}
+    edges = [
+        {"source": "rq/q", "target": "hyp/claim", "relation": "has_hypothesis"},
+        {"source": "exp/source", "target": "hyp/claim", "relation": "tests"},
+        {"source": "exp/source", "target": "ev/result", "relation": "produces"},
+    ]
+    unlinked = _patch(
+        {"op": "create_nodes", "nodes": [question, claim, _experiment(), _evidence()]},
+        {"op": "create_edges", "edges": edges},
+    )
+    assert [(flag.code, flag.related_node_ids) for flag in _flags(_state(), unlinked)] == [
+        ("evidence-not-linked-to-tested-hypothesis", ["ev/result", "hyp/claim"])
+    ]
+    back_edge = {
+        "source": "ev/result",
+        "target": "hyp/claim",
+        "relation": "inconclusive",
+        "assessment": {"relevance": "direct", "weight": "limited", "qualifications": []},
+    }
+    linked = _patch(
+        {"op": "create_nodes", "nodes": [question, claim, _experiment(), _evidence()]},
+        {"op": "create_edges", "edges": [*edges, back_edge]},
+    )
+    assert not _flags(_state(), linked)
 
 
 def test_old_issues_do_not_repeat_even_when_unrelated_fields_change() -> None:
@@ -248,7 +287,7 @@ def test_human_batch_advice_describes_final_atomic_graph(manifest, connect: bool
     assert len(committed) == 1
     messages = committed[0].admission_messages
     if connect:
-        assert not messages
+        assert [message.code for message in messages] == ["evidence-bears-on-nothing"]
     else:
         assert {message.code for message in messages} == {
             "isolated-operational-node",

@@ -136,12 +136,16 @@ used by inline lookup without deleting the historical entries.
 
 Admission also emits nonblocking quality flags for newly introduced internal-run
 Evidence without a producing Experiment, isolated operational nodes (Experiment,
-Evidence, Decision, Blocker), and identical normalized titles on same-type nodes.
+Evidence, Decision, Blocker), identical normalized titles on same-type nodes, and
+three missing links: a Hypothesis no ResearchQuestion connects to with
+`has_hypothesis`, produced Evidence with no edge back to a Hypothesis its
+Experiment tests, and produced Evidence that bears on nothing else. An agent's
+validator returns these flags on exit 0.
 Checks run once in the admission transition manager, after all source Patches
 and generated effects. They use the complete candidate graph and compare with
 the initial graph rather than repeating existing issues. Losing a final relevant
 connection can introduce an issue too. ResearchQuestions and Hypotheses are not
-subject to the isolation warning. Advice neither proves scientific equivalence
+subject to the isolation warning; a Hypothesis gets the missing-question warning instead. Advice neither proves scientific equivalence
 nor merges nodes; replay does not re-run these authoring checks.
 The non-canonical Sync preview publishes the same final admission messages as
 Sync would commit, while leaving canonical history and materialized files unchanged.

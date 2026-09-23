@@ -2,7 +2,7 @@
 id: graph-audit
 kind: skill
 label: Graph audit
-version: 3.3.0
+version: 3.4.0
 description: Audit a research graph when asked for a read-only structural review of claims, relations, node identity, lifecycle consistency, or rendered summaries; report defects without editing canonical state.
 dependencies:
 ---
@@ -31,6 +31,13 @@ implicit weight.
 only answers its ResearchQuestion yes or no, or whose predictions restate the statement. Flag an
 Experiment that `tests` a Hypothesis without `expected_outcomes` written before its results, and a
 design that measures a stand-in for the claim's quantity without listing it in `proxies`.
+
+**Broken structures.** For each node, read what it is trying to be and check that its connections
+deliver it: a Hypothesis serves a question, Evidence from an Experiment bears back on what that
+Experiment tested, a Decision belongs to a question or governs an Experiment, and a Blocker stops
+something. Check each structure in [common structures](references/structures.md) that the graph
+uses, and report its listed failures. Treat RCP's connection warnings in `graph.json`'s
+`validation_messages` as leads, not verdicts.
 
 **Relations hiding their reasoning.** Require an explanation of why each relation holds.
 - An Experiment `tests` a Hypothesis it can discriminate and `produces` the Evidence it generated.
