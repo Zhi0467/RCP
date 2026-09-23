@@ -174,11 +174,13 @@ test("a team page reconnects its own tunnel with backoff but never accepts a cha
   const originalWindow = globalThis.window;
   const originalWarn = console.warn;
   let served = identity;
-  let reconnectFailures = 1;
-  const commands = [];
+  let tunnelUp = true;
+  let reconnectFailures = 0;
+  let nativeRefusal = null;
   const waits = [];
-  globalThis.fetch = async () =>
-    new Response(
+  globalThis.fetch = async () => {
+    if (!tunnelUp) throw new TypeError("Load failed");
+    return new Response(
       JSON.stringify({
         status: "ok",
         ...served,
@@ -188,12 +190,15 @@ test("a team page reconnects its own tunnel with backoff but never accepts a cha
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
+  };
   const desktopWindow = new EventTarget();
   desktopWindow.__TAURI_INTERNALS__ = {
     invoke: async (command) => {
-      commands.push(command);
-      if (command === "desktop_reconnect_backend" && reconnectFailures-- > 0) {
-        throw new Error("the SSH tunnel ended before its local HTTPS proxy started");
+      if (command === "desktop_reconnect_backend") {
+        if (reconnectFailures-- > 0)
+          throw new Error("the SSH tunnel ended before its local HTTPS proxy started");
+        tunnelUp = true;
+        if (nativeRefusal) throw new Error(nativeRefusal);
       }
       return {
         desktop: true,
@@ -207,21 +212,26 @@ test("a team page reconnects its own tunnel with backoff but never accepts a cha
   console.warn = () => {};
   const results = [];
   desktopWindow.addEventListener("rcp:backend-identity", (event) => results.push(event.detail));
+  const recover = () => recoverTeamTransport(async (ms) => void waits.push(ms));
   try {
     assert.equal((await establishBackendIdentity()).ok, true);
-    results.length = 0;
-    commands.length = 0;
 
-    await recoverTeamTransport(async (ms) => void waits.push(ms));
-    assert.deepEqual(waits, [2000]);
-    assert.equal(commands.filter((command) => command === "desktop_reconnect_backend").length, 2);
+    tunnelUp = false;
+    reconnectFailures = 2;
+    await recover();
+    assert.deepEqual(waits, [2000, 4000]);
     assert.equal(results.at(-1).ok, true);
 
     served = { ...identity, instance_id: "instance-b" };
-    await recoverTeamTransport(async (ms) => void waits.push(ms));
-    assert.deepEqual(waits, [2000], "a changed backend ends recovery instead of retrying");
+    await recover();
+    assert.deepEqual(waits, [2000, 4000], "a changed backend ends recovery instead of retrying");
     assert.equal(results.at(-1).ok, false);
     assert.match(results.at(-1).message, /instance instance-a became instance-b/);
+
+    nativeRefusal = "the team server belongs to a different space";
+    await recover();
+    assert.deepEqual(waits, [2000, 4000], "a native refusal of an answering backend ends recovery");
+    assert.equal(results.at(-1).ok, false);
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;

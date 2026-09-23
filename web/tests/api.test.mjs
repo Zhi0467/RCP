@@ -182,9 +182,20 @@ test("a read that loses its transport reports it; an abort or a parse error does
       );
     await assert.rejects(api("/api/projects/demo/episodes"), TypeError);
     assert.equal(failures, 2, "a body cut off mid-read is a transport failure");
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new TypeError("Load failed"));
+          },
+        }),
+        { status: 500 },
+      );
+    await assert.rejects(api("/api/projects/demo/episodes"), ApiError);
+    assert.equal(failures, 3, "so is a cut-off error body");
     globalThis.fetch = async () => new Response("not json", { status: 200 });
     await assert.rejects(api("/api/projects/demo/episodes"), SyntaxError);
-    assert.equal(failures, 2, "a parse error is not");
+    assert.equal(failures, 3, "a parse error is not");
   } finally {
     registerTransportFailureHandler(null);
     globalThis.fetch = originalFetch;

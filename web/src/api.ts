@@ -84,7 +84,7 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    const body = await readErrorBody(response);
     if (
       mutation &&
       options.retryIdentity !== false &&
@@ -101,7 +101,7 @@ export async function api<T>(
         throw error;
       }
       if (response.ok) return readJson<T>(response);
-      const retryBody = await response.json().catch(() => ({ detail: response.statusText }));
+      const retryBody = await readErrorBody(response);
       await notifyMutationFailure(path);
       throw apiError(response.status, retryBody);
     }
@@ -119,6 +119,10 @@ async function readJson<T>(response: Response): Promise<T> {
     if (error instanceof TypeError) notifyTransportFailure(error);
     throw error;
   }
+}
+
+function readErrorBody(response: Response): Promise<unknown> {
+  return readJson(response).catch(() => ({ detail: response.statusText }));
 }
 
 export function isMutationRequest(init?: RequestInit): boolean {

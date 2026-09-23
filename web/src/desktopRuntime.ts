@@ -246,6 +246,17 @@ async function reconnectTeamUntilVerified(wait: (ms: number) => Promise<void>): 
       // A result with health is final either way: verified, or a changed backend.
       if ((await reverifyBackendIdentity(TEAM_TRANSPORT_RECOVERED)).health) return;
     } catch (error) {
+      // Native Reconnect also refuses a server from another space. If a backend
+      // answers anyway, let the identity check report it instead of retrying.
+      if (
+        await fetchHealth().then(
+          () => true,
+          () => false,
+        )
+      ) {
+        await reverifyBackendIdentity(TEAM_TRANSPORT_RECOVERED);
+        return;
+      }
       console.warn(
         `Team server is unreachable; retrying in ${delay / 1000}s: ${error instanceof Error ? error.message : String(error)}`,
       );
