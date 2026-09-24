@@ -260,6 +260,14 @@ rehearsal failure additionally names the exact retained result and capture,
 prints a bounded inspection command, and names only the exact paths eligible for
 cleanup before retry. The operator never reconstructs a command from prose.
 
+After authenticating the private socket peer and response request, instance and
+protocol identity, the supervisor preserves a valid refusal's bounded code and
+redacted message in its operation record and CLI events. A refusal does not need
+success-only result fields. Malformed or unauthenticated responses cannot supply
+operator text. Fenced probe readiness failures retain the last bounded, redacted
+error and the private probe log reference. A recovery failure reports the original
+deployment cause alongside the recovery cause.
+
 Privilege is fixed per command rather than inferred from what happens to work on
 one machine. `install`, `backup configure`, `restore`, and `update` enter through
 a narrow root coordinator because they change accounts, `/etc`, systemd, or
@@ -414,7 +422,20 @@ too, because live verification reads that cache and it must equal a fresh
 replay. A cache whose revision trails the proof, as a failed refresh leaves it,
 is rebuilt from canonical history instead. The retained baseline graph shares
 the display snapshot's size bound. A release that adds a graph field with a
-default must extend that list, or the update refuses.
+default must extend that list, or the update refuses. One recursive test walks
+the actual graph model variants and nested records against explicit serialized
+examples, including populated optional, list and map fields. It checks missing
+default restoration, upgrade idempotence, explicit values and stored edge layers;
+new fields or reachable types without an example fail the invariant.
+
+The old-data upgrade CI gate checks every published, non-draft, non-prerelease
+`v*` GitHub release, with separate current-cache and stale-cache cases for each
+tag. CI and test collection share `gh release list` discovery, increasing its
+request limit until the catalog is exhausted. Missing tags or failed discovery
+fail the gate rather than skip sources. Frozen schema-era fixtures and the exact
+candidate-base check remain. No supported source floor has been declared; that
+decision remains open. This gate builds historical source and does not qualify
+installed promoted artifacts, systemd transactions or real SSH recovery.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 It uses bounded traversal, regular files, safe ownership and permissions,
@@ -1112,6 +1133,16 @@ capture revalidates present bytes through that same owner and the archive binds
 its canonical owner manifest, content-addressed files, byte counts, and digests.
 An orphan, incomplete, rewritten, symlinked, special, or otherwise unsafe owner
 makes capture fail visibly; backup never substitutes a live provider home.
+An uncaptured project retains its safe failure category and relative failing
+component, including local state, checkout, imported-history and SSH distinctions.
+Raw exception text and absolute locators are not capture diagnostics. The backup
+CLI result and doctor `problems` include these per-project causes; the supervisor
+retains them when a protected backup refuses deployment, including nonzero CLI
+results. Existing strict receipt formats are unchanged. An optional diagnostic
+sidecar, bound to the backup operation ID, preserves causes for later inspection
+without breaking older readers. Sources without that sidecar retain their older
+diagnostic limits; the supervisor names the retained receipt instead of inventing
+a cause.
 
 For each protected team project, the manifest also binds a nonsecret recovery
 descriptor from the same captured provisioning state: repository sources and

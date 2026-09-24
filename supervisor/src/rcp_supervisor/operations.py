@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
 from typing import Protocol
 
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import SupervisorError, safe_diagnostic
 from rcp_supervisor.launch import validate_selected_receipt
 from rcp_supervisor.limits import MAX_OPERATION_BYTES
 
@@ -441,9 +441,16 @@ class Coordinator:
                 self.store.write(operation)
                 if operation["phase"] in ("candidate_chosen", "previous_chosen"):
                     raise SupervisorError(
-                        "The selected release failed to start; recovery must preserve its data."
+                        "The selected release failed to start; recovery must preserve its data: "
+                        + safe_diagnostic(str(exc))
                     ) from exc
-                recovered = self._recover(operation, startup=False)
+                try:
+                    recovered = self._recover(operation, startup=False)
+                except Exception as recovery_error:
+                    raise SupervisorError(
+                        f"Deployment failed: {safe_diagnostic(str(exc))}; "
+                        f"recovery also failed: {safe_diagnostic(str(recovery_error))}"
+                    ) from recovery_error
                 if operation["kind"] == "restore":
                     from rcp_supervisor.restore import RestoreOperatorAction
 

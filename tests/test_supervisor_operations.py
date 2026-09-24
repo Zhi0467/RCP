@@ -223,8 +223,10 @@ def test_failed_health_reports_both_failure_and_successful_rollback(tmp_path: Pa
 def test_failed_previous_probe_keeps_recovery_pending_then_retries(tmp_path: Path):
     coordinator, runtime, previous, target = _case(tmp_path / "case")
     runtime.fail_target = runtime.fail_previous = True
-    with pytest.raises(SupervisorError, match="previous release"):
+    with pytest.raises(SupervisorError, match="previous release") as failure:
         coordinator.deploy(previous, target)
+    assert "candidate health" in str(failure.value)
+    assert "candidate health" in coordinator.store.active()["error"]
     assert coordinator.store.active()["phase"] == "previous_pointer_restored"
     assert runtime.starts == 0
     runtime.fail_previous = False
