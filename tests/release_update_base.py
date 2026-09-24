@@ -14,9 +14,12 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import rcp.storage.models as storage_models  # noqa: E402
+from rcp.api import create_app  # noqa: E402
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator  # noqa: E402
 from rcp.server_ops.deployment import PrepareRequest, prepare  # noqa: E402
 from rcp.server_runtime import ServerMetadata  # noqa: E402
@@ -30,7 +33,14 @@ def main(root: Path) -> None:
         service_account=account, projects_root=root / "projects"
     )
     data = root / "data"
-    prepare_data(data, root / "projects", account=account)
+    receipt = prepare_data(data, root / "projects", account=account)
+    # A running server holds each project's display cache; the switched release reads it.
+    app = create_app(
+        data_dir=data, trusted_principal_resolver=lambda _request, _store: receipt["member_id"]
+    )
+    response = TestClient(app).get(f"/api/projects/{receipt['project_id']}")
+    if response.status_code != 200 or not (data / "project-snapshots").is_dir():
+        raise RuntimeError(f"the display cache was not written: {response.status_code}")
     (data / "run-stage").chmod(0o700)
     with tempfile.TemporaryDirectory(prefix="rcp-maint-", dir="/tmp") as sockets:
         metadata = ServerMetadata.create(

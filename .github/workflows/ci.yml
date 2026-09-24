@@ -79,11 +79,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # A release update is checked from the two newest promoted releases, the
-      # versions a team server may still run.
-      - name: Fetch the two newest release tags
+      # A release update is checked from the five newest promoted releases, the
+      # versions a team server may still run (RECENT_RELEASE_COUNT).
+      - name: Fetch the newest release tags
         run: |
-          for tag in $(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -2); do
+          for tag in $(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -5); do
             git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
           done
           git tag --list 'v*'

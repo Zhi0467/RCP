@@ -138,7 +138,10 @@ def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     return _build_checkout(base_ref, work_root, web=True), base_commit
 
 
-def latest_release_tags(count: int = 2) -> list[str]:
+RECENT_RELEASE_COUNT = 5
+
+
+def latest_release_tags(count: int = RECENT_RELEASE_COUNT) -> list[str]:
     """The newest promoted releases, the versions a team server may still run."""
     output = _capture(["git", "tag", "--list", "v*", "--sort=-v:refname"], cwd=REPOSITORY_ROOT)
     return output.split()[:count]
@@ -242,6 +245,7 @@ def _run(argv: list[str], *, cwd: Path) -> None:
 
 __all__ = [
     "EXACT_BASE_ENV",
+    "RECENT_RELEASE_COUNT",
     "EXPECTED_BOUNDARIES",
     "build_exact_base_checkout",
     "build_exact_base_fixture",

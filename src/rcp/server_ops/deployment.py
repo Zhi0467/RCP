@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from rcp.attachments import checkpoint_attachment_sets
+from rcp.core.models import upgrade_graph_projection
 from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops._local_primitives import canonical_json_line, fsync_file_tree
 from rcp.server_ops.application_snapshot import (
@@ -446,29 +447,12 @@ def _upgrade_previous_projection(
             if _canonical_sha256(graph) != expected.projection_sha256:
                 raise MaintenanceRefused("The previous graph projection digest changed.")
             if isinstance(graph, dict):
-                _apply_projection_upgrades(graph)
+                upgrade_graph_projection(graph)
                 expected = expected.model_copy(
                     update={"projection_sha256": _canonical_sha256(graph)}
                 )
         projects.append(expected)
     return proof.read_model.model_copy(update={"projects": tuple(projects)})
-
-
-def _apply_projection_upgrades(graph: dict[str, object]) -> None:
-    graph.pop("coverage", None)
-    # Edge `expectation` and Experiment `proxies`/`limitations` arrived with
-    # empty defaults; an older replay omits them.
-    edges = graph.get("edges")
-    if isinstance(edges, dict):
-        for edge in edges.values():
-            if isinstance(edge, dict):
-                edge.setdefault("expectation", None)
-    nodes = graph.get("nodes")
-    if isinstance(nodes, dict):
-        for node in nodes.values():
-            if isinstance(node, dict) and node.get("type") == "experiment":
-                node.setdefault("proxies", [])
-                node.setdefault("limitations", [])
 
 
 def _read_model_digest(model: CandidateRehearsalResult) -> str:
