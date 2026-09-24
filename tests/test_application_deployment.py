@@ -238,7 +238,7 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
     for node in experiments:
         node.pop("proxies")
         node.pop("limitations")
-    assert experiments
+    assert graph["edges"] and experiments
     if failure == "changed_graph":
         graph["nodes"] = {}
     graph_path.write_text(json.dumps(graph))
@@ -277,6 +277,8 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         assert checked["status"] == "verified"
         current = ApplicationProof.model_validate_json(Path(checked["proof_path"]).read_bytes())
         graph.pop("coverage")
+        for edge in graph["edges"].values():
+            edge["expectation"] = None
         for node in experiments:
             node.update(proxies=[], limitations=[])
         assert current.read_model.projects[0].projection_sha256 == _canonical_sha256(graph)

@@ -133,7 +133,7 @@ def exact_candidate_base() -> tuple[str, str]:
     return base_ref, _capture(["git", "rev-parse", base_ref], cwd=REPOSITORY_ROOT).strip()
 
 
-def build_exact_base_fixture(work_root: Path) -> tuple[Path, str]:
+def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     base_ref, base_commit = exact_candidate_base()
     work_root.mkdir(parents=True)
     archive = work_root / "base.tar"
@@ -147,7 +147,10 @@ def build_exact_base_fixture(work_root: Path) -> tuple[Path, str]:
     _run(["npm", "ci"], cwd=checkout / "web")
     _run(["npm", "run", "build"], cwd=checkout / "web")
     _run(["uv", "sync", "--project", str(checkout), "--frozen"], cwd=REPOSITORY_ROOT)
+    return checkout, base_commit
 
+
+def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) -> Path:
     fixture = work_root / "fixture"
     builder = REPOSITORY_ROOT / "tests" / "server_upgrade_fixture_builder.py"
     _run(
@@ -167,7 +170,17 @@ def build_exact_base_fixture(work_root: Path) -> tuple[Path, str]:
         ],
         cwd=work_root,
     )
-    return fixture, base_commit
+    return fixture
+
+
+def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]:
+    """Capture representative data and prepare its update with the checkout's code."""
+    script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
+    output = _capture(
+        ["uv", "run", "--project", str(checkout), "--frozen", "python", str(script), str(root)],
+        cwd=root.parent,
+    )
+    return json.loads(output.strip().splitlines()[-1])
 
 
 def exact_base_gate_enabled() -> bool:
@@ -200,11 +213,13 @@ def _run(argv: list[str], *, cwd: Path) -> None:
 __all__ = [
     "EXACT_BASE_ENV",
     "EXPECTED_BOUNDARIES",
+    "build_exact_base_checkout",
     "build_exact_base_fixture",
     "exact_base_gate_enabled",
     "exact_candidate_base",
     "fixture_bundle_digest",
     "immutable_fixture_directories",
+    "prepare_release_update_with",
     "verify_fixture_integrity",
     "verify_fixture_registry",
 ]

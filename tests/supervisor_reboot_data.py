@@ -220,9 +220,25 @@ def _prepare_data(
                             "type": "experiment",
                             "title": "Reboot recovery",
                             "objective": "Retain canonical history through deployment recovery.",
+                        },
+                        {
+                            "id": "hyp/recovery-keeps-history",
+                            "type": "hypothesis",
+                            "title": "Recovery keeps history",
+                            "statement": "Deployment recovery retains every canonical patch.",
+                        },
+                    ],
+                },
+                {
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "source": "exp/recovery",
+                            "target": "hyp/recovery-keeps-history",
+                            "relation": "tests",
                         }
                     ],
-                }
+                },
             ],
         )
     )

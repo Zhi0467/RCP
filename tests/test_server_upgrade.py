@@ -2,25 +2,31 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import os
+import pwd
 import re
 import shutil
 import sqlite3
 from contextlib import chdir
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import rcp.storage.base as storage_base_module
+import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import (
+    build_exact_base_checkout,
     build_exact_base_fixture,
     exact_base_gate_enabled,
     immutable_fixture_directories,
+    prepare_release_update_with,
     verify_fixture_integrity,
     verify_fixture_registry,
 )
@@ -137,13 +143,54 @@ def test_immutable_server_boundaries_converge_on_the_baseline_schema(
     assert _normalized_schema(upgraded) == _normalized_schema(baseline)
 
 
+@pytest.fixture(scope="module")
+def exact_base_checkout(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    return build_exact_base_checkout(tmp_path_factory.mktemp("exact-base") / "build")
+
+
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
-def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
-    fixture, base_commit = build_exact_base_fixture(tmp_path / "base-build")
+def test_exact_candidate_base_upgrades_and_starts(
+    exact_base_checkout: tuple[Path, str], tmp_path: Path
+) -> None:
+    checkout, base_commit = exact_base_checkout
+    fixture = build_exact_base_fixture(checkout, base_commit, tmp_path)
     metadata = verify_fixture_integrity(fixture)
 
     assert metadata["created_with_commit"] == base_commit
     _exercise_candidate_upgrade(fixture)
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_exact_candidate_base_release_update_validates(
+    exact_base_checkout: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release update prepared by the base must validate under the candidate.
+
+    This is the server's graph comparison across versions: a candidate that changes
+    a replayed graph without listing the change in the update check is refused.
+    """
+    from rcp.server_ops.deployment import ValidateRequest, validate
+
+    checkout, _base_commit = exact_base_checkout
+    root = tmp_path / "update"
+    prepared = prepare_release_update_with(checkout, root)
+    monkeypatch.setattr(
+        storage_models,
+        "DEFAULT_SERVER_LAYOUT",
+        SimpleNamespace(
+            service_account=pwd.getpwuid(os.geteuid()).pw_name,
+            projects_root=root / "projects",
+        ),
+    )
+    checked = validate(
+        ValidateRequest(
+            version=1,
+            proof_path=str(prepared["proof_path"]),
+            proof_sha256=str(prepared["proof_sha256"]),
+            output_dir=str(tmp_path / "validated"),
+        )
+    )
+    assert checked["status"] == "verified"
 
 
 def _exercise_candidate_upgrade(fixture: Path) -> None:
