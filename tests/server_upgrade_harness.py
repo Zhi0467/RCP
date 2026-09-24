@@ -195,7 +195,9 @@ def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) 
     return fixture
 
 
-def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]:
+def prepare_release_update_with(
+    checkout: Path, root: Path, *, stale_cache: bool
+) -> dict[str, object]:
     """Capture representative data and prepare its update with the checkout's code."""
     script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
     output = _capture(
@@ -210,6 +212,7 @@ def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]
             "-I",
             str(script),
             str(root),
+            *(["--stale-cache"] if stale_cache else []),
         ],
         cwd=root.parent,
     )

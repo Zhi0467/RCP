@@ -229,7 +229,8 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         "sessions_read": ["old-session"],
         "sessions_skipped": [],
         "earliest_timestamp": None,
-        "note": "Historical reading report.",
+        # A graph past the 4 MiB request bound is still an ordinary graph.
+        "note": "Historical reading report." + " " * (4 * 1024 * 1024),
     }
     # It also omitted fields later added with empty defaults.
     for edge in graph["edges"].values():

@@ -162,14 +162,16 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
     range(RECENT_RELEASE_COUNT),
     ids=[f"release-{index}" for index in range(RECENT_RELEASE_COUNT)],
 )
+@pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
 def test_release_update_from_a_recent_release_validates(
-    release_index: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    release_index: int, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A release update prepared by a recent promoted release must pass here.
 
     This is the server's update across versions, from the releases a team server may
     still run: the copied-state validation, then the switched release's live check
-    against the old release's data and display cache.
+    against the old release's data and display cache, current or left stale by a
+    failed refresh.
     """
     from rcp.server_ops.deployment import ValidateRequest, validate, verify_live_application
 
@@ -180,7 +182,7 @@ def test_release_update_from_a_recent_release_validates(
         pytest.skip(f"only {len(tags)} promoted releases exist")
     checkout = build_release_checkout(tags[release_index], tmp_path / "release")
     root = tmp_path / "update"
-    prepared = prepare_release_update_with(checkout, root)
+    prepared = prepare_release_update_with(checkout, root, stale_cache=stale_cache)
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
@@ -207,12 +209,15 @@ def test_release_update_from_a_recent_release_validates(
         store=live.state.background_tasks.store,
     )
     # On a real server the copied cache can be stale while the live one is current,
-    # so each check may read either; a served cache must equal a fresh replay.
+    # so each check may read either; a current cache must equal a fresh replay.
     for card in live.state.catalog.cards():
         status, cached = live.state.catalog.cached_snapshot_status(card["id"])
         _service, fresh = live.state.catalog.open_snapshot(card["id"])
         assert status == "valid" and cached is not None
-        assert cached["graph"] == fresh["graph"]
+        if stale_cache:
+            assert cached["graph"]["revision"] < fresh["graph"]["revision"]
+        else:
+            assert cached["graph"] == fresh["graph"]
 
 
 def _exercise_candidate_upgrade(fixture: Path) -> None:
