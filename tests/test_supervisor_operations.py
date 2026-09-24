@@ -10,7 +10,9 @@ from rcp_supervisor.checkpoint import (
     Checkpoint,
     SnapshotRoot,
     create_checkpoint,
+    create_stopped_snapshot,
     restore_checkpoint,
+    verify_checkpoint,
 )
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.operations import Coordinator, OperationBusy, OperationStore
@@ -53,6 +55,34 @@ class FakeRuntime:
 
     def stop_service(self):
         self.stops += 1
+
+    def snapshot(self, operation, capture):
+        checkpoint = create_stopped_snapshot(
+            self.root / "checkpoint", (self.data,), boundary_sha256="b" * 64
+        )
+        return {
+            "directory": str(checkpoint.directory),
+            "sha256": checkpoint.sha256,
+            "boundary_sha256": checkpoint.boundary_sha256,
+        }
+
+    def prepare_previous(self, operation, capture):
+        return {"path": str(self.root / "proof.json"), "sha256": "c" * 64}
+
+    def validate_target(self, operation):
+        return operation["previous_proof"]
+
+    def verify_roots(self, checkpoint):
+        verify_checkpoint(
+            Checkpoint(
+                Path(checkpoint["directory"]), checkpoint["sha256"], checkpoint["boundary_sha256"]
+            )
+        )
+
+    def verify_previous(self, operation):
+        assert (self.data / "value").read_text() == "old"
+        if self.fail_previous:
+            raise SupervisorError("previous release did not become healthy")
 
     def prepare(self, operation, capture):
         payload = self.root / "payload"
@@ -149,6 +179,9 @@ def test_success_chooses_target_before_admission(tmp_path: Path):
         "backup_ready",
         "entering_maintenance",
         "quiescent",
+        "snapshotting",
+        "snapshot_ready",
+        "baseline_ready",
         "checkpoint_ready",
         "activating",
         "pointer_switched",
@@ -401,3 +434,48 @@ def test_stale_previous_is_refused_before_journal_or_admission(tmp_path, monkeyp
         coordinator.deploy(previous, target)
     assert not list(coordinator.store.directory.glob("*.json"))
     assert runtime.stops == runtime.starts == 0
+
+
+@pytest.mark.parametrize("failure", ["prepare", "validate", "tree", "legacy"])
+def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tmp_path, failure):
+    coordinator, runtime, previous, target = _case(tmp_path / "case")
+
+    def prepare(operation, capture):
+        (runtime.data / "value").write_text("prepare changed live state")
+        if failure == "prepare":
+            raise SupervisorError("prepare failed")
+        return {"path": str(runtime.root / "proof.json"), "sha256": "c" * 64}
+
+    runtime.prepare_previous = prepare
+
+    def validate(operation):
+        raise SupervisorError("validate failed")
+
+    runtime.validate_target = validate
+    if failure in {"tree", "legacy"}:
+
+        def interrupted(phase):
+            if phase == "rollback_roots_complete":
+                raise PowerLoss
+
+        coordinator.boundary = interrupted
+        with pytest.raises(PowerLoss):
+            coordinator.deploy(previous, target)
+        coordinator.boundary = lambda _: None
+        if failure == "tree":
+            (runtime.data / "extra").write_text("not at stopped boundary")
+            expected = "rollback_tree_mismatch"
+        else:
+            operation = coordinator.store.active()
+            operation["version"] = 1
+            operation["target_proof"] = operation["previous_proof"]
+            coordinator.store.write(operation)
+            expected = "operation_recovery_required"
+        with pytest.raises(SupervisorError, match=expected):
+            coordinator.recover()
+        assert runtime.starts == 0
+    else:
+        with pytest.raises(SupervisorError, match="rolled_back"):
+            coordinator.deploy(previous, target)
+        assert runtime.starts == 1
+    assert (runtime.data / "value").read_text() == "old"

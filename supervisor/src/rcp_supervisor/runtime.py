@@ -543,6 +543,14 @@ class SystemRuntime:
             )
 
     def enter_maintenance(self, operation: dict) -> dict:
+        metadata = self.metadata()
+        previous = operation["previous"]
+        if (
+            metadata.get("running_commit") != previous["commit"]
+            or metadata.get("app_version") != previous["version_string"]
+        ):
+            raise SupervisorError("Running application identity differs from the selected release.")
+        self.control("probe")
         result = self.control(
             "maintenance_enter", record=operation, timeout=MAINTENANCE_TIMEOUT_SECONDS
         )
@@ -616,6 +624,145 @@ class SystemRuntime:
                 pass
             time.sleep(0.1)
         raise SupervisorError("The selected application did not start with its verified identity.")
+
+    @contextmanager
+    def stopped_data_lock(self):
+        """Check kernel ownership without rewriting the stopped lock-file bytes.
+
+        The outer deployment guard fences startup. Each use opens the current
+        pathname anew, including after restore replaced the previous inode.
+        """
+        path = self.paths.data_dir / "rcp.lock"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            yield
+            return
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.uid or info.st_nlink != 1:
+                raise SupervisorError("Stopped application lock has unsafe ownership or type.")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise SupervisorError("A writer still owns the stopped application lock.") from exc
+            if path.lstat() != info:
+                raise SupervisorError("Stopped application lock changed while acquiring it.")
+            yield
+        finally:
+            os.close(descriptor)
+
+    def snapshot(self, operation: dict, capture: dict) -> dict:
+        """The target describes roots; only the supervisor copies stopped bytes."""
+        with self.stopped_data_lock():
+            workspace = self.paths.checkpoints_root / operation["operation_id"]
+            inventory = self.application(
+                operation["target"],
+                "inventory",
+                {
+                    "version": 1,
+                    "data_dir": str(self.paths.data_dir),
+                    "output_dir": str(workspace / "inventory"),
+                    "sqlite_receipt_path": capture["receipt_path"],
+                    "sqlite_receipt_sha256": capture["receipt_sha256"],
+                },
+            )
+            if any(item["kind"] == "remote_research" for item in inventory["external_references"]):
+                raise SupervisorError(
+                    "legacy_remote_probation_unproven: old preparation cannot yet prove remote "
+                    "publication is confined to disposable state."
+                )
+            return self.filesystem(
+                "snapshot-roots",
+                {
+                    "directory": str(workspace / "checkpoint"),
+                    "roots": [root["live"] for root in inventory["roots"]],
+                    "boundary_sha256": operation["nonce"],
+                },
+            )
+
+    def prepare_previous(self, operation: dict, capture: dict) -> dict:
+        workspace = self.paths.checkpoints_root / operation["operation_id"]
+        prepared = self.application(
+            operation["previous"],
+            "prepare",
+            {
+                "version": 1,
+                "data_dir": str(self.paths.data_dir),
+                "output_dir": str(workspace / "prepared"),
+                "sqlite_receipt_path": capture["receipt_path"],
+                "sqlite_receipt_sha256": capture["receipt_sha256"],
+            },
+        )
+        self.filesystem(
+            "check-roots",
+            dict(operation["checkpoint"], roots=[root["live"] for root in prepared["roots"]]),
+        )
+        return {"path": prepared["proof_path"], "sha256": prepared["proof_sha256"]}
+
+    def validate_target(self, operation: dict) -> dict:
+        proof = operation["previous_proof"]
+        checked = self.application(
+            operation["target"],
+            "validate",
+            {
+                "version": 1,
+                "proof_path": proof["path"],
+                "proof_sha256": proof["sha256"],
+                "output_dir": str(
+                    self.paths.checkpoints_root / operation["operation_id"] / "validated"
+                ),
+            },
+        )
+        return {"path": checked["proof_path"], "sha256": checked["proof_sha256"]}
+
+    def verify_roots(self, checkpoint: dict) -> None:
+        with self.stopped_data_lock():
+            self.filesystem("verify", checkpoint)
+
+    def verify_previous(self, operation: dict) -> None:
+        previous = operation["previous"]
+        validate_selected_receipt(previous, releases_root=self.paths.releases_root)
+        version = (
+            self._service_output(
+                [self.python(previous), "-I", "-c", "import rcp; print(rcp.__version__)"],
+                release=previous,
+                timeout=APP_COMMAND_TIMEOUT_SECONDS,
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        if version != previous["version_string"]:
+            raise SupervisorError("Previous installed identity differs from its selected release.")
+        proof = operation["previous_proof"]
+        if proof is None:
+            self.notify("Structural rollback verified; preparation produced no semantic baseline.")
+            return
+        workspace = self.paths.checkpoints_root / operation["operation_id"]
+        # A retry gets a new disposable directory; retained failed rehearsals are
+        # diagnostic data and never become the source of a live replacement.
+        output = workspace / f"rollback-check-{uuid.uuid4().hex}"
+        copied = self.application(
+            operation["target"],
+            "rollback-copy",
+            {
+                "version": 1,
+                "data_dir": str(self.paths.data_dir),
+                "proof_path": proof["path"],
+                "proof_sha256": proof["sha256"],
+                "output_dir": str(output),
+            },
+        )
+        self.application(
+            operation["previous"],
+            "validate",
+            {
+                "version": 1,
+                "proof_path": copied["proof_path"],
+                "proof_sha256": copied["proof_sha256"],
+                "output_dir": str(output / "verified"),
+            },
+        )
 
     def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]:
         workspace = self.paths.checkpoints_root / operation["operation_id"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sys
 from dataclasses import asdict
@@ -11,9 +12,14 @@ from rcp_supervisor.checkpoint import (
     Checkpoint,
     SnapshotRoot,
     _directory,
+    check_checkpoint_roots,
     create_checkpoint,
     create_offline_snapshot,
+    create_stopped_snapshot,
+    quarantine_status,
+    relocate_quarantines,
     restore_checkpoint,
+    verify_checkpoint,
 )
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import MAX_CHECKPOINT_MANIFEST_BYTES
@@ -40,6 +46,42 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             result["directory"] = str(result["directory"])
+        elif (
+            arguments == ["snapshot-roots"]
+            and isinstance(request, dict)
+            and request.keys() == {"directory", "roots", "boundary_sha256"}
+        ):
+            result = asdict(
+                create_stopped_snapshot(
+                    Path(request["directory"]),
+                    tuple(Path(root) for root in request["roots"]),
+                    boundary_sha256=request["boundary_sha256"],
+                )
+            )
+            result["directory"] = str(result["directory"])
+        elif (
+            arguments
+            in (["verify"], ["check-roots"], ["relocate-quarantines"], ["quarantine-status"])
+            and isinstance(request, dict)
+            and request.keys()
+            == (
+                {"directory", "sha256", "boundary_sha256"}
+                | ({"roots"} if arguments == ["check-roots"] else set())
+            )
+        ):
+            checkpoint = Checkpoint(
+                Path(request["directory"]), request["sha256"], request["boundary_sha256"]
+            )
+            if arguments == ["check-roots"]:
+                check_checkpoint_roots(checkpoint, tuple(Path(root) for root in request["roots"]))
+                result = {"version": 1, "status": "verified"}
+            elif arguments == ["verify"]:
+                verify_checkpoint(checkpoint)
+                result = {"version": 1, "status": "verified"}
+            elif arguments == ["quarantine-status"]:
+                result = quarantine_status(checkpoint)
+            else:
+                result = relocate_quarantines(checkpoint)
         elif (
             arguments == ["prepare-deployment-lock"]
             and isinstance(request, dict)
@@ -117,7 +159,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result), flush=True)
         return 0
     except (SupervisorError, OSError, ValueError, TypeError, KeyError) as exc:
-        print(str(exc), file=sys.stderr)
+        if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
+            print(
+                "checkpoint_capacity: insufficient storage for filesystem operation.",
+                file=sys.stderr,
+            )
+        else:
+            print(str(exc), file=sys.stderr)
         return 1
 
 

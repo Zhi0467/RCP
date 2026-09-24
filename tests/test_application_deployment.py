@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pwd
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,19 +16,28 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
-from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
+from rcp_supervisor.checkpoint import create_stopped_snapshot, restore_checkpoint, verify_checkpoint
 
 import rcp.storage.models as storage_models
 from rcp.api import create_app
+from rcp.config import load_manifest
+from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history import HistoryManager
+from rcp.server_ops.application_snapshot import ApplicationSnapshotRefused
 from rcp.server_ops.application_validation import _canonical_sha256
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
+from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
 from rcp.server_ops.deployment import (
     ApplicationProof,
     PrepareRequest,
+    RollbackCopyRequest,
     ValidateRequest,
     _publish_proof,
+    inventory,
     prepare,
+    rollback_copy,
     validate,
 )
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
@@ -77,34 +88,120 @@ def captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path)
     return request, state, metadata
 
 
+def _tree_state(root: Path) -> dict:
+    entries = {}
+    for current, directories, files in os.walk(root, followlinks=False):
+        for path in [Path(current), *(Path(current) / name for name in directories + files)]:
+            info = path.lstat()
+            contents = (
+                os.readlink(path)
+                if stat.S_ISLNK(info.st_mode)
+                else hashlib.sha256(path.read_bytes()).hexdigest()
+                if stat.S_ISREG(info.st_mode)
+                else None
+            )
+            entries[str(path.relative_to(root))] = (
+                stat.S_IFMT(info.st_mode),
+                stat.S_IMODE(info.st_mode),
+                info.st_size if stat.S_ISREG(info.st_mode) else None,
+                contents,
+            )
+    return entries
+
+
+@pytest.mark.parametrize("failure", ["prepare", "verification"])
 def test_real_project_payload_restores_schema_graph_stage_and_attachment(
-    captured, tmp_path: Path
+    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    request, state, _metadata = captured
+    request, state, metadata = captured
+    data, research = Path(request.data_dir), Path(state["research"])
     # An agent run left links in its stage: one inside the stage, one to the host.
     stage = Path(state["stage"])
     (stage / "current").symlink_to("retained.txt")
     (stage / "python").symlink_to("/usr/bin/python3")
     (stage / "pytest-0").mkdir(mode=0o700)
     (stage / "pytest-current").symlink_to("pytest-0")  # pytest's directory link
-    # The canonical graph file names remain owned by the app; compare its whole
-    # prepared .research tree and the retained payload after exact replacement.
-    prepared = prepare(request)
-    assert {root["live"] for root in prepared["roots"]} == {request.data_dir, state["research"]}
-    data_payload = Path(prepared["roots"][0]["payload"])
-    assert (data_payload / "run-stage" / Path(state["stage"]).name / "retained.txt").read_text()
-    assert any((data_payload / "chat-attachments").rglob("notes.txt")) or any(
-        (data_payload / "chat-attachments").rglob("files/*")
+    for relative, content in {
+        "providers/claude/test-account/setup-token": "synthetic-token-do-not-publish",
+        "jobs/completed/receipt.json": '{"status":"completed"}',
+        f"run-stage/{stage.name}/unrecognized.future-file": "unknown retained bytes",
+    }.items():
+        path = data / relative
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(content)
+        path.chmod(0o600)
+    (data / "transfer-inbox").mkdir(mode=0o700, exist_ok=True)
+    (research / "cursors.json").write_text('{"source":"retained-watermark"}')
+    for name in ("facts", "paper"):
+        (research / name).mkdir(mode=0o700, exist_ok=True)
+        assert not list((research / name).iterdir())
+    history = HistoryManager(load_manifest(research / "manifest.toml"))
+    head = history.head_ref()
+    branch_id = str(uuid.uuid4())
+    history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=branch_id,
+            episode_id=branch_id,
+            project_id=state["project_id"],
+            base_head=head,
+            head=GraphHeadRef(
+                target=GraphTargetRef(kind="branch", branch_id=branch_id),
+                revision=head.revision,
+                transition_id=head.transition_id,
+            ),
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"], user_id=state["member_id"], display_name="Rollback test"
+            ),
+        )
     )
-    assert not (data_payload / "rcp.lock").exists()
-    checkpoint = create_checkpoint(
+    for name in ("patches", "merges"):
+        assert not list((research / "branches" / branch_id / name).iterdir())
+    capture = BackupCaptureCoordinator(
+        AppStore(data / "rcp.sqlite3"), data, metadata
+    ).capture_sqlite()
+    assert capture.receipt.status == "complete"
+    request = request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
+    before = {root: _tree_state(root) for root in (data, research)}
+    # Candidate root discovery must work before any old-code prepare and without
+    # initializing even a read-only AppStore against the stopped installation.
+    with monkeypatch.context() as guard:
+        guard.setattr(AppStore, "__init__", lambda *args, **kwargs: pytest.fail("live AppStore"))
+        discovered = inventory(
+            request.model_copy(update={"output_dir": str(tmp_path / "inventory")})
+        )
+    assert [item["live"] for item in discovered["roots"]] == [str(data), str(research)]
+    assert {root: _tree_state(root) for root in before} == before
+    checkpoint = create_stopped_snapshot(
         tmp_path / "checkpoint",
-        tuple(
-            SnapshotRoot(Path(root["live"]), Path(root["payload"])) for root in prepared["roots"]
-        ),
-        boundary_sha256=prepared["boundary_sha256"],
+        tuple(before),
+        boundary_sha256="d" * 64,
     )
-    data = Path(request.data_dir)
+    prepared = None
+    if failure == "prepare":
+
+        def failed_prepare(*args, **kwargs):
+            (stage / "retained.txt").write_text("partially settled preparation")
+            raise MaintenanceRefused("Injected old prepare failure")
+
+        with monkeypatch.context() as fault:
+            fault.setattr(
+                "rcp.server_ops.deployment._settle_accepting_artifact_replacements", failed_prepare
+            )
+            with pytest.raises(MaintenanceRefused):
+                prepare(request)
+    else:
+        prepared = prepare(request)
+        assert {root["live"] for root in prepared["roots"]} == set(map(str, before))
+        data_payload = Path(prepared["roots"][0]["payload"])
+        assert not (data_payload / "providers").exists()
+        assert not (data_payload / "jobs").exists()
+        # Corrupting the old selected payload cannot affect the rollback source.
+        shutil.rmtree(data_payload)
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
         connection.execute("CREATE TABLE candidate_only (value TEXT)")
     (Path(state["research"]) / "candidate-only").write_text("discarded candidate state")
@@ -113,11 +210,33 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     (stage / "python").unlink()
     (stage / "python").symlink_to("/usr/bin/python3.99")
     restore_checkpoint(checkpoint)
+    verify_checkpoint(checkpoint)
+    assert {root: _tree_state(root) for root in before} == before
     assert not (Path(state["research"]) / "candidate-only").exists()
     assert (Path(state["stage"]) / "retained.txt").read_text() != "candidate altered"
     assert os.readlink(stage / "current") == "retained.txt"
     assert os.readlink(stage / "python") == "/usr/bin/python3"
     assert os.readlink(stage / "pytest-current") == "pytest-0"
+    if prepared is not None:
+        restored_proof = rollback_copy(
+            RollbackCopyRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                data_dir=str(data),
+                output_dir=str(tmp_path / "rollback-copy"),
+            )
+        )
+        checked = validate(
+            ValidateRequest(
+                version=1,
+                proof_path=restored_proof["proof_path"],
+                proof_sha256=restored_proof["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )
+        assert checked["status"] == "verified"
+        assert {root: _tree_state(root) for root in before} == before
     restored = AppStore(data / "rcp.sqlite3")
     assert restored.authenticate_team_member_token(state["token"]).user_id == state["member_id"]
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
@@ -127,15 +246,12 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
             ).fetchone()
             is None
         )
-    checked = validate(
-        ValidateRequest(
-            version=1,
-            proof_path=prepared["proof_path"],
-            proof_sha256=prepared["proof_sha256"],
-            output_dir=str(tmp_path / "validated"),
-        )
+    fresh = BackupCaptureCoordinator(restored, data, metadata).capture_sqlite()
+    backup = BackupProjectFileCaptureCoordinator(data).capture(
+        fresh.receipt_path, expected_sha256=fresh.receipt_sha256
     )
-    assert checked["status"] == "verified"
+    assert backup.receipt.status == "complete"
+    assert sum(project.status == "uncaptured" for project in backup.receipt.projects) == 0
 
 
 def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
@@ -184,6 +300,47 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         AppStore(Path(request.data_dir) / "rcp.sqlite3").storage_schema_ledger_head()
         == state["ledger_head"]
     )
+
+
+@pytest.mark.parametrize("registry", ["legacy", "missing_project", "changed_location"])
+def test_stopped_inventory_reads_only_copied_legacy_registry(
+    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry: str
+) -> None:
+    request, state, _metadata = captured
+    data = Path(request.data_dir)
+    # The inventory must not need any of the current AppStore tables, schema
+    # ledger, or retirement column merely to discover the replacement roots.
+    database = data / "rcp.sqlite3"
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT project_id, home_space_id, locator, state_location, state_remote FROM projects"
+        ).fetchone()
+    database.unlink()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE projects (project_id TEXT, home_space_id TEXT, "
+            "locator TEXT, state_location TEXT, state_remote INTEGER)"
+        )
+        if registry != "missing_project":
+            connection.execute("INSERT INTO projects VALUES (?, ?, ?, ?, ?)", row)
+        if registry == "changed_location":
+            connection.execute("UPDATE projects SET state_location = ?", (str(tmp_path / "other"),))
+    before = {root: _tree_state(root) for root in (data, Path(state["research"]))}
+    monkeypatch.setattr(AppStore, "__init__", lambda *args, **kwargs: pytest.fail("AppStore init"))
+    monkeypatch.setattr(
+        AppStore,
+        "open_read_only_snapshot",
+        lambda *args, **kwargs: pytest.fail("AppStore snapshot"),
+    )
+    if registry == "legacy":
+        discovered = inventory(request)
+        assert {item["live"] for item in discovered["roots"]} == set(map(str, before))
+        assert discovered["external_references"] == []
+        assert [item["project_id"] for item in discovered["projects"]] == [state["project_id"]]
+    else:
+        with pytest.raises(ApplicationSnapshotRefused):
+            inventory(request)
+    assert {root: _tree_state(root) for root in before} == before
 
 
 def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path) -> None:
@@ -344,6 +501,8 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
         "version": 1,
         "maintenance_protocol": 10,
         "commands": [
+            "inventory",
+            "rollback-copy",
             "prepare",
             "validate",
             "inspect",

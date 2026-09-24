@@ -233,7 +233,19 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
     runtime.require_capability(previous)
     target = prepare_release(runtime, release)
     store = store_for(paths)
-    result = Coordinator(store, runtime).deploy(previous, target)
+    prior_operations = {record["operation_id"] for record, _ in store.records()}
+    try:
+        result = Coordinator(store, runtime).deploy(previous, target)
+    except SupervisorError as exc:
+        # Recovery is already terminal before retention can run. Cleanup failures
+        # remain diagnostics; the original update failure remains the outcome.
+        if any(
+            record["phase"] == "rolled_back" and record["operation_id"] not in prior_operations
+            for record, _ in store.records()
+        ):
+            fields = _retention_after_commit(runtime, store)
+            raise SupervisorError(f"{exc}; rollback retention: {fields}") from exc
+        raise
     fields = [
         {"name": "build", "value": target["build"]},
         {"name": "phase", "value": result["phase"]},

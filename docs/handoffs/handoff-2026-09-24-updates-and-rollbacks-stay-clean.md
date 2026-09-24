@@ -1,14 +1,19 @@
 # Release updates and rollbacks stay clean
 
-Date: 2026-09-24. Status: design only, based on `f1d9e12c` (v0.3.27).
-Implemented in that baseline: explicit projection upgrades for the new empty
-graph fields, old-shape display-cache decoding, reconstruction during live
-verification when cache revision differs, a 16 MiB baseline graph-read bound,
-and a recent-release validation gate with current/stale cache cases. These are
-verified by source and test inspection in this design run, not a new test run.
-Remaining: independent complete rollback capture, quiescence and probation
-repairs, branch/operational proofs, a principled source-release gate, operator
-diagnostics, and installed-artifact update/rollback qualification.
+Date: 2026-09-24. Status: slice 2 implemented; online maintenance entrance unchanged.
+Supervisor 0.1.6 captures every entry of each replacement root at the stopped
+boundary before old preparation, cross-checks application-owned root discovery,
+and proves the restored live tree before old startup. Recovery journals snapshot
+creation separately from preparation and verifies old semantics on a disposable
+copy. Journal-owned quarantines relocate only after rollback and complete
+post-rollback backup, then expire with their retained checkpoint; legacy
+quarantines remain available for inspection. Regression coverage includes
+credentials, jobs, watermarks, empty directories and interrupted restoration.
+The baseline already supplied explicit projection upgrades, old-shape cache
+decoding, reconstruction on revision mismatch and the larger graph-read bound.
+Remaining: slice 3 sign-in quiescence, probation and branch/operational proofs;
+the unresolved legacy entrance and source floor; operator diagnostics and
+installed-artifact qualification using an unmodified old wheel and old prepare.
 
 Settled requirements: preserve append-only history, restore every entry in a
 replaced root, preserve credentials and failed-run scratch, keep the supervisor
@@ -16,7 +21,8 @@ independent, introduce no configuration knobs, and retain all schema-era
 fixtures. Recommended ownership and compatibility tradeoffs are in the
 [proposed decision](../decisions/2026-09-24-update-rollback-preserves-stopped-trees.md).
 The bootstrap procedure and missing historical artifact inventory are review
-items, not silently accepted assumptions. Implementation has not started.
+items, not silently accepted assumptions. Slice 2 introduces no legacy online
+refusal and makes no claim that installed-machine qualification has passed.
 
 Closure: all five slices below are merged through normal PR review; required CI
 proves every supported release source, exact rollback and complete subsequent
@@ -57,7 +63,7 @@ below rather than carrying its claims forward unchanged.
 
 | Finding | Current evidence and qualification |
 | --- | --- |
-| Incomplete rollback is accepted as complete | `deployment.prepare` builds selected app-data files and `ApplicationSnapshotPolicy.copy_project_roots` copies a file-only backup inventory. `SystemRuntime.prepare` checkpoints those payloads. `checkpoint.restore_checkpoint` replaces whole roots and verifies against the same incomplete payload. Missing credentials, jobs, watermarks and empty directories are therefore invisible to its proof. |
+| Incomplete rollback was accepted as complete | Slice 2 now seals a supervisor-owned full stopped-tree snapshot before `deployment.prepare` builds its selected semantic payload. Restoration independently rescans every live root; credentials, jobs, watermarks and empty directories are part of that proof. |
 | Stale/old-shape cache and graph size | `upgrade_graph_projection` is used by deployment and the cache loader. `verify_live_application` reconstructs when revision differs. `_upgrade_previous_projection` now uses `PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES`. The earlier 4 MiB diagnosis is resolved; the current test includes a graph larger than 4 MiB. |
 | Reconstruction does not prove the served cache was repaired | Live verification uses the graph returned by `catalog.open_snapshot`. The recent-release test still expects a stale stored cache to remain stale afterward. It proves the verifier can reconstruct, not that the next served snapshot is current. |
 | Quiescence is incomplete | `MaintenanceCoordinator.enter` drains admission, `background.runtime_is_idle`, and runtime pollers. `ProviderSignInRunner.start_sign_in` creates a daemon thread outside that idle set. It can wait for the credential gate before persisting the in-progress marker. SQLite alone cannot prove no pending sign-in. Active transfer uploads already refuse maintenance. |
@@ -67,12 +73,12 @@ below rather than carrying its claims forward unchanged.
 | Diagnostics disappear | `SystemRuntime.control` collapses authenticated `ok=false` to a generic refusal. `backup_project_files._capture_or_preserve_failure` retains some inventory/remote reasons but replaces most local exceptions with a generic capture failure. Probe readiness retries discard the last error and log path. |
 | Installed-machine coverage is separate and incomplete | The recent-release harness builds old source with development dependencies and placeholder Web assets, not promoted wheels. Current Linux VM qualification is manually dispatched and uses synthetic bundles. Wrapper/identity/backup/stop/reboot checks elsewhere do not make this a required promoted-artifact transaction gate. |
 
-Current order is install target, protected backup, maintenance enter/capture,
-service stop, old-release prepare, candidate copied validation, checkpoint,
-pointer switch, fenced probe, durable candidate choice, ordinary startup.
-Preparation can settle artifact replacements before the current checkpoint.
-Recovery's early phases assume those steps have not changed live data. The new
-checkpoint must precede them, with corresponding recovery phases.
+Slice 2's order is install target, protected backup, maintenance enter/capture,
+service stop, read-only root discovery and sealed stopped-tree checkpoint,
+old-release prepare, candidate copied validation, pointer switch, fenced probe,
+durable candidate choice, ordinary startup. Preparation can settle artifact
+replacements only after the full snapshot exists. Remaining recommendations
+below retain the unresolved entrance and installed qualification decisions.
 
 ## Exact rollback contract and ownership
 
@@ -81,7 +87,8 @@ before old preparation or candidate code may mutate live state. Let R be the
 restored boundary before old ordinary startup. For every replacement root,
 `inventory(R) == inventory(B)`. Do not compare with prepared payload inventory.
 Work completed while draining belongs to B; this does not rewind work accepted
-before maintenance. If a source cannot prove that boundary, refuse it.
+before maintenance. Stronger admission proof remains part of the unresolved
+legacy entrance and slice 3; slice 2 preserves today's online entrance.
 
 The application owns root discovery from the captured project registry and
 manifest configuration. Add a small read-only inventory operation in
@@ -421,12 +428,11 @@ Drive one disposable backup refusal and one maintenance refusal through the CLI.
 
 Owners: supervisor checkpoint/fs worker/runtime/operations/retention; application
 read-only root inventory; existing deployment and reboot corpus helpers.
-Implement the B/R proof, capture-before-prepare phases, old-copy verification,
-and journal-owned quarantine cleanup. Keep protected restore/adoption behavior
-explicitly separate where their authority differs; shared primitive changes
-must retain their existing tests. Bump supervisor version. Resolve the proposed
-legacy stopped-source entrance before enabling it; no false online capability.
-Until qualified, legacy sources receive the explicit bootstrap refusal.
+Implemented: the B/R proof, capture-before-prepare phases, old-copy verification,
+journal-owned quarantine cleanup and supervisor version bump. Protected
+restore/adoption retain their distinct authority. The online maintenance
+entrance remains unchanged; the proposed legacy stopped-source entrance and
+bootstrap refusal await a human decision and are not enabled by this slice.
 
 Checks: `uv run pytest -n0 tests/test_supervisor_checkpoint.py tests/test_supervisor_operations.py tests/test_application_deployment.py tests/test_supervisor_retention.py tests/test_supervisor_restore.py tests/test_supervisor_migration.py`.
 Extend the existing real payload round-trip with a full tree oracle taken before

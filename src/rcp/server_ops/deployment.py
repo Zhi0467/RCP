@@ -26,15 +26,20 @@ from rcp.server_ops._local_primitives import canonical_json_line, fsync_file_tre
 from rcp.server_ops.application_snapshot import (
     ApplicationSnapshotPolicy,
     _copy_declared_file,
+    _copy_stable_file,
+    _project_restore_location,
     _set_private_directory_modes,
     _settle_accepting_artifact_replacements,
     _snapshot_tree,
+    copy_stopped_database,
+    stopped_root_inventory,
 )
 from rcp.server_ops.application_validation import (
     CandidateProjectVerification,
     CandidateRehearsalResult,
     StartupRecoveryReadModel,
     _canonical_sha256,
+    _write_private_bytes,
     _write_private_json,
     build_rehearsal_overlay,
     run_candidate_child,
@@ -98,6 +103,15 @@ class ValidateRequest(_Model):
     @classmethod
     def digest(cls, value: str) -> str:
         return _digest(value)
+
+
+class RollbackCopyRequest(ValidateRequest):
+    data_dir: str
+
+    @field_validator("data_dir")
+    @classmethod
+    def data_path(cls, value: str) -> str:
+        return _absolute(value)
 
 
 class ApplicationProof(_Model):
@@ -383,6 +397,38 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         }
 
 
+def inventory(request: PrepareRequest) -> dict[str, object]:
+    """Discover replacement roots before old preparation can change any live entry."""
+    data, output = Path(request.data_dir), Path(request.output_dir)
+    _private_ancestors(data)
+    if output == data or output.is_relative_to(data) or data.is_relative_to(output):
+        raise MaintenanceRefused("Inventory storage overlaps application state.")
+    receipt = read_backup_sqlite_capture_receipt(
+        Path(request.sqlite_receipt_path), expected_sha256=request.sqlite_receipt_sha256
+    )
+    if Path(receipt.app_data_plan.data_dir) != data:
+        raise MaintenanceRefused("Inventory capture belongs to different application data.")
+    # Check the captured local placements before creating the disposable copy;
+    # the stopped registry and manifests independently cross-check them below.
+    for project in receipt.projects:
+        if project.recovery is None:
+            raise MaintenanceRefused("Inventory capture has an unresolved project.")
+        _, live = _project_restore_location(project)
+        if live is not None and (
+            output == live or output.is_relative_to(live) or live.is_relative_to(output)
+        ):
+            raise MaintenanceRefused("Inventory storage overlaps a captured project root.")
+    _new_output(output)
+    database = copy_stopped_database(data, output / "database")
+    result = stopped_root_inventory(data, database, receipt)
+    for root in result["roots"]:
+        live = Path(root["live"])
+        _private_ancestors(live)
+        if output == live or output.is_relative_to(live) or live.is_relative_to(output):
+            raise MaintenanceRefused("Inventory storage overlaps a discovered project root.")
+    return result
+
+
 def validate(request: ValidateRequest) -> dict[str, object]:
     proof = _read_proof(Path(request.proof_path), request.proof_sha256)
     output = Path(request.output_dir)
@@ -412,6 +458,84 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         "proof_sha256": digest,
         "verification_sha256": _read_model_digest(observed),
     }
+
+
+def rollback_copy(request: RollbackCopyRequest) -> dict[str, object]:
+    """Build old-code rehearsal inputs from restored bytes without opening live SQLite."""
+    from rcp.server_ops.backup_integrity import database_schema_sha256
+
+    proof = _read_proof(Path(request.proof_path), request.proof_sha256)
+    # Keep the old serialized schema: strict old readers must not receive
+    # defaults introduced by the candidate's current receipt models.
+    document = json.loads(_read(Path(request.proof_path), request.proof_sha256))
+    data, output = Path(request.data_dir), Path(request.output_dir)
+    if str(data) != proof.sqlite_receipt.app_data_plan.data_dir:
+        raise MaintenanceRefused("Rollback copy belongs to different application data.")
+    live_roots = [data]
+    for project in proof.project_receipt.projects:
+        _, live = _project_restore_location(project)
+        if live is not None:
+            live_roots.append(live)
+    for live in live_roots:
+        _private_ancestors(live)
+        if output == live or output.is_relative_to(live) or live.is_relative_to(output):
+            raise MaintenanceRefused("Rollback rehearsal storage overlaps restored state.")
+    _new_output(output)
+    raw_database = copy_stopped_database(data, output / "raw-database")
+    capture = output / f"backup-{proof.sqlite_receipt.capture_id}"
+    capture.mkdir(mode=0o700)
+    database = capture / "rcp.sqlite3"
+    with sqlite3.connect(raw_database) as source, sqlite3.connect(database) as destination:
+        source.backup(destination)
+        schema = database_schema_sha256(destination)
+    database.chmod(0o600)
+    with database.open("rb") as source:
+        sqlite_digest = hashlib.file_digest(source, "sha256").hexdigest()
+    sqlite = document["sqlite_receipt"]
+    sqlite.update(snapshot_path=str(database), database_schema_sha256=schema)
+    sqlite["sqlite_snapshot"].update(sha256=sqlite_digest, size_bytes=database.stat().st_size)
+    sqlite_receipt_digest = _canonical_sha256(sqlite)
+    for project, raw_project in zip(
+        proof.project_receipt.projects, document["project_receipt"]["projects"], strict=True
+    ):
+        _, research = _project_restore_location(project)
+        for entry, raw_entry in zip(project.files, raw_project["files"], strict=True):
+            relative = PurePosixPath(entry.source_relative_path)
+            if research is None:
+                source = Path(proof.capture_root).joinpath(*PurePosixPath(entry.archive_path).parts)
+            else:
+                if relative.parts[0] != ".research":
+                    raise MaintenanceRefused("Rollback project entry escapes its research root.")
+                source = research.joinpath(*relative.parts[1:])
+            copied = _copy_stable_file(
+                source,
+                capture.joinpath(*PurePosixPath(entry.archive_path).parts),
+                relative_path=entry.archive_path,
+                restore_mode=0o600,
+            )
+            raw_entry.update(sha256=copied.sha256, size_bytes=copied.size_bytes)
+    for imported in proof.project_receipt.imported_sources:
+        if imported.present:
+            relative = PurePosixPath("project-sources") / imported.project_id / "provider-history"
+            _snapshot_tree(
+                data.joinpath(*relative.parts),
+                capture.joinpath(*relative.parts),
+                relative_prefix=relative,
+            )
+    project_receipt = document["project_receipt"]
+    project_receipt.update(
+        sqlite_receipt_sha256=sqlite_receipt_digest, sqlite_snapshot_sha256=sqlite_digest
+    )
+    document.update(
+        capture_root=str(capture),
+        sqlite_receipt_sha256=sqlite_receipt_digest,
+        project_receipt_sha256=_canonical_sha256(project_receipt),
+    )
+    proof_path = output / "application-proof.json"
+    _write_private_bytes(proof_path, canonical_json_line(document))
+    digest = hashlib.sha256(_read(proof_path)).hexdigest()
+    fsync_file_tree(output)
+    return {"version": 1, "proof_path": str(proof_path), "proof_sha256": digest}
 
 
 def _upgrade_previous_projection(
@@ -744,6 +868,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "operation",
         choices=(
+            "inventory",
+            "rollback-copy",
             "prepare",
             "validate",
             "capabilities",
@@ -766,6 +892,8 @@ def main(argv: list[str] | None = None) -> int:
                     "version": 1,
                     "maintenance_protocol": 10,
                     "commands": [
+                        "inventory",
+                        "rollback-copy",
                         "prepare",
                         "validate",
                         "inspect",
@@ -787,7 +915,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if len(payload) > _MAX_REQUEST_BYTES:
             raise MaintenanceRefused("Application request exceeds its bound.")
-        if args.operation == "prepare":
+        if args.operation == "inventory":
+            result = inventory(PrepareRequest.model_validate_json(payload))
+        elif args.operation == "rollback-copy":
+            result = rollback_copy(RollbackCopyRequest.model_validate_json(payload))
+        elif args.operation == "prepare":
             result = prepare(PrepareRequest.model_validate_json(payload))
         elif args.operation == "restore-prepare":
             from rcp.server_ops.restore import RestorePrepareRequest, prepare_restore

@@ -29,7 +29,7 @@ def _write(path: Path, data: bytes, mode: int = 0o600) -> None:
     path.chmod(mode)
 
 
-def _case(tmp_path: Path):
+def _case(tmp_path: Path, *, stopped: bool = False):
     live_data = _directory(tmp_path / "server" / "data")
     live_research = _directory(tmp_path / "repository" / ".research")
     database = live_data / "rcp.sqlite3"
@@ -40,7 +40,19 @@ def _case(tmp_path: Path):
     _write(live_data / "run-stage" / "retained" / "runner", b"retained stage\n", 0o700)
     (live_data / "run-stage" / "retained" / "current").symlink_to("runner")
     _write(live_research / "patches" / "000001.json", b'{"revision":1}\n')
-    _directory(live_research / "facts")
+    _write(live_data / "providers" / "token", b"synthetic-provider-token")
+    _write(live_data / "jobs" / "local-job.json", b'{"state":"complete"}')
+    _write(live_research / "cursors.json", b'{"watermark":42}')
+    for relative in ("facts", "paper", "branches/topic/patches", "branches/topic/merges"):
+        _directory(live_research / relative)
+    if not stopped:
+        for root in (live_data, live_research):
+            for directory in root.rglob("*"):
+                if directory.is_dir():
+                    directory.chmod(0o700)
+    if stopped:
+        live_research.chmod(0o750)
+        (live_research / "paper").chmod(0o500)
     payload_data = tmp_path / "prepared" / "data"
     payload_research = tmp_path / "prepared" / "research"
     _directory(payload_data.parent)
@@ -51,9 +63,16 @@ def _case(tmp_path: Path):
         checkpoint.SnapshotRoot(live=live_data, payload=payload_data),
         checkpoint.SnapshotRoot(live=live_research, payload=payload_research),
     )
-    saved = checkpoint.create_checkpoint(
-        tmp_path / "checkpoints" / "operation", roots, boundary_sha256="b" * 64
-    )
+    if stopped:
+        saved = checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoints" / "operation",
+            tuple(root.live for root in roots),
+            boundary_sha256="b" * 64,
+        )
+    else:
+        saved = checkpoint.create_checkpoint(
+            tmp_path / "checkpoints" / "operation", roots, boundary_sha256="b" * 64
+        )
     return saved, roots
 
 
@@ -73,7 +92,7 @@ def _assert_restored(roots) -> None:
         live_paths = {path.relative_to(root.live) for path in root.live.rglob("*")}
         expected_paths = {path.relative_to(root.payload) for path in root.payload.rglob("*")}
         assert live_paths == expected_paths
-        assert stat.S_IMODE(root.live.stat().st_mode) == 0o700
+        assert stat.S_IMODE(root.live.stat().st_mode) == stat.S_IMODE(root.payload.stat().st_mode)
         for relative in expected_paths:
             actual = root.live / relative
             expected = root.payload / relative
@@ -82,7 +101,7 @@ def _assert_restored(roots) -> None:
                 assert actual.is_symlink() and os.readlink(actual) == os.readlink(expected)
             elif expected.is_dir():
                 assert actual.is_dir() and not actual.is_symlink()
-                assert stat.S_IMODE(actual.stat().st_mode) == 0o700
+                assert stat.S_IMODE(actual.stat().st_mode) == stat.S_IMODE(expected.stat().st_mode)
             else:
                 assert actual.read_bytes() == expected.read_bytes()
                 assert stat.S_IMODE(actual.stat().st_mode) == stat.S_IMODE(expected.stat().st_mode)
@@ -119,13 +138,24 @@ def test_checkpoint_restores_forward_migration_and_research_without_overlay(tmp_
     _assert_restored(roots)
 
 
+@pytest.mark.parametrize(
+    "stopped,move",
+    [
+        (False, "quarantine"),
+        (False, "publication"),
+        (True, "quarantine"),
+        (True, "publication"),
+        ("missing", "publication"),
+    ],
+)
 @pytest.mark.parametrize("moved_root", [0, 1])
-@pytest.mark.parametrize("move", ["quarantine", "publication"])
 def test_restore_reenters_after_each_live_root_rename(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved_root: int, move: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved_root: int, move: str, stopped: bool | str
 ) -> None:
-    saved, roots = _case(tmp_path)
+    saved, roots = _case(tmp_path, stopped=stopped)
     _mutate_live(roots)
+    if stopped == "missing":
+        shutil.rmtree(roots[moved_root].live)
     replace = os.replace
     interrupted = False
 
@@ -149,10 +179,11 @@ def test_restore_reenters_after_each_live_root_rename(
     _assert_restored(roots)
 
 
+@pytest.mark.parametrize("stopped", [False, True])
 def test_restore_reenters_after_staged_file_fsync(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: bool
 ) -> None:
-    saved, roots = _case(tmp_path)
+    saved, roots = _case(tmp_path, stopped=stopped)
     _mutate_live(roots)
     fsync = os.fsync
     interrupted = False
@@ -504,3 +535,150 @@ def test_offline_adoption_snapshot_retains_original_sqlite_before_new_code(tmp_p
     (live / "stray").symlink_to("rcp.sqlite3")
     with pytest.raises(SupervisorError):
         create_offline_snapshot(tmp_path / "legacy-checkpoint-2", live, boundary_sha256="b" * 64)
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "type", "file-mode", "root-mode", "link"])
+def test_stopped_snapshot_independently_proves_every_restored_entry(
+    tmp_path: Path, change: str
+) -> None:
+    saved, roots = _case(tmp_path, stopped=True)
+    _mutate_live(roots)
+    checkpoint.restore_checkpoint(saved)
+    checkpoint.verify_checkpoint(saved)
+    _assert_restored(roots)
+    live = roots[0].live
+    if change == "missing":
+        (live / "providers" / "token").unlink()
+    elif change == "extra":
+        _write(live / "unknown", b"new entry")
+    elif change == "type":
+        (roots[1].live / "paper").rmdir()
+        _write(roots[1].live / "paper", b"file replacing empty directory")
+    elif change == "file-mode":
+        (live / "jobs" / "local-job.json").chmod(0o640)
+    elif change == "root-mode":
+        live.chmod(0o750)
+    else:
+        link = live / "run-stage" / "retained" / "current"
+        link.unlink()
+        link.symlink_to("elsewhere")
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
+        checkpoint.verify_checkpoint(saved)
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
+        checkpoint.restore_checkpoint(saved)
+
+
+def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_path: Path) -> None:
+    saved, roots = _case(tmp_path, stopped=True)
+    checkpoint.check_checkpoint_roots(saved, tuple(root.live for root in reversed(roots)))
+    with pytest.raises(SupervisorError, match="checkpoint_root_mismatch"):
+        checkpoint.check_checkpoint_roots(saved, (roots[0].live,))
+    legacy, _ = _case(_directory(tmp_path / "legacy"))
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
+        checkpoint.verify_checkpoint(legacy)
+
+
+@pytest.mark.parametrize("unsafe", ["link", "xattr", "hardlink", "directory-mode"])
+def test_stopped_snapshot_refuses_uncopyable_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
+) -> None:
+    live = _directory(tmp_path / "live")
+    target = live / "file"
+    _write(target, b"preserve or refuse")
+    if unsafe == "link":
+        (live / "link").symlink_to("file")
+    elif unsafe == "hardlink":
+        os.link(target, live / "alias")
+    elif unsafe == "directory-mode":
+        live.chmod(0o1700)
+    else:
+        monkeypatch.setattr(
+            checkpoint.os, "listxattr", lambda *args, **kwargs: ["user.unsupported"], raising=False
+        )
+    with pytest.raises(SupervisorError):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
+        )
+
+
+@pytest.mark.parametrize("interruption", ["journal", "rename", "copy", "remove"])
+def test_quarantine_relocation_resumes_and_keeps_unowned_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    import errno
+
+    saved, roots = _case(tmp_path, stopped=True)
+    _mutate_live(roots)
+    checkpoint.restore_checkpoint(saved)
+    owned = [
+        Path(path)
+        for path in json.loads((saved.directory / "restore.json").read_bytes())["quarantines"]
+    ]
+    legacy = roots[1].live.with_name(".rcp-quarantine-unowned")
+    _write(legacy / "keep", b"unowned diagnostics")
+    replace = os.replace
+    remove = shutil.rmtree
+    interrupted = False
+
+    def fail_replace(source, destination, *args, **kwargs):
+        nonlocal interrupted
+        if Path(source) in owned and interruption != "rename":
+            raise OSError(errno.EXDEV, "cross-device relocation")
+        result = replace(source, destination, *args, **kwargs)
+        selected = (
+            Path(source) in owned
+            if interruption == "rename"
+            else Path(destination).parent.name == "quarantines"
+        )
+        if interruption == "journal":
+            selected = Path(destination) == saved.directory / "relocation.json"
+        if not interrupted and interruption != "remove" and selected:
+            interrupted = True
+            raise PowerLoss
+        return result
+
+    def fail_remove(path, *args, **kwargs):
+        nonlocal interrupted
+        if Path(path) in owned and not interrupted:
+            interrupted = True
+            (Path(path) / "candidate-only" / "diagnostic").unlink()
+            raise PowerLoss
+        return remove(path, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(checkpoint.os, "replace", fail_replace)
+        if interruption == "remove":
+            fault.setattr(shutil, "rmtree", fail_remove)
+        with pytest.raises(PowerLoss):
+            checkpoint.relocate_quarantines(saved)
+    assert interrupted
+    result = checkpoint.relocate_quarantines(saved)
+    assert result["status"] == "relocated"
+    assert result["legacy_quarantines"] == [str(legacy)]
+    assert all(not path.exists() for path in owned)
+    assert (legacy / "keep").read_bytes() == b"unowned diagnostics"
+    assert (
+        saved.directory / "quarantines" / "0" / "candidate-only" / "diagnostic"
+    ).read_bytes() == b"candidate database side effect\n"
+    assert checkpoint.relocate_quarantines(saved) == result
+    _assert_restored(roots)
+
+
+def test_stopped_snapshot_rechecks_all_sources_before_sealing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, roots = _case(tmp_path, stopped=True)
+    copy = checkpoint._copy_tree
+
+    def mutate_earlier_root(source, destination, entries, **kwargs):
+        copy(source, destination, entries, **kwargs)
+        if source == roots[1].live:
+            (roots[0].live / "providers" / "token").write_bytes(b"changed during second root copy")
+
+    monkeypatch.setattr(checkpoint, "_copy_tree", mutate_earlier_root)
+    destination = tmp_path / "not-sealed"
+    with pytest.raises(SupervisorError, match="checkpoint_unsafe_entry"):
+        checkpoint.create_stopped_snapshot(
+            destination, tuple(root.live for root in roots), boundary_sha256="b" * 64
+        )
+    assert not (destination / "checkpoint.json").exists()

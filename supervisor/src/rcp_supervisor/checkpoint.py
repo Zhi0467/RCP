@@ -1,18 +1,21 @@
-"""Verified app-prepared checkpoints and pre-admission filesystem recovery.
+"""Opaque stopped-tree checkpoints and pre-admission filesystem recovery.
 
-RCP owns the snapshot inventory and application validation. This module only
-handles complete prepared trees. Its caller must keep the service and every
-writer stopped throughout replacement; it never grants work admission.
+RCP owns root discovery and application validation. This module owns stopped
+filesystem inventories and retains prepared checkpoints for legacy recovery.
+Its caller must keep the service and every writer stopped throughout replacement;
+it never grants work admission.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
-import shutil
 import stat
+import sys
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,7 +108,7 @@ def _file_hash(path: Path, *, max_bytes: int | None = None) -> tuple[str, int, i
     max_bytes = MAX_CHECKPOINT_BYTES if max_bytes is None else max_bytes
     before = path.lstat()
     if before.st_size > max_bytes:
-        _fail("A checkpoint file exceeds the size limit.")
+        _fail("checkpoint_capacity: A checkpoint file exceeds the size limit.")
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_uid != os.geteuid()
@@ -123,7 +126,7 @@ def _file_hash(path: Path, *, max_bytes: int | None = None) -> tuple[str, int, i
         while chunk := stream.read(CHECKPOINT_COPY_BYTES):
             size += len(chunk)
             if size > max_bytes:
-                _fail("A checkpoint file exceeds the size limit.")
+                _fail("checkpoint_capacity: A checkpoint file exceeds the size limit.")
             digest.update(chunk)
         after = os.fstat(stream.fileno())
     # atime may change through this read; every content/identity field must agree.
@@ -152,11 +155,12 @@ def _inventory(
     max_entries: int | None = None,
     max_bytes: int | None = None,
     links: bool = True,
+    exact: bool = False,
 ) -> list[dict]:
     """Inventory a tree; ``links`` records symbolic links by text, else refuses them.
 
-    Application-prepared payloads may carry links inside retained recovery stages;
-    an offline snapshot of an opaque live root keeps the old fail-closed rule.
+    Prepared payloads retain links; exact snapshots admit only links below
+    retained run stages. Legacy offline adoption keeps its no-links contract.
     """
     max_entries = MAX_CHECKPOINT_ENTRIES if max_entries is None else max_entries
     max_bytes = MAX_CHECKPOINT_BYTES if max_bytes is None else max_bytes
@@ -172,22 +176,29 @@ def _inventory(
         with os.scandir(parent) as children:
             for entry in children:
                 if len(result) >= max_entries:
-                    _fail("Checkpoint inventory exceeds its entry limit.")
+                    _fail("checkpoint_capacity: Checkpoint inventory exceeds its entry limit.")
                 child = Path(entry.path)
                 relative = child.relative_to(root).as_posix()
                 if len(relative.encode()) > 4096:
                     _fail("A checkpoint relative path exceeds the limit.")
                 info = child.lstat()
+                metadata = _access_metadata(child) if exact else {}
                 if stat.S_ISDIR(info.st_mode):
                     _directory(child)
-                    result.append({"path": relative, "kind": "directory"})
+                    result.append({"path": relative, "kind": "directory", **metadata})
                     pending.append(child)
                 elif stat.S_ISLNK(info.st_mode) and links:
+                    if exact and (
+                        Path(relative).parts[0] != "run-stage" or len(Path(relative).parts) < 2
+                    ):
+                        _fail("checkpoint_unsafe_entry: symbolic link outside retained scratch.")
                     # A link is inventory by its text alone; nothing here follows it.
                     target = os.readlink(child)
                     if not _valid_link_target(target):
                         _fail("A checkpoint link target is invalid.")
-                    result.append({"path": relative, "kind": "symlink", "target": target})
+                    result.append(
+                        {"path": relative, "kind": "symlink", "target": target, **metadata}
+                    )
                 else:
                     digest, length, mode = _file_hash(child, max_bytes=max_bytes - size)
                     size += length
@@ -198,9 +209,62 @@ def _inventory(
                             "sha256": digest,
                             "size": length,
                             "mode": mode,
+                            **metadata,
                         }
                     )
     return sorted(result, key=lambda item: item["path"])
+
+
+def _access_metadata(path: Path) -> dict:
+    info = path.lstat()
+    if info.st_uid != os.geteuid() or info.st_gid not in {os.getegid(), *os.getgroups()}:
+        _fail("checkpoint_unsafe_entry: unsupported ownership.")
+    if getattr(info, "st_flags", 0):
+        _fail("checkpoint_unsafe_entry: filesystem flags are unsupported.")
+    if _has_extended_metadata(path):
+        _fail("checkpoint_unsafe_entry: ACLs and extended attributes are unsupported.")
+    metadata = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid}
+    _validate_metadata(metadata, symlink=stat.S_ISLNK(info.st_mode))
+    return metadata
+
+
+def _has_extended_metadata(path: Path) -> bool:
+    if hasattr(os, "listxattr"):
+        return bool(os.listxattr(path, follow_symlinks=False))
+    if sys.platform != "darwin":
+        _fail("checkpoint_unsafe_entry: filesystem metadata inspection is unsupported.")
+    # The installed supervisor supports Linux. Darwin permits local development
+    # checks, but its filesystem access metadata is not deployment-qualified.
+    warnings.warn(
+        "Darwin development checks do not verify ACLs or extended attributes; "
+        "installed checkpoint support requires Linux.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return False
+
+
+def _validate_metadata(value: object, *, symlink: bool = False) -> None:
+    if (
+        not isinstance(value, dict)
+        or value.keys() != {"mode", "uid", "gid"}
+        or any(type(value[key]) is not int for key in value)
+        or value["uid"] != os.geteuid()
+        or value["gid"] not in {os.getegid(), *os.getgroups()}
+        or not 0 <= value["mode"] <= 0o777
+        or (not symlink and value["mode"] & 0o022)
+    ):
+        _fail("Checkpoint access metadata is unsupported.")
+
+
+def _apply_metadata(path: Path, metadata: dict) -> None:
+    os.chown(path, metadata["uid"], metadata["gid"], follow_symlinks=False)
+    if not path.is_symlink():
+        os.chmod(path, metadata["mode"])
+    elif stat.S_IMODE(path.lstat().st_mode) != metadata["mode"]:
+        if not hasattr(os, "lchmod"):
+            _fail("checkpoint_unsafe_entry: symbolic link mode is unsupported.")
+        os.lchmod(path, metadata["mode"])
 
 
 def _fsync_directory(path: Path) -> None:
@@ -217,7 +281,7 @@ def _write_json(path: Path, document: dict) -> None:
         + b"\n"
     )
     if len(payload) > MAX_CHECKPOINT_MANIFEST_BYTES:
-        _fail("Checkpoint metadata exceeds the size limit.")
+        _fail("checkpoint_capacity: Checkpoint metadata exceeds the size limit.")
     temporary = path.with_name(f".{path.name}.tmp")
     if os.path.lexists(temporary):
         _file_hash(temporary, max_bytes=MAX_CHECKPOINT_MANIFEST_BYTES)
@@ -246,7 +310,7 @@ def _read_json(path: Path) -> tuple[dict, str]:
             _fail("Checkpoint metadata changed while opening it.")
         payload = stream.read(MAX_CHECKPOINT_MANIFEST_BYTES + 1)
     if len(payload) > MAX_CHECKPOINT_MANIFEST_BYTES:
-        _fail("Checkpoint metadata exceeds the size limit.")
+        _fail("checkpoint_capacity: Checkpoint metadata exceeds the size limit.")
 
     def unique(pairs):
         result = {}
@@ -271,7 +335,7 @@ def _valid_link_target(target: object) -> bool:
     )
 
 
-def _validate_entries(entries: object) -> None:
+def _validate_entries(entries: object, *, exact: bool = False) -> None:
     if not isinstance(entries, list) or len(entries) > MAX_CHECKPOINT_ENTRIES:
         _fail("Checkpoint entries are missing or exceed the limit.")
     previous = ""
@@ -289,6 +353,12 @@ def _validate_entries(entries: object) -> None:
             names |= {"sha256", "size", "mode"}
         elif entry["kind"] == "symlink":
             names |= {"target"}
+        if exact:
+            names |= {"mode", "uid", "gid"}
+            _validate_metadata(
+                {key: entry.get(key) for key in ("mode", "uid", "gid")},
+                symlink=entry["kind"] == "symlink",
+            )
         if not _keys(entry, names):
             _fail("Checkpoint entry fields are unsupported.")
         relative = entry["path"]
@@ -329,24 +399,47 @@ def _validate_entries(entries: object) -> None:
                 _fail("Checkpoint file identity or permissions are invalid.")
             total += entry["size"]
     if total > MAX_CHECKPOINT_BYTES:
-        _fail("Checkpoint payload exceeds the size limit.")
+        _fail("checkpoint_capacity: Checkpoint payload exceeds the size limit.")
 
 
-def _verify_tree(root: Path, entries: list[dict], *, stored: bool) -> None:
-    _directory(root, private=True)
-    actual = _inventory(root)
+def _verify_tree(
+    root: Path, entries: list[dict], *, stored: bool, metadata: dict | None = None
+) -> None:
+    _directory(root, private=stored or metadata is None)
+    actual = _inventory(root, exact=metadata is not None)
     expected = [
         dict(entry, mode=0o400) if stored and entry["kind"] == "file" else entry
         for entry in entries
     ]
+    if metadata is not None:
+        expected = [
+            dict(
+                entry,
+                mode=0o700 if entry["kind"] == "directory" else entry["mode"],
+                uid=os.geteuid(),
+                gid=os.getegid(),
+            )
+            if stored
+            else entry
+            for entry in expected
+        ]
+        if not stored and _access_metadata(root) != metadata:
+            _fail("Checkpoint root access metadata differs from its inventory.")
     if actual != expected:
         _fail("Checkpoint tree differs from its verified inventory.")
     for entry in entries:
         if entry["kind"] == "directory":
-            _directory(root / entry["path"], private=True)
+            _directory(root / entry["path"], private=stored or metadata is None)
 
 
-def _copy_tree(source: Path, destination: Path, entries: list[dict], *, stored: bool) -> None:
+def _copy_tree(
+    source: Path,
+    destination: Path,
+    entries: list[dict],
+    *,
+    stored: bool,
+    metadata: dict | None = None,
+) -> None:
     destination.mkdir(mode=0o700)
     for entry in entries:
         target = destination / entry["path"]
@@ -381,8 +474,26 @@ def _copy_tree(source: Path, destination: Path, entries: list[dict], *, stored: 
             if reader.read(1) or digest.hexdigest() != entry["sha256"]:
                 _fail("Checkpoint copy SHA-256 mismatch.")
             writer.flush()
+            if metadata is not None:
+                os.fchown(
+                    writer.fileno(),
+                    os.geteuid() if stored else entry["uid"],
+                    os.getegid() if stored else entry["gid"],
+                )
             os.fchmod(writer.fileno(), 0o400 if stored else entry["mode"])
             os.fsync(writer.fileno())
+    if metadata is not None:
+        for entry in reversed(entries):
+            if entry["kind"] == "file":
+                continue
+            access = dict(entry, uid=os.geteuid(), gid=os.getegid()) if stored else entry
+            if stored:
+                access["mode"] = 0o700 if entry["kind"] == "directory" else entry["mode"]
+            _apply_metadata(destination / entry["path"], access)
+        _apply_metadata(
+            destination,
+            {"mode": 0o700, "uid": os.geteuid(), "gid": os.getegid()} if stored else metadata,
+        )
     for directory in reversed(
         [
             destination,
@@ -391,7 +502,7 @@ def _copy_tree(source: Path, destination: Path, entries: list[dict], *, stored: 
     ):
         _fsync_directory(directory)
     _fsync_directory(destination.parent)
-    _verify_tree(destination, entries, stored=stored)
+    _verify_tree(destination, entries, stored=stored, metadata=metadata)
 
 
 def _document(directory: Path, expected_sha256: str) -> dict:
@@ -404,7 +515,7 @@ def _document(directory: Path, expected_sha256: str) -> dict:
     if (
         not _keys(document, {"version", "checkpoint_id", "boundary_sha256", "roots"})
         or type(document["version"]) is not int
-        or document["version"] != 1
+        or document["version"] not in (1, 2)
     ):
         _fail("Checkpoint manifest format is unsupported.")
     try:
@@ -422,17 +533,27 @@ def _document(directory: Path, expected_sha256: str) -> dict:
     total_entries = 0
     total_bytes = 0
     for index, root in enumerate(roots):
-        if not _keys(root, {"live", "payload", "entries"}) or root["payload"] != f"payload/{index}":
+        fields = {"live", "payload", "entries"}
+        if document["version"] == 2:
+            fields.add("metadata")
+        if not _keys(root, fields) or root["payload"] != f"payload/{index}":
             _fail("Checkpoint replacement fields are unsupported.")
         live = _path(root["live"])
         _directory(live.parent)
         live_paths.append(live)
-        _validate_entries(root["entries"])
+        if document["version"] == 2:
+            _validate_metadata(root["metadata"])
+        _validate_entries(root["entries"], exact=document["version"] == 2)
         total_entries += len(root["entries"])
         total_bytes += sum(entry.get("size", 0) for entry in root["entries"])
         if total_entries > MAX_CHECKPOINT_ENTRIES or total_bytes > MAX_CHECKPOINT_BYTES:
-            _fail("Checkpoint inventory exceeds its resource limits.")
-        _verify_tree(directory / root["payload"], root["entries"], stored=True)
+            _fail("checkpoint_capacity: Checkpoint inventory exceeds its resource limits.")
+        _verify_tree(
+            directory / root["payload"],
+            root["entries"],
+            stored=True,
+            metadata=root.get("metadata"),
+        )
     _disjoint([directory, *live_paths])
     return document
 
@@ -450,7 +571,7 @@ def create_offline_snapshot(destination: Path, live: Path, *, boundary_sha256: s
     """Retain stopped legacy bytes before any newer app interprets them.
 
     Only source adoption uses this initial opaque snapshot. Its caller must have
-    proved every writer stopped; normal updates use application-prepared trees.
+    proved every writer stopped; updates use a separate multi-root exact snapshot.
     """
     return _create_checkpoint(
         destination,
@@ -460,12 +581,26 @@ def create_offline_snapshot(destination: Path, live: Path, *, boundary_sha256: s
     )
 
 
+def create_stopped_snapshot(
+    destination: Path, roots: tuple[Path, ...], *, boundary_sha256: str
+) -> Checkpoint:
+    """Seal every stopped entry before old preparation can mutate any live root."""
+    return _create_checkpoint(
+        destination,
+        tuple(SnapshotRoot(root, root) for root in roots),
+        boundary_sha256=boundary_sha256,
+        offline_snapshot=True,
+        exact=True,
+    )
+
+
 def _create_checkpoint(
     destination: Path,
     roots: tuple[SnapshotRoot, ...],
     *,
     boundary_sha256: str,
     offline_snapshot: bool,
+    exact: bool = False,
 ) -> Checkpoint:
     _path(str(destination))
     _directory(destination.parent)
@@ -473,12 +608,14 @@ def _create_checkpoint(
         _fail("Checkpoint creation requires roots and an application boundary digest.")
     paths = [destination]
     inventories = []
+    metadata_inventory = []
     total_entries = 0
     total_bytes = 0
     for root in roots:
         _directory(root.live)
         _directory(root.live.parent)
         _directory(root.payload)
+        metadata_inventory.append(_access_metadata(root.live) if exact else None)
         paths.append(root.live)
         if not offline_snapshot:
             paths.append(root.payload)
@@ -486,7 +623,8 @@ def _create_checkpoint(
             root.payload,
             max_entries=MAX_CHECKPOINT_ENTRIES - total_entries,
             max_bytes=MAX_CHECKPOINT_BYTES - total_bytes,
-            links=not offline_snapshot,
+            links=exact or not offline_snapshot,
+            exact=exact,
         )
         inventories.append(entries)
         total_entries += len(entries)
@@ -497,7 +635,7 @@ def _create_checkpoint(
         or sum(entry.get("size", 0) for entries in inventories for entry in entries)
         > MAX_CHECKPOINT_BYTES
     ):
-        _fail("Checkpoint inventory exceeds its resource limits.")
+        _fail("checkpoint_capacity: Checkpoint inventory exceeds its resource limits.")
     try:
         destination.mkdir(mode=0o700)
     except FileExistsError as exc:
@@ -507,14 +645,30 @@ def _create_checkpoint(
     (destination / "payload").mkdir(mode=0o700)
     records = []
     for index, (root, entries) in enumerate(zip(roots, inventories, strict=True)):
-        _validate_entries(entries)
+        _validate_entries(entries, exact=exact)
+        metadata = metadata_inventory[index]
         relative = f"payload/{index}"
-        _copy_tree(root.payload, destination / relative, entries, stored=True)
-        if _inventory(root.payload, links=not offline_snapshot) != entries:
+        _copy_tree(root.payload, destination / relative, entries, stored=True, metadata=metadata)
+        if _inventory(root.payload, links=exact or not offline_snapshot, exact=exact) != entries:
             _fail("An application checkpoint payload changed during capture.")
-        records.append({"live": str(root.live), "payload": relative, "entries": entries})
+        record = {"live": str(root.live), "payload": relative, "entries": entries}
+        if exact:
+            if _access_metadata(root.live) != metadata:
+                _fail("A stopped root changed access metadata during capture.")
+            record["metadata"] = metadata
+        records.append(record)
+    if exact:
+        for root in records:
+            try:
+                _verify_tree(
+                    Path(root["live"]), root["entries"], stored=False, metadata=root["metadata"]
+                )
+            except (SupervisorError, OSError) as exc:
+                raise SupervisorError(
+                    "checkpoint_unsafe_entry: stopped roots changed during capture."
+                ) from exc
     document = {
-        "version": 1,
+        "version": 2 if exact else 1,
         "checkpoint_id": uuid.uuid4().hex,
         "boundary_sha256": boundary_sha256,
         "roots": records,
@@ -537,6 +691,8 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
     admission reopens is forbidden: selected-release recovery must preserve new
     work. A completed restoration is verified, never reapplied over changed data.
     """
+    from rcp_supervisor.retention import remove_retained_tree
+
     document = _document(checkpoint.directory, checkpoint.sha256)
     if document["boundary_sha256"] != checkpoint.boundary_sha256:
         _fail("Checkpoint application boundary changed.")
@@ -558,17 +714,36 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
             ),
         ]
     )
-    state = {"version": 1, "checkpoint_sha256": checkpoint.sha256, "status": "restoring"}
+    state = {
+        "version": document["version"],
+        "checkpoint_sha256": checkpoint.sha256,
+        "status": "restoring",
+    }
+    if document["version"] == 2:
+        state["quarantines"] = [str(quarantine) for _, _, quarantine, _ in paths]
+        state["absent_roots"] = [
+            index for index, (live, _, _, _) in enumerate(paths) if not os.path.lexists(live)
+        ]
     if os.path.lexists(journal):
         state, _digest_value = _read_json(journal)
         if (
-            not _keys(state, {"version", "checkpoint_sha256", "status"})
+            not _keys(
+                state,
+                {"version", "checkpoint_sha256", "status"}
+                | ({"quarantines", "absent_roots"} if document["version"] == 2 else set()),
+            )
             or type(state["version"]) is not int
-            or state["version"] != 1
+            or state["version"] != document["version"]
             or state["checkpoint_sha256"] != checkpoint.sha256
             or state["status"] not in ("restoring", "complete")
+            or (
+                document["version"] == 2
+                and state["quarantines"] != [str(quarantine) for _, _, quarantine, _ in paths]
+            )
         ):
             _fail("Restore journal is unsupported or differs from its checkpoint.")
+        if document["version"] == 2:
+            _validate_absent_roots(state["absent_roots"], len(paths))
     else:
         if any(
             os.path.lexists(path)
@@ -579,30 +754,256 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
         _write_json(journal, state)
     if state["status"] == "complete":
         for live, _partial, _quarantine, root in paths:
-            _verify_tree(live, root["entries"], stored=False)
+            _verify_live_root(live, root)
         return
-    for live, partial, quarantine, root in paths:
+    for index, (live, partial, quarantine, root) in enumerate(paths):
+        absent = index in state.get("absent_roots", [])
+        if absent and os.path.lexists(quarantine):
+            _fail("An absent root has an unexpected quarantine.")
+        if absent and os.path.lexists(live):
+            if os.path.lexists(partial):
+                _fail("Restore has ambiguous live and staged roots.")
+            _verify_live_root(live, root)
+            continue
         if os.path.lexists(quarantine):
             _directory(quarantine)
             if os.path.lexists(live):
                 if os.path.lexists(partial):
                     _fail("Restore has ambiguous live and staged roots.")
-                _verify_tree(live, root["entries"], stored=False)
+                _verify_live_root(live, root)
                 continue
-        else:
+        elif not absent:
             _directory(live)
         if os.path.lexists(partial):
             # Only this journal's disposable staging tree may be rebuilt. Live
             # roots and quarantines are never deleted or recursively overlaid.
-            _directory(partial, private=True)
-            shutil.rmtree(partial)
-            _fsync_directory(partial.parent)
-        _copy_tree(checkpoint.directory / root["payload"], partial, root["entries"], stored=False)
-        if not os.path.lexists(quarantine):
+            _directory(partial)
+            remove_retained_tree(partial, partial.parent)
+        _copy_tree(
+            checkpoint.directory / root["payload"],
+            partial,
+            root["entries"],
+            stored=False,
+            metadata=root.get("metadata"),
+        )
+        if not absent and not os.path.lexists(quarantine):
             os.replace(live, quarantine)
             _fsync_directory(live.parent)
         os.replace(partial, live)
         _fsync_directory(live.parent)
     for live, _partial, _quarantine, root in paths:
-        _verify_tree(live, root["entries"], stored=False)
+        _verify_live_root(live, root)
     _write_json(journal, dict(state, status="complete"))
+
+
+def _verify_live_root(live: Path, root: dict) -> None:
+    try:
+        _verify_tree(live, root["entries"], stored=False, metadata=root.get("metadata"))
+    except (SupervisorError, OSError) as exc:
+        raise SupervisorError(
+            "rollback_tree_mismatch: restored root differs from stopped inventory."
+        ) from exc
+
+
+def _exact_document(checkpoint: Checkpoint) -> dict:
+    document = _document(checkpoint.directory, checkpoint.sha256)
+    if document["version"] != 2:
+        _fail("rollback_tree_mismatch: legacy checkpoint has no exact stopped-tree proof.")
+    if document["boundary_sha256"] != checkpoint.boundary_sha256:
+        _fail("rollback_tree_mismatch: checkpoint boundary identity changed.")
+    return document
+
+
+def verify_checkpoint(checkpoint: Checkpoint) -> None:
+    """Independently rescan restored roots before old ordinary startup."""
+    try:
+        for root in _exact_document(checkpoint)["roots"]:
+            _verify_live_root(Path(root["live"]), root)
+    except (SupervisorError, OSError) as exc:
+        raise SupervisorError("rollback_tree_mismatch: exact stopped-tree proof failed.") from exc
+
+
+def check_checkpoint_roots(checkpoint: Checkpoint, roots: tuple[Path, ...]) -> None:
+    document = _exact_document(checkpoint)
+    expected = [root["live"] for root in document["roots"]]
+    actual = [str(_path(str(root))) for root in roots]
+    if len(set(actual)) != len(actual) or set(expected) != set(actual):
+        _fail("checkpoint_root_mismatch: prepared roots differ from stopped inventory.")
+
+
+def _owned_quarantines(checkpoint: Checkpoint, document: dict) -> list[Path]:
+    state, _ = _read_json(checkpoint.directory / "restore.json")
+    expected = [
+        str(Path(root["live"]).with_name(f".rcp-quarantine-{document['checkpoint_id']}-{index}"))
+        for index, root in enumerate(document["roots"])
+    ]
+    if (
+        not _keys(state, {"version", "checkpoint_sha256", "status", "quarantines", "absent_roots"})
+        or state["version"] != 2
+        or state["checkpoint_sha256"] != checkpoint.sha256
+        or state["status"] != "complete"
+        or state["quarantines"] != expected
+    ):
+        _fail("Quarantine relocation requires its completed exact restore journal.")
+    _validate_absent_roots(state["absent_roots"], len(expected))
+    return [Path(path) for index, path in enumerate(expected) if index not in state["absent_roots"]]
+
+
+def _validate_absent_roots(indices: object, count: int) -> None:
+    if (
+        not isinstance(indices, list)
+        or any(type(index) is not int or not 0 <= index < count for index in indices)
+        or indices != sorted(set(indices))
+    ):
+        _fail("Restore journal has invalid absent roots.")
+
+
+def _legacy_quarantines(document: dict, owned: list[Path]) -> list[str]:
+    # Discovery is reporting only. These names never become deletion authority.
+    legacy = set()
+    for parent in {Path(root["live"]).parent for root in document["roots"]}:
+        with os.scandir(parent) as children:
+            for entry in children:
+                if entry.name.startswith(".rcp-quarantine-") and Path(entry.path) not in owned:
+                    legacy.add(entry.path)
+                    if len(legacy) > MAX_CHECKPOINT_ENTRIES:
+                        _fail("Quarantine report exceeds its entry limit.")
+    return sorted(legacy)
+
+
+def quarantine_status(checkpoint: Checkpoint) -> dict:
+    document = _document(checkpoint.directory, checkpoint.sha256)
+    if document["version"] != 2:
+        return {
+            "version": 1,
+            "status": "legacy",
+            "legacy_quarantines": _legacy_quarantines(document, []),
+        }
+    owned = _owned_quarantines(checkpoint, document)
+    path = checkpoint.directory / "relocation.json"
+    state = _relocation_document(checkpoint, owned) if path.exists() else None
+    if state and state["status"] == "complete" and any(os.path.lexists(source) for source in owned):
+        _fail("A relocated quarantine source unexpectedly reappeared.")
+    return {
+        "version": 1,
+        "status": "relocated" if state and state["status"] == "complete" else "pending",
+        "legacy_quarantines": _legacy_quarantines(document, owned),
+    }
+
+
+def _relocation_document(checkpoint: Checkpoint, owned: list[Path]) -> dict:
+    state, _ = _read_json(checkpoint.directory / "relocation.json")
+    if (
+        not _keys(state, {"version", "checkpoint_sha256", "status", "roots"})
+        or state["version"] != 1
+        or state["checkpoint_sha256"] != checkpoint.sha256
+        or state["status"] not in ("relocating", "complete")
+        or not isinstance(state["roots"], list)
+        or len(state["roots"]) != len(owned)
+    ):
+        _fail("Quarantine relocation journal is unsupported.")
+    for index, (root, source) in enumerate(zip(state["roots"], owned, strict=True)):
+        if (
+            not _keys(root, {"source", "destination", "entries", "metadata", "status"})
+            or root["source"] != str(source)
+            or root["destination"] != f"quarantines/{index}"
+            or root["status"] not in ("pending", "removing", "complete")
+        ):
+            _fail("Quarantine relocation ownership is invalid.")
+        _validate_metadata(root["metadata"])
+        _validate_entries(root["entries"], exact=True)
+    if state["status"] == "complete" and any(
+        root["status"] != "complete" for root in state["roots"]
+    ):
+        _fail("Quarantine relocation journal has inconsistent completion.")
+    return state
+
+
+def relocate_quarantines(checkpoint: Checkpoint) -> dict:
+    """Retain journal-owned diagnostics after the caller proves a complete backup.
+
+    The journal grants authority for each source and staging path, including an
+    interrupted verified removal. No live tree is read or changed after startup.
+    """
+    from rcp_supervisor.retention import remove_retained_tree
+
+    document = _exact_document(checkpoint)
+    owned = _owned_quarantines(checkpoint, document)
+    journal = checkpoint.directory / "relocation.json"
+    storage = checkpoint.directory / "quarantines"
+    if journal.exists():
+        state = _relocation_document(checkpoint, owned)
+        storage.mkdir(mode=0o700, exist_ok=True)
+        _directory(storage, private=True)
+        _fsync_directory(storage.parent)
+    else:
+        if os.path.lexists(storage):
+            _fail("Quarantine storage exists without its owning journal.")
+        records = []
+        total_entries = total_bytes = 0
+        for index, source in enumerate(owned):
+            entries = _inventory(
+                source,
+                exact=True,
+                max_entries=MAX_CHECKPOINT_ENTRIES - total_entries,
+                max_bytes=MAX_CHECKPOINT_BYTES - total_bytes,
+            )
+            total_entries += len(entries)
+            total_bytes += sum(entry.get("size", 0) for entry in entries)
+            records.append(
+                {
+                    "source": str(source),
+                    "destination": f"quarantines/{index}",
+                    "entries": entries,
+                    "metadata": _access_metadata(source),
+                    "status": "pending",
+                }
+            )
+        state = {
+            "version": 1,
+            "checkpoint_sha256": checkpoint.sha256,
+            "status": "relocating",
+            "roots": records,
+        }
+        _write_json(journal, state)
+        storage.mkdir(mode=0o700)
+        _fsync_directory(storage.parent)
+    for root in state["roots"]:
+        source = Path(root["source"])
+        destination = checkpoint.directory / root["destination"]
+        partial = destination.with_name(f".{destination.name}.partial")
+        if root["status"] == "complete":
+            _verify_tree(destination, root["entries"], stored=False, metadata=root["metadata"])
+            if os.path.lexists(source):
+                _fail("A relocated quarantine source unexpectedly reappeared.")
+            continue
+        if not os.path.lexists(destination):
+            _verify_tree(source, root["entries"], stored=False, metadata=root["metadata"])
+            try:
+                os.replace(source, destination)
+                _fsync_directory(source.parent)
+                _fsync_directory(destination.parent)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                if os.path.lexists(partial):
+                    _directory(partial)
+                    remove_retained_tree(partial, partial.parent)
+                _copy_tree(
+                    source, partial, root["entries"], stored=False, metadata=root["metadata"]
+                )
+                os.replace(partial, destination)
+                _fsync_directory(destination.parent)
+        _verify_tree(destination, root["entries"], stored=False, metadata=root["metadata"])
+        if os.path.lexists(source):
+            if root["status"] != "removing":
+                _verify_tree(source, root["entries"], stored=False, metadata=root["metadata"])
+                root["status"] = "removing"
+                _write_json(journal, state)
+            _directory(source)
+            remove_retained_tree(source, source.parent)
+        root["status"] = "complete"
+        _write_json(journal, state)
+    state["status"] = "complete"
+    _write_json(journal, state)
+    return quarantine_status(checkpoint)

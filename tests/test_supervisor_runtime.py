@@ -315,3 +315,45 @@ def test_selected_release_requires_receipt_and_current_pointer_agreement(monkeyp
         else:
             with pytest.raises(SupervisorError, match="current pointer.*disagree"):
                 read()
+
+
+@pytest.mark.parametrize("field", ["running_commit", "app_version"])
+def test_stopped_boundary_requires_the_previous_running_identity(runtime, field):
+    metadata = {"running_commit": "a" * 40, "app_version": "0.3.4+build.100.gaaaaaaa"}
+    previous = {"commit": metadata["running_commit"], "version_string": metadata["app_version"]}
+    metadata[field] = "different"
+    runtime.metadata = lambda: metadata
+    runtime.control = lambda *args, **kwargs: pytest.fail("maintenance must not be entered")
+    with pytest.raises(SupervisorError, match="Running application identity"):
+        runtime.enter_maintenance({"previous": previous})
+
+
+def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_path):
+    import fcntl
+    from dataclasses import replace
+
+    runtime.paths = replace(runtime.paths, data_dir=tmp_path)
+    lock = tmp_path / "rcp.lock"
+    lock.write_bytes(b"stopped pid bytes\n")
+    lock.chmod(0o600)
+    before = lock.read_bytes()
+    with lock.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (
+            pytest.raises(SupervisorError, match="writer still owns"),
+            runtime.stopped_data_lock(),
+        ):
+            pytest.fail("admitted locked data")
+    with runtime.stopped_data_lock():
+        assert lock.read_bytes() == before
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"restored lock bytes\n")
+    replacement.replace(lock)
+    with lock.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (
+            pytest.raises(SupervisorError, match="writer still owns"),
+            runtime.stopped_data_lock(),
+        ):
+            pytest.fail("checked stale inode")
+    assert lock.read_bytes() == b"restored lock bytes\n"
