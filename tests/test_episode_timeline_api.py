@@ -244,6 +244,18 @@ def test_actor_kinds_and_recorded_links(timeline):
             "UPDATE graph_runs SET error=? WHERE operation_id=?",
             ("E" * (EPISODE_TIMELINE_ERROR_MAX_LENGTH + 1), f"{prefix}-root"),
         )
+        # A pending route has not created its episode yet: no actor.
+        connection.execute(
+            "INSERT INTO auto_research_child_experiments (child_episode_id, auto_research_episode_id, project_id, control_node_id, state, request_json, parent_operation_id, created_at, updated_at) VALUES (?, ?, ?, 'exp/pending', 'pending', '{}', ?, ?, ?)",
+            (
+                f"{prefix}-unstarted",
+                prefix,
+                episode.project_id,
+                f"{prefix}-root",
+                episode.updated_at,
+                episode.updated_at,
+            ),
+        )
         before = list(connection.iterdump())
     response = client.get(f"/api/projects/{episode.project_id}/episodes/{prefix}/timeline")
     assert response.status_code == 200
@@ -256,6 +268,9 @@ def test_actor_kinds_and_recorded_links(timeline):
         "worker",
         "experiment",
     }
+    assert [actor["subtitle"] for actor in data["actors"] if actor["kind"] == "experiment"] == [
+        "exp/timeline"
+    ]
     worker = next(actor for actor in data["actors"] if actor["kind"] == "worker")
     assert worker["label"] == "Evidence check"
     assert worker["subtitle"] == "exp/timeline"
@@ -289,11 +304,12 @@ def test_message_disposition(timeline, disposition):
             connection.execute(
                 "UPDATE graph_runs SET status='failed' WHERE operation_id=?", (f"{prefix}-wake",)
             )
-    if disposition in {"harvested", "cleared"}:
+    if disposition in {"harvested", "cleared", "failed_attempt"}:
+        # A later harvest does not hide that the receiving attempt failed.
         store.process_auto_research_lifecycle_inbox(
             prefix,
             effect_id="consume",
-            mode="harvest" if disposition == "harvested" else "clear",
+            mode="clear" if disposition == "cleared" else "harvest",
             acknowledged_by=f"{prefix}-root",
             delivery_operation_id=f"{prefix}-retry",
         )

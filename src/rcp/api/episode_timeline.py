@@ -201,6 +201,8 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         )
     for child_id, route in routes.items():
         child = children.get(child_id)
+        if child is None:
+            continue  # A pending or cancelled route never created its episode.
         actor_id = f"actor:experiment:{child_id}"
         handoff = handoff_by_actor.get(actor_id)
         add_actor(
@@ -210,18 +212,17 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             route.auto_research_episode_id,
             subtitle=route.control_node_id,
             row_key=f"node:{route.control_node_id}",
-            started_at=child.created_at if child else route.created_at,
-            ended_at=child.ended_at if child else None,
-            outcome=child.ending if child else None,
+            started_at=child.created_at,
+            ended_at=child.ended_at,
+            outcome=child.ending,
             started_by_span_id=handoff.from_span_id
             if handoff
             else _span(route.parent_operation_id),
             links=EpisodeTimelineLinks(episode_id=child_id, control_node_id=route.control_node_id),
         )
         mark(actor_id, "started", route.created_at, child_id, actors[actor_id].started_by_span_id)
-        if child:
-            mark(actor_id, "stop_requested", child.stop_requested_at, child_id)
-            mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
+        mark(actor_id, "stop_requested", child.stop_requested_at, child_id)
+        mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
     for owner in owners.values():
         # Report turns are hidden allocations; the roster shows them as report spans.
         for task in store.episode_tasks(owner.episode_id, include_hidden=True):
@@ -258,10 +259,9 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         else:
             task_actors[task.operation_id] = primary_id
     waiting_workers = {
-        watcher.worker_id
+        worker_id
         for member in chain
-        for watcher in store.episode_watchers(member.episode_id)
-        if watcher.worker_id and watcher.status == "active"
+        for worker_id in store.auto_research_waiting_child_work_ids(member.episode_id)
     }
     for work in works.values():
         actor_id = f"actor:worker:{work.worker_id}"
@@ -408,8 +408,11 @@ def _communications(
         for message in store.auto_research_messages(member.episode_id) if auto else []:
             receipt = mail_receipts.get(message.message_id)
             delivered = tasks.get(message.delivery_operation_id)
+            # A failed receiving attempt outranks how the message was consumed.
             disposition = (
-                "harvested"
+                "failed_attempt"
+                if delivered is not None and delivered.status in {"failed", "interrupted"}
+                else "harvested"
                 if receipt and receipt.mode == "harvest"
                 else "cleared"
                 if receipt
@@ -417,8 +420,6 @@ def _communications(
                 if not message.delivered_at and not message.delivery_operation_id
                 else "unknown"
                 if delivered is None
-                else "failed_attempt"
-                if delivered.status in {"failed", "interrupted"}
                 else "wake"
             )
             messages.append(

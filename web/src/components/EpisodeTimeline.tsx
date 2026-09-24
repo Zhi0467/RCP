@@ -165,6 +165,11 @@ export function EpisodeTimeline({
       });
     } else setCard(null);
   }
+
+  function labelHit(id: string | undefined, label: string, children: ReactNode) {
+    return id ? hit(id, label, children) : <g aria-label={label}>{children}</g>;
+  }
+
   function hit(id: string, label: string, children: ReactNode, extra = "") {
     return (
       <g
@@ -787,8 +792,8 @@ export function EpisodeTimeline({
                       <line x1={0} x2={left} y1={r.y - 24} y2={r.y - 24} className="roster-rule" />
                     </>
                   )}
-                  {hit(
-                    r.actors.at(-1)!.actor_id,
+                  {labelHit(
+                    r.actors.at(-1)?.actor_id,
                     r.label,
                     <>
                       <rect

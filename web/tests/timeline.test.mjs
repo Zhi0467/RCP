@@ -50,7 +50,7 @@ const data = (extra = {}) => ({
   ...extra,
 });
 
-test("actors group by recorded row key in kind and start order", () => {
+test("actors group by recorded row key in kind and start order; actorless watcher nodes get a row", () => {
   const rows = timelineRows(
     data({
       actors: [
@@ -66,6 +66,7 @@ test("actors group by recorded row key in kind and start order", () => {
         actor("w1", "watcher", "group"),
         actor("w2", "watcher", "group"),
       ],
+      signals: [{ item_id: "signal:g", kind: "watcher", source_row_key: "node:orphan" }],
     }),
     [
       { episode: { episode_id: "latest" }, node: { title: "Latest experiment" } },
@@ -77,8 +78,9 @@ test("actors group by recorded row key in kind and start order", () => {
   assert.equal(rows[2].subtitle, "node");
   assert.deepEqual(
     rows.map((r) => r.rowKey),
-    ["person", "worker", "node", "group"],
+    ["person", "worker", "node", "group", "node:orphan"],
   );
+  assert.equal(rows[4].label, "orphan");
   assert.deepEqual(
     rows[2].actors.map((a) => a.actor_id),
     ["early", "late"],
