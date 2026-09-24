@@ -188,7 +188,7 @@ locally.
 | --- | --- |
 | `age` and `age-keygen` on `PATH` | real age encryption of a backup archive, rather than the stub |
 | `systemd-run` on `PATH` | the compute-job backend probe |
-| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data, and release updates from the five newest promoted releases, including the switched release's live check (needs their `v*` tags fetched) |
+| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data, and release updates from every published non-prerelease `v*` release with current and stale caches, including the switched release's live check (needs authenticated `gh` and every release tag fetched) |
 | `RCP_FROZEN_BACKEND=<path to the built backend binary>` | local unpushed commits through a frozen desktop backend |
 | `RCP_RUN_GIT_CREDENTIALS_LIVE=1` plus `RCP_LIVE_GITHUB_ADMIN_TOKEN` and `RCP_LIVE_GITHUB_REPOSITORY` | live GitHub credential checks |
 | `RCP_RUN_PROJECT_CHECKOUT_LIVE=1` plus `RCP_LIVE_PROJECT_CHECKOUT_SSH_HOST` and `RCP_LIVE_PROJECT_CHECKOUT_SSH_ACCOUNT` | project checkout over real SSH |

@@ -400,6 +400,117 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
         assert hashlib.sha256(captured.read_bytes()).hexdigest() == entry.sha256
 
 
+@pytest.mark.parametrize("failure", ["missing_branch_directory", "untrusted_exception"])
+def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rcp.__main__ import build_parser
+    from rcp.server_ops import backup
+    from rcp.server_ops.cli import CallerIdentity, run_server_command
+    from rcp.server_ops.doctor import LinuxServerDoctorMachine
+    from tests.test_backup_encryption import (
+        CAPTURED_AT,
+        INSTALLATION_ID,
+        _archive_receipt,
+        _installed,
+    )
+
+    data_dir = tmp_path / "data"
+    inventory, repository = _project_inventory(
+        tmp_path, project_id=str(uuid.uuid4()), task_id=str(uuid.uuid4()), with_files=True
+    )
+    receipt_path, digest = _sqlite_capture_with_projects(data_dir, (inventory,))
+    if failure == "missing_branch_directory":
+        component = next((repository / ".research/branches").glob("*/patches"))
+        component.rmdir()
+        expected = component.relative_to(repository).as_posix()
+        category = "local_state_missing"
+    else:
+
+        def fail_checkout(*_args):
+            raise CheckoutInspectionError("token=private-secret ssh://private-host/private-path")
+
+        monkeypatch.setattr(project_files, "verify_checkout_identities", fail_checkout)
+        expected = "repositories"
+        category = "checkout_invalid"
+    receipt = (
+        BackupProjectFileCaptureCoordinator(data_dir)
+        .capture(receipt_path, expected_sha256=digest)
+        .receipt
+    )
+    assert receipt.status == "partial"
+    assert category in receipt.projects[0].unavailable_reason
+    assert expected in receipt.projects[0].unavailable_reason
+    problems = backup.project_capture_problems(receipt.projects)
+    assert inventory.project_id in problems[0]
+    assert all(
+        private not in problems[0] for private in (str(tmp_path), "private-secret", "private-host")
+    )
+    destination = tmp_path / "backups"
+    archive = _archive_receipt(destination).model_copy(
+        update={
+            "capture_status": "partial",
+            "protected_project_count": 1,
+            "uncaptured_project_count": 1,
+        }
+    )
+    outcome = backup.BackupRunOutcome(
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        destination=str(destination),
+        started_at=CAPTURED_AT,
+        completed_at=CAPTURED_AT,
+        status="partial",
+        archive=archive,
+        archive_receipt_sha256="c" * 64,
+        problems=problems,
+    )
+    layout = SimpleNamespace(server_root=tmp_path)
+    backup.write_backup_outcome(outcome, layout)
+    assert "problems" not in json.loads((tmp_path / "backup-status.json").read_text())
+    restored = backup.read_backup_outcome(layout)
+    assert restored.problems == problems
+    args = build_parser().parse_args(("server", "backup", "run", "--machine-readable"))
+    output = StringIO()
+    assert (
+        run_server_command(
+            args,
+            handler=lambda request, identity: backup.prepare_backup_run_command(
+                request, identity, machine=SimpleNamespace(run=lambda: restored)
+            ),
+            identity=CallerIdentity(uid=os.geteuid(), username="rcp", host="example.test"),
+            stream=output,
+        )
+        == 0
+    )
+    fields = {
+        field["name"]: field["value"]
+        for field in json.loads(output.getvalue().splitlines()[-1])["step"]["fields"]
+    }
+    assert fields["problems"] == problems[0]
+    monkeypatch.setattr(backup, "read_backup_archive_receipt", lambda *_args, **_kwargs: archive)
+    doctor_problems: list[str] = []
+    LinuxServerDoctorMachine(
+        layout,
+        runner=lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, "active" if "--property=ActiveState" in argv else "enabled", ""
+        ),
+    )._inspect_backup(
+        _installed(destination), service_uid=os.geteuid(), add_problem=doctor_problems.append
+    )
+    assert problems[0] in doctor_problems
+    diagnostics_path = tmp_path / "backup-diagnostics.json"
+    diagnostics = json.loads(diagnostics_path.read_text())
+    diagnostics["operation_id"] = str(uuid.uuid4())
+    diagnostics_path.write_text(json.dumps(diagnostics))
+    assert backup.read_backup_outcome(layout).problems == ()
+    diagnostics_path.unlink()
+    assert backup.read_backup_outcome(layout).problems == ()
+
+
 @pytest.mark.parametrize("remote_reader", [False, True], ids=("local", "remote"))
 @pytest.mark.parametrize("race", ["pending_accept", "interrupted_accept"])
 def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(

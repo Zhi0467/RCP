@@ -75,18 +75,21 @@ jobs:
   old-data-upgrade:
     name: old-data upgrade
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # A release update is checked from the five newest promoted releases, the
-      # versions a team server may still run (RECENT_RELEASE_COUNT).
-      - name: Fetch the newest release tags
+      # Use the complete GitHub release catalog: tags alone also include builds
+      # and versions that were never promoted. Discovery failures fail the job.
+      - name: Fetch every published release tag
         run: |
-          for tag in $(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -5); do
+          python -c 'from tests.server_upgrade_harness import published_release_tags; print("\n".join(published_release_tags()))' > "$RUNNER_TEMP/upgrade-release-tags"
+          while IFS= read -r tag; do
             git fetch --no-tags --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
-          done
-          git tag --list 'v*'
+          done < "$RUNNER_TEMP/upgrade-release-tags"
+          cat "$RUNNER_TEMP/upgrade-release-tags"
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -101,7 +104,7 @@ jobs:
       - run: uv sync --frozen
       # `-n0` opts out of the repository-wide `-n auto`: one file lands on one
       # worker under `--dist loadfile`, so the rest are started for nothing.
-      - run: uv run pytest tests/test_server_upgrade.py -n0
+      - run: uv run pytest tests/test_server_upgrade.py -n0 --durations=0
         env:
           RCP_RUN_EXACT_BASE_UPGRADE: "1"
 

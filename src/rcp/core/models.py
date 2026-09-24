@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import (
     BaseModel,
@@ -17,6 +18,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined, to_jsonable_python
 
 DISPLAY_NAME_MAX_LENGTH = 120
 EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
@@ -948,26 +951,79 @@ class GraphState(BaseModel):
         return adapt_persisted_graph_state_document(value)
 
 
-def upgrade_graph_projection(graph: dict[str, object]) -> None:
-    """Bring a stored graph projection to the current shape in place.
+def _projection_default(field: FieldInfo) -> Any:
+    """Return a JSON default only when its construction is known to be deterministic."""
+    factory = field.default_factory
+    if factory is None:
+        if field.is_required():
+            return PydanticUndefined
+        return to_jsonable_python(field.default)
+    if factory in (list, dict, tuple, set, frozenset):
+        return to_jsonable_python(factory())
+    if isinstance(factory, type) and issubclass(factory, BaseModel):
+        defaults = {
+            name: _projection_default(child) for name, child in factory.model_fields.items()
+        }
+        if all(value is not PydanticUndefined for value in defaults.values()):
+            return defaults
+    # Never execute an arbitrary factory to guess whether it is deterministic.
+    # The recursive schema invariant names these fields for an explicit migration.
+    return PydanticUndefined
 
-    A projection written by an older release lacks fields added later with empty
-    defaults and may carry the retired coverage report. Only those listed changes
-    apply; derived values such as edge layers stay exactly as stored. A release that
-    adds a graph field with a default must extend this list, or its update refuses.
+
+def _upgrade_projection_value(value: Any, annotation: Any, discriminator: Any = None) -> None:
+    origin, arguments = get_origin(annotation), get_args(annotation)
+    if origin is Annotated:
+        for metadata in arguments[1:]:
+            if isinstance(metadata, FieldInfo) and metadata.discriminator is not None:
+                discriminator = metadata.discriminator
+        _upgrade_projection_value(value, arguments[0], discriminator)
+    elif origin in (Union, UnionType):
+        variants = [variant for variant in arguments if variant is not type(None)]
+        if len(variants) == 1:
+            _upgrade_projection_value(value, variants[0])
+        elif isinstance(discriminator, str) and isinstance(value, dict):
+            discriminator_value = value.get(discriminator)
+            if discriminator == "intent" and discriminator not in value:
+                from rcp.core.operations import _legacy_proposal_intent
+
+                # Resolve as validation does, without persisting the omitted intent.
+                discriminator_value = _legacy_proposal_intent(value)
+            for variant in variants:
+                if isinstance(variant, type) and issubclass(variant, BaseModel):
+                    tag = variant.model_fields.get(discriminator)
+                    if tag and discriminator_value in get_args(tag.annotation):
+                        _upgrade_projection_value(value, variant)
+                        break
+    elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        if not isinstance(value, dict):
+            return
+        for name, field in annotation.model_fields.items():
+            if name not in value:
+                default = _projection_default(field)
+                if default is not PydanticUndefined:
+                    value[name] = default
+            if name in value:
+                _upgrade_projection_value(value[name], field.annotation, field.discriminator)
+    elif origin is dict and isinstance(value, dict):
+        for item in value.values():
+            _upgrade_projection_value(item, arguments[1])
+    elif origin is list and isinstance(value, list):
+        for item in value:
+            _upgrade_projection_value(item, arguments[0])
+
+
+def upgrade_graph_projection(graph: dict[str, object]) -> None:
+    """Fill absent deterministic defaults from the graph model, in place.
+
+    Walk discriminated variants and nested records without validation or
+    normalization: explicit values, unknown keys and stored edge layers survive.
+    Constant defaults, empty container factories and model factories composed of
+    these defaults are safe; other factories require an explicit migration and
+    fail the recursive schema invariant. Retired coverage is explicitly removed.
     """
     graph.pop("coverage", None)
-    edges = graph.get("edges")
-    if isinstance(edges, dict):
-        for edge in edges.values():
-            if isinstance(edge, dict):
-                edge.setdefault("expectation", None)
-    nodes = graph.get("nodes")
-    if isinstance(nodes, dict):
-        for node in nodes.values():
-            if isinstance(node, dict) and node.get("type") == "experiment":
-                node.setdefault("proxies", [])
-                node.setdefault("limitations", [])
+    _upgrade_projection_value(graph, GraphState)
 
 
 def _canonical_uuid4(value: str) -> str:

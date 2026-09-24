@@ -9,15 +9,20 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
 
 import rcp.storage.models as storage_models
 from rcp.api import create_app
+from rcp.core.models import GraphState, upgrade_graph_projection
 from rcp.server_ops.application_validation import _canonical_sha256
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
@@ -201,6 +206,233 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
             )
         )
     assert not (tmp_path / "should-not-exist").exists()
+
+
+def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
+    """Cover every model path and independently omit every defaulted field.
+
+    Keep the literal schema inventory independent of model validation/serialization;
+    separately verify the real serialized Proposal shape.
+    """
+    examples = json.loads(
+        """
+        {
+          "source": {"machine": "local", "truth_repository": "research", "source": "codex", "session_id": "session", "record_uuid": "record", "timestamp": "2026-01-01T00:00:00Z", "excerpt": "claim"},
+          "common": {"title": "Example", "extension_type": null, "extension_fields": {"label": "kept"}, "standing": "accepted", "created_rev": 1, "updated_rev": 2},
+          "nodes": {
+            "question": {"type": "research_question", "question": "Why?", "motivation": "context", "scope": "bounded", "status": "open"},
+            "hypothesis": {"type": "hypothesis", "statement": "A claim", "rationale": "reason", "predictions": ["result"], "scope": "bounded", "status": "active"},
+            "decision": {"type": "decision", "question": "Which?", "options": ["one", "two"], "selected_option": "one", "rationale": "reason", "consequences": ["change"], "status": "decided"},
+            "experiment": {"type": "experiment", "objective": "test", "design": "protocol",
+              "proxies": [{"stands_for": "quantity", "measure": "observation"}], "limitations": ["bounded"],
+              "expected_outcomes": ["result"], "interpretation_rules": ["rule"], "completion_criteria": ["done"],
+              "invocation_ceiling": 7, "status": "completed",
+              "attempts": [{"id": "attempt", "sequence": 1, "purpose": "test", "attempt_kind": "external_run",
+              "decision_bundle": [{"decision_id": "decision", "decision_revision": 2, "selected_option": "one"}],
+              "debug": {"mechanical_fault": "fault", "change": "repair", "predicted_effect": "works"},
+              "configuration": "config", "status": "completed", "job_refs": ["job"], "outcome": "result", "failure_reason": null,
+              "started_at": "2026-01-01T00:00:00Z", "finished_at": "2026-01-01T00:00:00Z"}],
+              "current_summary": "done", "next_action": "review", "current_summary_stale": true, "next_action_stale": true},
+            "evidence": {"type": "evidence", "observation": "result", "interpretation": "finding", "role": "result", "legacy_strength": null, "validity": "qualified", "origin": "internal_run", "artifact_refs": ["result.txt"]},
+            "blocker": {"type": "blocker", "description": "obstacle", "blocker_type": "data", "status": "open", "resolution_condition": "available", "recommended_action": "collect"}
+          },
+          "edge": {"id": "edge", "source": "evidence", "target": "hypothesis", "relation": "supports", "layer": "epistemic", "explanation": "result", "assessment": {"relevance": "direct", "weight": "strong", "scope": "bounded", "qualifications": ["caveat"]}, "expectation": "diverged", "created_rev": 2},
+          "ontology": {
+            "types": [{"name": "special", "definition": "specialized", "base_type": "hypothesis", "layer": "epistemic", "deprecated": false}],
+            "fields": [{"owner_type": "special", "name": "label", "definition": "label", "kind": "text", "required": false, "agent_writable": true, "deprecated": false}],
+            "relations": [{"name": "custom", "definition": "custom", "source_types": ["special"], "target_types": ["hypothesis"], "layer": "epistemic", "deprecated": false}]
+          },
+          "ambiguity": {"id": "ambiguity", "question": "Which?", "why_it_matters": "reason", "candidates": ["one"], "related_node_ids": ["question"], "artifact_refs": ["result.txt"], "status": "open"},
+          "term": {"term": "term", "plain_definition": "meaning", "where_defined": "result.txt"},
+          "coverage": {"repositories_seen": ["research"], "repositories_never_seen": ["other"], "sessions_read": ["session"], "sessions_skipped": ["other"], "earliest_timestamp": "2026-01-01T00:00:00Z", "note": "report"},
+          "current": {
+            "revision": 2,
+            "project_truth_scope": ["research"],
+            "config_revisions": {"research": 1},
+            "proposals": {"proposal": {"id": "proposal", "title": "change",
+              "card": {"situation_cold": "context", "why_human_now": "choice", "consequences": "change", "decision_needed": "approve"},
+              "related_node_ids": ["hypothesis"], "related_edge_ids": ["edge"], "related_config_keys": ["research"],
+              "base_rev": 1, "status": "pending", "created_by": "agent", "created_by_operation_id": "operation",
+              "raised_rev": 2, "resolved_rev": null, "resolved_by": null, "resolved_by_operation_id": null,
+              "resolution_reason": null, "rejection_reason": null}},
+            "ambiguities": {"ambiguity": {"id": "ambiguity", "question": "Which?", "why_it_matters": "reason", "candidates": ["one"], "related_node_ids": ["question"], "artifact_refs": ["result.txt"], "status": "open", "raised_rev": 1}},
+            "glossary": {"term": {"term": "term", "plain_definition": "meaning", "where_defined": "result.txt", "updated_rev": 2}},
+            "validation_messages": [{"level": "flag", "code": "example", "message": "message", "patch_revision": 2, "related_node_ids": ["hypothesis"], "related_edge_ids": ["edge"], "operation_index": 0, "rule_id": "rule", "cause_chain": [{"code": "cause"}], "failed_invariant": "example"}],
+            "belief_transitions": [{"hypothesis_id": "hypothesis", "from_status": "proposed", "to_status": "active", "revision": 2, "cause": {"kind": "evidence_edge", "ref_id": "ref"}}],
+            "replay_status": "degraded",
+            "replay_failure": {"revision": 2, "created_at": "2026-01-01T00:00:00Z", "code": "example", "message": "failure"},
+            "last_refresh_at": "2026-01-01T00:00:00Z"
+          }
+        }
+        """
+    )
+    source, common, nodes = examples["source"], examples["common"], examples["nodes"]
+    nodes = {key: dict(common, id=key, source_refs=[source], **node) for key, node in nodes.items()}
+    nodes["experiment"]["attempts"][0]["source_refs"] = [source]
+    edge, ontology = examples["edge"], examples["ontology"]
+    ambiguity, term, coverage = examples["ambiguity"], examples["term"], examples["coverage"]
+    causes = [
+        dict(kind=kind, ref_id="ref")
+        for kind in ("evidence_edge", "decision", "proposal_resolution")
+    ]
+    causes.append(dict(kind="human_edit"))
+    updates = [
+        dict(id="hypothesis", changes={"title": "changed"}, cause=cause, base_updated_rev=2)
+        for cause in causes
+    ]
+    supersedes = [
+        dict(id="hypothesis", superseded_by="other", explanation="reason", cause=causes[0])
+    ]
+    merges = [
+        dict(duplicate="hypothesis", canonical="other", explanation="reason", cause=causes[0])
+    ]
+    new_edge = {key: value for key, value in edge.items() if key not in {"layer", "created_rev"}}
+    operations = [
+        dict(op="update_nodes", intent="content_change", nodes=updates),
+        dict(op="update_nodes", intent="status_change", nodes=updates),
+        dict(
+            op="set_standing", intent="standing_change", node_id="hypothesis", standing="accepted"
+        ),
+        dict(op="remove_nodes", intent="removal", node_ids=["hypothesis"]),
+        dict(op="supersede_nodes", intent="supersede", nodes=supersedes),
+        dict(op="merge_nodes", intent="merge", merges=merges),
+        dict(
+            op="create_edges", intent="protected_relation_change", edges=[new_edge], edge_ids=None
+        ),
+        dict(op="remove_edges", intent="protected_relation_change", edges=None, edge_ids=["edge"]),
+    ]
+    operations += [
+        dict(operation, intent="legacy_" + operation["intent"])
+        for operation in operations
+        if operation["intent"] != "standing_change"
+    ]
+    operations += [
+        dict(
+            op="set_project_truth_scope",
+            intent="legacy_project_truth_scope_change",
+            truth_scope=["research"],
+            repository=dict(alias="research", machine="local", path="/workspace/research"),
+        ),
+        dict(op="set_ontology", intent="legacy_ontology_change", ontology=ontology),
+        dict(op="create_nodes", intent="legacy_create_nodes", nodes=list(nodes.values())),
+        dict(op="create_ambiguities", intent="legacy_create_ambiguities", ambiguities=[ambiguity]),
+        dict(
+            op="resolve_ambiguities",
+            intent="legacy_resolve_ambiguities",
+            resolutions=[dict(id="ambiguity", status="resolved")],
+        ),
+        dict(op="upsert_glossary", intent="legacy_upsert_glossary", terms=[term]),
+        dict(op="set_coverage", intent="legacy_set_coverage", coverage=coverage),
+    ]
+    current = examples["current"]
+    current.update(
+        nodes=nodes,
+        ontology=ontology,
+        edges={
+            "edge": edge,
+            # Materialization resolves this declared action relation to a seam.
+            "blocked": dict(
+                edge,
+                id="blocked",
+                source="question",
+                target="blocker",
+                relation="blocked_by",
+                layer="seam",
+                assessment=None,
+            ),
+        },
+    )
+    current["proposals"]["proposal"]["ops"] = operations
+    # Stored JSON has no shared object identities between repeated examples.
+    current = json.loads(json.dumps(current))
+    reachable = set()
+    unsafe_defaults = []
+
+    def discover(annotation):
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if annotation not in reachable:
+                reachable.add(annotation)
+                for name, field in annotation.model_fields.items():
+                    factory = field.default_factory
+                    if factory is not None and factory not in (list, dict, tuple, set, frozenset):
+                        if isinstance(factory, type) and issubclass(factory, BaseModel):
+                            discover(factory)
+                        else:
+                            unsafe_defaults.append(f"{annotation.__name__}.{name}")
+                    discover(field.annotation)
+        else:
+            for argument in get_args(annotation):
+                discover(argument)
+
+    discover(GraphState)
+    assert not unsafe_defaults, (
+        "Defaults require explicit migration (unproven deterministic factory): "
+        + ", ".join(sorted(unsafe_defaults))
+    )
+    covered = set()
+    upgrades = []
+
+    def check_paths(model, document, path=()):
+        if isinstance(model, BaseModel):
+            covered.add(type(model))
+            assert set(document) == set(type(model).model_fields), (
+                f"{path}: missing explicit field/upgrade example"
+            )
+            for name, field in type(model).model_fields.items():
+                if not field.is_required():
+                    default = to_jsonable_python(field.get_default(call_default_factory=True))
+                    upgrades.append(((*path, name), default))
+                check_paths(getattr(model, name), document[name], (*path, name))
+        elif isinstance(model, dict):
+            for key, value in model.items():
+                check_paths(value, document[key], (*path, key))
+        elif isinstance(model, list):
+            for index, value in enumerate(model):
+                check_paths(value, document[index], (*path, index))
+
+    check_paths(GraphState.model_validate(deepcopy(current)), current)
+    assert covered == reachable, f"Missing populated examples: {reachable - covered}"
+    # Every defaulted field is omitted independently, preserving all other
+    # explicit values. Model-derived defaults are the only expected additions.
+    for path, default in upgrades:
+        legacy = deepcopy(current)
+        expected = deepcopy(current)
+        old_parent, expected_parent = legacy, expected
+        for component in path[:-1]:
+            old_parent, expected_parent = old_parent[component], expected_parent[component]
+        del old_parent[path[-1]]
+        expected_parent[path[-1]] = default
+        upgrade_graph_projection(legacy)
+        assert legacy == expected, path
+        upgrade_graph_projection(legacy)
+        assert legacy == expected, path
+    # Real Proposal serialization omits legacy intents, including create_nodes
+    # with nested Experiments. Compare that stored shape with a fresh serialization.
+    graph = GraphState.model_validate(current)
+    operation = next(op for op in graph.proposals["proposal"].ops if op.op == "create_nodes")
+    experiment = next(node for node in operation.nodes if node.type == "experiment")
+    experiment.invocation_ceiling = type(experiment).model_fields["invocation_ceiling"].default
+    serialized = graph.model_dump(mode="json")
+    legacy = deepcopy(serialized)
+    operation = next(
+        op for op in legacy["proposals"]["proposal"]["ops"] if op["op"] == "create_nodes"
+    )
+    assert "intent" not in operation
+    experiment = next(node for node in operation["nodes"] if node["type"] == "experiment")
+    del experiment["invocation_ceiling"]
+    upgrade_graph_projection(legacy)
+    assert legacy == serialized
+    upgrade_graph_projection(legacy)
+    assert legacy == serialized
+    current["future_graph_field"] = {"kept": True}
+    current["nodes"]["experiment"]["future_node_field"] = "kept"
+    current["edges"]["edge"]["assessment"]["scope"] = "  unnormalized  "
+    preserved = deepcopy(current)
+    preserved["coverage"] = coverage
+    upgrade_graph_projection(preserved)
+    assert preserved == current  # Includes populated defaults and the stored edge layers.
+    upgrade_graph_projection(preserved)
+    assert preserved == current
 
 
 @pytest.mark.parametrize("failure", [None, "changed_graph", "changed_startup", "tampered_graph"])

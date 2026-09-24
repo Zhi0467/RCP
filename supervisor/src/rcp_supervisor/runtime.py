@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import selectors
 import signal
 import socket
@@ -23,10 +24,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import ApplicationCommandError, SupervisorError, safe_diagnostic
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.limits import (
     APP_COMMAND_TIMEOUT_SECONDS,
+    CONTROL_MAX_ERROR_CODE_CHARS,
+    CONTROL_MAX_ERROR_MESSAGE_CHARS,
     CONTROL_MAX_RESPONSE_BYTES,
     INSTALL_TIMEOUT_SECONDS,
     MAINTENANCE_TIMEOUT_SECONDS,
@@ -342,10 +345,6 @@ class SystemRuntime:
                             if offset == len(payload):
                                 selector.unregister(key.fileobj)
                                 key.fileobj.close()
-                if process.returncode:
-                    raise SupervisorError(
-                        f"Application subprocess refused the deployment operation; inspect {error_path}."
-                    )
                 if (
                     sum(os.fstat(log.fileno()).st_size for log in (output, error))
                     > MAX_APP_OUTPUT_BYTES
@@ -357,6 +356,11 @@ class SystemRuntime:
                 data = output.read(MAX_APP_OUTPUT_BYTES + 1)
                 if len(data) > MAX_APP_OUTPUT_BYTES:
                     raise SupervisorError("Application subprocess output exceeded its bound.")
+                if process.returncode:
+                    raise ApplicationCommandError(
+                        f"Application subprocess refused the deployment operation; inspect {error_path}.",
+                        data,
+                    )
                 return data
             finally:
                 self._stop_child(process)
@@ -495,13 +499,46 @@ class SystemRuntime:
             (length,) = struct.unpack("!I", receive(4))
             if not 1 <= length <= CONTROL_MAX_RESPONSE_BYTES:
                 raise SupervisorError("Private maintenance response exceeds its limit.")
-            result = json.loads(receive(length))
+
+            def unique_fields(pairs):
+                result = dict(pairs)
+                if len(result) != len(pairs):
+                    raise ValueError("duplicate control response fields")
+                return result
+
+            try:
+                result = json.loads(receive(length), object_pairs_hook=unique_fields)
+            except (ValueError, UnicodeError) as exc:
+                raise SupervisorError("Private maintenance response is malformed.") from exc
         if (
             not isinstance(result, dict)
+            or set(result)
+            - {"protocol_version", "request_id", "instance_id", "ok", "result", "error"}
             or result.get("request_id") != request["request_id"]
             or result.get("instance_id") != metadata["instance_id"]
+            or type(result.get("protocol_version")) is not int
             or result.get("protocol_version") != 10
-            or result.get("ok") is not True
+        ):
+            raise SupervisorError("Private maintenance response identity is invalid.")
+        if result.get("ok") is False:
+            error = result.get("error")
+            if (
+                result.get("result") is not None
+                or not isinstance(error, dict)
+                or set(error) != {"code", "message"}
+                or not isinstance(error["code"], str)
+                or not 1 <= len(error["code"]) <= CONTROL_MAX_ERROR_CODE_CHARS
+                or re.fullmatch(r"[a-z][a-z0-9_]*", error["code"]) is None
+                or not isinstance(error["message"], str)
+                or not 1 <= len(error["message"]) <= CONTROL_MAX_ERROR_MESSAGE_CHARS
+                or not error["message"].isprintable()
+                or not error["message"].strip()
+            ):
+                raise SupervisorError("Private maintenance refusal is malformed.")
+            raise SupervisorError(f"{error['code']}: {safe_diagnostic(error['message'])}")
+        if (
+            result.get("ok") is not True
+            or result.get("error") is not None
             or not isinstance(result.get("result"), dict)
             or result["result"].get("pid") != peer_pid
             or result["result"].get("instance_id") != metadata["instance_id"]
@@ -514,20 +551,24 @@ class SystemRuntime:
         current = release or read_selected_receipt(
             self.paths.selected, releases_root=self.paths.releases_root
         )
-        output = self._service_output(
-            [
-                self.python(current),
-                "-I",
-                "-m",
-                "rcp",
-                "server",
-                "backup",
-                "run",
-                "--machine-readable",
-            ],
-            timeout=APP_COMMAND_TIMEOUT_SECONDS,
-            release=current,
-        )
+        failure = None
+        try:
+            output = self._service_output(
+                [
+                    self.python(current),
+                    "-I",
+                    "-m",
+                    "rcp",
+                    "server",
+                    "backup",
+                    "run",
+                    "--machine-readable",
+                ],
+                timeout=APP_COMMAND_TIMEOUT_SECONDS,
+                release=current,
+            )
+        except ApplicationCommandError as exc:
+            output, failure = exc.output, exc
         try:
             events = [json.loads(line) for line in output.splitlines() if line.strip()]
             fields = {
@@ -535,11 +576,25 @@ class SystemRuntime:
                 for event in events
                 for field in event.get("step", {}).get("fields", [])
             }
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            if failure is not None:
+                raise failure from exc
             raise SupervisorError("Protected backup did not return a readable receipt.") from exc
-        if fields.get("backup_status") != "protected" or fields.get("uncaptured_projects") != 0:
+        if (
+            failure is not None
+            or fields.get("backup_status") != "protected"
+            or fields.get("uncaptured_projects") != 0
+        ):
+            problems = fields.get("problems")
+            detail = (
+                f" {safe_diagnostic(problems)}"
+                if isinstance(problems, str) and problems.strip()
+                else " The source returned no per-project cause; inspect its retained capture receipt."
+            )
             raise SupervisorError(
                 "A complete verified protected backup is required before deployment."
+                + detail
+                + (f" {failure}" if failure is not None else "")
             )
 
     def enter_maintenance(self, operation: dict) -> dict:
@@ -770,7 +825,7 @@ class SystemRuntime:
     def probe(self, release: dict, operation: dict, proof: dict | None) -> None:
         self.require_capability(release)
         self.prepare_control_directory()
-        with self._log("probe") as (log, _):
+        with self._log("probe") as (log, log_path):
             process = subprocess.Popen(
                 self.owned_argv(
                     [
@@ -804,15 +859,20 @@ class SystemRuntime:
             )
             try:
                 deadline = time.monotonic() + PROBE_TIMEOUT_SECONDS
+                last_error = "No readiness response was received."
                 while True:
                     if process.poll() is not None:
-                        raise SupervisorError("The fenced application exited before verification.")
+                        raise SupervisorError(
+                            "Probe readiness: the fenced application exited before verification; "
+                            f"last error: {last_error}; inspect {log_path}."
+                        )
                     if (
                         time.monotonic() >= deadline
                         or os.fstat(log.fileno()).st_size > MAX_APP_OUTPUT_BYTES
                     ):
                         raise SupervisorError(
-                            "The fenced application did not become ready within its bounds."
+                            "Probe readiness: the fenced application did not become ready within "
+                            f"its bounds; last error: {last_error}; inspect {log_path}."
                         )
                     try:
                         metadata = self.metadata()
@@ -835,7 +895,8 @@ class SystemRuntime:
                                 "The fenced application did not preserve closed admission."
                             )
                         break
-                    except (OSError, SupervisorError):
+                    except (OSError, SupervisorError) as exc:
+                        last_error = safe_diagnostic(str(exc))
                         time.sleep(0.1)
                 if proof is not None:
                     verified = self.control(
