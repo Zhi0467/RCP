@@ -276,8 +276,9 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 1
     assert not list(inputs.glob("*human-request.txt"))
-    assert not list(inputs.glob("*discuss*.md"))
-    assert not list(inputs.glob("task-*-initial.md"))
+    assert [path.name for path in inputs.glob("task-*.md")] == [
+        f"task-{execution.operation_id}-prompt.md"
+    ]
     baseline = store.chat_session_context("codex", "laptop", session_id)
     assert baseline is not None
     snapshot = json.loads(baseline.snapshot_json)
@@ -301,7 +302,9 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         for item in store.agent_task_receipts(execution.operation_id)
         if item.category == "agent_prompt"
     )
-    assert launch_receipt.payload["contract_path"] == str(master_path)
+    assert launch_receipt.payload["contract_path"] == str(
+        inputs / f"task-{execution.operation_id}-prompt.md"
+    )
 
 
 @pytest.mark.parametrize("mode", ["discuss", "work"])
@@ -680,7 +683,8 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
         for item in store.agent_task_receipts(second_operation_id)
         if item.category == "agent_prompt"
     )
-    assert launch_receipt.payload["contract_path"] == str(master_path)
+    contract_path = Path(launch_receipt.payload["contract_path"])
+    assert contract_path.read_text(encoding="utf-8") == prompt
 
     third_message = "No package invocation on this turn."
     third_response = client.post(
@@ -929,8 +933,9 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]
 
 
-def test_a_work_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
-    manifest, tmp_path
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
+    manifest, tmp_path, mode: str
 ) -> None:
     """The launch receipt drops an oversized prompt whole; the durable contract
     must still let a later continuation find the turn's original prompt."""
@@ -946,9 +951,8 @@ def test_a_work_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
     launcher = _RecordingLauncher("oversized-session")
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in stream_work_run(
-            service, launcher, request, tmp_path / "data", execution=execution
-        ):
+        run = stream_work_run if request.mode == "work" else stream_discuss_run
+        async for frame in run(service, launcher, request, tmp_path / "data", execution=execution):
             yield frame
 
     app.state.background_tasks.stream = stream
@@ -959,7 +963,7 @@ def test_a_work_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
             "chat_id": "7d1e2f30-4a5b-4c6d-8e7f-90a1b2c3d4e5",
             "message": "Long assignment. " * (AGENT_TASK_RECEIPT_MAX_BYTES // 16),
             "run_truth_scope": ["repo-a"],
-            "mode": "work",
+            "mode": mode,
         },
     )
     assert response.status_code == 202, response.text

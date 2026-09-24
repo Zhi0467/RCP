@@ -62,6 +62,7 @@ from rcp.runs.chat import (
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
     _stage_chat_patch_inputs,
+    _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     finalize_artifact_revision,
@@ -287,17 +288,7 @@ def _prepare_work_chat_prompt(
             execution_instructions_path, write_scope.workspace_root
         ),
     )
-    # The inline prompt is the turn's original contract. Record it durably so a
-    # later Resume or Retry finds it without the bounded launch receipt.
-    contract_path, _ = _stage_task_contract(
-        local_stage,
-        remote_stage,
-        f"task-{_task_token(execution)}-prompt.md",
-        prompt,
-        execution=execution,
-        role="work",
-    )
-    return prompt, contract_path
+    return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
 def _work_execution_instructions(turn: WorkTurn) -> str:

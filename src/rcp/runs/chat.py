@@ -45,6 +45,8 @@ from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
     _stage_or_reuse_task_input,
+    _stage_task_contract,
+    _task_token,
     _touch_local_stage,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
@@ -139,6 +141,28 @@ def _stage_chat_patch_inputs(
         validator_mailbox_id=validator_staged.credential.mailbox_id,
         validator_staged=validator_staged,
     )
+
+
+def _stage_chat_turn_contract(
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    prompt: str,
+) -> str:
+    """Record a chat turn's inline prompt as its original contract.
+
+    A later Resume or Retry finds it here, not in the bounded launch receipt.
+    """
+
+    contract_path, _ = _stage_task_contract(
+        local_stage,
+        remote_stage,
+        f"task-{_task_token(execution)}-prompt.md",
+        prompt,
+        execution=execution,
+        role="chat_turn",
+    )
+    return contract_path
 
 
 def _prepare_chat_prompt_state(

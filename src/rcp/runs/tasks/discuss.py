@@ -36,6 +36,7 @@ from rcp.runs.chat import (
     _record_chat_context_receipt,
     _retained_chat_patch_values,
     _stage_chat_patch_inputs,
+    _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     stage_artifact_context,
@@ -155,7 +156,7 @@ def _prepare_discuss_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
-    return prompt, retained_master_path
+    return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
 DISCUSS_FINALIZATION_CONTEXT_ROLE = "discuss_finalization_context"
@@ -791,7 +792,7 @@ async def stream_discuss_run(
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
                 )
-                prompt, retained_master_path = _prepare_discuss_chat_prompt(
+                prompt, contract_path = _prepare_discuss_chat_prompt(
                     execution,
                     request,
                     local_stage=local_stage,
@@ -802,7 +803,6 @@ async def stream_discuss_run(
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
                 )
-                contract_path = retained_master_path
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
