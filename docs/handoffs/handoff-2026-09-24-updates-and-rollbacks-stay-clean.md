@@ -176,7 +176,7 @@ preparation failure does not require a proof that was never produced. When no
 semantic baseline exists, exact restoration plus the recorded pre-stop healthy
 identity permits returning to old startup; label this as structural rollback
 verification, not successful semantic rehearsal. Qualification covers this
-failure separately. The proposed decision makes this change to old-live-probe
+failure separately. The decision makes this change to old-live-probe
 semantics explicit.
 
 ### First update and separately shipped supervisor
