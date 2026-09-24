@@ -24,8 +24,10 @@ from rcp.storage import AppStore
 from .server_upgrade_harness import (
     build_exact_base_checkout,
     build_exact_base_fixture,
+    build_release_checkout,
     exact_base_gate_enabled,
     immutable_fixture_directories,
+    latest_release_tags,
     prepare_release_update_with,
     verify_fixture_integrity,
     verify_fixture_registry,
@@ -143,16 +145,9 @@ def test_immutable_server_boundaries_converge_on_the_baseline_schema(
     assert _normalized_schema(upgraded) == _normalized_schema(baseline)
 
 
-@pytest.fixture(scope="module")
-def exact_base_checkout(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
-    return build_exact_base_checkout(tmp_path_factory.mktemp("exact-base") / "build")
-
-
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
-def test_exact_candidate_base_upgrades_and_starts(
-    exact_base_checkout: tuple[Path, str], tmp_path: Path
-) -> None:
-    checkout, base_commit = exact_base_checkout
+def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
+    checkout, base_commit = build_exact_base_checkout(tmp_path / "base-build")
     fixture = build_exact_base_fixture(checkout, base_commit, tmp_path)
     metadata = verify_fixture_integrity(fixture)
 
@@ -161,17 +156,22 @@ def test_exact_candidate_base_upgrades_and_starts(
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
-def test_exact_candidate_base_release_update_validates(
-    exact_base_checkout: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("release_index", [0, 1], ids=["latest-release", "previous-release"])
+def test_release_update_from_a_recent_release_validates(
+    release_index: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A release update prepared by the base must validate under the candidate.
+    """A release update prepared by a recent promoted release must validate here.
 
-    This is the server's graph comparison across versions: a candidate that changes
-    a replayed graph without listing the change in the update check is refused.
+    This is the server's graph comparison across versions, from the releases a team
+    server may still run: a candidate that changes a replayed graph, or drops the
+    handling of an older one, without listing it in the update check is refused.
     """
     from rcp.server_ops.deployment import ValidateRequest, validate
 
-    checkout, _base_commit = exact_base_checkout
+    tags = latest_release_tags()
+    if len(tags) <= release_index:
+        pytest.fail("the upgrade gate needs the two latest release tags fetched")
+    checkout = build_release_checkout(tags[release_index], tmp_path / "release")
     root = tmp_path / "update"
     prepared = prepare_release_update_with(checkout, root)
     monkeypatch.setattr(

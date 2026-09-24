@@ -1,6 +1,6 @@
 """Capture representative team data and prepare its release update.
 
-The old-data upgrade gate runs this with the previous commit's code, then validates
+The old-data upgrade gate runs this with a recent release's code, then validates
 the prepared update with the candidate, as a real server update does.
 """
 
