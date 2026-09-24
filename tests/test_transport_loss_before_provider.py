@@ -307,14 +307,13 @@ async def test_a_failed_experiment_stage_preparation_marks_only_a_lost_link(
     assert execution.stage_unreachable is (type(failure) is StateUnreachable)
 
 
-@pytest.mark.parametrize("evidence", ["contract", "session", None])
+@pytest.mark.parametrize("sent", [True, False])
 def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
-    monkeypatch: pytest.MonkeyPatch, evidence: str | None
+    monkeypatch: pytest.MonkeyPatch, sent: bool
 ) -> None:
     """A Work turn that lost its link while preparing its stage never composed a
     prompt, so its reattempt has no original to continue and must not refuse.
-    What it did record before the drop is bookkeeping, never a prompt. A native
-    session proves a provider was reached even when the prompt receipt is gone."""
+    What it did record before the drop is bookkeeping, never a prompt."""
 
     from rcp.runs import chat, shared
     from rcp.runs import experiment_loop as experiment_context
@@ -338,13 +337,10 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
         work_turn_runtime.WORK_CORRECTION_SESSION_ROLE,
     ]
     records = {
-        "retry": SimpleNamespace(parent_operation_id="dropped", native_session_id=None),
-        "dropped": SimpleNamespace(
-            parent_operation_id=None,
-            native_session_id="session" if evidence == "session" else None,
-        ),
+        "retry": SimpleNamespace(parent_operation_id="dropped"),
+        "dropped": SimpleNamespace(parent_operation_id=None),
     }
-    roles = bookkeeping + (["work"] if evidence == "contract" else [])
+    roles = bookkeeping + (["work"] if sent else [])
     receipts: list[str] = []
     store = SimpleNamespace(
         agent_task=records.get,
@@ -363,5 +359,5 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
         "current.md",
     )
 
-    assert path == ("original.md" if evidence else "current.md")
-    assert receipts == ([] if evidence else ["retry_without_sent_prompt"])
+    assert path == ("original.md" if sent else "current.md")
+    assert receipts == ([] if sent else ["retry_without_sent_prompt"])

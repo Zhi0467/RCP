@@ -470,8 +470,7 @@ def retry_original_contract_path(
 
     An attempt whose link dropped while its stage was prepared never composed a
     prompt, so no ancestor holds one. This retry is then the first time the turn
-    is sent, and its current contract is the original. An ancestor with a native
-    session did reach a provider, so a pruned prompt receipt fails closed instead.
+    is sent, and its current contract is the original.
     """
 
     record = execution.store.agent_task(execution.operation_id)
@@ -480,16 +479,12 @@ def retry_original_contract_path(
         ancestor = execution.store.agent_task(ancestor_id)
         if ancestor is None:
             break
-        if (
-            ancestor.native_session_id is not None
-            or any(
-                contract.role not in _NON_PROMPT_CONTRACT_ROLES
-                for contract in execution.store.agent_task_contracts(ancestor_id)
-            )
-            or any(
-                receipt.category == "agent_prompt"
-                for receipt in execution.store.agent_task_receipts(ancestor_id)
-            )
+        if any(
+            contract.role not in _NON_PROMPT_CONTRACT_ROLES
+            for contract in execution.store.agent_task_contracts(ancestor_id)
+        ) or any(
+            receipt.category == "agent_prompt"
+            for receipt in execution.store.agent_task_receipts(ancestor_id)
         ):
             return _parent_task_contract_path(execution, local_stage, remote_stage)
         ancestor_id = ancestor.parent_operation_id

@@ -1176,10 +1176,7 @@ A Work Resume or Retry continues the prompt its lineage first sent. Every
 launch, including a chat-protocol or Auto-research child Work turn, records the
 prompt it sends as a durable task contract. The `agent_prompt` launch receipt is
 a bounded diagnostic (`AGENT_TASK_RECEIPT_MAX_BYTES`) that may be omitted or
-pruned, so recovery never depends on it alone. A Work lineage with no prompt
-contract retries as the first send only when no ancestor reached a provider; one
-that holds a native session but no recoverable prompt refuses instead of
-treating the new assignment as the original.
+pruned, so recovery never depends on it alone.
 
 New automatic launches wait until the machine has stayed awake long enough to
 finish one (`AUTOMATIC_LAUNCH_AWAKE_SECONDS`). A laptop sleeping with its lid
