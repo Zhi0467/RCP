@@ -13422,8 +13422,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   position: relative;
   min-width: 0;
 }
-.roster-scroll,
-.roster-table-scroll {
+.roster-scroll {
   max-width: 100%;
   overflow-x: auto;
 }
@@ -13582,19 +13581,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-size: 12px;
 }
 .roster-below {
-  display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(240px, 1fr);
-  gap: 24px;
   margin-top: 24px;
-}
-.roster-detail-only {
-  grid-template-columns: minmax(0, 1fr);
-}
-.roster-below > .roster-table-scroll {
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
+  max-width: 760px;
 }
 .episode-roster .roster-item-icon {
   display: inline-flex;
@@ -13624,28 +13612,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-size: 15px;
   margin: 0 0 12px;
 }
-.roster-wakes {
-  min-width: 520px;
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-  font-size: 12px;
-}
-.roster-wakes th,
-.roster-wakes td {
-  padding: 10px 8px;
-  vertical-align: top;
-  border-bottom: 1px solid var(--line);
-}
-.roster-wakes td:nth-child(2) {
-  min-width: 120px;
-}
-.roster-wakes p {
-  margin-bottom: 0;
-}
-.roster-selected {
-  background: var(--surface-cool);
-}
 .roster-detail {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -13661,6 +13627,10 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .roster-detail dd {
   margin: 0;
+}
+.roster-detail h4 {
+  font-size: 12px;
+  margin: 14px 0 6px;
 }
 .roster-detail blockquote {
   margin: 16px 0;
@@ -13681,9 +13651,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   outline-offset: 3px;
 }
 @media (max-width: 800px) {
-  .roster-below {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .roster-detail {
     padding: 16px 0 0;
     border-left: 0;

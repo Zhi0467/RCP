@@ -80,12 +80,12 @@ export function timelineRows(
         actors: [actor],
       });
   }
-  // A graph watcher names a node that may have no actor; its signals still need a row.
+  // A graph watcher names a node that may have no actor; its signals get a watcher row.
   for (const signal of data.signals)
     if (!rows.has(signal.source_row_key))
       rows.set(signal.source_row_key, {
         rowKey: signal.source_row_key,
-        kind: "experiment",
+        kind: "watcher",
         label: signal.source_row_key.replace(/^node:/, ""),
         subtitle: null,
         actors: [],

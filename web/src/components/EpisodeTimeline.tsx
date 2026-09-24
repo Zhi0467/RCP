@@ -304,6 +304,7 @@ export function EpisodeTimeline({
   const selectedMark = data.marks.find((m) => m.item_id === selected);
   const selectedActor = selected ? actor(selected) : undefined,
     selectedSpan = selected ? span(selected) : undefined;
+  const wake = wakes.find((w) => w.span.span_id === selectedSpan?.span_id);
   const child = childExperiments.find(
     (e) =>
       e.episode.episode_id ===
@@ -636,7 +637,7 @@ export function EpisodeTimeline({
                         className="roster-mark"
                       />
                       <text x={x(m.at) + 9} y={actorY(m.actor_id) + 4} className="roster-tick">
-                        stopped
+                        stop requested
                       </text>
                     </>,
                   ),
@@ -869,87 +870,7 @@ export function EpisodeTimeline({
           </div>
         )}
       </div>
-      <div
-        className={`roster-below ${data.mode === "experiment_loop" ? "roster-detail-only" : ""}`}
-      >
-        {data.mode === "auto_research" && (
-          <div className="roster-table-scroll">
-            <h3>Orchestrator wakes</h3>
-            <table className="roster-wakes">
-              <thead>
-                <tr>
-                  <th>Turn</th>
-                  <th>Time</th>
-                  <th>Cause / landed</th>
-                  <th>What it did</th>
-                </tr>
-              </thead>
-              <tbody>
-                {wakes.map((w) => (
-                  <tr
-                    onClick={() => choose(w.span.span_id)}
-                    key={w.span.span_id}
-                    className={selected === w.span.span_id ? "roster-selected" : ""}
-                  >
-                    <td>{refButton(w.span.span_id)}</td>
-                    <td>
-                      {stamp(w.span.started_at)}
-                      <br />
-                      {duration(w.span)} ·{" "}
-                      {w.span.invocation_number === null
-                        ? "no invocation"
-                        : `inv ${w.span.invocation_number}`}
-                    </td>
-                    <td>
-                      {w.cause}
-                      {w.landed.map((i) => (
-                        <div key={i.item_id}>{refButton(i.item_id, i.label)}</div>
-                      ))}
-                    </td>
-                    <td>
-                      {w.actions.map((i) => (
-                        <div key={i.item_id}>
-                          {i.at && <time dateTime={i.at}>{clock(Date.parse(i.at))} · </time>}
-                          {i.icon ? (
-                            <>
-                              {i.label}{" "}
-                              <button
-                                type="button"
-                                className="roster-item-icon"
-                                aria-label={i.label}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  choose(i.item_id, e.currentTarget);
-                                }}
-                              >
-                                {i.icon === "document" ? (
-                                  <svg
-                                    width="12"
-                                    height="16"
-                                    viewBox="0 0 12 16"
-                                    aria-hidden="true"
-                                  >
-                                    <rect x="1" y="1" width="10" height="14" rx="1" />
-                                    <path d="M3 5h6 M3 8h6 M3 11h4" />
-                                  </svg>
-                                ) : (
-                                  "✉"
-                                )}
-                              </button>
-                            </>
-                          ) : (
-                            refButton(i.item_id, i.label)
-                          )}
-                        </div>
-                      ))}
-                      {w.span.headline && <p>{w.span.headline}</p>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <div className="roster-below">
         {selected && (
           <aside className="roster-detail" aria-label="Timeline selection">
             <h3>{title(selected)}</h3>
@@ -1011,10 +932,55 @@ export function EpisodeTimeline({
                 <p>
                   {stamp(selectedSpan.started_at)} · {duration(selectedSpan)} ·{" "}
                   {selectedSpan.status}
+                  {selectedSpan.invocation_number !== null && (
+                    <> · invocation {selectedSpan.invocation_number}</>
+                  )}
                 </p>
-                <p>{selectedSpan.cause}</p>
-                {selectedSpan.invocation_number !== null && (
-                  <p>Invocation {selectedSpan.invocation_number}</p>
+                {wake ? (
+                  <>
+                    <p>{wake.cause}</p>
+                    {wake.landed.length > 0 && (
+                      <>
+                        <h4>Landed</h4>
+                        {wake.landed.map((i) => (
+                          <div key={i.item_id}>{refButton(i.item_id, i.label)}</div>
+                        ))}
+                      </>
+                    )}
+                    {wake.actions.length > 0 && <h4>Did</h4>}
+                    {wake.actions.map((i) => (
+                      <div key={i.item_id}>
+                        {i.at && <time dateTime={i.at}>{clock(Date.parse(i.at))} · </time>}
+                        {i.icon ? (
+                          <>
+                            {i.label}{" "}
+                            <button
+                              type="button"
+                              className="roster-item-icon"
+                              aria-label={i.label}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                choose(i.item_id, e.currentTarget);
+                              }}
+                            >
+                              {i.icon === "document" ? (
+                                <svg width="12" height="16" viewBox="0 0 12 16" aria-hidden="true">
+                                  <rect x="1" y="1" width="10" height="14" rx="1" />
+                                  <path d="M3 5h6 M3 8h6 M3 11h4" />
+                                </svg>
+                              ) : (
+                                "✉"
+                              )}
+                            </button>
+                          </>
+                        ) : (
+                          refButton(i.item_id, i.label)
+                        )}
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <p>{selectedSpan.cause}</p>
                 )}
                 {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
                 {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
@@ -1036,7 +1002,7 @@ export function EpisodeTimeline({
                 <button onClick={(e) => choose(selected, e.currentTarget)}>Open full text</button>
               </>
             )}
-            {selected && (
+            {!wake && (
               <div className="roster-related">
                 {[...(related ?? [])]
                   .filter((id) => id !== selected && (actor(id) || span(id) || item(id)))

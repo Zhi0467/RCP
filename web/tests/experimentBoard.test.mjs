@@ -1,4 +1,3 @@
-import { timelineFixture } from "./fixtures/timeline.mjs";
 import assert from "node:assert/strict";
 import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
@@ -25,7 +24,6 @@ const {
   projectHashAfterViewChange,
   projectRunsNeedsExperimentIndex,
 } = await server.ssrLoadModule("/src/experimentBoard.ts");
-const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
@@ -505,68 +503,6 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
   // the child run card and must not recreate the retired Turns projection.
   assert.doesNotMatch(html, /campaign-task depth-1/);
   assert.doesNotMatch(html, /Turns<\/h3>/);
-  const response = timelineFixture("auto-research-parent", "auto_research", {
-    actors: [
-      {
-        actor_id: "orchestrator",
-        kind: "orchestrator",
-        row_key: "orchestrator",
-        label: "Orchestrator",
-        subtitle: null,
-        started_at: "2026-09-14T10:00:00Z",
-        ended_at: null,
-        outcome: "running",
-        started_by_span_id: null,
-        links: {},
-      },
-      {
-        actor_id: "child:one",
-        kind: "experiment",
-        row_key: "experiment/branch-child",
-        label: "Reproduce the baseline",
-        subtitle: "experiment/branch-child",
-        started_at: "2026-09-14T10:01:00Z",
-        ended_at: null,
-        outcome: "running",
-        started_by_span_id: "turn:before",
-        links: {
-          episode_id: "child-experiment-episode",
-          control_node_id: "experiment/branch-child",
-        },
-      },
-    ],
-    spans: ["before", "after"].map((name, index) => ({
-      span_id: `turn:${name}`,
-      actor_id: "orchestrator",
-      kind: "turn",
-      started_at: `2026-09-14T10:0${index * 2}:00Z`,
-      finished_at: `2026-09-14T10:0${index * 2 + 1}:00Z`,
-      status: "succeeded",
-      attempt: 1,
-      invocation_number: index + 1,
-      headline: `Parent turn ${name} child.`,
-      error: null,
-      cause: "wake",
-      task_id: `task:${name}`,
-      owner_episode_id: "auto-research-parent",
-    })),
-  });
-  const timeline = renderToStaticMarkup(
-    React.createElement(EpisodeTimeline, {
-      response,
-      apiBase: "/api/projects/project-one",
-      episodeId: "auto-research-parent",
-      graphTarget: { kind: "branch", branch_id: "auto-research-parent" },
-      onInspectTask() {},
-    }),
-  );
-  assert.match(timeline, /aria-label="Agent roster chart"/);
-  assert.match(timeline, /aria-label="experiment\/branch-child"/);
-  assert.match(timeline, /Orchestrator wakes/);
-  assert.ok(
-    timeline.indexOf("Parent turn before child.") < timeline.indexOf("Parent turn after child."),
-  );
-
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(html, /1 \/ 5 invocations/);
   assert.match(html, /Wait for the active Experiment turn/);

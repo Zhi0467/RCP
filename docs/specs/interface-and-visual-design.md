@@ -314,9 +314,9 @@ including loading and error states, or the inline signal payload. Close, Escape,
 and outside click dismiss it. Selection highlights related actors, spans, and
 items and dims others. A detail panel links turn and attempt spans to the task
 inspector and child episodes to their existing Experiment detail; report spans
-do not open the task inspector. Auto-research also shows one wake-table row per
-orchestrator span with time, length, invocation, cause, landed items, actions,
-and headline. Summary counts cover returned actors, hand-offs, and message
+do not open the task inspector. The panel appears only after a selection; for
+an orchestrator turn it shows the cause, what landed in the turn, what the turn
+did, and its headline. There is no separate wake table. Summary counts cover returned actors, hand-offs, and message
 dispositions and explicitly say when only truncated items are counted.
 
 Pinch or Ctrl/Cmd+wheel zooms at the cursor; buttons and double-click zoom, with

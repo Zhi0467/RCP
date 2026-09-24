@@ -849,7 +849,7 @@ starting span, and navigation links. Spans carry turn/attempt/report kind,
 times, status, attempt and invocation numbers, nullable cause/error/headline,
 and task and episode ids. Headlines are bounded first sentences from stored
 answers; reports have no headline. The browser groups actors by `row_key` and
-derives summary counts, relations, and the orchestrator wake table from this
+derives summary counts, relations, and per-turn wake details from this
 single response, without a parallel event-list model.
 
 Hand-offs join recorded admission commands to their starting span and worker or

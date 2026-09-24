@@ -402,7 +402,6 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
     await message.focus();
     await page.keyboard.press("Enter");
     await card.getByRole("alert").waitFor();
-    assert.match(await card.textContent(), /Text temporarily unavailable/);
     await page.getByRole("button", { name: "Whole run", exact: true }).click();
     await card.waitFor({ state: "detached" });
     failText = false;

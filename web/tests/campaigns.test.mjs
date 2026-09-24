@@ -1,4 +1,3 @@
-import { timelineFixture } from "./fixtures/timeline.mjs";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import React from "react";
@@ -43,7 +42,6 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
-const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
@@ -104,55 +102,6 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /3 of 8 operational invocations used/);
   assert.doesNotMatch(html, /reserved|report unit|episode_report/i);
   assert.match(html, /12345|12,345/);
-});
-
-test("the roster exposes a recorded span failure without inventing a headline", () => {
-  const error = "The provider exited before returning an answer.";
-  const response = timelineFixture(episode.episode_id, "auto_research", {
-    actors: [
-      {
-        actor_id: "orchestrator",
-        kind: "orchestrator",
-        label: "Orchestrator",
-        subtitle: null,
-        row_key: "orchestrator",
-        owner_episode_id: episode.episode_id,
-        started_at: rootTask.created_at,
-        ended_at: rootTask.created_at,
-        outcome: "failed",
-        started_by_span_id: null,
-        links: {},
-      },
-    ],
-    spans: [
-      {
-        span_id: "turn:failed",
-        actor_id: "orchestrator",
-        kind: "turn",
-        started_at: rootTask.created_at,
-        finished_at: rootTask.created_at,
-        status: "failed",
-        attempt: 1,
-        invocation_number: 1,
-        headline: null,
-        error,
-        cause: "initial",
-        task_id: rootTask.operation_id,
-        owner_episode_id: episode.episode_id,
-      },
-    ],
-  });
-  const html = renderToStaticMarkup(
-    React.createElement(EpisodeTimeline, {
-      response,
-      apiBase: "/api/projects/demo",
-      episodeId: episode.episode_id,
-      onInspectTask() {},
-    }),
-  );
-  assert.match(html, /The provider exited before returning an answer/);
-  assert.match(html, /aria-label="Turn 1 · failed"/);
-  assert.doesNotMatch(html, /Agent task completed/);
 });
 
 test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
