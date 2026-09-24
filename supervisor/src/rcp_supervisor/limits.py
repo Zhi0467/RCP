@@ -21,6 +21,8 @@ MAX_CHECKPOINT_BYTES = 1024**4
 MAX_CHECKPOINT_ENTRIES = 100_000
 MAX_CHECKPOINT_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_ROOTS = 1000
+MAX_CHECKPOINT_DIFFERENCES = 5
+MAX_CHECKPOINT_DIFFERENCE_PATH = 240
 # Retained artifacts a committed update leaves behind: the newest checkpoints
 # and installed release trees kept on disk. Two covers the live release and its
 # rollback target. An unrecorded checkpoint workspace is reclaimed only once it
@@ -31,6 +33,8 @@ RETAINED_RELEASES = 2
 RETENTION_ORPHAN_MIN_AGE_SECONDS = 24 * 60 * 60
 MAX_OPERATION_BYTES = 1024 * 1024
 APP_COMMAND_TIMEOUT_SECONDS = 300
+# Whole-root checkpoint copies scale with data size, up to MAX_CHECKPOINT_BYTES.
+CHECKPOINT_COPY_TIMEOUT_SECONDS = 3600
 MAINTENANCE_TIMEOUT_SECONDS = 1800
 SERVICE_TIMEOUT_SECONDS = 90
 STARTUP_RECOVERY_TIMEOUT_SECONDS = 3600

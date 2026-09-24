@@ -25,6 +25,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     write_all as _write_all,
 )
+from rcp.server_ops.backup_capture import BackupSnapshotProjectInventory
 from rcp.server_ops.backup_models import (
     BackupProjectCapture,
 )
@@ -156,7 +157,7 @@ class ApplicationSnapshotRoot(_StrictModel):
 
 
 def _project_restore_location(
-    project: BackupProjectCapture,
+    project: BackupProjectCapture | BackupSnapshotProjectInventory,
 ) -> tuple[Literal["local_research", "remote_excluded"], Path | None]:
     assert project.recovery is not None
     configuration = project.recovery.configuration
@@ -547,10 +548,11 @@ class ApplicationSnapshotPolicy:
         """Capture only receipt-backed complete target upload archives.
 
         The live inbox is deliberately excluded from ordinary backup and
-        rehearsal.  An update checkpoint is the one local boundary that may
-        retain a complete upload, but only when the immutable SQLite snapshot
-        contains a typed completion row that binds the request, archive, and
-        exact bytes.  Filesystem names are derived through the target owner;
+        rehearsal. Semantic preparation admits a complete upload only when the
+        immutable SQLite snapshot contains a typed completion row binding its
+        request, archive, and exact bytes. The supervisor's independent stopped
+        snapshot precedes this validation and retains the entire inbox.
+        Filesystem names are derived through the target owner;
         no path supplied by a database row is trusted.
         """
 

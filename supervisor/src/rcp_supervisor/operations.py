@@ -18,7 +18,14 @@ from rcp_supervisor.limits import MAX_OPERATION_BYTES
 
 TERMINAL = frozenset({"committed", "rolled_back", "aborted"})
 EARLY = frozenset(
-    {"preparing", "backup_ready", "entering_maintenance", "quiescent", "checkpoint_ready"}
+    {
+        "preparing",
+        "backup_ready",
+        "entering_maintenance",
+        "quiescent",
+        "snapshotting",
+        "checkpoint_ready",
+    }
 )
 ROLLBACK = (
     "rollback_started",
@@ -31,6 +38,7 @@ PHASES = (
     | EARLY
     | frozenset(ROLLBACK)
     | {
+        "snapshot_ready",
         "activating",
         "pointer_switched",
         "candidate_verified",
@@ -68,6 +76,9 @@ class Runtime(Protocol):
     def enter_maintenance(self, operation: dict) -> dict: ...
     def abort_maintenance(self, operation: dict) -> None: ...
     def stop_service(self) -> None: ...
+    def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]: ...
+    def snapshot(self, operation: dict, roots: list[str]) -> dict: ...
+    def verify_roots(self, checkpoint: dict) -> None: ...
     def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]: ...
     def prepare_fresh_restore(self, operation: dict) -> tuple[dict, None, dict, dict]: ...
     def restore_roots(self, checkpoint: dict) -> None: ...
@@ -185,7 +196,7 @@ class OperationStore:
             not isinstance(record, dict)
             or record.keys() != _FIELDS
             or type(record["version"]) is not int
-            or record["version"] != 1
+            or record["version"] not in (1, 2)
         ):
             raise SupervisorError("Deployment journal format is unsupported.")
         try:
@@ -226,15 +237,27 @@ class OperationStore:
         for name in ("previous_proof", "target_proof"):
             if record[name] is not None and not _proof(record[name]):
                 raise SupervisorError("Deployment application proof is invalid.")
-        if record["phase"] not in EARLY - {"checkpoint_ready"} | {"aborted"} and any(
-            record[name] is None
-            for name in (
-                "checkpoint",
-                "target_proof",
-                *(() if record["previous_uninitialized"] else ("previous_proof",)),
-            )
-        ):
+        exact_update = record["version"] == 2 and record["kind"] == "update"
+        needs_checkpoint = record["phase"] not in EARLY - {"checkpoint_ready"} | {"aborted"}
+        if needs_checkpoint and record["checkpoint"] is None:
             raise SupervisorError("Deployment state lacks its exact checked checkpoint.")
+        needs_proofs = needs_checkpoint and (
+            not exact_update
+            or record["phase"]
+            in {
+                "checkpoint_ready",
+                "activating",
+                "pointer_switched",
+                "candidate_verified",
+                "candidate_chosen",
+                "committed",
+            }
+        )
+        if needs_proofs and (
+            record["target_proof"] is None
+            or (not record["previous_uninitialized"] and record["previous_proof"] is None)
+        ):
+            raise SupervisorError("Deployment state lacks its application proof.")
         if record["kind"] == "update" and record["candidate_checkpoint"] is not None:
             raise SupervisorError("An update cannot replace application data before migration.")
         if (
@@ -378,7 +401,7 @@ class Coordinator:
                     "The selected release changed before deployment; rerun the operation."
                 )
             operation = {
-                "version": 1,
+                "version": 2 if kind == "update" else 1,
                 "operation_id": str(uuid.uuid4()),
                 "kind": kind,
                 "phase": "preparing",
@@ -403,8 +426,15 @@ class Coordinator:
                 capture = (
                     None if previous_uninitialized else self.runtime.enter_maintenance(operation)
                 )
+                roots = (
+                    self.runtime.checkpoint_roots(operation, capture) if kind == "update" else []
+                )
                 operation = self._phase(operation, "quiescent")
                 self.runtime.stop_service()
+                if kind == "update":
+                    operation = self._phase(operation, "snapshotting")
+                    checkpoint = self.runtime.snapshot(operation, roots)
+                    operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
                 checkpoint, previous_proof, target_proof, candidate_checkpoint = (
                     self.runtime.prepare_fresh_restore(operation)
                     if previous_uninitialized
@@ -469,7 +499,20 @@ class Coordinator:
                 return self._recover(operation, startup=startup)
 
     def _recover(self, operation: dict, *, startup: bool) -> dict:
+        try:
+            return self._recover_operation(operation, startup=startup)
+        except Exception as exc:
+            current = self.store.active()
+            if current is not None:
+                # Keep the failure that started recovery beside the recovery's own.
+                cause, original = str(exc)[:2048], current.get("error")
+                error = f"{original}; recovery failed: {cause}" if original else cause
+                self.store.write(dict(current, error=error[:4096]))
+            raise
+
+    def _recover_operation(self, operation: dict, *, startup: bool) -> dict:
         phase = operation["phase"]
+        exact_update = operation["kind"] == "update" and operation["version"] == 2
         if phase in ("candidate_chosen", "previous_chosen"):
             release = operation["target"] if phase == "candidate_chosen" else operation["previous"]
             if not startup:
@@ -488,7 +531,21 @@ class Coordinator:
             return self._phase(
                 operation, "committed" if phase == "candidate_chosen" else "rolled_back"
             )
-        if phase in EARLY:
+        if (
+            operation["kind"] == "update"
+            and not exact_update
+            and phase
+            not in {
+                "preparing",
+                "backup_ready",
+                "entering_maintenance",
+            }
+        ):
+            raise SupervisorError(
+                "operation_recovery_required: legacy rollback has no complete stopped-tree baseline; "
+                "retain its payloads for operator recovery."
+            )
+        if phase in EARLY and not (exact_update and operation["checkpoint"] is not None):
             if operation["previous_uninitialized"]:
                 if not startup:
                     self.runtime.stop_service()
@@ -518,6 +575,9 @@ class Coordinator:
                 operation["previous"], allowed=(operation["previous"], operation["target"])
             )
             operation = self._phase(operation, "previous_pointer_restored")
+        if exact_update:
+            # Recheck after an interrupted rename/phase boundary, before any old code.
+            self.runtime.verify_roots(operation["checkpoint"])
         if operation["phase"] == "previous_pointer_restored":
             if not operation["previous_uninitialized"]:
                 self.runtime.probe(operation["previous"], operation, operation["previous_proof"])

@@ -26,6 +26,7 @@ from rcp.server_ops._local_primitives import canonical_json_line, fsync_file_tre
 from rcp.server_ops.application_snapshot import (
     ApplicationSnapshotPolicy,
     _copy_declared_file,
+    _project_restore_location,
     _set_private_directory_modes,
     _settle_accepting_artifact_replacements,
     _snapshot_tree,
@@ -383,6 +384,28 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         }
 
 
+def inventory(request: PrepareRequest) -> dict[str, object]:
+    """Reuse backup's captured registration discovery before old preparation runs."""
+    data = Path(request.data_dir)
+    receipt = read_backup_sqlite_capture_receipt(
+        Path(request.sqlite_receipt_path), expected_sha256=request.sqlite_receipt_sha256
+    )
+    if Path(receipt.app_data_plan.data_dir) != data:
+        raise MaintenanceRefused("Inventory capture belongs to different application data.")
+    roots = [{"live": str(data), "project_id": None}]
+    for project in receipt.projects:
+        if project.status != "capturable" or project.recovery is None:
+            raise MaintenanceRefused("Inventory capture has an unresolved project.")
+        _, live = _project_restore_location(project)
+        # A remote project's state lives on another machine: an update never
+        # replaces it, so only local roots are checkpointed.
+        if live is not None:
+            roots.append({"live": str(live), "project_id": project.project_id})
+    for root in roots:
+        _private_ancestors(Path(root["live"]))
+    return {"version": 1, "roots": roots}
+
+
 def validate(request: ValidateRequest) -> dict[str, object]:
     proof = _read_proof(Path(request.proof_path), request.proof_sha256)
     output = Path(request.output_dir)
@@ -471,7 +494,9 @@ def _read_model_digest(model: CandidateRehearsalResult) -> str:
 def verify_live_application(
     proof_path: Path, *, proof_sha256: str, background, catalog, store
 ) -> str:
-    final = _read_proof(proof_path, proof_sha256).read_model
+    proof = _read_proof(proof_path, proof_sha256)
+    final = proof.read_model
+    captures = {project.project_id: project for project in proof.project_receipt.projects}
     startup = StartupRecoveryReadModel.model_validate(background.plan_startup_recovery().as_dict())
     if startup != final.startup_recovery:
         raise MaintenanceRefused("The switched release changed the startup recovery read model.")
@@ -501,26 +526,44 @@ def verify_live_application(
             # canonical history; rebuild it rather than refuse the release.
             if isinstance(graph, dict) and graph.get("revision") != expected.revision:
                 graph = None
-            if not isinstance(graph, dict):
-                try:
-                    _service, rebuilt = catalog.open_snapshot(expected.project_id)
-                    graph = rebuilt["graph"]
-                except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
-                    raise MaintenanceRefused(
-                        "The switched release could not reconstruct project projection "
-                        f"{expected.project_id}."
-                    ) from exc
-            if not isinstance(graph, dict):
+            # Remote means what the checkpoint used: the captured classification,
+            # never a row the candidate's own migration could have changed.
+            capture = captures[expected.project_id]
+            remote = _project_restore_location(capture)[1] is None
+            record = store.project(expected.project_id)
+            if record is None or bool(record.state_remote) != remote:
                 raise MaintenanceRefused(
-                    f"The switched release has no valid project projection for {expected.project_id}."
+                    f"The switched release changed where project {expected.project_id} "
+                    "keeps its state."
                 )
-            revision = graph.get("revision")
-            observed = CandidateProjectVerification(
-                project_id=expected.project_id,
-                status="verified",
-                revision=revision if isinstance(revision, int) else None,
-                projection_sha256=_canonical_sha256(graph),
-            )
+            if not isinstance(graph, dict) and remote:
+                # Two stages: before the release commits, nothing may write to a
+                # remote project, which no local rollback can undo. Validation already
+                # replayed its captured history on copies; its served projection is
+                # rebuilt on first open once the release is chosen.
+                observed = expected
+            else:
+                if not isinstance(graph, dict):
+                    try:
+                        _service, rebuilt = catalog.open_snapshot(expected.project_id)
+                        graph = rebuilt["graph"]
+                    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+                        raise MaintenanceRefused(
+                            "The switched release could not reconstruct project projection "
+                            f"{expected.project_id}."
+                        ) from exc
+                if not isinstance(graph, dict):
+                    raise MaintenanceRefused(
+                        "The switched release has no valid project projection for "
+                        f"{expected.project_id}."
+                    )
+                revision = graph.get("revision")
+                observed = CandidateProjectVerification(
+                    project_id=expected.project_id,
+                    status="verified",
+                    revision=revision if isinstance(revision, int) else None,
+                    projection_sha256=_canonical_sha256(graph),
+                )
         if observed != expected:
             raise MaintenanceRefused(
                 f"The switched release changed project projection {expected.project_id}."
@@ -744,6 +787,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "operation",
         choices=(
+            "inventory",
             "prepare",
             "validate",
             "capabilities",
@@ -766,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
                     "version": 1,
                     "maintenance_protocol": 10,
                     "commands": [
+                        "inventory",
                         "prepare",
                         "validate",
                         "inspect",
@@ -787,7 +832,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if len(payload) > _MAX_REQUEST_BYTES:
             raise MaintenanceRefused("Application request exceeds its bound.")
-        if args.operation == "prepare":
+        if args.operation == "inventory":
+            result = inventory(PrepareRequest.model_validate_json(payload))
+        elif args.operation == "prepare":
             result = prepare(PrepareRequest.model_validate_json(payload))
         elif args.operation == "restore-prepare":
             from rcp.server_ops.restore import RestorePrepareRequest, prepare_restore

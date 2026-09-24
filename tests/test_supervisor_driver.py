@@ -396,7 +396,7 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
             target.mkdir(parents=True),
             {"release_directory": str(target)},
         )[-1],
-        require_capability=lambda _receipt: calls.append("capability"),
+        require_capability=lambda _receipt, **kwargs: calls.append("capability"),
     )
     monkeypatch.setattr(driver, "release_receipt", lambda *_args: receipt)
     monkeypatch.setattr(driver, "install_operator_console", lambda *_args: None)

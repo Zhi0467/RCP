@@ -28,6 +28,7 @@ from rcp_supervisor.errors import ApplicationCommandError, SupervisorError, safe
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.limits import (
     APP_COMMAND_TIMEOUT_SECONDS,
+    CHECKPOINT_COPY_TIMEOUT_SECONDS,
     CONTROL_MAX_ERROR_CODE_CHARS,
     CONTROL_MAX_ERROR_MESSAGE_CHARS,
     CONTROL_MAX_RESPONSE_BYTES,
@@ -389,15 +390,20 @@ class SystemRuntime:
         return str(Path(release["release_directory"]) / ".venv/bin/python")
 
     def filesystem(self, action: str, request: dict) -> dict:
-        return self.service_json(
+        result = self.service_json(
             [sys.executable, "-I", "-m", "rcp_supervisor.fs_worker", action],
             request,
             timeout=(
                 INSTALL_TIMEOUT_SECONDS
                 if action in {"install", "remove"}
+                else CHECKPOINT_COPY_TIMEOUT_SECONDS
+                if action in {"check-space", "snapshot-roots", "restore", "verify"}
                 else APP_COMMAND_TIMEOUT_SECONDS
             ),
         )
+        if isinstance(result.get("error"), str):
+            raise SupervisorError(result["error"][:4096])
+        return result
 
     def remove_retained(self, directory: Path, root: Path) -> None:
         """Delete one retained artifact through the account that created it."""
@@ -423,7 +429,7 @@ class SystemRuntime:
             release=release,
         )
 
-    def require_capability(self, release: dict) -> None:
+    def require_capability(self, release: dict, *, extra_commands: tuple[str, ...] = ()) -> None:
         capability = self.application(release, "capabilities")
         if (
             capability.get("version") != 1
@@ -432,6 +438,11 @@ class SystemRuntime:
         ):
             raise SupervisorError(
                 "The release lacks the required application maintenance contract."
+            )
+        missing = set(extra_commands) - set(capability.get("commands", []))
+        if missing:
+            raise SupervisorError(
+                f"application_maintenance_commands_missing: {', '.join(sorted(missing))}"
             )
 
     def metadata(self) -> dict:
@@ -672,6 +683,72 @@ class SystemRuntime:
             time.sleep(0.1)
         raise SupervisorError("The selected application did not start with its verified identity.")
 
+    @contextmanager
+    def stopped_data_lock(self):
+        """Check kernel ownership without rewriting the stopped lock-file bytes.
+
+        The outer deployment guard fences startup. Each use opens the current
+        pathname anew, including after restore replaced the previous inode.
+        """
+        path = self.paths.data_dir / "rcp.lock"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            yield
+            return
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.uid or info.st_nlink != 1:
+                raise SupervisorError("Stopped application lock has unsafe ownership or type.")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise SupervisorError("A writer still owns the stopped application lock.") from exc
+            if path.lstat() != info:
+                raise SupervisorError("Stopped application lock changed while acquiring it.")
+            yield
+        finally:
+            os.close(descriptor)
+
+    def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]:
+        """Reuse backup discovery and check room before stopping the service."""
+        inventory = self.application(
+            operation["target"],
+            "inventory",
+            {
+                "version": 1,
+                "data_dir": str(self.paths.data_dir),
+                "output_dir": str(
+                    self.paths.checkpoints_root / operation["operation_id"] / "inventory"
+                ),
+                "sqlite_receipt_path": capture["receipt_path"],
+                "sqlite_receipt_sha256": capture["receipt_sha256"],
+            },
+        )
+        roots = [root["live"] for root in inventory["roots"]]
+        self.filesystem(
+            "check-space", {"directory": str(self.paths.checkpoints_root), "roots": roots}
+        )
+        return roots
+
+    def snapshot(self, operation: dict, roots: list[str]) -> dict:
+        """Only the supervisor copies stopped bytes, before old preparation."""
+        with self.stopped_data_lock():
+            workspace = self.paths.checkpoints_root / operation["operation_id"]
+            self.filesystem("workspace", {"directory": str(workspace)})
+            return self.filesystem(
+                "snapshot-roots",
+                {
+                    "directory": str(workspace / "checkpoint"),
+                    "roots": roots,
+                    "boundary_sha256": operation["nonce"],
+                },
+            )
+
+    def verify_roots(self, checkpoint: dict) -> None:
+        with self.stopped_data_lock():
+            self.filesystem("verify", checkpoint)
+
     def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]:
         workspace = self.paths.checkpoints_root / operation["operation_id"]
         prepared = self.application(
@@ -685,6 +762,11 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
+        if operation["kind"] == "update":
+            self.filesystem(
+                "check-roots",
+                dict(operation["checkpoint"], roots=[root["live"] for root in prepared["roots"]]),
+            )
         checked = self.application(
             operation["target"],
             "validate",
@@ -704,14 +786,16 @@ class SystemRuntime:
             candidate_checkpoint, target_proof, extra_previous_roots = prepare_restore(
                 self, self.restore_request, operation, prepared
             )
-        checkpoint = self.filesystem(
-            "checkpoint",
-            {
-                "directory": str(workspace / "checkpoint"),
-                "roots": [*prepared["roots"], *extra_previous_roots],
-                "boundary_sha256": prepared["boundary_sha256"],
-            },
-        )
+        checkpoint = operation["checkpoint"]
+        if operation["kind"] != "update":
+            checkpoint = self.filesystem(
+                "checkpoint",
+                {
+                    "directory": str(workspace / "checkpoint"),
+                    "roots": [*prepared["roots"], *extra_previous_roots],
+                    "boundary_sha256": prepared["boundary_sha256"],
+                },
+            )
         return (
             checkpoint,
             {"path": prepared["proof_path"], "sha256": prepared["proof_sha256"]},

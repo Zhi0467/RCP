@@ -335,6 +335,87 @@ def test_selected_release_requires_receipt_and_current_pointer_agreement(monkeyp
                 read()
 
 
+def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_path):
+    import fcntl
+    from dataclasses import replace
+
+    runtime.paths = replace(runtime.paths, data_dir=tmp_path)
+    lock = tmp_path / "rcp.lock"
+    lock.write_bytes(b"stopped pid bytes\n")
+    lock.chmod(0o600)
+    before = lock.read_bytes()
+    with lock.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (
+            pytest.raises(SupervisorError, match="writer still owns"),
+            runtime.stopped_data_lock(),
+        ):
+            pytest.fail("admitted locked data")
+    with runtime.stopped_data_lock():
+        assert lock.read_bytes() == before
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"restored lock bytes\n")
+    replacement.replace(lock)
+    with lock.open("rb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (
+            pytest.raises(SupervisorError, match="writer still owns"),
+            runtime.stopped_data_lock(),
+        ):
+            pytest.fail("checked stale inode")
+    assert lock.read_bytes() == b"restored lock bytes\n"
+
+
+def test_candidate_requires_inventory_command(runtime):
+    runtime.application = lambda *args: {
+        "version": 1,
+        "maintenance_protocol": 10,
+        "commands": ["prepare", "validate"],
+    }
+    runtime.require_capability({})  # The source release needs no new command.
+    with pytest.raises(
+        SupervisorError, match="application_maintenance_commands_missing: inventory"
+    ):
+        runtime.require_capability({}, extra_commands=("inventory",))
+
+
+def test_filesystem_mismatch_reaches_operation_record(runtime, tmp_path):
+    from rcp_supervisor.checkpoint import create_stopped_snapshot
+
+    from tests.test_supervisor_operations import _case
+
+    coordinator, fake, previous, target = _case(tmp_path / "operation")
+    # Exercise the real worker JSON transport from this checkout.
+    source = Path(__file__).resolve().parents[1] / "supervisor" / "src"
+    runtime.owned_argv = lambda argv: [
+        sys.executable,
+        "-I",
+        "-c",
+        f"import sys,runpy; sys.path.insert(0, {str(source)!r}); "
+        "sys.argv = ['fs_worker', 'verify']; runpy.run_module('rcp_supervisor.fs_worker', run_name='__main__')",
+    ]
+    saved = create_stopped_snapshot(tmp_path / "snapshot", (fake.data,), boundary_sha256="b" * 64)
+    identity = {
+        "directory": str(saved.directory),
+        "sha256": saved.sha256,
+        "boundary_sha256": saved.boundary_sha256,
+    }
+    fake.fail_target = True
+
+    def verify(checkpoint):
+        (fake.data / "value").write_text("secret changed bytes")
+        runtime.filesystem("verify", identity)
+
+    fake.verify_roots = verify
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
+        coordinator.deploy(previous, target)
+    assert "value" in str(error.value) and "changed" in str(error.value)
+    assert "secret changed bytes" not in str(error.value)
+    journal = coordinator.store.active()["error"]
+    assert "rollback_tree_mismatch" in journal and '"value": changed' in journal
+    assert fake.starts == 0
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
