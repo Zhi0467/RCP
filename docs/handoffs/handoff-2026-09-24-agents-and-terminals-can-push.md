@@ -7,7 +7,9 @@ Settled by the human on 2026-09-24:
 
 - The default push credential is the repository's deploy key, the one RCP
   already provisions for a team checkout.
-- Discuss and Work turns both get it, as does the member terminal.
+- Discuss and Work turns both get it, as does the member terminal. Discuss
+  keeps no repository writes, so it can reach the remote (`git ls-remote`) but
+  cannot fetch, commit, or push; those happen in Work or the terminal.
 - RCP adds no per-member Git setting: no personal key, name, or email. It
   supplies a default identity that any Git configuration overrides.
 - RCP membership becomes write access to the repository, because pushes
@@ -15,10 +17,10 @@ Settled by the human on 2026-09-24:
   member, as the pusher; only the unverified commit author names the member.
   Removing a member from the project is the revocation.
 
-Close this handoff when, in a team space, a member's terminal, Discuss turn,
-and Work turn each run `git fetch`, `git commit`, and `git push` against a
-registered repository with no manual Git setup, and the commit carries that
-member's identity.
+Close this handoff when, in a team space, a member's terminal and Work turn
+each run `git fetch`, `git commit`, and `git push` against a registered
+repository with no manual Git setup, the commit carries that member's
+identity, and a Discuss turn's `git ls-remote` reaches the remote.
 
 ## The problem
 
@@ -88,13 +90,14 @@ provisions one. No silent credential-less launch.
 ## Invariants and docs that change
 
 - Invariant 4 in `AGENTS.md`: Discuss gains Git transport. It still gains no
-  graph or project authority, and `patch.json` stays the only graph channel.
+  graph or project authority or repository writes, and `patch.json` stays the
+  only graph channel.
 - [`providers-and-containment.md`](../specs/providers-and-containment.md): the
   "Git key, provider login, and member token are independent" paragraph stays
   true, and gains the rule that every launch on a repository receives its Git
   access.
-- A decision record: agents may push, including from Discuss, and why the
-  separation of Discuss from repository writes was dropped.
+- A decision record: every team launch carries Git transport, and what that
+  gives up.
 
 ## Work and checks
 
@@ -108,5 +111,5 @@ One pull request.
   `GIT_CONFIG_SYSTEM` in both modes, and a repository-level `user.name`
   overrides the default.
 - The missing-key notice in the terminal and chat composer.
-- Live team-space run: terminal, Discuss, and Work each fetch, commit, and
-  push. This also closes the deploy-key run the terminal handoff still owes.
+- Live team-space run: terminal and Work each fetch, commit, and push;
+  Discuss runs `git ls-remote`. This also closes the deploy-key run the terminal handoff still owes.
