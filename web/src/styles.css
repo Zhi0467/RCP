@@ -13395,15 +13395,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .roster-toolbar {
   display: flex;
+  justify-content: flex-end;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   padding-block: 14px;
 }
-.roster-toolbar h3 {
-  margin: 0 auto 0 0;
-  font-size: 15px;
-}
+
 .episode-roster button {
   color: var(--ink);
   background: var(--surface);
@@ -13488,6 +13486,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .roster-success {
   color: var(--green);
 }
+.roster-warning {
+  color: var(--amber);
+}
+.roster-badge {
+  fill: currentColor;
+  font-size: 10px;
+}
 .roster-danger {
   color: var(--red);
 }
@@ -13527,8 +13532,16 @@ details[open] > .view-disclosure-summary > svg:last-child {
   stroke-width: 1.6px;
 }
 .roster-cross {
+  stroke: var(--red);
+  stroke-width: 2px;
+  fill: none;
+}
+.roster-undelivered {
   fill: var(--red);
-  text-anchor: middle;
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
 }
 .roster-signal {
   stroke: currentColor;
@@ -13583,12 +13596,27 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-radius: 8px;
   background: var(--surface);
 }
+.episode-roster .roster-item-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--cobalt);
+}
+.roster-item-icon svg {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 1.2px;
+}
 .episode-roster .roster-ref {
   border: 0;
   background: transparent;
   color: var(--cobalt);
   padding: 0;
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--cobalt) 40%, transparent);
   text-underline-offset: 2px;
   text-align: left;
 }

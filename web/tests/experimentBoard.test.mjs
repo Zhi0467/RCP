@@ -561,7 +561,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
     }),
   );
   assert.match(timeline, /aria-label="Agent roster chart"/);
-  assert.match(timeline, /aria-label="Reproduce the baseline"/);
+  assert.match(timeline, /aria-label="experiment\/branch-child"/);
   assert.match(timeline, /Orchestrator wakes/);
   assert.ok(
     timeline.indexOf("Parent turn before child.") < timeline.indexOf("Parent turn after child."),

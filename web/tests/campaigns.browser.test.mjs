@@ -386,8 +386,11 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
     const timeline = page.getByRole("region", { name: "Episode timeline" });
-    const message = timeline.getByRole("button", { name: /^Message / });
-    await message.locator(".roster-envelope").click();
+    const message = timeline.getByRole("button", {
+      name: "Message from Human to Orchestrator",
+      exact: true,
+    });
+    await message.click();
     const card = page.getByRole("dialog");
     await card.getByRole("status").waitFor();
     releaseText();
@@ -403,7 +406,7 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
     await page.getByRole("button", { name: "Whole run", exact: true }).click();
     await card.waitFor({ state: "detached" });
     failText = false;
-    await message.locator(".roster-envelope").click();
+    await message.click();
     await card.getByText(body, { exact: true }).waitFor();
     await card.getByRole("button", { name: "Close", exact: true }).click();
     await card.waitFor({ state: "detached" });

@@ -2,6 +2,8 @@ import type {
   EpisodeTimelineActor,
   EpisodeTimelineMessage,
   EpisodeTimelineResponse,
+  EpisodeTimelineSignal,
+  ExperimentLoopIndexEntry,
 } from "./types";
 
 export type TimelineWindow = [number, number];
@@ -22,7 +24,40 @@ export interface TimelineRow {
   actors: EpisodeTimelineActor[];
 }
 
-export function timelineRows(data: EpisodeTimelineResponse): TimelineRow[] {
+export function timelineActorLabel(
+  actor: EpisodeTimelineActor,
+  children: ExperimentLoopIndexEntry[] = [],
+): string {
+  if (actor.kind === "worker") return actor.label.replace(/^Assignment:\s*/i, "");
+  if (actor.kind === "experiment")
+    return (
+      children.find((child) => child.episode.episode_id === actor.links.episode_id)?.node.title ??
+      actor.links.control_node_id ??
+      actor.subtitle ??
+      actor.row_key.replace(/^node:/, "")
+    );
+  return actor.label;
+}
+
+export function timelineOutcome(actor: EpisodeTimelineActor): string {
+  return actor.outcome === "exhausted"
+    ? "out of turns"
+    : (actor.outcome ?? (actor.ended_at ? "unknown" : "running"));
+}
+
+export const messageDisposition = {
+  wake: "delivered with a wake",
+  harvested: "harvested",
+  cleared: "cleared",
+  failed_attempt: "delivered to an attempt that failed",
+  undelivered: "not delivered",
+  unknown: "delivery unknown",
+};
+
+export function timelineRows(
+  data: EpisodeTimelineResponse,
+  children: ExperimentLoopIndexEntry[] = [],
+): TimelineRow[] {
   const rows = new Map<string, TimelineRow>();
   for (const actor of [...data.actors].sort(
     (a, b) =>
@@ -30,13 +65,18 @@ export function timelineRows(data: EpisodeTimelineResponse): TimelineRow[] {
       (Date.parse(a.started_at ?? "") || 0) - (Date.parse(b.started_at ?? "") || 0),
   )) {
     const row = rows.get(actor.row_key);
-    if (row) row.actors.push(actor);
-    else
+    if (row) {
+      row.actors.push(actor);
+      if (actor.kind === "experiment") row.label = timelineActorLabel(actor, children);
+    } else
       rows.set(actor.row_key, {
         rowKey: actor.row_key,
         kind: actor.kind,
-        label: actor.label,
-        subtitle: actor.subtitle,
+        label: timelineActorLabel(actor, children),
+        subtitle:
+          actor.kind === "experiment"
+            ? (actor.links.control_node_id ?? actor.subtitle)
+            : actor.subtitle,
         actors: [actor],
       });
   }
@@ -159,7 +199,28 @@ export function timelineRelated(data: EpisodeTimelineResponse, id: string): Set<
   return related;
 }
 
-export function timelineWakeRows(data: EpisodeTimelineResponse) {
+export function timelineWakeRows(
+  data: EpisodeTimelineResponse,
+  children: ExperimentLoopIndexEntry[] = [],
+) {
+  const label = (id: string | null) => {
+    const actor = data.actors.find((a) => a.actor_id === id);
+    return actor ? timelineActorLabel(actor, children) : "Unknown actor";
+  };
+  const node = (signal: EpisodeTimelineSignal) => {
+    const source = data.actors.find((a) => a.row_key === signal.source_row_key);
+    return (
+      source?.links.control_node_id ??
+      source?.subtitle ??
+      signal.source_row_key.replace(/^node:/, "")
+    );
+  };
+  const causes: Record<string, string> = {
+    fresh: "Started",
+    lifecycle: "Lifecycle notice",
+    graph_condition: "Watcher fired",
+    message: "Message",
+  };
   const actors = new Set(
     data.actors.filter((a) => a.kind === "orchestrator").map((a) => a.actor_id),
   );
@@ -172,15 +233,53 @@ export function timelineWakeRows(data: EpisodeTimelineResponse) {
     .map((span, index) => ({
       span,
       number: index + 1,
+      cause: span.cause ? (causes[span.cause] ?? span.cause) : null,
       landed: [
-        ...data.signals.filter((s) => s.landed_span_id === span.span_id),
-        ...data.messages.filter((m) => m.delivered_span_id === span.span_id),
+        ...data.signals
+          .filter((s) => s.landed_span_id === span.span_id)
+          .map((s) => ({
+            item_id: s.item_id,
+            label: [
+              s.kind === "watcher" ? `Watcher on ${node(s)}` : label(s.source_actor_id),
+              s.event,
+              s.landing,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          })),
+        ...data.messages
+          .filter((m) => m.delivered_span_id === span.span_id)
+          .map((m) => ({
+            item_id: m.item_id,
+            label: `Message from ${label(m.from_actor_id)} · ${messageDisposition[m.disposition]}`,
+          })),
       ],
-      handoffs: data.handoffs.filter((h) => h.from_span_id === span.span_id),
-      messages: data.messages.filter((m) => m.sent_span_id === span.span_id),
-      watchers: data.signals.filter(
-        (s) => s.kind === "watcher" && s.armed_span_id === span.span_id,
-      ),
+      actions: [
+        ...data.handoffs
+          .filter((h) => h.from_span_id === span.span_id)
+          .map((h) => ({
+            item_id: h.item_id,
+            at: h.at,
+            icon: "document",
+            label: `Started ${h.kind === "assignment" ? "worker" : "Experiment"} ${label(h.to_actor_id)}`,
+          })),
+        ...data.messages
+          .filter((m) => m.sent_span_id === span.span_id)
+          .map((m) => ({
+            item_id: m.item_id,
+            at: m.sent_at,
+            icon: "envelope",
+            label: `Sent message to ${label(m.to_actor_id)}`,
+          })),
+        ...data.signals
+          .filter((s) => s.kind === "watcher" && s.armed_span_id === span.span_id)
+          .map((s) => ({
+            item_id: s.item_id,
+            at: s.armed_at,
+            icon: null,
+            label: `Armed watcher on ${node(s)}`,
+          })),
+      ].sort((a, b) => (a.at ?? "").localeCompare(b.at ?? "")),
     }));
 }
 
@@ -190,7 +289,7 @@ export function timelineSummary(data: EpisodeTimelineResponse) {
     if (!matching.length) return [];
     const outcomes: Record<string, number> = {};
     for (const actor of matching) {
-      const outcome = actor.outcome ?? "unknown";
+      const outcome = timelineOutcome(actor);
       outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
     }
     return [{ kind, total: matching.length, outcomes }];

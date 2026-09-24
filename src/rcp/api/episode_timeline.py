@@ -47,15 +47,18 @@ def _headline(task: AgentTaskRecord) -> str | None:
     )
     if answer is None:
         return None
-    return re.split(r"(?<=[.!?])\s+", answer, maxsplit=1)[0][:EPISODE_TIMELINE_HEADLINE_MAX_LENGTH]
+    sentence = re.split(r"(?<=[.!?])\s+", answer, maxsplit=1)[0]
+    if len(sentence) <= EPISODE_TIMELINE_HEADLINE_MAX_LENGTH:
+        return sentence
+    return sentence[: EPISODE_TIMELINE_HEADLINE_MAX_LENGTH - 1].rsplit(" ", 1)[0] + "…"
 
 
 def _handoffs(store: AppStore, chain: list[EpisodeRecord]) -> list[EpisodeTimelineHandoff]:
     result = []
     for member in chain:
         for admission in store.auto_research_child_admissions(member.episode_id):
-            # A cancelled admission never created its child; its command is no hand-off.
-            if admission.state == "cancelled":
+            # Only a reflected admission created its child; accepted is still pending, cancelled never ran.
+            if admission.state != "reflected":
                 continue
             command = store.auto_research_child_admission_command(admission.admission_id)
             if command is None:

@@ -10,6 +10,9 @@ import {
   timelineRelated,
   timelineWakeRows,
   timelineSummary,
+  timelineActorLabel,
+  timelineOutcome,
+  messageDisposition as disposition,
 } from "../timeline";
 import type {
   EpisodeTimelineResponse,
@@ -26,14 +29,6 @@ const groups = {
   experiment: "Experiments",
   watcher: "Watchers",
 };
-const disposition = {
-  wake: "delivered with a wake",
-  harvested: "harvested",
-  cleared: "cleared",
-  failed_attempt: "delivered to an attempt that failed",
-  undelivered: "not delivered",
-  unknown: "delivery unknown",
-};
 const stamp = (s: string | number) =>
   new Date(s).toLocaleString(undefined, {
     month: "short",
@@ -44,13 +39,15 @@ const stamp = (s: string | number) =>
 const clock = (n: number) =>
   new Date(n).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const tone = (s: string | null) =>
-  ["failed", "exhausted", "error", "interrupted"].includes(s ?? "")
-    ? "danger"
-    : ["running", "active", "queued", "armed"].includes(s ?? "")
-      ? "active"
-      : ["completed", "succeeded", "ready"].includes(s ?? "")
-        ? "success"
-        : "neutral";
+  s === "exhausted"
+    ? "warning"
+    : ["failed", "error", "interrupted"].includes(s ?? "")
+      ? "danger"
+      : ["running", "active", "queued", "armed"].includes(s ?? "")
+        ? "active"
+        : ["completed", "succeeded", "ready"].includes(s ?? "")
+          ? "success"
+          : "neutral";
 
 export function EpisodeTimeline({
   response: data,
@@ -72,7 +69,7 @@ export function EpisodeTimeline({
   const host = useRef<HTMLDivElement>(null),
     svg = useRef<SVGSVGElement>(null),
     pop = useRef<HTMLDivElement>(null);
-  const rows = useMemo(() => timelineRows(data), [data]);
+  const rows = useMemo(() => timelineRows(data, childExperiments), [data, childExperiments]);
   const bounds = useMemo(() => timelineBounds(data), [data]);
   const [window, setWindow] = useState<[number, number] | null>(null);
   const view = window ? clampWindow(window, bounds) : bounds;
@@ -88,9 +85,9 @@ export function EpisodeTimeline({
   const trigger = useRef<Element | null>(null);
   const related = selected ? timelineRelated(data, selected) : null;
   const summary = timelineSummary(data),
-    wakes = timelineWakeRows(data);
+    wakes = timelineWakeRows(data, childExperiments);
   const left = 190,
-    right = width - 80,
+    right = width - 110,
     track = right - left;
   const x = (t: string | number) =>
     left +
@@ -122,8 +119,12 @@ export function EpisodeTimeline({
   });
   const item = (id: string) =>
     [...data.handoffs, ...data.messages, ...data.signals].find((i) => i.item_id === id);
+  const actorLabel = (id: string | null) => {
+    const found = actor(id);
+    return found ? timelineActorLabel(found, childExperiments) : "Unknown actor";
+  };
   const title = (id: string): string =>
-    actor(id)?.label ??
+    (actor(id) ? actorLabel(id) : undefined) ??
     (span(id)
       ? span(id)!.kind === "report"
         ? "Report"
@@ -190,7 +191,7 @@ export function EpisodeTimeline({
       </g>
     );
   }
-  const refButton = (id: string) => (
+  const refButton = (id: string, label = title(id)) => (
     <button
       className="roster-ref"
       type="button"
@@ -200,7 +201,7 @@ export function EpisodeTimeline({
         choose(id, e.currentTarget);
       }}
     >
-      {title(id)}
+      {label}
     </button>
   );
   useEffect(() => {
@@ -285,6 +286,7 @@ export function EpisodeTimeline({
       .map((n) => n * 60000)
       .find((n) => (view[1] - view[0]) / n < track / 65) ?? 604800000;
   for (let t = Math.ceil(view[0] / step) * step; t <= view[1]; t += step) ticks.push(t);
+  let tickLabelEnd = -Infinity;
   const dates = [view[0]];
   const day = new Date(view[0]);
   day.setHours(24, 0, 0, 0);
@@ -319,11 +321,13 @@ export function EpisodeTimeline({
             <strong>
               {g.total} {groups[g.kind]}
             </strong>
-            <span>
-              {Object.entries(g.outcomes)
-                .map(([key, n]) => `${n} ${key}`)
-                .join(" · ")}
-            </span>
+            {g.kind !== "human" && (
+              <span>
+                {Object.entries(g.outcomes)
+                  .map(([key, n]) => `${n} ${key}`)
+                  .join(" · ")}
+              </span>
+            )}
           </div>
         ))}
         <div>
@@ -340,7 +344,6 @@ export function EpisodeTimeline({
       </div>
       {data.truncated && <p>Counts cover the shown items.</p>}
       <div className="roster-toolbar" aria-label="Timeline zoom">
-        <h3>Timeline</h3>
         <button
           aria-label="Zoom out"
           onClick={() => setWindow(zoomWindow(view, bounds, (view[0] + view[1]) / 2, 1.6))}
@@ -464,17 +467,25 @@ export function EpisodeTimeline({
                   {new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                 </text>
               ))}
-            {ticks.map((t) => (
-              <text
-                key={t}
-                x={x(t)}
-                y={31}
-                textAnchor={x(t) - left < 30 ? "start" : "middle"}
-                className="roster-tick"
-              >
-                {clock(t)}
-              </text>
-            ))}
+            {ticks.flatMap((t) => {
+              const label = clock(t),
+                labelWidth = label.length * 7;
+              const startAligned = x(t) - left < labelWidth / 2;
+              const labelLeft = startAligned ? x(t) : x(t) - labelWidth / 2;
+              if (labelLeft < tickLabelEnd + 8) return [];
+              tickLabelEnd = labelLeft + labelWidth;
+              return [
+                <text
+                  key={t}
+                  x={x(t)}
+                  y={31}
+                  textAnchor={startAligned ? "start" : "middle"}
+                  className="roster-tick"
+                >
+                  {label}
+                </text>,
+              ];
+            })}
             {layout
               .filter((r) => r.heading)
               .map((r) => (
@@ -526,7 +537,7 @@ export function EpisodeTimeline({
                 .map((a) =>
                   hit(
                     a.actor_id,
-                    `${a.label} ${a.outcome ?? ""}`,
+                    `${actorLabel(a.actor_id)} ${timelineOutcome(a)}`,
                     <>
                       {a.kind === "experiment" || a.kind === "watcher" ? (
                         <rect
@@ -535,7 +546,7 @@ export function EpisodeTimeline({
                           width={Math.max(4, x(a.ended_at ?? data.generated_at) - x(a.started_at!))}
                           height={12}
                           rx={3}
-                          className={`roster-rail roster-${tone(a.outcome)}`}
+                          className={`roster-rail roster-${tone(a.outcome ?? (a.ended_at ? null : "running"))}`}
                         />
                       ) : (
                         a.kind !== "human" && (
@@ -549,13 +560,22 @@ export function EpisodeTimeline({
                           />
                         )
                       )}
-                      {a.ended_at && x(a.ended_at) < right && a.outcome && (
+                      {a.kind === "experiment" && visible(a.ended_at ?? data.generated_at) && (
                         <text
-                          x={x(a.ended_at) + 6}
+                          x={x(a.ended_at ?? data.generated_at) + 6}
                           y={actorY(a.actor_id) + 4}
-                          className="roster-tick"
+                          className={`roster-badge roster-${tone(a.outcome ?? "running")}`}
                         >
-                          {a.outcome}
+                          {timelineOutcome(a)}
+                          {a.outcome === "exhausted" &&
+                            (() => {
+                              const budget = childExperiments.find(
+                                (c) => c.episode.episode_id === a.links.episode_id,
+                              )?.episode.budget;
+                              return budget
+                                ? ` ${budget.invocations_used}/${budget.invocation_ceiling}`
+                                : "";
+                            })()}
                         </text>
                       )}
                     </>,
@@ -583,7 +603,7 @@ export function EpisodeTimeline({
                         width={w}
                         height={18}
                         rx={2}
-                        className={`roster-block roster-${tone(s.status)}`}
+                        className={`roster-block roster-${tone(actor(s.actor_id)?.outcome === "exhausted" && !["failed", "interrupted"].includes(s.status) ? "exhausted" : s.status)}`}
                       />
                       {show && (
                         <text x={center} y={yy - 13} textAnchor="middle" className="roster-number">
@@ -597,65 +617,25 @@ export function EpisodeTimeline({
                   );
                 })}
               {data.marks
-                .filter((m) => visible(m.at))
+                .filter((m) => m.kind === "stop_requested" && visible(m.at))
                 .map((m) =>
                   hit(
                     m.item_id,
                     m.kind.replaceAll("_", " "),
-                    <rect
-                      x={x(m.at) - 4}
-                      y={actorY(m.actor_id) - 5}
-                      width={9}
-                      height={10}
-                      className="roster-mark"
-                    />,
+                    <>
+                      <rect
+                        x={x(m.at) - 4}
+                        y={actorY(m.actor_id) - 5}
+                        width={9}
+                        height={10}
+                        className="roster-mark"
+                      />
+                      <text x={x(m.at) + 9} y={actorY(m.actor_id) + 4} className="roster-tick">
+                        stopped
+                      </text>
+                    </>,
                   ),
                 )}
-              {data.messages
-                .filter((m) => visible(m.sent_at, m.delivered_at ?? m.sent_at))
-                .map((m) => {
-                  const from = endpoint(m.from_actor_id, m.sent_at),
-                    to = endpoint(m.to_actor_id, m.delivered_at ?? m.sent_at),
-                    bad = ["failed_attempt", "undelivered"].includes(m.disposition);
-                  if (m.sent_span_id && !span(m.sent_span_id)) from.x = left;
-                  if (m.delivered_span_id && !span(m.delivered_span_id)) to.x = right;
-                  return hit(
-                    m.item_id,
-                    `Message ${m.preview}`,
-                    <>
-                      <path
-                        d={`M${from.x} ${from.y} C${from.x} ${(from.y + to.y) / 2} ${to.x} ${(from.y + to.y) / 2} ${to.x} ${to.y}`}
-                        className={`roster-message ${bad ? "roster-danger" : ""}`}
-                        strokeDasharray={m.disposition === "undelivered" ? "4 3" : undefined}
-                        markerEnd={
-                          m.disposition !== "undelivered" ? `url(#${uid}-arrow)` : undefined
-                        }
-                      />
-                      <rect
-                        x={from.x - 7}
-                        y={from.y - 5}
-                        width={14}
-                        height={10}
-                        rx={1}
-                        data-pop-anchor="true"
-                        className={`roster-envelope ${bad ? "roster-danger" : ""}`}
-                      />
-                      <path
-                        d={`M${from.x - 7} ${from.y - 5} l7 6 l7 -6`}
-                        className="roster-envelope-fold"
-                      />
-                      {m.disposition === "failed_attempt" && (
-                        <circle cx={to.x} cy={to.y} r={10} className="roster-failure-ring" />
-                      )}
-                      {m.disposition === "undelivered" && (
-                        <text x={to.x} y={to.y + 5} className="roster-cross">
-                          ✕
-                        </text>
-                      )}
-                      <title>{disposition[m.disposition]}</title>
-                    </>,
-                  );
-                })}
               {data.signals.map((s) => {
                 const target = span(s.landed_span_id),
                   start = s.recorded_at,
@@ -730,6 +710,70 @@ export function EpisodeTimeline({
                     </>,
                   );
                 })}
+              {data.messages
+                .filter((m) => visible(m.sent_at, m.delivered_at ?? m.sent_at))
+                .map((m) => {
+                  const from = endpoint(m.from_actor_id, m.sent_at),
+                    to = endpoint(m.to_actor_id, m.delivered_at ?? m.sent_at);
+                  const bad = ["failed_attempt", "undelivered"].includes(m.disposition),
+                    undelivered = m.disposition === "undelivered";
+                  if (m.sent_span_id && !span(m.sent_span_id)) from.x = left;
+                  if (m.delivered_span_id && !span(m.delivered_span_id)) to.x = right;
+                  const endY = to.y - (undelivered ? 12 : 0);
+                  return (
+                    <g key={m.item_id}>
+                      <g className={dim([m.item_id])} pointerEvents="none">
+                        <path
+                          d={`M${from.x} ${from.y} C${from.x} ${(from.y + endY) / 2} ${to.x} ${(from.y + endY) / 2} ${to.x} ${endY}`}
+                          className={`roster-message ${bad ? "roster-danger" : ""}`}
+                          strokeDasharray={undelivered ? "4 3" : undefined}
+                          markerEnd={undelivered ? undefined : `url(#${uid}-arrow)`}
+                        />
+                        {m.disposition === "failed_attempt" && (
+                          <circle cx={to.x} cy={to.y} r={10} className="roster-failure-ring" />
+                        )}
+                        {undelivered && (
+                          <>
+                            <path
+                              d={`M${to.x - 4} ${endY - 4} l8 8 M${to.x + 4} ${endY - 4} l-8 8`}
+                              className="roster-cross"
+                            />
+                            <text x={to.x + 9} y={endY + 4} className="roster-undelivered">
+                              not delivered
+                            </text>
+                          </>
+                        )}
+                      </g>
+                      {hit(
+                        m.item_id,
+                        `Message from ${actorLabel(m.from_actor_id)} to ${actorLabel(m.to_actor_id)}`,
+                        <>
+                          <rect
+                            x={from.x - 12}
+                            y={from.y - 12}
+                            width={24}
+                            height={24}
+                            fill="transparent"
+                          />
+                          <rect
+                            x={from.x - 7}
+                            y={from.y - 5}
+                            width={14}
+                            height={10}
+                            rx={1}
+                            data-pop-anchor="true"
+                            className={`roster-envelope ${bad ? "roster-danger" : ""}`}
+                          />
+                          <path
+                            d={`M${from.x - 7} ${from.y - 5} l7 6 l7 -6`}
+                            className="roster-envelope-fold"
+                          />
+                          <title>{disposition[m.disposition]}</title>
+                        </>,
+                      )}
+                    </g>
+                  );
+                })}
             </g>
             <g transform={`translate(${scrollLeft},0)`}>
               <rect width={left - 10} height={height} className="roster-label-surface" />
@@ -744,7 +788,7 @@ export function EpisodeTimeline({
                     </>
                   )}
                   {hit(
-                    r.actors[0].actor_id,
+                    r.actors.at(-1)!.actor_id,
                     r.label,
                     <>
                       <rect
@@ -788,8 +832,7 @@ export function EpisodeTimeline({
             </header>
             {"disposition" in opened && (
               <p>
-                {actor(opened.from_actor_id)?.label ?? "Unknown sender"} →{" "}
-                {actor(opened.to_actor_id)?.label ?? "Unknown recipient"} ·{" "}
+                {actorLabel(opened.from_actor_id)} → {actorLabel(opened.to_actor_id)} ·{" "}
                 {disposition[opened.disposition]} · {stamp(opened.sent_at)}
               </p>
             )}
@@ -853,27 +896,44 @@ export function EpisodeTimeline({
                         : `inv ${w.span.invocation_number}`}
                     </td>
                     <td>
-                      {w.span.cause}
+                      {w.cause}
                       {w.landed.map((i) => (
-                        <div key={i.item_id}>
-                          {refButton(i.item_id)}{" "}
-                          {"disposition" in i ? disposition[i.disposition] : i.landing}
-                        </div>
+                        <div key={i.item_id}>{refButton(i.item_id, i.label)}</div>
                       ))}
                     </td>
                     <td>
-                      {[...w.handoffs, ...w.messages, ...w.watchers].map((i) => (
+                      {w.actions.map((i) => (
                         <div key={i.item_id}>
-                          {stamp(
-                            "at" in i
-                              ? i.at
-                              : "sent_at" in i
-                                ? i.sent_at
-                                : (i.armed_at ?? i.recorded_at),
-                          )}{" "}
-                          · {refButton(i.item_id)}
-                          {"to_actor_id" in i && i.to_actor_id && (
-                            <> → {refButton(i.to_actor_id)}</>
+                          {i.at && <time dateTime={i.at}>{clock(Date.parse(i.at))} · </time>}
+                          {i.icon ? (
+                            <>
+                              {i.label}{" "}
+                              <button
+                                type="button"
+                                className="roster-item-icon"
+                                aria-label={i.label}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  choose(i.item_id, e.currentTarget);
+                                }}
+                              >
+                                {i.icon === "document" ? (
+                                  <svg
+                                    width="12"
+                                    height="16"
+                                    viewBox="0 0 12 16"
+                                    aria-hidden="true"
+                                  >
+                                    <rect x="1" y="1" width="10" height="14" rx="1" />
+                                    <path d="M3 5h6 M3 8h6 M3 11h4" />
+                                  </svg>
+                                ) : (
+                                  "✉"
+                                )}
+                              </button>
+                            </>
+                          ) : (
+                            refButton(i.item_id, i.label)
                           )}
                         </div>
                       ))}
@@ -885,98 +945,101 @@ export function EpisodeTimeline({
             </table>
           </div>
         )}
-        <aside className="roster-detail" aria-label="Timeline selection">
-          <h3>{selected ? title(selected) : "Details"}</h3>
-          {selectedMark && (
-            <p>
-              {selectedMark.kind.replaceAll("_", " ")} · {stamp(selectedMark.at)}
-              {selectedMark.by_span_id && <> · {refButton(selectedMark.by_span_id)}</>}
-            </p>
-          )}
-          {selectedActor && (
-            <>
-              <dl>
-                <dt>Kind</dt>
-                <dd>{selectedActor.kind}</dd>
-                {selectedActor.subtitle && (
-                  <>
-                    <dt>Node</dt>
-                    <dd>{selectedActor.subtitle}</dd>
-                  </>
-                )}
-                <dt>Outcome</dt>
-                <dd>{selectedActor.outcome ?? "Unknown"}</dd>
-                {selectedActor.started_at && (
-                  <>
-                    <dt>Started</dt>
-                    <dd>{stamp(selectedActor.started_at)}</dd>
-                  </>
-                )}
-                {selectedActor.ended_at && (
-                  <>
-                    <dt>Ended</dt>
-                    <dd>{stamp(selectedActor.ended_at)}</dd>
-                  </>
-                )}
-                {selectedActor.started_by_span_id && (
-                  <>
-                    <dt>Started by</dt>
-                    <dd>{refButton(selectedActor.started_by_span_id)}</dd>
-                  </>
-                )}
-              </dl>
-              {child && onOpenExperimentEntry && (
-                <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
-              )}
-              {data.spans
-                .filter((s) => s.actor_id === selectedActor.actor_id)
-                .map((s) => (
-                  <div key={s.span_id}>
-                    {refButton(s.span_id)} · {stamp(s.started_at)} · {s.status} · {duration(s)}
-                    {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
-                    {s.headline && <p>{s.headline}</p>}
-                    {s.error && <p className="roster-error">{s.error}</p>}
-                  </div>
-                ))}
-            </>
-          )}
-          {selectedSpan && (
-            <>
+        {selected && (
+          <aside className="roster-detail" aria-label="Timeline selection">
+            <h3>{title(selected)}</h3>
+            {selectedMark && (
               <p>
-                {stamp(selectedSpan.started_at)} · {duration(selectedSpan)} · {selectedSpan.status}
+                {selectedMark.kind.replaceAll("_", " ")} · {stamp(selectedMark.at)}
+                {selectedMark.by_span_id && <> · {refButton(selectedMark.by_span_id)}</>}
               </p>
-              <p>{selectedSpan.cause}</p>
-              {selectedSpan.invocation_number !== null && (
-                <p>Invocation {selectedSpan.invocation_number}</p>
-              )}
-              {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
-              {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
-              {child && onOpenExperimentEntry && (
-                <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
-              )}
-              {selectedSpan.kind !== "report" && (
-                <button onClick={() => onInspectTask(selectedSpan.task_id)}>Inspect task</button>
-              )}
-            </>
-          )}
-          {selected && item(selected) && (
-            <>
-              <p>
-                {"preview" in item(selected)!
-                  ? (item(selected) as { preview: string }).preview
-                  : JSON.stringify((item(selected) as { payload: object }).payload)}
-              </p>
-              <button onClick={(e) => choose(selected, e.currentTarget)}>Open full text</button>
-            </>
-          )}
-          {selected && (
-            <div className="roster-related">
-              {[...(related ?? [])]
-                .filter((id) => id !== selected && (actor(id) || span(id) || item(id)))
-                .map(refButton)}
-            </div>
-          )}
-        </aside>
+            )}
+            {selectedActor && (
+              <>
+                <dl>
+                  <dt>Kind</dt>
+                  <dd>{selectedActor.kind}</dd>
+                  {selectedActor.subtitle && (
+                    <>
+                      <dt>Node</dt>
+                      <dd>{selectedActor.subtitle}</dd>
+                    </>
+                  )}
+                  <dt>Outcome</dt>
+                  <dd>{timelineOutcome(selectedActor)}</dd>
+                  {selectedActor.started_at && (
+                    <>
+                      <dt>Started</dt>
+                      <dd>{stamp(selectedActor.started_at)}</dd>
+                    </>
+                  )}
+                  {selectedActor.ended_at && (
+                    <>
+                      <dt>Ended</dt>
+                      <dd>{stamp(selectedActor.ended_at)}</dd>
+                    </>
+                  )}
+                  {selectedActor.started_by_span_id && (
+                    <>
+                      <dt>Started by</dt>
+                      <dd>{refButton(selectedActor.started_by_span_id)}</dd>
+                    </>
+                  )}
+                </dl>
+                {child && onOpenExperimentEntry && (
+                  <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                )}
+                {data.spans
+                  .filter((s) => s.actor_id === selectedActor.actor_id)
+                  .map((s) => (
+                    <div key={s.span_id}>
+                      {refButton(s.span_id)} · {stamp(s.started_at)} · {s.status} · {duration(s)}
+                      {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
+                      {s.headline && <p>{s.headline}</p>}
+                      {s.error && <p className="roster-error">{s.error}</p>}
+                    </div>
+                  ))}
+              </>
+            )}
+            {selectedSpan && (
+              <>
+                <p>
+                  {stamp(selectedSpan.started_at)} · {duration(selectedSpan)} ·{" "}
+                  {selectedSpan.status}
+                </p>
+                <p>{selectedSpan.cause}</p>
+                {selectedSpan.invocation_number !== null && (
+                  <p>Invocation {selectedSpan.invocation_number}</p>
+                )}
+                {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
+                {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
+                {child && onOpenExperimentEntry && (
+                  <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                )}
+                {selectedSpan.kind !== "report" && (
+                  <button onClick={() => onInspectTask(selectedSpan.task_id)}>Inspect task</button>
+                )}
+              </>
+            )}
+            {selected && item(selected) && (
+              <>
+                <p>
+                  {"preview" in item(selected)!
+                    ? (item(selected) as { preview: string }).preview
+                    : JSON.stringify((item(selected) as { payload: object }).payload)}
+                </p>
+                <button onClick={(e) => choose(selected, e.currentTarget)}>Open full text</button>
+              </>
+            )}
+            {selected && (
+              <div className="roster-related">
+                {[...(related ?? [])]
+                  .filter((id) => id !== selected && (actor(id) || span(id) || item(id)))
+                  .map((id) => refButton(id))}
+              </div>
+            )}
+          </aside>
+        )}
       </div>
     </section>
   );

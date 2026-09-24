@@ -398,6 +398,7 @@ def _handoff(store, episode, kind="assignment"):
         ),
     )
     with store.connection() as connection:
+        connection.execute("UPDATE auto_research_child_admissions SET state='reflected'")
         connection.execute(
             "UPDATE episodes SET status='completed', ending='completed', ended_at=? WHERE episode_id=?",
             (episode.ended_at, prefix),
@@ -427,8 +428,8 @@ def test_handoff_joins_planned_child_not_neighboring_task(timeline, kind):
 
     assert len(handoff.preview) == EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
     with store.connection() as connection:
-        connection.execute("UPDATE auto_research_child_admissions SET state='cancelled'")
-    assert build_episode_timeline(store, episode).handoffs == []  # Never created its child.
+        connection.execute("UPDATE auto_research_child_admissions SET state='accepted'")
+    assert build_episode_timeline(store, episode).handoffs == []  # No child exists yet.
 
 
 def test_bound_counts_spans_and_items_newest_first(timeline, monkeypatch):
@@ -584,8 +585,11 @@ def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
         (["A trace before the answer.", "Final answer. Detail."], "Final answer."),
         ([], None),
         (
-            ["A" * (EPISODE_TIMELINE_HEADLINE_MAX_LENGTH + 1)],
-            "A" * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH,
+            ["word " * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH],
+            ("word " * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH)[
+                : EPISODE_TIMELINE_HEADLINE_MAX_LENGTH - 1
+            ].rsplit(" ", 1)[0]
+            + "…",
         ),
     ],
 )
