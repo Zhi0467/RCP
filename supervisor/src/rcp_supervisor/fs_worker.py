@@ -13,11 +13,10 @@ from rcp_supervisor.checkpoint import (
     SnapshotRoot,
     _directory,
     check_checkpoint_roots,
+    check_snapshot_space,
     create_checkpoint,
     create_offline_snapshot,
     create_stopped_snapshot,
-    quarantine_status,
-    relocate_quarantines,
     restore_checkpoint,
     verify_checkpoint,
 )
@@ -33,35 +32,33 @@ def main(argv: list[str] | None = None) -> int:
             raise SupervisorError("Filesystem request exceeds its limit.")
         request = json.loads(payload)
         if (
-            arguments == ["checkpoint"]
+            arguments in (["checkpoint"], ["snapshot-roots"])
             and isinstance(request, dict)
             and request.keys() == {"directory", "roots", "boundary_sha256"}
         ):
-            roots = tuple(
-                SnapshotRoot(Path(item["live"]), Path(item["payload"])) for item in request["roots"]
-            )
-            result = asdict(
-                create_checkpoint(
-                    Path(request["directory"]), roots, boundary_sha256=request["boundary_sha256"]
+            directory = Path(request["directory"])
+            boundary = request["boundary_sha256"]
+            if arguments == ["snapshot-roots"]:
+                roots = tuple(Path(root) for root in request["roots"])
+                result = asdict(create_stopped_snapshot(directory, roots, boundary_sha256=boundary))
+            else:
+                roots = tuple(
+                    SnapshotRoot(Path(item["live"]), Path(item["payload"]))
+                    for item in request["roots"]
                 )
-            )
+                result = asdict(create_checkpoint(directory, roots, boundary_sha256=boundary))
             result["directory"] = str(result["directory"])
         elif (
-            arguments == ["snapshot-roots"]
+            arguments == ["check-space"]
             and isinstance(request, dict)
-            and request.keys() == {"directory", "roots", "boundary_sha256"}
+            and request.keys() == {"directory", "roots"}
         ):
-            result = asdict(
-                create_stopped_snapshot(
-                    Path(request["directory"]),
-                    tuple(Path(root) for root in request["roots"]),
-                    boundary_sha256=request["boundary_sha256"],
-                )
+            check_snapshot_space(
+                Path(request["directory"]), tuple(Path(root) for root in request["roots"])
             )
-            result["directory"] = str(result["directory"])
+            result = {"version": 1, "status": "ready"}
         elif (
-            arguments
-            in (["verify"], ["check-roots"], ["relocate-quarantines"], ["quarantine-status"])
+            arguments in (["verify"], ["check-roots"])
             and isinstance(request, dict)
             and request.keys()
             == (
@@ -78,10 +75,6 @@ def main(argv: list[str] | None = None) -> int:
             elif arguments == ["verify"]:
                 verify_checkpoint(checkpoint)
                 result = {"version": 1, "status": "verified"}
-            elif arguments == ["quarantine-status"]:
-                result = quarantine_status(checkpoint)
-            else:
-                result = relocate_quarantines(checkpoint)
         elif (
             arguments == ["prepare-deployment-lock"]
             and isinstance(request, dict)
@@ -159,13 +152,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result), flush=True)
         return 0
     except (SupervisorError, OSError, ValueError, TypeError, KeyError) as exc:
+        message = str(exc)
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
-            print(
-                "checkpoint_capacity: insufficient storage for filesystem operation.",
-                file=sys.stderr,
-            )
-        else:
-            print(str(exc), file=sys.stderr)
+            message = "checkpoint_capacity: insufficient storage for filesystem operation."
+        if message.startswith(("rollback_tree_mismatch:", "checkpoint_capacity:")):
+            # Only bounded checkpoint diagnostics cross the worker boundary.
+            print(json.dumps({"error": message[:4096]}), flush=True)
+            return 0
+        print(message, file=sys.stderr)
         return 1
 
 

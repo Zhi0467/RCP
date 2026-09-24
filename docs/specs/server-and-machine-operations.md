@@ -371,13 +371,8 @@ The root-owned current pointer must agree with it before application launch.
 
 `server update` displays an exact `vX.Y.Z:manifest-sha256` target for operator
 confirmation. Preparation uses a new isolated service-owned release directory;
-no failed preparation overwrites an existing directory.
-Before maintenance, the target must advertise `inventory` and `rollback-copy`
-in addition to the source's `prepare`/`validate` contract; missing commands
-refuse with `application_maintenance_commands_missing`. Rollback uses the target
-to copy restored state and the previous release to validate that disposable copy.
-A newer required supervisor version must be installed first through
-`server supervisor update`.
+no failed preparation overwrites an existing directory. A newer required
+supervisor version must be installed first through `server supervisor update`.
 That command validates a separate root-owned runtime and atomically switches its
 pointer under the same operation lock, without rolling back application data.
 
@@ -388,39 +383,32 @@ closing admission. Root authenticates the maintenance RPC to the actual service
 PID, account, instance, and data-directory identity. The application closes new
 mutations, provider launches, watchers, machine operations, and runtime recovery
 owners, drains entered work, then returns a SQLite capture bound to that
-quiescent boundary. Before stopping, the supervisor checks that the running
-version and commit match the selected previous release. Root stops the service
-and proves its main PID is gone.
+quiescent boundary. The candidate's thin `inventory` command projects the roots
+from backup's captured registration receipt using `_project_restore_location`,
+shared with preparation; it does not reread SQLite or parse manifests separately.
+Before service stop, supervisor `check-space` refuses with `checkpoint_capacity`
+if the checkpoint filesystem cannot hold a full copy. Root then stops the
+service and proves its main PID is gone. Before old preparation can mutate live
+state, the supervisor seals a full snapshot of every entry in the data root and
+registered local canonical `.research` roots. It then checks that old preparation
+declares the same replacement roots. The old prepared payload remains
+candidate-validation input, never the rollback source. The candidate migrates
+and validates only disposable copies.
 
-Before old preparation runs, the candidate's read-only application inventory
-discovers the data root and every registered local canonical `.research` root
-from a disposable copy of stopped SQLite and project manifests. It neither
-opens a live application store nor initializes or publishes graph state. The
-supervisor seals its own complete snapshot of those roots, then cross-checks
-the roots declared by old preparation and refuses unexplained differences.
-The old prepared payload remains a semantic-validation input, never the update
-rollback source. The candidate migrates and validates disposable copies.
-
-The stopped snapshot includes every entry in each replaced root: managed
-credentials, local jobs, transfer inboxes, watermarks, caches, unknown regular
-files, all branches and empty directories, plus raw SQLite main/WAL/SHM/journal
-files. Symlinks inside retained scratch keep their text and are never followed;
-links elsewhere refuse. Unsupported entries, unsafe ownership or permissions,
-ACLs and extended attributes on supported Linux filesystems, and exceeded copy
-bounds refuse explicitly.
-Provider homes, Git/source checkouts and remote canonical roots remain outside
-replacement scope. Updates currently refuse registered remote canonical roots
-with `legacy_remote_probation_unproven` until preparation and probation can
-prove remote publication is confined to disposable state. Kept artifacts and
-result views outside replacement roots remain checked by their typed owners.
-The online maintenance entrance is unchanged; stronger sign-in quiescence is
-separate unfinished work.
+Whole-root capture includes credentials, jobs, cursors, unknown files and empty
+directories. Existing bounded traversal and filesystem-entry safety checks still
+apply; no backup inclusion list filters the snapshot. Provider homes, source
+checkouts and remote canonical roots remain outside replacement scope. Updates
+with registered remote roots refuse with `legacy_remote_probation_unproven`
+until preparation and probation confinement pass qualification. Kept artifacts
+and result views outside replacement roots retain their typed checks.
+An intact startup-effect fence prevents probation from changing external state.
 
 Offline validation exercises real API projections, main and branch replay,
 merge receipts, retained task/stage paths, imported histories, and startup
-recovery inventory. `migrate --check` alone is insufficient. Candidate live-state
-and old copied-state proofs are separate application-owned documents. The
-supervisor handles only their digests and opaque filesystem trees.
+recovery inventory. `migrate --check` alone is insufficient. Candidate and old
+live-state proofs are separate, exact application-owned documents. The
+supervisor handles only their digests and opaque filesystem snapshots.
 A candidate may change the graph projection only in listed ways. It verifies the
 retained baseline graph against its recorded digest, then removes the retired
 `coverage` report and fills fields added with empty defaults (edge `expectation`,
@@ -441,18 +429,17 @@ checkpoint payloads and filesystem replacement run as `rcp`. Before replacing a
 root, the filesystem worker writes and fsyncs its restoration journal, builds
 and verifies a sibling temporary tree, renames the current root to a retained
 quarantine, then atomically publishes the replacement and fsyncs its parent.
-Every individual root can resume after interruption. Before old startup, an
-independent live rescan must equal the stopped snapshot's full root and entry
-set, types, sizes, hashes, symlink text and supported ownership and modes,
-including root metadata. Any difference
-reports `rollback_tree_mismatch` and keeps the service stopped. Old semantic
-verification runs on a disposable restored copy; it cannot repair live bytes.
-When preparation failed before producing a baseline, the exact tree proof and
-recorded pre-stop healthy identity permit structural rollback without claiming
-a successful semantic rehearsal. A completed restoration never reapplies over
-later accepted work.
+Every individual root can resume after interruption. After restoring the
+checkpoint, an independent live rescan compares the complete entry set, contents
+and supported metadata against the snapshot. A `rollback_tree_mismatch` keeps
+the service stopped and names the first few differing relative entries as
+missing, extra or changed in both the error and operation record. Diagnostics
+are bounded and contain no file contents or secrets. No automatic repair or new
+recovery command is introduced. A completed restoration never reapplies over
+later changes. Supervisor 0.1.6 owns this checkpoint contract; protected restore
+and source adoption retain their distinct snapshot authority.
 
-Retained artifacts are bounded. Once an update commits or rolls back, the supervisor prunes
+Retained artifacts are bounded. Once an update commits, the supervisor prunes
 under the same operation lock: it keeps the newest checkpoints and newest
 release trees (two of each, in `limits.py`), the live release, the rollback
 target, and every release a kept checkpoint sits between, and removes the
@@ -465,21 +452,6 @@ in the result, so a release being installed is never removed from under its
 installer. A pruned build keeps its
 sealed receipt; selecting that version again installs the verified bundle
 under the same identity. `server prune` runs the same decision on demand.
-After proven rollback, old startup and a fresh complete protected backup, the
-filesystem worker relocates only quarantines named by its restoration journal
-out of project repositories into the checkpoint workspace. Cross-filesystem
-relocation verifies the copied tree and fsyncs before removing its source;
-interrupted cleanup resumes through the same retention owner. A cleanup or
-backup failure reports retained artifacts without changing rollback's outcome.
-Those diagnostic trees expire with their owning checkpoint under the existing
-limits. Legacy or unowned quarantines are reported for operator inspection and
-never deleted by filename pattern. Legacy incomplete update checkpoints are
-never upgraded into an exact-tree claim or automatically cleaned up.
-
-Supervisor 0.1.6 owns this update checkpoint contract. The target's bundled
-supervisor version uses the existing required-supervisor gate, so an older
-supervisor must be updated before admitting that target. Protected restore and
-source adoption keep their distinct snapshot authority.
 
 ### Selection and startup guard
 
@@ -490,9 +462,10 @@ live-state proof, and stops that probation process. A durable `candidate_chosen`
 record is the point after which old data may never be restored automatically.
 Only then does it publish the selected receipt and start the ordinary service.
 A failure after checkpoint sealing and before that choice restores and verifies
-the complete stopped trees before selecting and starting old code. Snapshot
-creation is journaled separately from semantic preparation. Failed candidate
-trees remain quarantined until the post-rollback backup permits relocation.
+old bytes before selecting and starting old code. Snapshot creation is journaled
+separately from preparation. The existing previous-release startup probe runs
+after file readback succeeds. Failed candidate trees stay quarantined in place
+and are reported for inspection.
 
 `rcp.service` invokes root `rcp-supervisor recover --startup` in `ExecStartPre`.
 Recovery uses local installed code, checkpoints and journals; it performs no
@@ -1071,8 +1044,7 @@ Update maintenance refuses immediately while an upload is active, leaving
 admission open so the running service can accept that upload's completion. Its
 semantic preparation preserves only receipt-backed `complete` files, ignores
 already-`consumed` records, and rejects a leftover or untyped inbox file. The
-independent stopped-tree rollback checkpoint retains the entire inbox before
-that validation runs.
+independent rollback checkpoint retains the whole inbox before validation.
 Restore invalidates active and complete uploads for every nonterminal target
 request, so an old lease cannot complete after replacement. A reviewed
 `archive_bound` restore re-entry binds the exact restored revision, final-review
@@ -1128,10 +1100,10 @@ Pending artifact revision candidates are task-stage state and are likewise not
 copied into an offline backup. Restore atomically marks them Abandoned before
 task-session detachment; it never publishes candidate bytes, and the original
 temporary or kept artifact remains unchanged. Server update checkpoints preserve
-the complete stopped roots, including unresolved local candidates, before old
-preparation settles any accepting local temporary or kept-artifact replacement
-journal. Semantic preparation separately validates the recovery-stage inventory
-and refuses if replacement state remains unresolved.
+whole stopped roots, including unresolved local candidates, before old preparation
+settles any accepting local temporary or kept-artifact replacement journal.
+Semantic preparation separately validates the recovery-stage inventory and
+refuses if replacement state remains unresolved.
 When the SQLite snapshot contains an unresolved kept-artifact revision, its
 kept-file inventory is bound to the candidate's base digest. A later mismatch
 makes that project uncaptured instead of archiving unaccepted candidate bytes.

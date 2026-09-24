@@ -39,7 +39,6 @@ PHASES = (
     | frozenset(ROLLBACK)
     | {
         "snapshot_ready",
-        "baseline_ready",
         "activating",
         "pointer_switched",
         "candidate_verified",
@@ -77,10 +76,8 @@ class Runtime(Protocol):
     def enter_maintenance(self, operation: dict) -> dict: ...
     def abort_maintenance(self, operation: dict) -> None: ...
     def stop_service(self) -> None: ...
-    def snapshot(self, operation: dict, capture: dict) -> dict: ...
-    def prepare_previous(self, operation: dict, capture: dict) -> dict: ...
-    def validate_target(self, operation: dict) -> dict: ...
-    def verify_previous(self, operation: dict) -> None: ...
+    def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]: ...
+    def snapshot(self, operation: dict, roots: list[str]) -> dict: ...
     def verify_roots(self, checkpoint: dict) -> None: ...
     def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]: ...
     def prepare_fresh_restore(self, operation: dict) -> tuple[dict, None, dict, dict]: ...
@@ -429,24 +426,20 @@ class Coordinator:
                 capture = (
                     None if previous_uninitialized else self.runtime.enter_maintenance(operation)
                 )
+                roots = (
+                    self.runtime.checkpoint_roots(operation, capture) if kind == "update" else []
+                )
                 operation = self._phase(operation, "quiescent")
                 self.runtime.stop_service()
                 if kind == "update":
                     operation = self._phase(operation, "snapshotting")
-                    checkpoint = self.runtime.snapshot(operation, capture)
+                    checkpoint = self.runtime.snapshot(operation, roots)
                     operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
-                    previous_proof = self.runtime.prepare_previous(operation, capture)
-                    operation = self._phase(
-                        operation, "baseline_ready", previous_proof=previous_proof
-                    )
-                    target_proof = self.runtime.validate_target(operation)
-                    candidate_checkpoint = None
-                else:
-                    checkpoint, previous_proof, target_proof, candidate_checkpoint = (
-                        self.runtime.prepare_fresh_restore(operation)
-                        if previous_uninitialized
-                        else self.runtime.prepare(operation, capture)
-                    )
+                checkpoint, previous_proof, target_proof, candidate_checkpoint = (
+                    self.runtime.prepare_fresh_restore(operation)
+                    if previous_uninitialized
+                    else self.runtime.prepare(operation, capture)
+                )
                 operation = self._phase(
                     operation,
                     "checkpoint_ready",
@@ -486,15 +479,8 @@ class Coordinator:
 
                     if isinstance(exc, RestoreOperatorAction):
                         raise
-                verification = (
-                    " (structural verification)"
-                    if recovered["phase"] == "rolled_back"
-                    and recovered["previous_proof"] is None
-                    and recovered["kind"] == "update"
-                    else ""
-                )
                 raise SupervisorError(
-                    f"Deployment failed; recovery ended in {recovered['phase']}{verification}: {str(exc)[:2048]}"
+                    f"Deployment failed; recovery ended in {recovered['phase']}: {str(exc)[:2048]}"
                 ) from exc
 
     def recover(self, *, startup: bool = False) -> dict | None:
@@ -506,6 +492,15 @@ class Coordinator:
                 return self._recover(operation, startup=startup)
 
     def _recover(self, operation: dict, *, startup: bool) -> dict:
+        try:
+            return self._recover_operation(operation, startup=startup)
+        except Exception as exc:
+            current = self.store.active()
+            if current is not None:
+                self.store.write(dict(current, error=str(exc)[:4096]))
+            raise
+
+    def _recover_operation(self, operation: dict, *, startup: bool) -> dict:
         phase = operation["phase"]
         exact_update = operation["kind"] == "update" and operation["version"] == 2
         if phase in ("candidate_chosen", "previous_chosen"):
@@ -574,13 +569,9 @@ class Coordinator:
             # Recheck after an interrupted rename/phase boundary, before any old code.
             self.runtime.verify_roots(operation["checkpoint"])
         if operation["phase"] == "previous_pointer_restored":
-            if exact_update:
-                self.runtime.verify_previous(operation)
-            elif not operation["previous_uninitialized"]:
+            if not operation["previous_uninitialized"]:
                 self.runtime.probe(operation["previous"], operation, operation["previous_proof"])
             operation = self._phase(operation, "previous_verified")
-        if exact_update:
-            self.runtime.verify_roots(operation["checkpoint"])
         operation = self._phase(operation, "previous_chosen")
         self.runtime.select(operation["previous"])
         if not startup and not operation["previous_uninitialized"]:

@@ -317,17 +317,6 @@ def test_selected_release_requires_receipt_and_current_pointer_agreement(monkeyp
                 read()
 
 
-@pytest.mark.parametrize("field", ["running_commit", "app_version"])
-def test_stopped_boundary_requires_the_previous_running_identity(runtime, field):
-    metadata = {"running_commit": "a" * 40, "app_version": "0.3.4+build.100.gaaaaaaa"}
-    previous = {"commit": metadata["running_commit"], "version_string": metadata["app_version"]}
-    metadata[field] = "different"
-    runtime.metadata = lambda: metadata
-    runtime.control = lambda *args, **kwargs: pytest.fail("maintenance must not be entered")
-    with pytest.raises(SupervisorError, match="Running application identity"):
-        runtime.enter_maintenance({"previous": previous})
-
-
 def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_path):
     import fcntl
     from dataclasses import replace
@@ -357,3 +346,52 @@ def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_p
         ):
             pytest.fail("checked stale inode")
     assert lock.read_bytes() == b"restored lock bytes\n"
+
+
+def test_candidate_requires_inventory_command(runtime):
+    runtime.application = lambda *args: {
+        "version": 1,
+        "maintenance_protocol": 10,
+        "commands": ["prepare", "validate"],
+    }
+    runtime.require_capability({})  # The source release needs no new command.
+    with pytest.raises(
+        SupervisorError, match="application_maintenance_commands_missing: inventory"
+    ):
+        runtime.require_capability({}, extra_commands=("inventory",))
+
+
+def test_filesystem_mismatch_reaches_operation_record(runtime, tmp_path):
+    from rcp_supervisor.checkpoint import create_stopped_snapshot
+
+    from tests.test_supervisor_operations import _case
+
+    coordinator, fake, previous, target = _case(tmp_path / "operation")
+    # Exercise the real worker JSON transport from this checkout.
+    source = Path(__file__).resolve().parents[1] / "supervisor" / "src"
+    runtime.owned_argv = lambda argv: [
+        sys.executable,
+        "-I",
+        "-c",
+        f"import sys,runpy; sys.path.insert(0, {str(source)!r}); "
+        "sys.argv = ['fs_worker', 'verify']; runpy.run_module('rcp_supervisor.fs_worker', run_name='__main__')",
+    ]
+    saved = create_stopped_snapshot(tmp_path / "snapshot", (fake.data,), boundary_sha256="b" * 64)
+    identity = {
+        "directory": str(saved.directory),
+        "sha256": saved.sha256,
+        "boundary_sha256": saved.boundary_sha256,
+    }
+    fake.fail_target = True
+
+    def verify(checkpoint):
+        (fake.data / "value").write_text("secret changed bytes")
+        runtime.filesystem("verify", identity)
+
+    fake.verify_roots = verify
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
+        coordinator.deploy(previous, target)
+    assert "value" in str(error.value) and "changed" in str(error.value)
+    assert "secret changed bytes" not in str(error.value)
+    assert coordinator.store.active()["error"] == str(error.value)
+    assert fake.starts == 0

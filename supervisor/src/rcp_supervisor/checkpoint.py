@@ -8,14 +8,12 @@ it never grants work admission.
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
+import shutil
 import stat
-import sys
 import uuid
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +21,8 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     CHECKPOINT_COPY_BYTES,
     MAX_CHECKPOINT_BYTES,
+    MAX_CHECKPOINT_DIFFERENCE_PATH,
+    MAX_CHECKPOINT_DIFFERENCES,
     MAX_CHECKPOINT_ENTRIES,
     MAX_CHECKPOINT_MANIFEST_BYTES,
     MAX_CHECKPOINT_ROOTS,
@@ -181,76 +181,62 @@ def _inventory(
                 relative = child.relative_to(root).as_posix()
                 if len(relative.encode()) > 4096:
                     _fail("A checkpoint relative path exceeds the limit.")
-                info = child.lstat()
-                metadata = _access_metadata(child) if exact else {}
-                if stat.S_ISDIR(info.st_mode):
-                    _directory(child)
-                    result.append({"path": relative, "kind": "directory", **metadata})
-                    pending.append(child)
-                elif stat.S_ISLNK(info.st_mode) and links:
-                    if exact and (
-                        Path(relative).parts[0] != "run-stage" or len(Path(relative).parts) < 2
-                    ):
-                        _fail("checkpoint_unsafe_entry: symbolic link outside retained scratch.")
-                    # A link is inventory by its text alone; nothing here follows it.
-                    target = os.readlink(child)
-                    if not _valid_link_target(target):
-                        _fail("A checkpoint link target is invalid.")
-                    result.append(
-                        {"path": relative, "kind": "symlink", "target": target, **metadata}
-                    )
-                else:
-                    digest, length, mode = _file_hash(child, max_bytes=max_bytes - size)
-                    size += length
-                    result.append(
-                        {
-                            "path": relative,
-                            "kind": "file",
-                            "sha256": digest,
-                            "size": length,
-                            "mode": mode,
-                            **metadata,
-                        }
-                    )
+                try:
+                    info = child.lstat()
+                    metadata = _access_metadata(child) if exact else {}
+                    if stat.S_ISDIR(info.st_mode):
+                        _directory(child)
+                        result.append({"path": relative, "kind": "directory", **metadata})
+                        pending.append(child)
+                    elif stat.S_ISLNK(info.st_mode) and links:
+                        if exact and (
+                            Path(relative).parts[0] != "run-stage" or len(Path(relative).parts) < 2
+                        ):
+                            _fail(
+                                "checkpoint_unsafe_entry: symbolic link outside retained scratch."
+                            )
+                        # A link is inventory by its text alone; nothing here follows it.
+                        target = os.readlink(child)
+                        if not _valid_link_target(target):
+                            _fail("A checkpoint link target is invalid.")
+                        result.append(
+                            {"path": relative, "kind": "symlink", "target": target, **metadata}
+                        )
+                    else:
+                        digest, length, mode = _file_hash(child, max_bytes=max_bytes - size)
+                        size += length
+                        result.append(
+                            {
+                                "path": relative,
+                                "kind": "file",
+                                "sha256": digest,
+                                "size": length,
+                                "mode": mode,
+                                **metadata,
+                            }
+                        )
+                except (SupervisorError, OSError) as exc:
+                    raise SupervisorError(
+                        f"{exc if isinstance(exc, SupervisorError) else 'Checkpoint entry unreadable.'} "
+                        f"{_entry_name(relative)}: changed."
+                    ) from exc
     return sorted(result, key=lambda item: item["path"])
 
 
+def _entry_name(relative: str) -> str:
+    return json.dumps(relative, ensure_ascii=False)[:MAX_CHECKPOINT_DIFFERENCE_PATH]
+
+
 def _access_metadata(path: Path) -> dict:
-    info = path.lstat()
-    if info.st_uid != os.geteuid() or info.st_gid not in {os.getegid(), *os.getgroups()}:
-        _fail("checkpoint_unsafe_entry: unsupported ownership.")
-    if getattr(info, "st_flags", 0):
-        _fail("checkpoint_unsafe_entry: filesystem flags are unsupported.")
-    if _has_extended_metadata(path):
-        _fail("checkpoint_unsafe_entry: ACLs and extended attributes are unsupported.")
-    metadata = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid}
-    _validate_metadata(metadata, symlink=stat.S_ISLNK(info.st_mode))
+    metadata = {"mode": stat.S_IMODE(path.lstat().st_mode)}
+    _validate_metadata(metadata, symlink=path.is_symlink())
     return metadata
-
-
-def _has_extended_metadata(path: Path) -> bool:
-    if hasattr(os, "listxattr"):
-        return bool(os.listxattr(path, follow_symlinks=False))
-    if sys.platform != "darwin":
-        _fail("checkpoint_unsafe_entry: filesystem metadata inspection is unsupported.")
-    # The installed supervisor supports Linux. Darwin permits local development
-    # checks, but its filesystem access metadata is not deployment-qualified.
-    warnings.warn(
-        "Darwin development checks do not verify ACLs or extended attributes; "
-        "installed checkpoint support requires Linux.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    return False
 
 
 def _validate_metadata(value: object, *, symlink: bool = False) -> None:
     if (
-        not isinstance(value, dict)
-        or value.keys() != {"mode", "uid", "gid"}
-        or any(type(value[key]) is not int for key in value)
-        or value["uid"] != os.geteuid()
-        or value["gid"] not in {os.getegid(), *os.getgroups()}
+        not _keys(value, {"mode"})
+        or type(value["mode"]) is not int
         or not 0 <= value["mode"] <= 0o777
         or (not symlink and value["mode"] & 0o022)
     ):
@@ -258,7 +244,6 @@ def _validate_metadata(value: object, *, symlink: bool = False) -> None:
 
 
 def _apply_metadata(path: Path, metadata: dict) -> None:
-    os.chown(path, metadata["uid"], metadata["gid"], follow_symlinks=False)
     if not path.is_symlink():
         os.chmod(path, metadata["mode"])
     elif stat.S_IMODE(path.lstat().st_mode) != metadata["mode"]:
@@ -354,9 +339,9 @@ def _validate_entries(entries: object, *, exact: bool = False) -> None:
         elif entry["kind"] == "symlink":
             names |= {"target"}
         if exact:
-            names |= {"mode", "uid", "gid"}
+            names.add("mode")
             _validate_metadata(
-                {key: entry.get(key) for key in ("mode", "uid", "gid")},
+                {"mode": entry.get("mode")},
                 symlink=entry["kind"] == "symlink",
             )
         if not _keys(entry, names):
@@ -405,28 +390,41 @@ def _validate_entries(entries: object, *, exact: bool = False) -> None:
 def _verify_tree(
     root: Path, entries: list[dict], *, stored: bool, metadata: dict | None = None
 ) -> None:
-    _directory(root, private=stored or metadata is None)
+    try:
+        _directory(root, private=stored or metadata is None)
+    except (SupervisorError, OSError) as exc:
+        status = "changed" if os.path.lexists(root) else "missing"
+        raise SupervisorError(f"Checkpoint tree differs: .: {status}.") from exc
     actual = _inventory(root, exact=metadata is not None)
     expected = [
-        dict(entry, mode=0o400) if stored and entry["kind"] == "file" else entry
+        dict(entry, mode=0o400 if entry["kind"] == "file" else 0o700)
+        if stored and (entry["kind"] == "file" or metadata and entry["kind"] == "directory")
+        else entry
         for entry in entries
     ]
-    if metadata is not None:
-        expected = [
-            dict(
-                entry,
-                mode=0o700 if entry["kind"] == "directory" else entry["mode"],
-                uid=os.geteuid(),
-                gid=os.getegid(),
-            )
-            if stored
-            else entry
-            for entry in expected
-        ]
-        if not stored and _access_metadata(root) != metadata:
-            _fail("Checkpoint root access metadata differs from its inventory.")
+    if metadata is not None and not stored:
+        try:
+            if _access_metadata(root) != metadata:
+                _fail("Checkpoint root mode differs.")
+        except (SupervisorError, OSError) as exc:
+            raise SupervisorError("Checkpoint tree differs: .: changed.") from exc
     if actual != expected:
-        _fail("Checkpoint tree differs from its verified inventory.")
+        expected_by_path = {entry["path"]: entry for entry in expected}
+        actual_by_path = {entry["path"]: entry for entry in actual}
+        differences = []
+        for path in sorted(expected_by_path.keys() | actual_by_path.keys()):
+            if path not in actual_by_path:
+                status = "missing"
+            elif path not in expected_by_path:
+                status = "extra"
+            elif expected_by_path[path] != actual_by_path[path]:
+                status = "changed"
+            else:
+                continue
+            differences.append(f"{_entry_name(path)}: {status}")
+            if len(differences) == MAX_CHECKPOINT_DIFFERENCES:
+                break
+        _fail("Checkpoint tree differs: " + "; ".join(differences) + ".")
     for entry in entries:
         if entry["kind"] == "directory":
             _directory(root / entry["path"], private=stored or metadata is None)
@@ -474,25 +472,19 @@ def _copy_tree(
             if reader.read(1) or digest.hexdigest() != entry["sha256"]:
                 _fail("Checkpoint copy SHA-256 mismatch.")
             writer.flush()
-            if metadata is not None:
-                os.fchown(
-                    writer.fileno(),
-                    os.geteuid() if stored else entry["uid"],
-                    os.getegid() if stored else entry["gid"],
-                )
             os.fchmod(writer.fileno(), 0o400 if stored else entry["mode"])
             os.fsync(writer.fileno())
     if metadata is not None:
         for entry in reversed(entries):
             if entry["kind"] == "file":
                 continue
-            access = dict(entry, uid=os.geteuid(), gid=os.getegid()) if stored else entry
+            access = dict(entry) if stored else entry
             if stored:
                 access["mode"] = 0o700 if entry["kind"] == "directory" else entry["mode"]
             _apply_metadata(destination / entry["path"], access)
         _apply_metadata(
             destination,
-            {"mode": 0o700, "uid": os.geteuid(), "gid": os.getegid()} if stored else metadata,
+            {"mode": 0o700} if stored else metadata,
         )
     for directory in reversed(
         [
@@ -579,6 +571,32 @@ def create_offline_snapshot(destination: Path, live: Path, *, boundary_sha256: s
         boundary_sha256=boundary_sha256,
         offline_snapshot=True,
     )
+
+
+def check_snapshot_space(directory: Path, roots: tuple[Path, ...]) -> None:
+    """Refuse before service stop if a complete checkpoint cannot fit here."""
+    _directory(directory)
+    block = os.statvfs(directory).f_frsize or 4096
+    required = MAX_CHECKPOINT_MANIFEST_BYTES + block * (len(roots) + 2)
+    total_entries = total_bytes = 0
+    for root in roots:
+        entries = _inventory(
+            root,
+            max_entries=MAX_CHECKPOINT_ENTRIES - total_entries,
+            max_bytes=MAX_CHECKPOINT_BYTES - total_bytes,
+            exact=True,
+        )
+        total_entries += len(entries)
+        total_bytes += sum(entry.get("size", 0) for entry in entries)
+        required += sum(
+            max(1, (entry.get("size", 0) + block - 1) // block) * block for entry in entries
+        )
+    available = shutil.disk_usage(directory).free
+    if available < required:
+        _fail(
+            f"checkpoint_capacity: checkpoint filesystem needs {required} bytes; "
+            f"only {available} bytes are available."
+        )
 
 
 def create_stopped_snapshot(
@@ -691,8 +709,6 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
     admission reopens is forbidden: selected-release recovery must preserve new
     work. A completed restoration is verified, never reapplied over changed data.
     """
-    from rcp_supervisor.retention import remove_retained_tree
-
     document = _document(checkpoint.directory, checkpoint.sha256)
     if document["boundary_sha256"] != checkpoint.boundary_sha256:
         _fail("Checkpoint application boundary changed.")
@@ -720,7 +736,6 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
         "status": "restoring",
     }
     if document["version"] == 2:
-        state["quarantines"] = [str(quarantine) for _, _, quarantine, _ in paths]
         state["absent_roots"] = [
             index for index, (live, _, _, _) in enumerate(paths) if not os.path.lexists(live)
         ]
@@ -730,16 +745,12 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
             not _keys(
                 state,
                 {"version", "checkpoint_sha256", "status"}
-                | ({"quarantines", "absent_roots"} if document["version"] == 2 else set()),
+                | ({"absent_roots"} if document["version"] == 2 else set()),
             )
             or type(state["version"]) is not int
             or state["version"] != document["version"]
             or state["checkpoint_sha256"] != checkpoint.sha256
             or state["status"] not in ("restoring", "complete")
-            or (
-                document["version"] == 2
-                and state["quarantines"] != [str(quarantine) for _, _, quarantine, _ in paths]
-            )
         ):
             _fail("Restore journal is unsupported or differs from its checkpoint.")
         if document["version"] == 2:
@@ -778,7 +789,15 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
             # Only this journal's disposable staging tree may be rebuilt. Live
             # roots and quarantines are never deleted or recursively overlaid.
             _directory(partial)
-            remove_retained_tree(partial, partial.parent)
+            # Restore copies can already carry read-only directory modes.
+            for parent, directories, _files in os.walk(partial, followlinks=False):
+                os.chmod(parent, 0o700)
+                for name in directories:
+                    child = Path(parent) / name
+                    if not child.is_symlink():
+                        os.chmod(child, 0o700)
+            shutil.rmtree(partial)
+            _fsync_directory(partial.parent)
         _copy_tree(
             checkpoint.directory / root["payload"],
             partial,
@@ -800,9 +819,7 @@ def _verify_live_root(live: Path, root: dict) -> None:
     try:
         _verify_tree(live, root["entries"], stored=False, metadata=root.get("metadata"))
     except (SupervisorError, OSError) as exc:
-        raise SupervisorError(
-            "rollback_tree_mismatch: restored root differs from stopped inventory."
-        ) from exc
+        raise SupervisorError(f"rollback_tree_mismatch: {exc}") from exc
 
 
 def _exact_document(checkpoint: Checkpoint) -> dict:
@@ -819,8 +836,12 @@ def verify_checkpoint(checkpoint: Checkpoint) -> None:
     try:
         for root in _exact_document(checkpoint)["roots"]:
             _verify_live_root(Path(root["live"]), root)
-    except (SupervisorError, OSError) as exc:
-        raise SupervisorError("rollback_tree_mismatch: exact stopped-tree proof failed.") from exc
+    except SupervisorError as exc:
+        if str(exc).startswith("rollback_tree_mismatch:"):
+            raise
+        raise SupervisorError(f"rollback_tree_mismatch: {exc}") from exc
+    except OSError as exc:
+        raise SupervisorError("rollback_tree_mismatch: checkpoint could not be read.") from exc
 
 
 def check_checkpoint_roots(checkpoint: Checkpoint, roots: tuple[Path, ...]) -> None:
@@ -831,24 +852,6 @@ def check_checkpoint_roots(checkpoint: Checkpoint, roots: tuple[Path, ...]) -> N
         _fail("checkpoint_root_mismatch: prepared roots differ from stopped inventory.")
 
 
-def _owned_quarantines(checkpoint: Checkpoint, document: dict) -> list[Path]:
-    state, _ = _read_json(checkpoint.directory / "restore.json")
-    expected = [
-        str(Path(root["live"]).with_name(f".rcp-quarantine-{document['checkpoint_id']}-{index}"))
-        for index, root in enumerate(document["roots"])
-    ]
-    if (
-        not _keys(state, {"version", "checkpoint_sha256", "status", "quarantines", "absent_roots"})
-        or state["version"] != 2
-        or state["checkpoint_sha256"] != checkpoint.sha256
-        or state["status"] != "complete"
-        or state["quarantines"] != expected
-    ):
-        _fail("Quarantine relocation requires its completed exact restore journal.")
-    _validate_absent_roots(state["absent_roots"], len(expected))
-    return [Path(path) for index, path in enumerate(expected) if index not in state["absent_roots"]]
-
-
 def _validate_absent_roots(indices: object, count: int) -> None:
     if (
         not isinstance(indices, list)
@@ -856,154 +859,3 @@ def _validate_absent_roots(indices: object, count: int) -> None:
         or indices != sorted(set(indices))
     ):
         _fail("Restore journal has invalid absent roots.")
-
-
-def _legacy_quarantines(document: dict, owned: list[Path]) -> list[str]:
-    # Discovery is reporting only. These names never become deletion authority.
-    legacy = set()
-    for parent in {Path(root["live"]).parent for root in document["roots"]}:
-        with os.scandir(parent) as children:
-            for entry in children:
-                if entry.name.startswith(".rcp-quarantine-") and Path(entry.path) not in owned:
-                    legacy.add(entry.path)
-                    if len(legacy) > MAX_CHECKPOINT_ENTRIES:
-                        _fail("Quarantine report exceeds its entry limit.")
-    return sorted(legacy)
-
-
-def quarantine_status(checkpoint: Checkpoint) -> dict:
-    document = _document(checkpoint.directory, checkpoint.sha256)
-    if document["version"] != 2:
-        return {
-            "version": 1,
-            "status": "legacy",
-            "legacy_quarantines": _legacy_quarantines(document, []),
-        }
-    owned = _owned_quarantines(checkpoint, document)
-    path = checkpoint.directory / "relocation.json"
-    state = _relocation_document(checkpoint, owned) if path.exists() else None
-    if state and state["status"] == "complete" and any(os.path.lexists(source) for source in owned):
-        _fail("A relocated quarantine source unexpectedly reappeared.")
-    return {
-        "version": 1,
-        "status": "relocated" if state and state["status"] == "complete" else "pending",
-        "legacy_quarantines": _legacy_quarantines(document, owned),
-    }
-
-
-def _relocation_document(checkpoint: Checkpoint, owned: list[Path]) -> dict:
-    state, _ = _read_json(checkpoint.directory / "relocation.json")
-    if (
-        not _keys(state, {"version", "checkpoint_sha256", "status", "roots"})
-        or state["version"] != 1
-        or state["checkpoint_sha256"] != checkpoint.sha256
-        or state["status"] not in ("relocating", "complete")
-        or not isinstance(state["roots"], list)
-        or len(state["roots"]) != len(owned)
-    ):
-        _fail("Quarantine relocation journal is unsupported.")
-    for index, (root, source) in enumerate(zip(state["roots"], owned, strict=True)):
-        if (
-            not _keys(root, {"source", "destination", "entries", "metadata", "status"})
-            or root["source"] != str(source)
-            or root["destination"] != f"quarantines/{index}"
-            or root["status"] not in ("pending", "removing", "complete")
-        ):
-            _fail("Quarantine relocation ownership is invalid.")
-        _validate_metadata(root["metadata"])
-        _validate_entries(root["entries"], exact=True)
-    if state["status"] == "complete" and any(
-        root["status"] != "complete" for root in state["roots"]
-    ):
-        _fail("Quarantine relocation journal has inconsistent completion.")
-    return state
-
-
-def relocate_quarantines(checkpoint: Checkpoint) -> dict:
-    """Retain journal-owned diagnostics after the caller proves a complete backup.
-
-    The journal grants authority for each source and staging path, including an
-    interrupted verified removal. No live tree is read or changed after startup.
-    """
-    from rcp_supervisor.retention import remove_retained_tree
-
-    document = _exact_document(checkpoint)
-    owned = _owned_quarantines(checkpoint, document)
-    journal = checkpoint.directory / "relocation.json"
-    storage = checkpoint.directory / "quarantines"
-    if journal.exists():
-        state = _relocation_document(checkpoint, owned)
-        storage.mkdir(mode=0o700, exist_ok=True)
-        _directory(storage, private=True)
-        _fsync_directory(storage.parent)
-    else:
-        if os.path.lexists(storage):
-            _fail("Quarantine storage exists without its owning journal.")
-        records = []
-        total_entries = total_bytes = 0
-        for index, source in enumerate(owned):
-            entries = _inventory(
-                source,
-                exact=True,
-                max_entries=MAX_CHECKPOINT_ENTRIES - total_entries,
-                max_bytes=MAX_CHECKPOINT_BYTES - total_bytes,
-            )
-            total_entries += len(entries)
-            total_bytes += sum(entry.get("size", 0) for entry in entries)
-            records.append(
-                {
-                    "source": str(source),
-                    "destination": f"quarantines/{index}",
-                    "entries": entries,
-                    "metadata": _access_metadata(source),
-                    "status": "pending",
-                }
-            )
-        state = {
-            "version": 1,
-            "checkpoint_sha256": checkpoint.sha256,
-            "status": "relocating",
-            "roots": records,
-        }
-        _write_json(journal, state)
-        storage.mkdir(mode=0o700)
-        _fsync_directory(storage.parent)
-    for root in state["roots"]:
-        source = Path(root["source"])
-        destination = checkpoint.directory / root["destination"]
-        partial = destination.with_name(f".{destination.name}.partial")
-        if root["status"] == "complete":
-            _verify_tree(destination, root["entries"], stored=False, metadata=root["metadata"])
-            if os.path.lexists(source):
-                _fail("A relocated quarantine source unexpectedly reappeared.")
-            continue
-        if not os.path.lexists(destination):
-            _verify_tree(source, root["entries"], stored=False, metadata=root["metadata"])
-            try:
-                os.replace(source, destination)
-                _fsync_directory(source.parent)
-                _fsync_directory(destination.parent)
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    raise
-                if os.path.lexists(partial):
-                    _directory(partial)
-                    remove_retained_tree(partial, partial.parent)
-                _copy_tree(
-                    source, partial, root["entries"], stored=False, metadata=root["metadata"]
-                )
-                os.replace(partial, destination)
-                _fsync_directory(destination.parent)
-        _verify_tree(destination, root["entries"], stored=False, metadata=root["metadata"])
-        if os.path.lexists(source):
-            if root["status"] != "removing":
-                _verify_tree(source, root["entries"], stored=False, metadata=root["metadata"])
-                root["status"] = "removing"
-                _write_json(journal, state)
-            _directory(source)
-            remove_retained_tree(source, source.parent)
-        root["status"] = "complete"
-        _write_json(journal, state)
-    state["status"] = "complete"
-    _write_json(journal, state)
-    return quarantine_status(checkpoint)

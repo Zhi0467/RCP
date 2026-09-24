@@ -17,7 +17,7 @@ import shutil
 import stat
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -112,11 +112,6 @@ def plan_retention(
     kept_operations = [
         record for record, _ in newest_first if _owns_checkpoint(record, checkpoints_root)
     ][:RETAINED_CHECKPOINTS]
-    kept_operations.extend(
-        record
-        for record, _ in newest_first
-        if record["operation_id"] in protected_operation_ids and record not in kept_operations
-    )
     kept_ids = {record["operation_id"] for record in kept_operations} | set(protected_operation_ids)
     recorded_ids = {record["operation_id"] for record, _ in records}
     # Only a build some completed deployment names is this store's to remove. A
@@ -204,91 +199,21 @@ def adoption_operation_ids(paths: Paths) -> frozenset[str]:
 def prune_retained(runtime: SystemRuntime, store: OperationStore) -> RetentionPlan:
     """Remove what the plan names, under the same locks a deployment holds."""
 
-    with store.locked():
-        records = store.records()
-        protected = set(adoption_operation_ids(runtime.paths))
-        reports: list[str] = []
-
-        def plan() -> RetentionPlan:
-            return plan_retention(
-                records=records,
-                checkpoints_root=runtime.paths.checkpoints_root,
-                releases_root=runtime.paths.releases_root,
-                current_release_directory=runtime.current_release_directory(),
-                selected=runtime.selected_release(),
-                protected_operation_ids=frozenset(protected),
-                now=time.time(),
-            )
-
-        # Reject an unfinished or inconsistent machine before invoking backup.
-        plan()
-        rolled_back = [
-            record
-            for record, _ in records
-            if record["phase"] == "rolled_back"
-            and record["kind"] == "update"
-            and _owns_checkpoint(record, runtime.paths.checkpoints_root)
-        ]
-        exact = []
-        for record in rolled_back:
-            protected.add(record["operation_id"])
-            if record["version"] == 2:
-                try:
-                    status = runtime.filesystem("quarantine-status", record["checkpoint"])
-                    if status.get("version") != 1 or status.get("status") not in {
-                        "pending",
-                        "relocated",
-                    }:
-                        raise SupervisorError("Exact quarantine ownership was not confirmed.")
-                    for path in status.get("legacy_quarantines", []):
-                        reports.append(
-                            f"{path}: legacy quarantine retained; inspect before removal"
-                        )
-                except (SupervisorError, OSError) as exc:
-                    reports.append(
-                        f"{record['operation_id']}: quarantines retained: {str(exc)[:512]}"
-                    )
-                else:
-                    if status["status"] == "relocated":
-                        protected.remove(record["operation_id"])
-                    else:
-                        exact.append(record)
-            else:
-                reports.append(
-                    f"{record['operation_id']}: legacy rollback retained; inspect its quarantines"
-                )
-        # Backup acquires the deployment lock itself. Keep the operation lock,
-        # but do not hold the backup lock while running its owner.
-        if exact:
-            try:
-                runtime.protected_backup()
-            except (SupervisorError, OSError) as exc:
-                reports.append(f"rollback quarantines retained: {str(exc)[:512]}")
-                exact = []
-        with runtime.deployment_lock():
-            plan()
-            for record in exact:
-                try:
-                    result = runtime.filesystem("relocate-quarantines", record["checkpoint"])
-                    if result.get("version") != 1 or result.get("status") != "relocated":
-                        raise SupervisorError("Quarantine relocation was not confirmed.")
-                    for path in result.get("legacy_quarantines", []):
-                        reports.append(
-                            f"{path}: legacy quarantine retained; inspect before removal"
-                        )
-                except (SupervisorError, OSError) as exc:
-                    reports.append(
-                        f"{record['operation_id']}: quarantines retained: {str(exc)[:512]}"
-                    )
-                else:
-                    protected.remove(record["operation_id"])
-            result_plan = plan()
-            result_plan = replace(result_plan, left_alone=(*result_plan.left_alone, *reports))
-            for directory in result_plan.remove_checkpoints:
-                runtime.remove_retained(directory, runtime.paths.checkpoints_root)
-            for directory in result_plan.remove_releases:
-                runtime.remove_retained(directory, runtime.paths.releases_root)
-    return result_plan
+    with store.locked(), runtime.deployment_lock():
+        plan = plan_retention(
+            records=store.records(),
+            checkpoints_root=runtime.paths.checkpoints_root,
+            releases_root=runtime.paths.releases_root,
+            current_release_directory=runtime.current_release_directory(),
+            selected=runtime.selected_release(),
+            protected_operation_ids=adoption_operation_ids(runtime.paths),
+            now=time.time(),
+        )
+        for directory in plan.remove_checkpoints:
+            runtime.remove_retained(directory, runtime.paths.checkpoints_root)
+        for directory in plan.remove_releases:
+            runtime.remove_retained(directory, runtime.paths.releases_root)
+    return plan
 
 
 def remove_retained_tree(directory: Path, root: Path) -> None:

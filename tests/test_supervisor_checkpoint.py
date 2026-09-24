@@ -537,9 +537,20 @@ def test_offline_adoption_snapshot_retains_original_sqlite_before_new_code(tmp_p
         create_offline_snapshot(tmp_path / "legacy-checkpoint-2", live, boundary_sha256="b" * 64)
 
 
-@pytest.mark.parametrize("change", ["missing", "extra", "type", "file-mode", "root-mode", "link"])
+@pytest.mark.parametrize(
+    "change,detail",
+    [
+        ("missing", '"providers/token": missing'),
+        ("extra", '"unknown": extra'),
+        ("type", '"paper": changed'),
+        ("file-mode", '"jobs/local-job.json": changed'),
+        ("root-mode", ".: changed"),
+        ("link", '"run-stage/retained/current": changed'),
+        ("contents", '"providers/token": changed'),
+    ],
+)
 def test_stopped_snapshot_independently_proves_every_restored_entry(
-    tmp_path: Path, change: str
+    tmp_path: Path, change: str, detail: str
 ) -> None:
     saved, roots = _case(tmp_path, stopped=True)
     _mutate_live(roots)
@@ -558,14 +569,18 @@ def test_stopped_snapshot_independently_proves_every_restored_entry(
         (live / "jobs" / "local-job.json").chmod(0o640)
     elif change == "root-mode":
         live.chmod(0o750)
+    elif change == "contents":
+        (live / "providers" / "token").write_bytes(b"secret changed token")
     else:
         link = live / "run-stage" / "retained" / "current"
         link.unlink()
         link.symlink_to("elsewhere")
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
-        checkpoint.verify_checkpoint(saved)
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
-        checkpoint.restore_checkpoint(saved)
+    for verify in (checkpoint.verify_checkpoint, checkpoint.restore_checkpoint):
+        with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
+            verify(saved)
+        assert detail in str(error.value)
+        assert "secret changed token" not in str(error.value)
+        assert "synthetic-provider-token" not in str(error.value)
 
 
 def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_path: Path) -> None:
@@ -578,10 +593,8 @@ def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_p
         checkpoint.verify_checkpoint(legacy)
 
 
-@pytest.mark.parametrize("unsafe", ["link", "xattr", "hardlink", "directory-mode"])
-def test_stopped_snapshot_refuses_uncopyable_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
-) -> None:
+@pytest.mark.parametrize("unsafe", ["link", "hardlink", "directory-mode"])
+def test_stopped_snapshot_refuses_uncopyable_metadata(tmp_path: Path, unsafe: str) -> None:
     live = _directory(tmp_path / "live")
     target = live / "file"
     _write(target, b"preserve or refuse")
@@ -591,77 +604,10 @@ def test_stopped_snapshot_refuses_uncopyable_metadata(
         os.link(target, live / "alias")
     elif unsafe == "directory-mode":
         live.chmod(0o1700)
-    else:
-        monkeypatch.setattr(
-            checkpoint.os, "listxattr", lambda *args, **kwargs: ["user.unsupported"], raising=False
-        )
     with pytest.raises(SupervisorError):
         checkpoint.create_stopped_snapshot(
             tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
         )
-
-
-@pytest.mark.parametrize("interruption", ["journal", "rename", "copy", "remove"])
-def test_quarantine_relocation_resumes_and_keeps_unowned_trees(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
-) -> None:
-    import errno
-
-    saved, roots = _case(tmp_path, stopped=True)
-    _mutate_live(roots)
-    checkpoint.restore_checkpoint(saved)
-    owned = [
-        Path(path)
-        for path in json.loads((saved.directory / "restore.json").read_bytes())["quarantines"]
-    ]
-    legacy = roots[1].live.with_name(".rcp-quarantine-unowned")
-    _write(legacy / "keep", b"unowned diagnostics")
-    replace = os.replace
-    remove = shutil.rmtree
-    interrupted = False
-
-    def fail_replace(source, destination, *args, **kwargs):
-        nonlocal interrupted
-        if Path(source) in owned and interruption != "rename":
-            raise OSError(errno.EXDEV, "cross-device relocation")
-        result = replace(source, destination, *args, **kwargs)
-        selected = (
-            Path(source) in owned
-            if interruption == "rename"
-            else Path(destination).parent.name == "quarantines"
-        )
-        if interruption == "journal":
-            selected = Path(destination) == saved.directory / "relocation.json"
-        if not interrupted and interruption != "remove" and selected:
-            interrupted = True
-            raise PowerLoss
-        return result
-
-    def fail_remove(path, *args, **kwargs):
-        nonlocal interrupted
-        if Path(path) in owned and not interrupted:
-            interrupted = True
-            (Path(path) / "candidate-only" / "diagnostic").unlink()
-            raise PowerLoss
-        return remove(path, *args, **kwargs)
-
-    with monkeypatch.context() as fault:
-        fault.setattr(checkpoint.os, "replace", fail_replace)
-        if interruption == "remove":
-            fault.setattr(shutil, "rmtree", fail_remove)
-        with pytest.raises(PowerLoss):
-            checkpoint.relocate_quarantines(saved)
-    assert interrupted
-    result = checkpoint.relocate_quarantines(saved)
-    assert result["status"] == "relocated"
-    assert result["legacy_quarantines"] == [str(legacy)]
-    assert all(not path.exists() for path in owned)
-    assert (legacy / "keep").read_bytes() == b"unowned diagnostics"
-    assert (
-        saved.directory / "quarantines" / "0" / "candidate-only" / "diagnostic"
-    ).read_bytes() == b"candidate database side effect\n"
-    assert checkpoint.relocate_quarantines(saved) == result
-    _assert_restored(roots)
 
 
 def test_stopped_snapshot_rechecks_all_sources_before_sealing(
@@ -682,3 +628,18 @@ def test_stopped_snapshot_rechecks_all_sources_before_sealing(
             destination, tuple(root.live for root in roots), boundary_sha256="b" * 64
         )
     assert not (destination / "checkpoint.json").exists()
+
+
+def test_restore_mismatch_report_is_bounded(tmp_path: Path) -> None:
+    saved, roots = _case(tmp_path, stopped=True)
+    checkpoint.restore_checkpoint(saved)
+    for index in range(20):
+        _write(roots[0].live / f"extra-{index:02}", b"must not be reported")
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
+        checkpoint.verify_checkpoint(saved)
+    message = str(error.value)
+    assert message.count(": extra") == checkpoint.MAX_CHECKPOINT_DIFFERENCES
+    assert '"extra-00": extra' in message
+    assert '"extra-04": extra' in message
+    assert "must not be reported" not in message
+    assert len(message) < 1500

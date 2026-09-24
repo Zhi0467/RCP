@@ -3,9 +3,8 @@
 Active:
 
 - [Release updates and rollbacks stay clean](handoff-2026-09-24-updates-and-rollbacks-stay-clean.md)
-  — design 2026-09-24; slice 2 (exact stopped-tree rollback and its restore
-  proof) implemented. Quiescence, source floor, installed-artifact CI and the
-  legacy first-update entrance remain, the last three awaiting human decisions.
+  — full checkpoint restoration implemented; sign-in quiescence, source floor,
+  installed-artifact CI, legacy first-update entrance and remote containment remain.
 
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the

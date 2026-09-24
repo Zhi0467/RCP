@@ -20,11 +20,6 @@ from rcp_supervisor.checkpoint import create_stopped_snapshot, restore_checkpoin
 
 import rcp.storage.models as storage_models
 from rcp.api import create_app
-from rcp.config import load_manifest
-from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.history import HistoryManager
-from rcp.server_ops.application_snapshot import ApplicationSnapshotRefused
 from rcp.server_ops.application_validation import _canonical_sha256
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
@@ -32,12 +27,10 @@ from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
 from rcp.server_ops.deployment import (
     ApplicationProof,
     PrepareRequest,
-    RollbackCopyRequest,
     ValidateRequest,
     _publish_proof,
     inventory,
     prepare,
-    rollback_copy,
     validate,
 )
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
@@ -135,53 +128,26 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     for name in ("facts", "paper"):
         (research / name).mkdir(mode=0o700, exist_ok=True)
         assert not list((research / name).iterdir())
-    history = HistoryManager(load_manifest(research / "manifest.toml"))
-    head = history.head_ref()
-    branch_id = str(uuid.uuid4())
-    history.create_auto_research_branch(
-        GraphBranchMetadata(
-            branch_id=branch_id,
-            episode_id=branch_id,
-            project_id=state["project_id"],
-            base_head=head,
-            head=GraphHeadRef(
-                target=GraphTargetRef(kind="branch", branch_id=branch_id),
-                revision=head.revision,
-                transition_id=head.transition_id,
-            ),
-            authorized_by=AuthorizedHuman(
-                space_id=state["space_id"], user_id=state["member_id"], display_name="Rollback test"
-            ),
-        )
-    )
-    for name in ("patches", "merges"):
-        assert not list((research / "branches" / branch_id / name).iterdir())
-    capture = BackupCaptureCoordinator(
-        AppStore(data / "rcp.sqlite3"), data, metadata
-    ).capture_sqlite()
-    assert capture.receipt.status == "complete"
-    request = request.model_copy(
-        update={
-            "sqlite_receipt_path": str(capture.receipt_path),
-            "sqlite_receipt_sha256": capture.receipt_sha256,
-        }
-    )
     before = {root: _tree_state(root) for root in (data, research)}
     # Candidate root discovery must work before any old-code prepare and without
     # initializing even a read-only AppStore against the stopped installation.
     with monkeypatch.context() as guard:
         guard.setattr(AppStore, "__init__", lambda *args, **kwargs: pytest.fail("live AppStore"))
-        discovered = inventory(
-            request.model_copy(update={"output_dir": str(tmp_path / "inventory")})
+        guard.setattr(
+            AppStore,
+            "open_read_only_snapshot",
+            lambda *args, **kwargs: pytest.fail("AppStore snapshot"),
         )
+        discovered = inventory(request)
+    assert not Path(request.output_dir).exists()
+    assert discovered["external_references"] == []
     assert [item["live"] for item in discovered["roots"]] == [str(data), str(research)]
     assert {root: _tree_state(root) for root in before} == before
     checkpoint = create_stopped_snapshot(
         tmp_path / "checkpoint",
-        tuple(before),
+        tuple(Path(root["live"]) for root in discovered["roots"]),
         boundary_sha256="d" * 64,
     )
-    prepared = None
     if failure == "prepare":
 
         def failed_prepare(*args, **kwargs):
@@ -217,26 +183,6 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     assert os.readlink(stage / "current") == "retained.txt"
     assert os.readlink(stage / "python") == "/usr/bin/python3"
     assert os.readlink(stage / "pytest-current") == "pytest-0"
-    if prepared is not None:
-        restored_proof = rollback_copy(
-            RollbackCopyRequest(
-                version=1,
-                proof_path=prepared["proof_path"],
-                proof_sha256=prepared["proof_sha256"],
-                data_dir=str(data),
-                output_dir=str(tmp_path / "rollback-copy"),
-            )
-        )
-        checked = validate(
-            ValidateRequest(
-                version=1,
-                proof_path=restored_proof["proof_path"],
-                proof_sha256=restored_proof["proof_sha256"],
-                output_dir=str(tmp_path / "validated"),
-            )
-        )
-        assert checked["status"] == "verified"
-        assert {root: _tree_state(root) for root in before} == before
     restored = AppStore(data / "rcp.sqlite3")
     assert restored.authenticate_team_member_token(state["token"]).user_id == state["member_id"]
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
@@ -300,47 +246,6 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         AppStore(Path(request.data_dir) / "rcp.sqlite3").storage_schema_ledger_head()
         == state["ledger_head"]
     )
-
-
-@pytest.mark.parametrize("registry", ["legacy", "missing_project", "changed_location"])
-def test_stopped_inventory_reads_only_copied_legacy_registry(
-    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry: str
-) -> None:
-    request, state, _metadata = captured
-    data = Path(request.data_dir)
-    # The inventory must not need any of the current AppStore tables, schema
-    # ledger, or retirement column merely to discover the replacement roots.
-    database = data / "rcp.sqlite3"
-    with sqlite3.connect(database) as connection:
-        row = connection.execute(
-            "SELECT project_id, home_space_id, locator, state_location, state_remote FROM projects"
-        ).fetchone()
-    database.unlink()
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE projects (project_id TEXT, home_space_id TEXT, "
-            "locator TEXT, state_location TEXT, state_remote INTEGER)"
-        )
-        if registry != "missing_project":
-            connection.execute("INSERT INTO projects VALUES (?, ?, ?, ?, ?)", row)
-        if registry == "changed_location":
-            connection.execute("UPDATE projects SET state_location = ?", (str(tmp_path / "other"),))
-    before = {root: _tree_state(root) for root in (data, Path(state["research"]))}
-    monkeypatch.setattr(AppStore, "__init__", lambda *args, **kwargs: pytest.fail("AppStore init"))
-    monkeypatch.setattr(
-        AppStore,
-        "open_read_only_snapshot",
-        lambda *args, **kwargs: pytest.fail("AppStore snapshot"),
-    )
-    if registry == "legacy":
-        discovered = inventory(request)
-        assert {item["live"] for item in discovered["roots"]} == set(map(str, before))
-        assert discovered["external_references"] == []
-        assert [item["project_id"] for item in discovered["projects"]] == [state["project_id"]]
-    else:
-        with pytest.raises(ApplicationSnapshotRefused):
-            inventory(request)
-    assert {root: _tree_state(root) for root in before} == before
 
 
 def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path) -> None:
@@ -502,7 +407,6 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
         "maintenance_protocol": 10,
         "commands": [
             "inventory",
-            "rollback-copy",
             "prepare",
             "validate",
             "inspect",

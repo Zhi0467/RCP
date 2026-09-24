@@ -7,7 +7,6 @@ import os
 import re
 import sqlite3
 import stat
-import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -26,7 +25,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     write_all as _write_all,
 )
-from rcp.server_ops.backup_capture import BackupSnapshotProjectInventory, BackupSQLiteCaptureReceipt
+from rcp.server_ops.backup_capture import BackupSnapshotProjectInventory
 from rcp.server_ops.backup_models import (
     BackupProjectCapture,
 )
@@ -49,121 +48,6 @@ _PAYLOAD_FILE_MODE = 0o400
 
 class ApplicationSnapshotRefused(RuntimeError):
     """The final local rollback boundary was incomplete or unsafe."""
-
-
-def copy_stopped_database(data_dir: Path, destination: Path) -> Path:
-    """Copy raw SQLite entries without opening the live database, even read-only."""
-    names = tuple(f"rcp.sqlite3{suffix}" for suffix in ("", "-wal", "-shm", "-journal"))
-    before = {name: (data_dir / name).lstat() for name in names if os.path.lexists(data_dir / name)}
-    if "rcp.sqlite3" not in before:
-        raise ApplicationSnapshotRefused("The stopped application database is missing.")
-    for name in before:
-        _copy_stable_file(
-            data_dir / name, destination / name, relative_path=name, restore_mode=0o600
-        )
-        (destination / name).chmod(0o600)
-    after = {name: (data_dir / name).lstat() for name in names if os.path.lexists(data_dir / name)}
-    stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode")
-    if before.keys() != after.keys() or any(
-        getattr(before[name], field) != getattr(after[name], field)
-        for name in before
-        for field in stable
-    ):
-        raise ApplicationSnapshotRefused("The stopped SQLite entry set changed during copying.")
-    return destination / "rcp.sqlite3"
-
-
-def stopped_root_inventory(
-    data_dir: Path, database: Path, receipt: BackupSQLiteCaptureReceipt
-) -> dict[str, object]:
-    """Read stable registry columns and manifest placement, without current schema owners."""
-    with sqlite3.connect(database) as connection:
-        connection.row_factory = sqlite3.Row
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
-        required = {"project_id", "home_space_id", "locator", "state_location", "state_remote"}
-        if not required <= columns:
-            raise ApplicationSnapshotRefused("The stopped project registry schema is unsupported.")
-        # Older admitted schemas predate project retirement; no migration is needed.
-        where = " WHERE retired_at IS NULL" if "retired_at" in columns else ""
-        records = connection.execute(
-            "SELECT project_id, home_space_id, locator, state_location, state_remote "
-            f"FROM projects{where} ORDER BY project_id"
-        ).fetchall()
-    captures = {project.project_id: project for project in receipt.projects}
-    if {row["project_id"] for row in records} != set(captures):
-        raise ApplicationSnapshotRefused("The stopped registry differs from the captured projects.")
-    roots = [{"live": str(data_dir), "project_id": None}]
-    projects = []
-    external = []
-    for row in records:
-        captured = captures[row["project_id"]]
-        recovery = captured.recovery
-        if (
-            captured.status != "capturable"
-            or recovery is None
-            or row["locator"] != captured.locator
-            or row["home_space_id"] != captured.home_space_id
-            or row["state_remote"] not in (0, 1)
-        ):
-            raise ApplicationSnapshotRefused("A stopped project has no matching captured identity.")
-        try:
-            with Path(row["locator"]).open("rb") as source:
-                manifest = tomllib.load(source)
-            repository = next(
-                item
-                for item in manifest["repositories"]
-                if item["alias"] == manifest["state"]["repository"]
-            )
-            machine = next(
-                item for item in manifest["machines"] if item["alias"] == repository["machine"]
-            )
-            recorded = next(
-                item
-                for item in recovery.repositories
-                if item.alias == recovery.configuration.state_repository
-            )
-            recorded_machine = next(
-                item for item in recovery.machines if item.alias == recorded.machine_alias
-            )
-            host = machine.get("host", "")
-            repository_path = repository["path"]
-            if not host:
-                local = Path(repository_path).expanduser()
-                if not local.is_absolute():
-                    local = (Path(row["locator"]).parent.parent / local).resolve()
-                repository_path = str(local)
-            research = Path(recorded.resolved_path) / ".research"
-            location = f"{host}:{research}" if host else str(research)
-            if (
-                repository["alias"] != recorded.alias
-                or repository["machine"] != recorded.machine_alias
-                or repository_path != recorded.resolved_path
-                or host != recorded_machine.host
-                or bool(host) != bool(row["state_remote"])
-                or location != row["state_location"]
-                or (not host and Path(row["locator"]) != research / "manifest.toml")
-            ):
-                raise ValueError("placement differs")
-        except (OSError, KeyError, TypeError, ValueError, StopIteration) as exc:
-            raise ApplicationSnapshotRefused(
-                "A stopped project manifest does not resolve its captured canonical root."
-            ) from exc
-        projects.append(dict(row))
-        if host:
-            external.append(
-                {"kind": "remote_research", "project_id": row["project_id"], "location": location}
-            )
-        else:
-            _require_directory(research, expected_uid=os.geteuid(), label="canonical research root")
-            roots.append({"live": str(research), "project_id": row["project_id"]})
-    paths = [Path(root["live"]) for root in roots]
-    if any(
-        left == right or left.is_relative_to(right) or right.is_relative_to(left)
-        for index, left in enumerate(paths)
-        for right in paths[index + 1 :]
-    ):
-        raise ApplicationSnapshotRefused("Stopped replacement roots overlap.")
-    return {"version": 1, "roots": roots, "projects": projects, "external_references": external}
 
 
 def _settle_accepting_artifact_replacements(
