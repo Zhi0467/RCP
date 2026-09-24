@@ -33,27 +33,43 @@ member configures `user.name` and `user.email` by hand in each shell.
 
 ## What changes
 
-### One Git access object, used by every launch
+### The key lives in each checkout's Git config
 
+A project can register several repositories, each with its own deploy key,
+and one chat turn can touch all of them. A single `GIT_SSH_COMMAND` per launch
+cannot serve that. So RCP writes `core.sshCommand` into each team checkout's
+local `.git/config`, pinned to that repository's deploy key and the account's
+`known_hosts` with strict host checking. Every process working in the
+repository, including its conversation worktrees, then uses the right key with
+no launch plumbing.
+
+`deploy_key_ssh_command` in
+[`project_checkout.py`](../../src/rcp/server_ops/project_checkout.py) and
 `terminal_git_access` in
-[`git_access.py`](../../src/rcp/terminals/git_access.py) already builds the
-right `GIT_SSH_COMMAND` for a deploy key. It becomes the single owner of "Git
-access for this member on this repository", returning:
+[`git_access.py`](../../src/rcp/terminals/git_access.py) already build this
+command. One builder owns it. Provisioning writes it after clone, and an
+existing checkout gets it the next time provisioning or checkout verification
+runs, so no manual step is needed on a live server. The terminal stops setting
+its own `GIT_SSH_COMMAND`. Personal spaces are unchanged: Git uses the
+account's own SSH setup.
 
-- `GIT_SSH_COMMAND` pinned to the repository's deploy key and the account's `known_hosts`;
-- `GIT_CONFIG_SYSTEM` pointing at a generated file with the member's default
-  `user.name` and `user.email`.
+### One identity file per member, used by every launch
 
-The terminal keeps calling it. Provider launches start calling it through
+`GIT_CONFIG_SYSTEM` points at a small generated file holding the member's
+default `user.name` and `user.email`, followed by an include of
+`/etc/gitconfig` when that exists so the host's system settings survive. The
+terminal binds it read-only. Provider launches receive the variable through
 `ProviderProcessEnvironment`
 ([`provider_environment.py`](../../src/rcp/agents/provider_environment.py)),
-which already carries a per-process environment locally and a remote prefix
-over SSH. No second implementation.
+which carries a local environment and a remote prefix over SSH. The remote
+prefix writes the file under the account's RCP data directory before
+exporting the variable. Discuss and Work turns both receive it.
 
 ### Commit identity
 
-The default is the member's RCP display name, with a placeholder email derived
-from their member id. A commit never fails for lack of identity. GitHub shows
+The default is the member's RCP display name and
+`<member-id>@members.rcp.invalid`; `.invalid` is a reserved, never-real domain,
+and the member id is stable across display-name changes. A commit never fails for lack of identity. GitHub shows
 the name but links it to no account.
 
 It is written to the system config layer, Git's lowest precedence, not to
@@ -84,10 +100,13 @@ provisions one. No silent credential-less launch.
 
 One pull request.
 
-- The Git access owner returns the deploy-key `GIT_SSH_COMMAND` and the
-  default identity file; the terminal and every provider launch, local and
-  remote, Discuss and Work, use it. Tests: the environment with and without a
-  deploy key, and a PATH-shimmed `git` that sees it in both modes.
+- Team checkouts carry `core.sshCommand` for their deploy key, written at
+  provisioning and backfilled on verification. Test: a provisioned checkout's
+  config names its own key; two repositories name different keys.
+- Every terminal and provider launch, local and remote, Discuss and Work, gets
+  the member's identity file. Test: a PATH-shimmed `git` sees
+  `GIT_CONFIG_SYSTEM` in both modes, and a repository-level `user.name`
+  overrides the default.
 - The missing-key notice in the terminal and chat composer.
 - Live team-space run: terminal, Discuss, and Work each fetch, commit, and
   push. This also closes the deploy-key run the terminal handoff still owes.
