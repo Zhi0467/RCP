@@ -1,11 +1,12 @@
 # Update rollback preserves stopped trees independently of backup policy
 
-Status: proposed design, 2026-09-24. No implementation or production operation
-is authorized by this record. The human requested the design; the first-update
-procedure and historical release inventory still require resolution in the
+Status: accepted for the exact stopped-tree rollback on merge of the pull
+request that implements it, 2026-09-24; that human merge is the approval. The
+legacy first-update entrance, the supported source floor, and installed-artifact
+CI stay open in the
 [handoff](../handoffs/handoff-2026-09-24-updates-and-rollbacks-stay-clean.md).
 The [operations specification](../specs/server-and-machine-operations.md)
-continues to describe current behavior until the implementation changes it.
+describes the implemented rollback.
 
 ## Recommendation
 

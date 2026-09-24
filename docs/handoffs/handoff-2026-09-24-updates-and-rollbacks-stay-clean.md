@@ -19,7 +19,7 @@ Settled requirements: preserve append-only history, restore every entry in a
 replaced root, preserve credentials and failed-run scratch, keep the supervisor
 independent, introduce no configuration knobs, and retain all schema-era
 fixtures. Recommended ownership and compatibility tradeoffs are in the
-[proposed decision](../decisions/2026-09-24-update-rollback-preserves-stopped-trees.md).
+[decision](../decisions/2026-09-24-update-rollback-preserves-stopped-trees.md).
 The bootstrap procedure and missing historical artifact inventory are review
 items, not silently accepted assumptions. Slice 2 introduces no legacy online
 refusal and makes no claim that installed-machine qualification has passed.

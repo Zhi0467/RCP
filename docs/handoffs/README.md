@@ -3,10 +3,9 @@
 Active:
 
 - [Release updates and rollbacks stay clean](handoff-2026-09-24-updates-and-rollbacks-stay-clean.md)
-  — design requested 2026-09-24; no implementation yet. Full stopped-tree
-  rollback proof, supported-source CI, server-state coverage and diagnostics
-  are planned in five slices. The legacy first-update procedure and historical
-  artifact inventory remain review items.
+  — design 2026-09-24; slice 2 (exact stopped-tree rollback and its restore
+  proof) implemented. Quiescence, source floor, installed-artifact CI and the
+  legacy first-update entrance remain, the last three awaiting human decisions.
 
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the
