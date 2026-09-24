@@ -1,3 +1,4 @@
+import { timelineFixture } from "./fixtures/timeline.mjs";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import React from "react";
@@ -105,40 +106,53 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /12345|12,345/);
 });
 
-test("an episode turn that lost part of its launch says so on its timeline row", () => {
-  const note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default.";
-  const event = {
-    event_id: `turn:${rootTask.operation_id}`,
-    kind: "turn",
-    at: rootTask.created_at,
-    actor: { kind: "orchestrator", id: rootTask.operation_id, label: "Orchestrator", member: null },
-    parent_event_id: null,
-    title: "Orchestrator turn",
-    detail: note,
-    status: "succeeded",
-    cause: null,
-    links: {
-      task_id: rootTask.operation_id,
-      message_id: null,
-      notice_id: null,
-      episode_id: episode.episode_id,
-      control_node_id: null,
-    },
-    provenance: "recorded",
-  };
-  const render = (detail) =>
-    renderToStaticMarkup(
-      React.createElement(EpisodeTimeline, {
-        events: [{ ...event, detail }],
-        apiBase: "/api/projects/demo",
-        episodeId: episode.episode_id,
-        onInspectTask() {},
-      }),
-    );
-  const html = render(note);
-  assert.match(html, /ignored the requested reasoning effort/);
-  assert.match(html, /status-pill succeeded/);
-  assert.doesNotMatch(render(null), /ignored the requested reasoning effort/);
+test("the roster exposes a recorded span failure without inventing a headline", () => {
+  const error = "The provider exited before returning an answer.";
+  const response = timelineFixture(episode.episode_id, "auto_research", {
+    actors: [
+      {
+        actor_id: "orchestrator",
+        kind: "orchestrator",
+        label: "Orchestrator",
+        subtitle: null,
+        row_key: "orchestrator",
+        owner_episode_id: episode.episode_id,
+        started_at: rootTask.created_at,
+        ended_at: rootTask.created_at,
+        outcome: "failed",
+        started_by_span_id: null,
+        links: {},
+      },
+    ],
+    spans: [
+      {
+        span_id: "turn:failed",
+        actor_id: "orchestrator",
+        kind: "turn",
+        started_at: rootTask.created_at,
+        finished_at: rootTask.created_at,
+        status: "failed",
+        attempt: 1,
+        invocation_number: 1,
+        headline: null,
+        error,
+        cause: "initial",
+        task_id: rootTask.operation_id,
+        owner_episode_id: episode.episode_id,
+      },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(EpisodeTimeline, {
+      response,
+      apiBase: "/api/projects/demo",
+      episodeId: episode.episode_id,
+      onInspectTask() {},
+    }),
+  );
+  assert.match(html, /The provider exited before returning an answer/);
+  assert.match(html, /aria-label="Turn 1 · failed"/);
+  assert.doesNotMatch(html, /Agent task completed/);
 });
 
 test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "vite";
+import { timelineFixture } from "./fixtures/timeline.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
 
@@ -38,7 +39,7 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     let polledEpisode = stopped;
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
-        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
+        json: timelineFixture(episode.episode_id, episode.mode),
       }),
     );
     await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
@@ -134,7 +135,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     let polls = 0;
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
-        json: { episode_id: episode.episode_id, mode: episode.mode, events: [], truncated: false },
+        json: timelineFixture(episode.episode_id, episode.mode),
       }),
     );
     await page.route("**/fixture/episode", (route) => {
@@ -288,5 +289,138 @@ test("an open space landing refreshes login notices with its Runs poll", async (
   } finally {
     await browser?.close();
     await liveServer.close();
+  }
+});
+
+test("an envelope loads full text, reports fetch failure, and closes accessibly", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 400, height: 800 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("console", (message) => {
+      if (message.type() === "error" && !message.text().includes("503 (Service Unavailable)"))
+        errors.push(message.text());
+    });
+    await page.route("**/fixture/episode", (route) => route.fulfill({ json: episode }));
+    const actor = (actor_id, kind, label) => ({
+      actor_id,
+      kind,
+      label,
+      row_key: actor_id,
+      owner_episode_id: episode.episode_id,
+      started_at: "2026-09-24T10:00:00Z",
+      ended_at: "2026-09-24T11:00:00Z",
+      outcome: "succeeded",
+      subtitle: null,
+      started_by_span_id: null,
+      links: {},
+    });
+    await page.route("**/api/projects/**/timeline", (route) =>
+      route.fulfill({
+        json: timelineFixture(episode.episode_id, episode.mode, {
+          members: [
+            {
+              episode_id: episode.episode_id,
+              started_at: "2026-09-24T10:00:00Z",
+              ended_at: "2026-09-24T11:00:00Z",
+              continues_episode_id: null,
+            },
+          ],
+          actors: [
+            actor("human:one", "human", "Human"),
+            actor("orchestrator:one", "orchestrator", "Orchestrator"),
+          ],
+          messages: [
+            {
+              item_id: "message:one",
+              from_actor_id: "human:one",
+              to_actor_id: "orchestrator:one",
+              sent_at: "2026-09-24T10:10:00Z",
+              sent_span_id: null,
+              delivered_at: "2026-09-24T10:12:00Z",
+              delivered_span_id: null,
+              disposition: "harvested",
+              preview: "Compare the latest results.",
+              text_ref: "message:one",
+            },
+          ],
+        }),
+      }),
+    );
+    let textRequests = 0;
+    let failText = false;
+    let releaseText;
+    const textReady = new Promise((resolve) => {
+      releaseText = resolve;
+    });
+    const body = "Compare the latest results. Full archived instructions include the control run.";
+    await page.route("**/timeline/text/*", async (route) => {
+      textRequests += 1;
+      await textReady;
+      if (failText)
+        return route.fulfill({ status: 503, json: { detail: "Text temporarily unavailable" } });
+      assert.equal(
+        decodeURIComponent(new URL(route.request().url()).pathname).split("/").at(-1),
+        "message:one",
+      );
+      return route.fulfill({
+        json: {
+          text_ref: "message:one",
+          kind: "message",
+          owner_episode_id: episode.episode_id,
+          body,
+          sha256: "a".repeat(64),
+        },
+      });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/branchMerge.html`,
+    );
+    const timeline = page.getByRole("region", { name: "Episode timeline" });
+    const message = timeline.getByRole("button", { name: /^Message / });
+    await message.locator(".roster-envelope").click();
+    const card = page.getByRole("dialog");
+    await card.getByRole("status").waitFor();
+    releaseText();
+    await card.getByText(body, { exact: true }).waitFor();
+    assert.equal(textRequests, 1);
+    await page.keyboard.press("Escape");
+    await card.waitFor({ state: "detached" });
+    failText = true;
+    await message.focus();
+    await page.keyboard.press("Enter");
+    await card.getByRole("alert").waitFor();
+    assert.match(await card.textContent(), /Text temporarily unavailable/);
+    await page.getByRole("button", { name: "Whole run", exact: true }).click();
+    await card.waitFor({ state: "detached" });
+    failText = false;
+    await message.locator(".roster-envelope").click();
+    await card.getByText(body, { exact: true }).waitFor();
+    await card.getByRole("button", { name: "Close", exact: true }).click();
+    await card.waitFor({ state: "detached" });
+    const envelope = await message.locator(".roster-envelope").boundingBox();
+    assert.ok(envelope);
+    const x = envelope.x + envelope.width / 2;
+    const y = envelope.y + envelope.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 35, y, { steps: 5 });
+    await page.mouse.move(x, y, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await card.count(), 0, "dragging over an envelope must not open it");
+    assert.equal(textRequests, 3);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
   }
 });

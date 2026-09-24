@@ -327,11 +327,10 @@ export function ExperimentRunDetail({
       )}
       {episode && timeline?.episode_id === episode.episode_id && (
         <EpisodeTimeline
-          events={timeline.events}
+          response={timeline}
           apiBase={apiBase}
           episodeId={episode.episode_id}
           graphTarget={episode.graph_target}
-          truncated={timeline.truncated}
           onInspectTask={(operationId) => onInspectTask?.(operationId)}
         />
       )}

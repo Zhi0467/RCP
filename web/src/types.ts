@@ -2316,41 +2316,117 @@ export interface Episode {
   run_section: EpisodeRunSection;
 }
 
-export type EpisodeTimelineEventKind =
-  "turn" | "retry" | "wake" | "mail" | "notice" | "child" | "lifecycle" | "human";
-
-export interface EpisodeTimelineActor {
-  kind: "orchestrator" | "worker" | "wake" | "human" | "rcp" | "child";
-  id: string | null;
-  label: string;
-  member: AuthorizedHuman | null;
+export interface EpisodeTimelineMember {
+  episode_id: string;
+  started_at: string;
+  ended_at: string | null;
+  continues_episode_id: string | null;
 }
 
-export interface EpisodeTimelineEvent {
-  event_id: string;
-  kind: EpisodeTimelineEventKind;
-  at: string;
-  actor: EpisodeTimelineActor;
-  parent_event_id: string | null;
-  title: string;
-  detail: string | null;
-  status: string | null;
+export interface EpisodeTimelineLinks {
+  task_id: string | null;
+  episode_id: string | null;
+  control_node_id: string | null;
+  watcher_id: string | null;
+}
+
+export interface EpisodeTimelineActor {
+  actor_id: string;
+  kind: "human" | "orchestrator" | "worker" | "experiment" | "agent" | "watcher";
+  label: string;
+  subtitle: string | null;
+  row_key: string;
+  owner_episode_id: string;
+  started_at: string | null;
+  ended_at: string | null;
+  outcome: string | null;
+  started_by_span_id: string | null;
+  links: EpisodeTimelineLinks;
+}
+
+export interface EpisodeTimelineSpan {
+  span_id: string;
+  actor_id: string;
+  kind: "turn" | "attempt" | "report";
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  attempt: number | null;
+  invocation_number: number | null;
+  headline: string | null;
+  error: string | null;
   cause: string | null;
-  links: {
-    task_id: string | null;
-    message_id: string | null;
-    notice_id: string | null;
-    episode_id: string | null;
-    control_node_id: string | null;
-  };
-  provenance: "recorded" | "unknown";
+  task_id: string;
+  owner_episode_id: string;
+}
+
+export interface EpisodeTimelineHandoff {
+  item_id: string;
+  kind: "assignment" | "goal";
+  from_span_id: string;
+  to_actor_id: string;
+  at: string;
+  preview: string;
+  text_ref: string;
+}
+
+export interface EpisodeTimelineMessage {
+  item_id: string;
+  from_actor_id: string | null;
+  to_actor_id: string | null;
+  sent_at: string;
+  sent_span_id: string | null;
+  delivered_at: string | null;
+  delivered_span_id: string | null;
+  disposition: "wake" | "harvested" | "cleared" | "failed_attempt" | "undelivered" | "unknown";
+  preview: string;
+  text_ref: string;
+}
+
+export interface EpisodeTimelineSignal {
+  item_id: string;
+  kind: "notice" | "watcher";
+  source_actor_id: string | null;
+  source_row_key: string;
+  event: string;
+  recorded_at: string;
+  landed_at: string | null;
+  landed_span_id: string | null;
+  landing: "woke" | "harvested" | "acknowledged" | null;
+  armed_span_id: string | null;
+  armed_at: string | null;
+  state: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface EpisodeTimelineMark {
+  item_id: string;
+  actor_id: string;
+  kind: "started" | "stop_requested" | "stopped";
+  at: string;
+  by_span_id: string | null;
 }
 
 export interface EpisodeTimelineResponse {
   episode_id: string;
-  mode: EpisodeMode;
-  events: EpisodeTimelineEvent[];
+  mode: "auto_research" | "experiment_loop";
+  generated_at: string;
   truncated: boolean;
+  members: EpisodeTimelineMember[];
+  actors: EpisodeTimelineActor[];
+  spans: EpisodeTimelineSpan[];
+  handoffs: EpisodeTimelineHandoff[];
+  messages: EpisodeTimelineMessage[];
+  signals: EpisodeTimelineSignal[];
+  marks: EpisodeTimelineMark[];
+}
+
+export interface EpisodeTimelineText {
+  text_ref: string;
+  kind: "assignment" | "goal" | "message";
+  owner_episode_id: string;
+  body: string;
+  sha256: string;
 }
 
 export interface EpisodeMessage {

@@ -1,3 +1,4 @@
+import { timelineFixture } from "./fixtures/timeline.mjs";
 import assert from "node:assert/strict";
 import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
@@ -504,53 +505,67 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
   // the child run card and must not recreate the retired Turns projection.
   assert.doesNotMatch(html, /campaign-task depth-1/);
   assert.doesNotMatch(html, /Turns<\/h3>/);
-  const timelineEvent = (id, kind, minute, parent, title) => ({
-    event_id: id,
-    kind,
-    at: `2026-09-14T10:0${minute}:00Z`,
-    actor: {
-      kind: kind === "child" ? "child" : "orchestrator",
-      id: null,
-      label: kind,
-      member: null,
-    },
-    parent_event_id: parent,
-    title,
-    detail: null,
-    status: "running",
-    cause: null,
-    links: {
-      task_id: kind === "turn" ? id : null,
-      message_id: null,
-      notice_id: null,
-      episode_id: kind === "child" ? "child-experiment-episode" : "auto-research-parent",
-      control_node_id: kind === "child" ? "experiment/branch-child" : null,
-    },
-    provenance: "recorded",
+  const response = timelineFixture("auto-research-parent", "auto_research", {
+    actors: [
+      {
+        actor_id: "orchestrator",
+        kind: "orchestrator",
+        row_key: "orchestrator",
+        label: "Orchestrator",
+        subtitle: null,
+        started_at: "2026-09-14T10:00:00Z",
+        ended_at: null,
+        outcome: "running",
+        started_by_span_id: null,
+        links: {},
+      },
+      {
+        actor_id: "child:one",
+        kind: "experiment",
+        row_key: "experiment/branch-child",
+        label: "Reproduce the baseline",
+        subtitle: "experiment/branch-child",
+        started_at: "2026-09-14T10:01:00Z",
+        ended_at: null,
+        outcome: "running",
+        started_by_span_id: "turn:before",
+        links: {
+          episode_id: "child-experiment-episode",
+          control_node_id: "experiment/branch-child",
+        },
+      },
+    ],
+    spans: ["before", "after"].map((name, index) => ({
+      span_id: `turn:${name}`,
+      actor_id: "orchestrator",
+      kind: "turn",
+      started_at: `2026-09-14T10:0${index * 2}:00Z`,
+      finished_at: `2026-09-14T10:0${index * 2 + 1}:00Z`,
+      status: "succeeded",
+      attempt: 1,
+      invocation_number: index + 1,
+      headline: `Parent turn ${name} child.`,
+      error: null,
+      cause: "wake",
+      task_id: `task:${name}`,
+      owner_episode_id: "auto-research-parent",
+    })),
   });
   const timeline = renderToStaticMarkup(
     React.createElement(EpisodeTimeline, {
-      events: [
-        timelineEvent("turn:before", "turn", 0, null, "Parent turn before child."),
-        timelineEvent("child:one", "child", 1, "turn:before", "Reproduce the baseline"),
-        timelineEvent("turn:after", "turn", 2, null, "Parent wake after child."),
-      ],
+      response,
       apiBase: "/api/projects/project-one",
       episodeId: "auto-research-parent",
       graphTarget: { kind: "branch", branch_id: "auto-research-parent" },
       onInspectTask() {},
     }),
   );
-  assert.match(timeline, /<h3>Timeline<\/h3>/);
-  assert.match(timeline, /episode-timeline-children[\s\S]*Reproduce the baseline/);
+  assert.match(timeline, /aria-label="Agent roster chart"/);
+  assert.match(timeline, /aria-label="Reproduce the baseline"/);
+  assert.match(timeline, /Orchestrator wakes/);
   assert.ok(
-    timeline.indexOf("Parent turn before child.") < timeline.indexOf("Reproduce the baseline"),
+    timeline.indexOf("Parent turn before child.") < timeline.indexOf("Parent turn after child."),
   );
-  assert.ok(
-    timeline.indexOf("Reproduce the baseline") < timeline.indexOf("Parent wake after child."),
-  );
-  assert.match(timeline, /episode=child-experiment-episode/);
-  assert.match(timeline, /branch=auto-research-parent/);
 
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(html, /1 \/ 5 invocations/);

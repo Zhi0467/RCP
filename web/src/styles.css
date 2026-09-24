@@ -13368,211 +13368,303 @@ details[open] > .view-disclosure-summary > svg:last-child {
   z-index: 1;
 }
 
-.episode-timeline {
+/* Actor roster: colors inherit both theme and display mode. */
+.episode-roster {
   min-width: 0;
-  contain: inline-size;
-  border-top: 1px solid var(--line);
-  margin-top: 12px;
-  padding-top: 13px;
+  margin-top: 18px;
+  color: var(--ink);
 }
-.episode-timeline-header,
-.episode-timeline-lanes {
-  align-items: center;
+.roster-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  justify-content: space-between;
-  margin-bottom: 10px;
+  gap: 16px 26px;
+  padding: 16px 0;
+  border-block: 1px solid var(--line);
 }
-.episode-timeline-header h3 {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  margin: 0;
-  text-transform: uppercase;
+.roster-summary > div {
+  flex: 1 1 140px;
+  background: var(--surface-cool);
+  border-radius: 6px;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+  max-width: 340px;
 }
-.episode-timeline-lanes {
-  justify-content: center;
-  font: 9px var(--mono);
-  text-transform: capitalize;
+.roster-summary span {
+  font-size: 12px;
 }
-.episode-timeline-axis,
-.episode-timeline-children {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  position: relative;
+.roster-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-block: 14px;
 }
-.episode-timeline-axis::before {
-  background: var(--line-strong);
-  bottom: 0;
-  content: "";
-  left: 50%;
-  position: absolute;
-  top: 0;
-  width: 1px;
+.roster-toolbar h3 {
+  margin: 0 auto 0 0;
+  font-size: 15px;
 }
-.episode-timeline-row {
-  position: relative;
-  margin: 8px 0;
-}
-.episode-timeline-row::before {
-  background: var(--line-strong);
-  content: "";
-  height: 1px;
-  left: 46%;
-  position: absolute;
-  top: 20px;
-  width: 8%;
-}
-.episode-timeline-card {
+.episode-roster button {
+  color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--timeline-tone, var(--line-strong));
   border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.episode-roster button:hover,
+.episode-roster button[aria-pressed="true"] {
+  background: var(--surface-cool);
+}
+.roster-chart-host {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding-block: 12px;
   position: relative;
-}
-.episode-timeline-side-left > .episode-timeline-card {
-  margin-right: 52%;
-}
-.episode-timeline-side-right > .episode-timeline-card {
-  margin-left: 52%;
-}
-.episode-timeline-card > header {
-  display: flex;
-}
-.episode-timeline-heading {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  gap: 7px;
   min-width: 0;
-  padding: 9px;
-  text-align: left;
-  text-decoration: none;
 }
-.episode-timeline-heading strong {
-  font-size: 11px;
+.roster-scroll,
+.roster-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.roster-scroll svg {
+  display: block;
+  touch-action: pan-y;
+  user-select: none;
+  font-family: var(--ui);
+  font-size: 12px;
+  fill: var(--ink);
+}
+.roster-tick {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.roster-number {
+  font-size: 10px;
+}
+.roster-group {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.roster-rule {
+  stroke: var(--line);
+}
+.roster-hit {
+  cursor: pointer;
+  transition: opacity 120ms;
+}
+.roster-hit[aria-pressed="true"] > rect {
+  stroke: var(--ink);
+  stroke-width: 2px;
+}
+.roster-dim {
+  opacity: 0.18;
+}
+.roster-label-surface {
+  fill: var(--surface);
+}
+.roster-label-bg {
+  fill: transparent;
+}
+.roster-hit:hover .roster-label-bg,
+.roster-hit[aria-pressed="true"] .roster-label-bg {
+  fill: var(--surface-cool);
+}
+.roster-start,
+.roster-now {
+  stroke: var(--cobalt);
+  stroke-width: 1.3px;
+}
+.roster-neutral {
+  color: var(--muted);
+}
+.roster-active {
+  color: var(--cobalt);
+}
+.roster-success {
+  color: var(--green);
+}
+.roster-danger {
+  color: var(--red);
+}
+.roster-block {
+  fill: currentColor;
+}
+.roster-rail {
+  fill: color-mix(in srgb, currentColor 16%, var(--surface));
+  stroke: currentColor;
+  stroke-width: 0.6px;
+}
+.roster-mark {
+  fill: var(--ink);
+}
+.roster-message {
+  fill: none;
+  stroke: var(--plum);
+  stroke-width: 1.6px;
+}
+.roster-message.roster-danger {
+  stroke: var(--red);
+}
+.roster-envelope {
+  fill: var(--plum);
+}
+.roster-envelope.roster-danger {
+  fill: var(--red);
+}
+.roster-envelope-fold {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1px;
+}
+.roster-failure-ring {
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 1.6px;
+}
+.roster-cross {
+  fill: var(--red);
+  text-anchor: middle;
+}
+.roster-signal {
+  stroke: currentColor;
+  stroke-width: 1.4px;
+  fill: none;
+}
+.roster-signal-icon {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 1.5px;
+}
+.roster-document {
+  fill: var(--surface);
+  stroke: var(--cobalt);
+  stroke-width: 1.4px;
+}
+.roster-popover {
+  position: absolute;
+  z-index: 10;
+  width: min(360px, calc(100% - 16px));
+  max-height: 440px;
+  overflow: auto;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.roster-popover header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.roster-popover pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.roster-below {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(240px, 1fr);
+  gap: 24px;
+  margin-top: 24px;
+}
+.roster-detail-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.roster-below > .roster-table-scroll {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.episode-roster .roster-ref {
+  border: 0;
+  background: transparent;
+  color: var(--cobalt);
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-align: left;
+}
+.roster-below h3 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+.roster-wakes {
+  min-width: 520px;
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+.roster-wakes th,
+.roster-wakes td {
+  padding: 10px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.roster-wakes td:nth-child(2) {
+  min-width: 120px;
+}
+.roster-wakes p {
+  margin-bottom: 0;
+}
+.roster-selected {
+  background: var(--surface-cool);
+}
+.roster-detail {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 16px;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
-.episode-timeline-heading time,
-.episode-timeline-actor {
-  font: 9px var(--mono);
+.roster-detail dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
 }
-.episode-timeline-heading time {
-  margin-left: auto;
+.roster-detail dd {
+  margin: 0;
 }
-.episode-timeline-glyph {
-  color: var(--timeline-tone, var(--ink));
+.roster-detail blockquote {
+  margin: 16px 0;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 12px;
 }
-.episode-timeline-fold {
-  background: transparent;
-  border: 0;
-  border-left: 1px solid var(--line);
-  color: inherit;
-  min-width: 32px;
+.roster-error {
+  color: var(--red);
 }
-.episode-timeline-preview {
-  background: transparent;
-  border: 0;
-  color: inherit;
-  display: block;
-  overflow: hidden;
-  padding: 0 9px 9px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  width: 100%;
-}
-.episode-timeline-tags {
+.roster-related {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 0 9px 7px;
-  font: 9px var(--mono);
+  margin-top: 14px;
 }
-.episode-timeline-unknown {
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  padding: 1px 4px;
-}
-.episode-timeline-detail {
-  font-size: 11px;
-  overflow-wrap: anywhere;
-  padding: 0 9px;
-}
-.episode-timeline-detail:empty {
-  display: none;
-}
-.episode-timeline-children {
-  border-left: 1px solid var(--line-strong);
-  margin-left: 18px;
-  padding-left: 12px;
-}
-.episode-timeline-children > .episode-timeline-row::before {
-  left: -12px;
-  width: 12px;
-}
-.episode-timeline-children > .episode-timeline-row > .episode-timeline-card {
-  margin: 0;
-}
-.episode-timeline-tone-neutral {
-  --timeline-tone: var(--ink-soft);
-}
-.episode-timeline-tone-active {
-  --timeline-tone: var(--cobalt);
-}
-.episode-timeline-tone-warning {
-  --timeline-tone: var(--amber);
-}
-.episode-timeline-tone-danger {
-  --timeline-tone: var(--red);
-}
-.episode-timeline-tone-success {
-  --timeline-tone: var(--teal);
-}
-.episode-timeline-tone-muted {
-  --timeline-tone: var(--muted);
-}
-.episode-timeline .status-pill {
-  color: var(--timeline-tone);
-}
-.episode-timeline button:hover,
-.episode-timeline a:hover {
-  background: var(--surface-cool);
-}
-.episode-timeline button:focus-visible,
-.episode-timeline a:focus-visible {
+.episode-roster :is(button, a, [role="button"], [role="dialog"]):focus-visible {
   outline: 2px solid var(--cobalt);
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
-@media (max-width: 560px) {
-  .episode-timeline-axis::before {
-    left: 0;
+@media (max-width: 800px) {
+  .roster-below {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .episode-timeline-side-left > .episode-timeline-card,
-  .episode-timeline-side-right > .episode-timeline-card {
-    margin-left: 10px;
-    margin-right: 0;
-  }
-  .episode-timeline-row::before {
-    left: 0;
-    width: 10px;
-  }
-  .episode-timeline-children {
-    margin-left: 10px;
-    padding-left: 8px;
+  .roster-detail {
+    padding: 16px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 }
-@media (min-width: 561px) {
-  .episode-timeline-axis > .episode-timeline-side-left > .episode-timeline-children {
-    margin-right: 52%;
-  }
-  .episode-timeline-axis > .episode-timeline-side-right > .episode-timeline-children {
-    margin-left: calc(52% + 18px);
+@media (prefers-reduced-motion: reduce) {
+  .roster-hit {
+    transition: none;
   }
 }
 

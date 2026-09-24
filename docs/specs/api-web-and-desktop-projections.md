@@ -833,7 +833,7 @@ an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
 `/api/projects/{project_id}/experiment-episodes` path restricts projection work
 to that visible project. The same child appears once as a linked, subordinate
-`child` event on the owning Auto-research card's timeline. That event is
+child actor on the owning Auto-research card's timeline. That actor is
 navigational provenance, not a second lifecycle or budget: its label and status
 consume the indexed node and control, while the child card retains its own
 episode budget, transcript, and valid controls.
@@ -841,27 +841,51 @@ episode budget, transcript, and valid controls.
 ### Episode timeline
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/timeline` is a read-only
-projection of one episode's causal record as typed events on one time axis:
-`turn`, `retry`, `wake`, `mail`, `notice`, `child`, `lifecycle`, and `human`.
-Each event carries its time, an actor (orchestrator, worker, wake, human
-member, RCP, or child), a `parent_event_id` that nests a retry under its turn,
-a delivered notice or message under the wake or harvesting turn that consumed
-it, and a child under the turn that admitted it, plus a cause (wake cause,
-retry cause, notice source event, `wake_suppressed`), bounded detail, links to
-the task, message, notice, or episode, and a `provenance` flag that is
-`unknown` when the record cannot say who or what caused an event; nothing is
-guessed. The response is bounded and says when it was truncated. The web holds
-one `EpisodeTimeline` model class and one `TimelineRenderConfig` that maps event
-kinds to lane, glyph, tone, and fold behavior; the component renders what the
-model decides. Mail is folded and opens on click; a task event opens the task
-inspector; a child event opens the child. An Auto-research episode's own
-watchers are graph conditions and between turns they are the only record of what
-it is waiting for, so its timeline carries them and each armed event names the
-node and the statuses it waits for rather than reading `Watcher armed`; its
-shell watchers belong to child episodes and stay on those timelines. The
-timeline replaces the Turns and
-Mail lists on the Auto-research card and the turn list on the Experiment run
-detail; the message composer stays beneath it.
+actor projection shared by Auto-research and Experiment run detail. It returns
+`episode_id`, `mode`, `generated_at`, `truncated`, continuation-chain `members`,
+and typed `actors`, `spans`, `handoffs`, `messages`, `signals`, and `marks`.
+Actors carry stable identity, kind, label, row key, lifetime, outcome, recorded
+starting span, and navigation links. Spans carry turn/attempt/report kind,
+times, status, attempt and invocation numbers, nullable cause/error/headline,
+and task and episode ids. Headlines are bounded first sentences from stored
+answers; reports have no headline. The browser groups actors by `row_key` and
+derives summary counts, relations, and the orchestrator wake table from this
+single response, without a parallel event-list model.
+
+Hand-offs join recorded admission commands to their starting span and worker or
+Experiment actor. Messages retain sender and recipient, sent and delivered
+spans and times, and one disposition: `wake`, `harvested`, `cleared`,
+`failed_attempt`, `undelivered`, or `unknown`. Delivery records allocation,
+never proof of reading. Signals contain inline notice or watcher payloads,
+source actor and row, landing span/time and `woke`, `harvested`, or
+`acknowledged` landing mode, plus recorded arming provenance. Graph watcher
+sources name the node row, not an inferred episode. Lifecycle marks preserve
+nullable issuing spans; missing provenance is never guessed.
+
+Joins resolve across the full continuation chain before bounding the response.
+The newest 400 spans, hand-offs, messages, signals, and marks are retained;
+actors remain when a returned span or item references them. `truncated` means
+summary counts cover shown items. Referenced actors or spans may be outside the
+returned set; the chart places missing endpoints at the window edge. In
+`experiment_loop` mode the roster contains the human, Experiment agent, and
+shell watchers grouped by their row keys; retries and reports remain spans on
+the agent row. Auto-research's graph watchers stay on its timeline; child shell
+watchers stay on their Experiment timeline.
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/timeline/text/{text_ref}`
+loads immutable full text on demand for `handoff:<command_id>` or
+`message:<message_id>`. It returns `text_ref`, `kind` (`assignment`, `goal`, or
+`message`), `owner_episode_id`, `body`, and `sha256`, checks existing project
+membership and the requested continuation chain, and returns 404 for records
+outside that chain. The roster response carries only bounded text previews.
+
+The roster replaces the old Turns and Mail lists and keeps the message composer
+beneath it. It links turn and attempt spans to the existing task inspector,
+excludes reports from that navigation, and resolves child Experiment navigation
+by episode id. Watcher controls remain with their existing owners. Layout,
+selection, and gesture behavior follow the
+[interface specification](interface-and-visual-design.md#auto-research-and-result-views).
+
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable
 objective separately from retained stale guidance. When the backend finds the

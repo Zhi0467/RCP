@@ -292,15 +292,42 @@ the legible number stays honest. Its report allocation is hidden from that
 operational budget. Every non-Stop ending produces the durable visual report;
 Stop alone means no report.
 
-An episode's history is one timeline: a vertical time axis with events
-branching to lanes (orchestrator, workers, children, mail, lifecycle, human),
-each a compact row with glyph, title, actor, time, and status pill. Retries
-nest under their turn, delivered notices and mail under the wake or turn that
-consumed them, children under the turn that admitted them. Mail rows are
-folded to sender and first line and open in place. A row whose cause the record
-does not hold says so with a small "provenance unknown" tag rather than
-implying one. Lane, glyph, tone, and fold behavior come from one render
-configuration, not from the component.
+An episode's history is a read-only agent roster on one SVG timeline. A fixed
+label column groups People, Orchestrator or Experiment agent, Workers, and
+Experiments or Watchers; actors with the same row key share a row. Date and time
+rows sit above status-colored turn, attempt, and report blocks. Experiment
+episodes have light rails, failed worker attempts are red slivers, and a Stop
+request is a square mark. Only live runs show a vertical now line; there are no
+vertical grid lines or commentary captions.
+
+Solid lines connect recorded starting spans to actors, with clickable hand-off
+icons. Message arrows begin at envelopes and end at delivery time; failed
+attempt delivery has a red ring, while undelivered messages use a dashed line
+and cross. Notice diamonds and watcher ringed dots open their payloads. A wake
+signal is dashed to its landed turn's start; harvested or acknowledged signals
+are dotted to the recorded landing time. Watcher lines originate from their
+recorded node row, and missing stop attribution stays unattributed. Delivery
+labels never claim a message was read.
+
+One popover beneath the selected icon shows fetched hand-off or message text,
+including loading and error states, or the inline signal payload. Close, Escape,
+and outside click dismiss it. Selection highlights related actors, spans, and
+items and dims others. A detail panel links turn and attempt spans to the task
+inspector and child episodes to their existing Experiment detail; report spans
+do not open the task inspector. Auto-research also shows one wake-table row per
+orchestrator span with time, length, invocation, cause, landed items, actions,
+and headline. Summary counts cover returned actors, hand-offs, and message
+dispositions and explicitly say when only truncated items are counted.
+
+Pinch or Ctrl/Cmd+wheel zooms at the cursor; buttons and double-click zoom, with
+Shift+double-click zooming out. Dragging, sideways scroll, and Shift+scroll pan;
+vertical scrolling remains page scrolling. Whole run and First 90 min presets
+share a minimum zoom window of ten minutes. Dragging never selects an item and
+overlapping turn numbers are omitted. Interactive elements have keyboard focus,
+motion respects reduced-motion preferences, and the chart scrolls inside its
+own container at narrow widths. Colors use existing theme tokens in Classic,
+Aqua, and dark mode. Watcher controls and the task inspector retain their own
+surfaces.
 
 Result views are revised by acting on the picture — box a region, underscore
 items — not by describing it in the composer. A gesture writes a visible draft

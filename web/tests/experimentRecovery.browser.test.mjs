@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { timelineFixture } from "./fixtures/timeline.mjs";
 import { withTaskAnswers } from "./taskAnswers.mjs";
 
 let server;
@@ -275,12 +276,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           json = { revision: 1, graph_head: project().graph_head };
         else if (path === "/api/providers/logins") json = [];
         else if (path.endsWith("/timeline"))
-          json = {
-            episode_id: episode().episode_id,
-            mode: episode().mode,
-            events: [],
-            truncated: false,
-          };
+          json = timelineFixture(episode().episode_id, episode().mode);
         else if (
           ![
             "/api/projects/demo/watchers",

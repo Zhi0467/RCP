@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { timelineFixture } from "./fixtures/timeline.mjs";
 
 test("reopening an indexed Experiment restores selection when its exact hash is unchanged", async () => {
   const server = await createServer({
@@ -20,35 +21,29 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
     const exactHash =
       "#/projects/project-one?view=runs&experiment=experiment%2Fbranch-child&episode=child-experiment-episode&target=branch&branch=auto-research-parent&parent=auto-research-parent";
     // The parent card's Timeline is the only projection that links to the child;
-    // the retired Turns list is gone. Serve the typed events the app would fetch.
+    // the retired Turns list is gone. Serve the actor projection the app would fetch.
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
-        json: {
-          episode_id: "auto-research-parent",
-          mode: "auto_research",
-          truncated: false,
-          events: [
+        json: timelineFixture("auto-research-parent", "auto_research", {
+          actors: [
             {
-              event_id: "child:one",
-              kind: "child",
-              at: "2026-09-14T10:01:00Z",
-              actor: { kind: "child", id: null, label: "child", member: null },
-              parent_event_id: null,
-              title: "Reproduce the baseline",
-              detail: null,
-              status: "running",
-              cause: null,
+              actor_id: "experiment:one",
+              kind: "experiment",
+              label: "Reproduce the baseline",
+              subtitle: null,
+              row_key: "experiment:baseline",
+              owner_episode_id: "child-experiment-episode",
+              started_at: "2026-09-24T10:01:00Z",
+              ended_at: null,
+              outcome: "running",
+              started_by_span_id: null,
               links: {
-                task_id: null,
-                message_id: null,
-                notice_id: null,
                 episode_id: "child-experiment-episode",
                 control_node_id: "experiment/branch-child",
               },
-              provenance: "recorded",
             },
           ],
-        },
+        }),
       }),
     );
     await page.goto(
@@ -83,10 +78,9 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
       .click();
     assert.equal(await page.getByText("Selected child transcript").count(), 0);
 
-    await page
-      .getByRole("region", { name: "Episode timeline" })
-      .getByRole("link", { name: /Reproduce the baseline/ })
-      .click();
+    const timeline = page.getByRole("region", { name: "Episode timeline" });
+    await timeline.getByRole("button", { name: "Reproduce the baseline", exact: true }).click();
+    await timeline.getByRole("button", { name: "Open Experiment" }).click();
 
     await page.getByText("Selected child transcript").waitFor();
     assert.equal(await page.evaluate(() => window.location.hash), exactHash);

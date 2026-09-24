@@ -4,15 +4,18 @@ Date: 2026-09-24
 Status: design confirmed by the human on 2026-09-24 against a rendered mockup
 built from a real Auto-research run (nine orchestrator turns, three workers, five
 Experiment episodes), then revised the same day after an xhigh design review
-whose five findings were verified against the code. Not yet implemented. The
+whose five findings were verified against the code. Slice 1 (projection and
+text endpoint) is implemented. Slice 2 (web) and the spec update are implemented. The
 mockup is kept outside the repository because it embeds production records; the
 implementer is given a copy and matches its layout and interaction. Where the
 mockup draws a link this contract does not record (a worker stop attributed to
 a turn, a watcher firing attributed to one Experiment episode, "read" wording),
 this contract wins.
 
-Remaining: everything below, on one pull request, in two implementation slices
-(projection, then web) plus the spec update.
+Verified: the focused web unit checks, build, and affected browser journeys with
+synthetic projection fixtures, including text loading and mobile/theme checks.
+Remaining: drive both surfaces in the served app against a copy of real data.
+The handoff remains active until that closing condition below holds.
 
 Close this handoff when the Auto-research card and the Experiment run detail
 both render the roster from the new projection, both have been driven in the

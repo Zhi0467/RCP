@@ -8,6 +8,7 @@ import type {
   Episode,
   EpisodeMessage,
   EpisodeTimelineResponse,
+  EpisodeTimelineText,
   EpisodeMode,
   ExperimentLoopIndexEntry,
   IdentityResponse,
@@ -436,6 +437,16 @@ export function fetchEpisodeTimeline(
 ): Promise<EpisodeTimelineResponse> {
   return api<EpisodeTimelineResponse>(
     `${apiBase}/episodes/${encodeURIComponent(episodeId)}/timeline`,
+  );
+}
+
+export function fetchTimelineText(
+  apiBase: string,
+  episodeId: string,
+  textRef: string,
+): Promise<EpisodeTimelineText> {
+  return api<EpisodeTimelineText>(
+    `${apiBase}/episodes/${encodeURIComponent(episodeId)}/timeline/text/${encodeURIComponent(textRef)}`,
   );
 }
 

@@ -1,111 +1,215 @@
-import type { EpisodeTimelineEvent, EpisodeTimelineEventKind } from "./types";
+import type {
+  EpisodeTimelineActor,
+  EpisodeTimelineMessage,
+  EpisodeTimelineResponse,
+} from "./types";
 
-export type TimelineLane = "orchestrator" | "workers" | "children" | "mail" | "lifecycle" | "human";
-export type TimelineTone = "neutral" | "active" | "warning" | "danger" | "success" | "muted";
-export interface TimelineRenderRule {
-  lane: TimelineLane;
-  glyph: string;
-  tone: TimelineTone;
-  fold: "never" | "folded" | "always";
-}
-export type TimelineRenderConfig = Record<EpisodeTimelineEventKind, TimelineRenderRule> & {
-  statusTone?: (event: EpisodeTimelineEvent) => TimelineTone | undefined;
-};
+export type TimelineWindow = [number, number];
+export const MIN_TIMELINE_WINDOW = 10 * 60 * 1000;
+export const ACTOR_KINDS: EpisodeTimelineActor["kind"][] = [
+  "human",
+  "orchestrator",
+  "agent",
+  "worker",
+  "experiment",
+  "watcher",
+];
 export interface TimelineRow {
-  event: EpisodeTimelineEvent;
-  children: TimelineRow[];
+  rowKey: string;
+  kind: EpisodeTimelineActor["kind"];
+  label: string;
+  subtitle: string | null;
+  actors: EpisodeTimelineActor[];
 }
 
-export const DEFAULT_TIMELINE_CONFIG: TimelineRenderConfig = {
-  turn: { lane: "orchestrator", glyph: "●", tone: "neutral", fold: "never" },
-  retry: { lane: "orchestrator", glyph: "↻", tone: "warning", fold: "never" },
-  wake: { lane: "orchestrator", glyph: "↗", tone: "active", fold: "never" },
-  child: { lane: "children", glyph: "◇", tone: "neutral", fold: "never" },
-  mail: { lane: "mail", glyph: "✉", tone: "neutral", fold: "folded" },
-  notice: { lane: "mail", glyph: "·", tone: "muted", fold: "folded" },
-  lifecycle: { lane: "lifecycle", glyph: "◆", tone: "muted", fold: "never" },
-  human: { lane: "human", glyph: "○", tone: "neutral", fold: "never" },
-  statusTone: (event) => {
-    if (["failed", "blocked", "interrupted"].includes(event.status ?? "")) return "danger";
-    if (["running", "queued", "active"].includes(event.status ?? "")) return "active";
-    if (["succeeded", "completed", "ready"].includes(event.status ?? "")) return "success";
-    if (["exhausted", "paused", "pending"].includes(event.status ?? "")) return "warning";
-    return undefined;
-  },
-};
-
-function compareEvents(a: EpisodeTimelineEvent, b: EpisodeTimelineEvent): number {
-  return Date.parse(a.at) - Date.parse(b.at) || a.event_id.localeCompare(b.event_id);
+export function timelineRows(data: EpisodeTimelineResponse): TimelineRow[] {
+  const rows = new Map<string, TimelineRow>();
+  for (const actor of [...data.actors].sort(
+    (a, b) =>
+      ACTOR_KINDS.indexOf(a.kind) - ACTOR_KINDS.indexOf(b.kind) ||
+      (Date.parse(a.started_at ?? "") || 0) - (Date.parse(b.started_at ?? "") || 0),
+  )) {
+    const row = rows.get(actor.row_key);
+    if (row) row.actors.push(actor);
+    else
+      rows.set(actor.row_key, {
+        rowKey: actor.row_key,
+        kind: actor.kind,
+        label: actor.label,
+        subtitle: actor.subtitle,
+        actors: [actor],
+      });
+  }
+  return [...rows.values()];
 }
 
-export class EpisodeTimeline {
-  readonly events: EpisodeTimelineEvent[];
-  readonly config: TimelineRenderConfig;
+export function timelineBounds(data: EpisodeTimelineResponse): TimelineWindow {
+  const dates = [
+    ...data.members.flatMap((m) => [m.started_at, m.ended_at]),
+    ...data.actors.flatMap((a) => [a.started_at, a.ended_at]),
+    ...data.spans.flatMap((s) => [s.started_at, s.finished_at]),
+    ...data.handoffs.map((h) => h.at),
+    ...data.messages.flatMap((m) => [m.sent_at, m.delivered_at]),
+    ...data.signals.flatMap((s) => [s.recorded_at, s.landed_at, s.armed_at]),
+    ...data.marks.map((m) => m.at),
+    ...(data.members.some((m) => !m.ended_at) ? [data.generated_at] : []),
+  ].flatMap((date) => (date && Number.isFinite(Date.parse(date)) ? [Date.parse(date)] : []));
+  const start = dates.length ? Math.min(...dates) : Date.parse(data.generated_at);
+  return [start, Math.max(start + MIN_TIMELINE_WINDOW, ...dates)];
+}
 
-  constructor(events: EpisodeTimelineEvent[], config = DEFAULT_TIMELINE_CONFIG) {
-    this.events = [...events].sort(compareEvents);
-    this.config = config;
+export function clampWindow(window: TimelineWindow, bounds: TimelineWindow): TimelineWindow {
+  const width = Math.min(
+    bounds[1] - bounds[0],
+    Math.max(MIN_TIMELINE_WINDOW, window[1] - window[0]),
+  );
+  const start = Math.max(bounds[0], Math.min(bounds[1] - width, window[0]));
+  return [start, start + width];
+}
+
+export function zoomWindow(
+  window: TimelineWindow,
+  bounds: TimelineWindow,
+  anchor: number,
+  factor: number,
+): TimelineWindow {
+  const fraction = Math.max(0, Math.min(1, (anchor - window[0]) / (window[1] - window[0])));
+  const width = Math.min(
+    bounds[1] - bounds[0],
+    Math.max(MIN_TIMELINE_WINDOW, (window[1] - window[0]) * factor),
+  );
+  return clampWindow([anchor - width * fraction, anchor + width * (1 - fraction)], bounds);
+}
+
+export function panWindow(
+  window: TimelineWindow,
+  bounds: TimelineWindow,
+  delta: number,
+): TimelineWindow {
+  return clampWindow([window[0] + delta, window[1] + delta], bounds);
+}
+
+// Direct recorded neighbors only: shared actors must not turn selection into a
+// transitive walk through the entire run. Keep absent IDs for edge endpoints.
+export function timelineRelated(data: EpisodeTimelineResponse, id: string): Set<string> {
+  const related = new Set([id]);
+  const actor = data.actors.find((a) => a.actor_id === id);
+  const span = data.spans.find((s) => s.span_id === id);
+  const add = (...ids: (string | null | undefined)[]) =>
+    ids.forEach((i) => {
+      if (i) related.add(i);
+    });
+  if (actor) {
+    add(actor.started_by_span_id, actor.row_key);
+    data.spans.filter((s) => s.actor_id === id).forEach((s) => add(s.span_id));
   }
-
-  rule(event: EpisodeTimelineEvent): TimelineRenderRule {
-    const rule = this.config[event.kind];
-    return {
-      ...rule,
-      lane: rule.lane === "orchestrator" && event.actor.kind === "worker" ? "workers" : rule.lane,
-      tone: this.config.statusTone?.(event) ?? rule.tone,
-    };
+  if (span) {
+    add(span.actor_id);
+    data.actors.filter((a) => a.started_by_span_id === id).forEach((a) => add(a.actor_id));
   }
-
-  lanes(): TimelineLane[] {
-    const used = new Set(this.events.map((event) => this.rule(event).lane));
-    const ordered = Object.values(this.config).flatMap((rule) =>
-      typeof rule === "function"
-        ? []
-        : [rule.lane, ...(rule.lane === "orchestrator" ? ["workers"] : [])],
-    ) as TimelineLane[];
-    return [...new Set(ordered)].filter((lane) => used.has(lane));
-  }
-
-  rows(): TimelineRow[] {
-    const rows = new Map(
-      this.events.map((event) => [event.event_id, { event, children: [] } as TimelineRow]),
-    );
-    const roots: TimelineRow[] = [];
-    for (const row of rows.values()) {
-      const ancestors = new Set([row.event.event_id]);
-      let parentId = row.event.parent_event_id;
-      let cycle = false;
-      while (parentId && rows.has(parentId)) {
-        if (ancestors.has(parentId)) {
-          cycle = true;
-          break;
-        }
-        ancestors.add(parentId);
-        parentId = rows.get(parentId)!.event.parent_event_id;
-      }
-      const parent = row.event.parent_event_id && rows.get(row.event.parent_event_id);
-      if (parent && !cycle) parent.children.push(row);
-      else roots.push(row);
+  for (const item of data.handoffs) {
+    if (item.item_id === id || item.from_span_id === id || item.to_actor_id === id) {
+      add(item.item_id, item.from_span_id, item.to_actor_id);
+      add(data.spans.find((s) => s.span_id === item.from_span_id)?.actor_id);
     }
-    return roots;
   }
+  for (const item of data.messages) {
+    if (
+      [
+        item.item_id,
+        item.from_actor_id,
+        item.to_actor_id,
+        item.sent_span_id,
+        item.delivered_span_id,
+      ].includes(id)
+    )
+      add(
+        item.item_id,
+        item.from_actor_id,
+        item.to_actor_id,
+        item.sent_span_id,
+        item.delivered_span_id,
+      );
+  }
+  for (const item of data.signals) {
+    if (
+      [
+        item.item_id,
+        item.source_actor_id,
+        item.source_row_key,
+        item.landed_span_id,
+        item.armed_span_id,
+      ].includes(id) ||
+      (actor && actor.row_key === item.source_row_key)
+    ) {
+      add(
+        item.item_id,
+        item.source_actor_id,
+        item.source_row_key,
+        item.landed_span_id,
+        item.armed_span_id,
+      );
+      data.actors.filter((a) => a.row_key === item.source_row_key).forEach((a) => add(a.actor_id));
+    }
+  }
+  for (const item of data.marks) {
+    if ([item.item_id, item.actor_id, item.by_span_id].includes(id))
+      add(item.item_id, item.actor_id, item.by_span_id);
+  }
+  return related;
+}
 
-  // State contains toggles from the configured default. "always" starts open.
-  isFolded(eventId: string, state: Set<string>): boolean {
-    const event = this.events.find((item) => item.event_id === eventId);
-    if (!event || this.rule(event).fold === "never") return false;
-    return (this.rule(event).fold === "folded") !== state.has(eventId);
-  }
+export function timelineWakeRows(data: EpisodeTimelineResponse) {
+  const actors = new Set(
+    data.actors.filter((a) => a.kind === "orchestrator").map((a) => a.actor_id),
+  );
+  return data.spans
+    .filter((s) => actors.has(s.actor_id))
+    .sort(
+      (a, b) =>
+        Date.parse(a.started_at) - Date.parse(b.started_at) || a.span_id.localeCompare(b.span_id),
+    )
+    .map((span, index) => ({
+      span,
+      number: index + 1,
+      landed: [
+        ...data.signals.filter((s) => s.landed_span_id === span.span_id),
+        ...data.messages.filter((m) => m.delivered_span_id === span.span_id),
+      ],
+      handoffs: data.handoffs.filter((h) => h.from_span_id === span.span_id),
+      messages: data.messages.filter((m) => m.sent_span_id === span.span_id),
+      watchers: data.signals.filter(
+        (s) => s.kind === "watcher" && s.armed_span_id === span.span_id,
+      ),
+    }));
+}
 
-  summary(): { turns: number; wakes: number; retries: number; mail: number; children: number } {
-    const count = (kind: EpisodeTimelineEventKind) =>
-      this.events.filter((event) => event.kind === kind).length;
-    return {
-      turns: count("turn"),
-      wakes: count("wake"),
-      retries: count("retry"),
-      mail: count("mail"),
-      children: count("child"),
-    };
-  }
+export function timelineSummary(data: EpisodeTimelineResponse) {
+  const actors = ACTOR_KINDS.flatMap((kind) => {
+    const matching = data.actors.filter((a) => a.kind === kind);
+    if (!matching.length) return [];
+    const outcomes: Record<string, number> = {};
+    for (const actor of matching) {
+      const outcome = actor.outcome ?? "unknown";
+      outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+    }
+    return [{ kind, total: matching.length, outcomes }];
+  });
+  const messages: Record<EpisodeTimelineMessage["disposition"], number> = {
+    wake: 0,
+    harvested: 0,
+    cleared: 0,
+    failed_attempt: 0,
+    undelivered: 0,
+    unknown: 0,
+  };
+  data.messages.forEach((message) => messages[message.disposition]++);
+  return {
+    actors,
+    totalActors: data.actors.length,
+    handoffs: data.handoffs.length,
+    messages,
+    totalMessages: data.messages.length,
+    truncated: data.truncated,
+  };
 }
