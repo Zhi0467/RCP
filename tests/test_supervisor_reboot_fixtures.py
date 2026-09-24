@@ -8,10 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 
 import rcp.storage.models as storage_models
+from rcp.core.models import NodeType
 from rcp.storage import AppStore
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
@@ -47,6 +49,8 @@ def test_disposable_data_has_canonical_project_retained_stage_and_attachment(
     assert store.authenticate_team_member_token(receipt["token"]).user_id == receipt["member_id"]
     assert (Path(receipt["stage"]) / "retained.txt").is_file()
     assert (Path(receipt["research"]) / "manifest.toml").is_file()
+    graph = json.loads((Path(receipt["research"]) / "graph.json").read_text())
+    assert {node["type"] for node in graph["nodes"].values()} == set(get_args(NodeType))
     assert receipt["attachment_id"]
     from tests.supervisor_reboot_guest import backup_inventory
 

@@ -177,7 +177,18 @@ def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]
     """Capture representative data and prepare its update with the checkout's code."""
     script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
     output = _capture(
-        ["uv", "run", "--project", str(checkout), "--frozen", "python", str(script), str(root)],
+        # `-I` keeps an inherited PYTHONPATH from putting candidate code on the base side.
+        [
+            "uv",
+            "run",
+            "--project",
+            str(checkout),
+            "--frozen",
+            "python",
+            "-I",
+            str(script),
+            str(root),
+        ],
         cwd=root.parent,
     )
     return json.loads(output.strip().splitlines()[-1])
