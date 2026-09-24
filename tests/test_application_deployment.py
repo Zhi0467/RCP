@@ -583,10 +583,12 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         assert current.read_model.projects[0].projection_sha256 == _canonical_sha256(graph)
 
 
-@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
+@pytest.mark.parametrize("case", ["local", "remote", "changed"])
 def test_live_check_opens_a_remote_project_only_after_the_release_commits(
-    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: bool
+    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    import rcp.server_ops.deployment as deployment
+
     request, _state, _metadata = captured
     prepared = prepare(request)
     checked = validate(
@@ -601,12 +603,17 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
     shutil.rmtree(data / "project-snapshots", ignore_errors=True)
     live = create_app(data_dir=data)
     store = live.state.background_tasks.store
-    project = store.project
-    monkeypatch.setattr(
-        store,
-        "project",
-        lambda project_id: project(project_id).model_copy(update={"state_remote": remote}),
-    )
+    if case == "remote":
+        # The capture classified this project remote; the live row agrees.
+        locate = deployment._project_restore_location
+        monkeypatch.setattr(deployment, "_project_restore_location", lambda p: (locate(p)[0], None))
+    if case != "local":
+        project = store.project
+        monkeypatch.setattr(
+            store,
+            "project",
+            lambda project_id: project(project_id).model_copy(update={"state_remote": True}),
+        )
     opened = []
     open_snapshot = live.state.catalog.open_snapshot
     monkeypatch.setattr(
@@ -614,15 +621,24 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
         "open_snapshot",
         lambda project_id: opened.append(project_id) or open_snapshot(project_id),
     )
-    assert verify_live_application(
-        Path(checked["proof_path"]),
-        proof_sha256=checked["proof_sha256"],
-        background=live.state.background_tasks,
-        catalog=live.state.catalog,
-        store=store,
-    )
+
+    def verify() -> str:
+        return verify_live_application(
+            Path(checked["proof_path"]),
+            proof_sha256=checked["proof_sha256"],
+            background=live.state.background_tasks,
+            catalog=live.state.catalog,
+            store=store,
+        )
+
+    if case == "changed":
+        # A candidate migration that reroutes a captured local project is refused.
+        with pytest.raises(MaintenanceRefused, match="keeps its state"):
+            verify()
+        return
+    assert verify()
     # A missing cache is rebuilt for a local project, never opened for a remote one.
-    assert bool(opened) is not remote
+    assert bool(opened) is (case == "local")
 
 
 def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path: Path) -> None:

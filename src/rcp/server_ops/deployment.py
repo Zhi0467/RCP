@@ -494,7 +494,9 @@ def _read_model_digest(model: CandidateRehearsalResult) -> str:
 def verify_live_application(
     proof_path: Path, *, proof_sha256: str, background, catalog, store
 ) -> str:
-    final = _read_proof(proof_path, proof_sha256).read_model
+    proof = _read_proof(proof_path, proof_sha256)
+    final = proof.read_model
+    captures = {project.project_id: project for project in proof.project_receipt.projects}
     startup = StartupRecoveryReadModel.model_validate(background.plan_startup_recovery().as_dict())
     if startup != final.startup_recovery:
         raise MaintenanceRefused("The switched release changed the startup recovery read model.")
@@ -524,8 +526,17 @@ def verify_live_application(
             # canonical history; rebuild it rather than refuse the release.
             if isinstance(graph, dict) and graph.get("revision") != expected.revision:
                 graph = None
+            # Remote means what the checkpoint used: the captured classification,
+            # never a row the candidate's own migration could have changed.
+            capture = captures[expected.project_id]
+            remote = _project_restore_location(capture)[1] is None
             record = store.project(expected.project_id)
-            if not isinstance(graph, dict) and record is not None and record.state_remote:
+            if record is None or bool(record.state_remote) != remote:
+                raise MaintenanceRefused(
+                    f"The switched release changed where project {expected.project_id} "
+                    "keeps its state."
+                )
+            if not isinstance(graph, dict) and remote:
                 # Two stages: before the release commits, nothing may write to a
                 # remote project, which no local rollback can undo. Validation already
                 # replayed its captured history on copies; its served projection is

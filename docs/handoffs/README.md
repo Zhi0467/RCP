@@ -2,11 +2,6 @@
 
 Active:
 
-- [Release updates and rollbacks stay clean](handoff-2026-09-24-updates-and-rollbacks-stay-clean.md)
-  — 2026-09-24. Whole-folder checkpoint rollback is implemented. Sign-in
-  quiescence, a source floor, installed-artifact CI and the legacy first-update
-  entrance remain; three await human decisions.
-
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the
   same day. A command action names the shell it runs in, a pause is titled for
