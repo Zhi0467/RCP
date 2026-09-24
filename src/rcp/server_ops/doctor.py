@@ -1144,6 +1144,8 @@ class LinuxServerDoctorMachine:
             add_problem("the last protected backup failed; inspect last_backup_failure")
         elif outcome.status == "partial":
             add_problem("the last protected backup is partial; inspect uncaptured projects")
+        for problem in outcome.problems:
+            add_problem(problem)
         return _BackupDoctorSummary(
             status=outcome.status,
             last_at=outcome.completed_at,

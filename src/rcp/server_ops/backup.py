@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -47,7 +48,11 @@ from rcp.server_ops.backup_capture import (
     read_backup_sqlite_capture_receipt,
 )
 from rcp.server_ops.backup_integrity import canonical_backup_manifest_bytes
-from rcp.server_ops.backup_models import BackupArchiveManifest, BackupFileEntry
+from rcp.server_ops.backup_models import (
+    BackupArchiveManifest,
+    BackupFileEntry,
+    BackupProjectCapture,
+)
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureCoordinator,
     BackupProjectFileCapturePublication,
@@ -61,6 +66,7 @@ from rcp.server_ops.config import (
 from rcp.server_ops.control import ServerControlBackupCaptureResult, ServerControlClient
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
+    SERVER_CLI_MAX_FIELD_CHARS,
     MachineTarget,
     NonsecretField,
     ServerCommandRequest,
@@ -83,6 +89,7 @@ _ARCHIVE_NAME = re.compile(
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ARCHIVE_MODE = 0o600
 _STATUS_NAME = "backup-status.json"
+_DIAGNOSTICS_NAME = "backup-diagnostics.json"
 _LOCK_NAME = ".backup-run.lock"
 _PUBLICATION_INTENT_NAME = re.compile(
     r"\.rcp-backup-publication-"
@@ -246,6 +253,17 @@ class BackupRunOutcome(_StrictModel):
     archive_receipt_sha256: str | None = None
     failure: str | None = None
     retention_deleted_archives: tuple[str, ...] = ()
+    # Persist separately: old releases strictly parse the version-1 outcome.
+    problems: tuple[str, ...] = Field(default=(), exclude=True)
+
+    @field_validator("problems")
+    @classmethod
+    def validate_problems(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for problem in value:
+            _safe_diagnostic(problem)
+            if len(problem) > 160:
+                raise ValueError("backup problems must fit the doctor diagnostic bound")
+        return value
 
     @field_validator("operation_id", "installation_id")
     @classmethod
@@ -409,11 +427,27 @@ def prepare_backup_run_command(
     return PreparedServerCommand(plan=plan, execute=execute)
 
 
+def project_capture_problems(projects: tuple[BackupProjectCapture, ...]) -> tuple[str, ...]:
+    problems = []
+    for project in projects:
+        if project.status != "uncaptured":
+            continue
+        reason = project.unavailable_reason or project.unavailable_kind
+        if project.unavailable_kind in {"inventory_failure", "remote_unreachable"}:
+            reason = f"{project.unavailable_kind}: {reason}"
+        problems.append(f"{project.project_id}: {reason}"[:160].rstrip())
+    return tuple(problems)
+
+
 def _outcome_fields(outcome: BackupRunOutcome) -> tuple[NonsecretField, ...]:
     archive = outcome.archive
     assert archive is not None
     return (
         NonsecretField(name="backup_status", value=outcome.status),
+        NonsecretField(
+            name="problems",
+            value="; ".join(outcome.problems)[:SERVER_CLI_MAX_FIELD_CHARS] or "none",
+        ),
         NonsecretField(
             name="archive_path", value=str(Path(outcome.destination) / archive.archive_name)
         ),
@@ -510,6 +544,7 @@ class LinuxBackupRunMachine:
                     archive=protected.receipt,
                     archive_receipt_sha256=protected.receipt_sha256,
                     retention_deleted_archives=deleted,
+                    problems=project_capture_problems(manifest.projects),
                 )
                 write_backup_outcome(outcome, self.layout)
                 return outcome
@@ -1292,6 +1327,11 @@ def write_backup_outcome(
 ) -> None:
     path = backup_status_path(layout)
     payload = _model_bytes(outcome)
+    # Publish diagnostics first; operation identity prevents stale attribution if interrupted.
+    _atomic_replace_private(
+        layout.server_root / _DIAGNOSTICS_NAME,
+        canonical_json_line({"operation_id": outcome.operation_id, "problems": outcome.problems}),
+    )
     _atomic_replace_private(path, payload)
 
 
@@ -1306,9 +1346,30 @@ def read_backup_outcome(
         maximum=BACKUP_RECEIPT_MAX_BYTES,
     )
     try:
-        return BackupRunOutcome.model_validate_json(payload)
+        outcome = BackupRunOutcome.model_validate_json(payload)
     except ValueError as exc:
         raise ValueError("backup status is invalid") from exc
+    diagnostics_path = layout.server_root / _DIAGNOSTICS_NAME
+    try:
+        diagnostics_path.lstat()
+    except FileNotFoundError:
+        return outcome  # Old sources have no diagnostic sidecar.
+    diagnostics = json.loads(
+        _read_private_file(
+            diagnostics_path,
+            expected_uid=os.geteuid() if expected_uid is None else expected_uid,
+            maximum=BACKUP_RECEIPT_MAX_BYTES,
+        )
+    )
+    if not isinstance(diagnostics, dict) or set(diagnostics) != {"operation_id", "problems"}:
+        raise ValueError("backup diagnostics are invalid")
+    if diagnostics["operation_id"] != outcome.operation_id:
+        return outcome
+    if not isinstance(diagnostics["problems"], list):
+        raise ValueError("backup diagnostics are invalid")
+    return BackupRunOutcome.model_validate(
+        {**outcome.model_dump(), "problems": tuple(diagnostics["problems"])}
+    )
 
 
 @contextmanager

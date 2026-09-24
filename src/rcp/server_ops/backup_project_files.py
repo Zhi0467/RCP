@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -64,7 +65,52 @@ BACKUP_PROJECT_FILE_CAPTURE_SCHEMA_VERSION = 1
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
-_PROJECT_CAPTURE_FAILURE = "The project files were invalid, changing, or unavailable."
+
+
+def _capture_failure_reason(
+    error: BaseException, *, category: str, component: str = ".research"
+) -> str:
+    """Expose exception types and schema-owned relative components, never exception text."""
+    cause: BaseException | None = error
+    seen: set[int] = set()
+    failure = "invalid"
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, OSError):
+            failure = {
+                errno.ENOENT: "missing",
+                errno.EACCES: "permission_denied",
+                errno.ENOSPC: "storage_full",
+            }.get(cause.errno, "io_failure")
+            if isinstance(cause.filename, str):
+                parts = Path(cause.filename).parts
+                if ".research" in parts:
+                    relative = parts[parts.index(".research") :]
+                    # Only fixed schema components and opaque UUIDs are operator-safe.
+                    safe: list[str] = []
+                    for part in relative:
+                        if part in {
+                            ".research",
+                            "branches",
+                            "patches",
+                            "merges",
+                            "branch.json",
+                            "manifest.toml",
+                            "scope-base.json",
+                            "chat",
+                            "facts",
+                            "paper",
+                            "introduction.md",
+                            "artifacts",
+                            "views",
+                        } or re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", part):
+                            safe.append(part)
+                        else:
+                            break
+                    component = "/".join(safe)
+            break
+        cause = cause.__cause__
+    return f"{category}_{failure}: {component}"
 
 
 class _StrictProjectCaptureModel(BaseModel):
@@ -373,14 +419,16 @@ class BackupProjectFileCaptureCoordinator:
         project_root = capture_root / "projects" / inventory.project_id
         try:
             project_root.mkdir(mode=0o700)
-        except OSError:
+        except OSError as exc:
             return BackupProjectCapture(
                 project_id=inventory.project_id,
                 home_space_id=inventory.home_space_id,
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_reason=_capture_failure_reason(
+                    exc, category="capture_destination", component="projects"
+                ),
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
@@ -411,11 +459,11 @@ class BackupProjectFileCaptureCoordinator:
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_reason="checkout_unreachable: repositories",
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
-        except StateUnavailable:
+        except StateUnavailable as exc:
             discard_failed_project_capture(capture_root, project_root)
             if _inventory_state_is_remote(inventory):
                 return BackupProjectCapture(
@@ -435,7 +483,7 @@ class BackupProjectFileCaptureCoordinator:
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_reason=_capture_failure_reason(exc, category="local_state"),
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
@@ -445,7 +493,7 @@ class BackupProjectFileCaptureCoordinator:
             OSError,
             TypeError,
             ValueError,
-        ):
+        ) as exc:
             discard_failed_project_capture(capture_root, project_root)
             return BackupProjectCapture(
                 project_id=inventory.project_id,
@@ -453,7 +501,15 @@ class BackupProjectFileCaptureCoordinator:
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_reason=_capture_failure_reason(
+                    exc,
+                    category="checkout"
+                    if isinstance(exc, CheckoutInspectionError)
+                    else "project_files",
+                    component="repositories"
+                    if isinstance(exc, CheckoutInspectionError)
+                    else ".research",
+                ),
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
@@ -604,7 +660,7 @@ def _uncaptured_project(
         locator=inventory.locator,
         status="uncaptured",
         unavailable_kind="capture_failure",
-        unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+        unavailable_reason="imported_history_invalid: project-sources",
         unavailable_at=datetime.now(UTC),
         total_bytes=0,
     )

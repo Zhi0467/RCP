@@ -359,7 +359,7 @@ def test_backup_run_composes_capture_protection_retention_and_stage_cleanup(
     installed = _installed(destination)
     sqlite_receipt = object()
     project_publication = object()
-    manifest = object()
+    manifest = SimpleNamespace(projects=())
     receipt = _archive_receipt(destination)
     protected = ProtectedBackupArchive(
         receipt=receipt,

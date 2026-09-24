@@ -250,8 +250,10 @@ def test_failed_health_reports_both_failure_and_successful_rollback(tmp_path: Pa
 def test_failed_previous_probe_keeps_recovery_pending_then_retries(tmp_path: Path):
     coordinator, runtime, previous, target = _case(tmp_path / "case")
     runtime.fail_target = runtime.fail_previous = True
-    with pytest.raises(SupervisorError, match="previous release"):
+    with pytest.raises(SupervisorError, match="previous release") as failure:
         coordinator.deploy(previous, target)
+    assert "candidate health" in str(failure.value)
+    assert "candidate health" in coordinator.store.active()["error"]
     assert coordinator.store.active()["phase"] == "previous_pointer_restored"
     assert runtime.starts == 0
     runtime.fail_previous = False
@@ -463,7 +465,7 @@ def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tm
             expected = "operation_recovery_required"
         with pytest.raises(SupervisorError, match=expected) as error:
             coordinator.recover()
-        assert coordinator.store.active()["error"] == str(error.value)
+        assert coordinator.store.active()["error"].endswith(str(error.value))
         assert runtime.starts == 0
     else:
         with pytest.raises(SupervisorError, match="rolled_back"):

@@ -138,13 +138,39 @@ def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     return _build_checkout(base_ref, work_root, web=True), base_commit
 
 
-RECENT_RELEASE_COUNT = 5
-
-
-def latest_release_tags(count: int = RECENT_RELEASE_COUNT) -> list[str]:
-    """The newest promoted releases, the versions a team server may still run."""
-    output = _capture(["git", "tag", "--list", "v*", "--sort=-v:refname"], cwd=REPOSITORY_ROOT)
-    return output.split()[:count]
+def published_release_tags() -> list[str]:
+    """Every promoted v* release, without a count window or a supported floor."""
+    # gh release list paginates internally but requires a finite --limit. Grow
+    # that request until it is exhausted; this is not a source-release ceiling.
+    limit = 100
+    while True:
+        releases = json.loads(
+            _capture(
+                [
+                    "gh",
+                    "release",
+                    "list",
+                    "--limit",
+                    str(limit),
+                    "--json",
+                    "tagName,isDraft,isPrerelease",
+                ],
+                cwd=REPOSITORY_ROOT,
+            )
+        )
+        if len(releases) < limit:
+            break
+        limit *= 2
+    tags = [
+        release["tagName"]
+        for release in releases
+        if not release["isDraft"]
+        and not release["isPrerelease"]
+        and release["tagName"].startswith("v")
+    ]
+    if not tags:
+        raise ValueError("the upgrade gate requires published v* releases")
+    return tags
 
 
 def build_release_checkout(tag: str, work_root: Path) -> Path:
@@ -248,7 +274,6 @@ def _run(argv: list[str], *, cwd: Path) -> None:
 
 __all__ = [
     "EXACT_BASE_ENV",
-    "RECENT_RELEASE_COUNT",
     "EXPECTED_BOUNDARIES",
     "build_exact_base_checkout",
     "build_exact_base_fixture",
@@ -257,7 +282,7 @@ __all__ = [
     "exact_candidate_base",
     "fixture_bundle_digest",
     "immutable_fixture_directories",
-    "latest_release_tags",
+    "published_release_tags",
     "prepare_release_update_with",
     "verify_fixture_integrity",
     "verify_fixture_registry",

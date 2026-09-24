@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import ApplicationCommandError, SupervisorError
 from rcp_supervisor.runtime import Paths, SystemRuntime
 
 
@@ -95,13 +95,14 @@ def test_stderr_output_is_bounded_too(runtime, monkeypatch):
 
 
 def test_backup_requires_complete_protected_receipt(runtime, monkeypatch):
-    def output(status, count):
+    def output(status, count, problems=""):
         return json.dumps(
             {
                 "step": {
                     "fields": [
                         {"name": "backup_status", "value": status},
                         {"name": "uncaptured_projects", "value": count},
+                        {"name": "problems", "value": problems},
                     ]
                 }
             }
@@ -118,6 +119,23 @@ def test_backup_requires_complete_protected_receipt(runtime, monkeypatch):
         )
         with pytest.raises(SupervisorError, match="complete verified"):
             runtime.protected_backup(legacy)
+
+    def failed(*_args, **_kwargs):
+        raise ApplicationCommandError(
+            "inspect private-error.log",
+            output(
+                "partial",
+                1,
+                "project-id: local_state_missing: .research/branches token=secret-value",
+            ),
+        )
+
+    monkeypatch.setattr(runtime, "_service_output", failed)
+    with pytest.raises(SupervisorError) as failure:
+        runtime.protected_backup(legacy)
+    assert "local_state_missing: .research/branches" in str(failure.value)
+    assert "private-error.log" in str(failure.value)
+    assert "secret-value" not in str(failure.value)
 
 
 def test_probe_arms_parent_ownership_in_supervisor_code_after_service_uid_drop(
@@ -393,5 +411,131 @@ def test_filesystem_mismatch_reaches_operation_record(runtime, tmp_path):
         coordinator.deploy(previous, target)
     assert "value" in str(error.value) and "changed" in str(error.value)
     assert "secret changed bytes" not in str(error.value)
-    assert coordinator.store.active()["error"] == str(error.value)
+    journal = coordinator.store.active()["error"]
+    assert "rollback_tree_mismatch" in journal and '"value": changed' in journal
     assert fake.starts == 0
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        "peer",
+        "request_id",
+        "instance_id",
+        "protocol_version",
+        "ok",
+        "result",
+        "code",
+        "message",
+        "control",
+    ],
+)
+def test_only_authenticated_refusal_causes_reach_cli_and_journal(
+    runtime, tmp_path, monkeypatch, capsys, invalid
+):
+    import socket
+    import struct
+
+    from rcp_supervisor import cli, driver
+
+    from tests.test_supervisor_operations import _case
+
+    metadata = {"instance_id": "instance", "pid": 123, "data_dir_id": "data"}
+    monkeypatch.setattr(runtime, "metadata", lambda: metadata)
+    monkeypatch.setattr(socket, "SO_PEERCRED", 17, raising=False)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def getsockopt(self, *_args):
+            return struct.pack("3i", 999 if invalid == "peer" else 123, runtime.uid, runtime.gid)
+
+        def sendall(self, data):
+            request = json.loads(data[4:])
+            response = {
+                "protocol_version": 10,
+                "request_id": request["request_id"],
+                "instance_id": "instance",
+                "ok": False,
+                "error": {
+                    "code": "operation_refused",
+                    "message": "maintenance_busy token=private-value",
+                },
+            }
+            if invalid in {"request_id", "instance_id", "protocol_version", "ok"}:
+                response[invalid] = "wrong"
+            elif invalid == "result":
+                response["result"] = {}
+            elif invalid == "code":
+                response["error"]["code"] = "x" * 65
+            elif invalid == "message":
+                response["error"]["message"] = "maintenance_busy " + "x" * 240
+            elif invalid == "control":
+                response["error"]["message"] += "\x1b[31m"
+            payload = json.dumps(response).encode()
+            self.data = struct.pack("!I", len(payload)) + payload
+
+        def recv(self, count):
+            data, self.data = self.data[:count], self.data[count:]
+            return data
+
+    monkeypatch.setattr(socket, "socket", lambda *_args: Connection())
+    coordinator, adapter, previous, target = _case(tmp_path / "deployment")
+    adapter.enter_maintenance = runtime.enter_maintenance
+    monkeypatch.setattr(driver, "update", lambda *_args: coordinator.deploy(previous, target))
+    monkeypatch.setattr(driver, "safe_state_fields", lambda: [])
+    assert cli.main(["server", "update", "--machine-readable"]) == 1
+    step = json.loads(capsys.readouterr().out.splitlines()[-1])["step"]
+    assert step["state"] == "failed"
+    journal = json.loads(next((tmp_path / "deployment/operations").glob("*.json")).read_text())
+    for diagnostic in (step["message"], journal["error"]):
+        assert "private-value" not in diagnostic
+        assert "\x1b" not in diagnostic
+        assert ("maintenance_busy" in diagnostic) is (invalid is None)
+        assert ("operation_refused" in diagnostic) is (invalid is None)
+    assert journal["phase"] == "aborted"
+
+
+@pytest.mark.parametrize("exit_early", [False, True])
+def test_probe_failure_retains_last_readiness_cause_and_private_log(
+    runtime, monkeypatch, exit_early
+):
+    monkeypatch.setattr(runtime, "require_capability", lambda _release: None)
+    monkeypatch.setattr(runtime, "prepare_control_directory", lambda: None)
+    monkeypatch.setattr(runtime, "environment", lambda _release: {})
+    monkeypatch.setattr(runtime, "_stop_child", lambda _process: None)
+    polls = iter([None, 1 if exit_early else None])
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: SimpleNamespace(pid=123, poll=lambda: next(polls)),
+    )
+    clock = iter([0, 0, 1000])
+    monkeypatch.setattr("rcp_supervisor.runtime.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("rcp_supervisor.runtime.time.sleep", lambda _seconds: None)
+
+    def unavailable():
+        raise SupervisorError("readiness_unavailable token=private-value")
+
+    monkeypatch.setattr(runtime, "metadata", unavailable)
+    with pytest.raises(SupervisorError) as failure:
+        runtime.probe(
+            {"release_directory": "/isolated"},
+            {"operation_id": "operation", "nonce": "boundary"},
+            None,
+        )
+    diagnostic = str(failure.value)
+    assert "readiness_unavailable" in diagnostic
+    assert "private-value" not in diagnostic
+    assert str(next((runtime.paths.service_home / "logs").glob("*-probe.log"))) in diagnostic

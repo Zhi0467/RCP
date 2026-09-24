@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import pwd
 import re
 import shutil
 import sqlite3
+import subprocess
 from contextlib import chdir
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,15 +23,15 @@ from rcp.config import load_manifest
 from rcp.history import HistoryManager
 from rcp.storage import AppStore
 
+from . import server_upgrade_harness
 from .server_upgrade_harness import (
-    RECENT_RELEASE_COUNT,
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
     exact_base_gate_enabled,
     immutable_fixture_directories,
-    latest_release_tags,
     prepare_release_update_with,
+    published_release_tags,
     verify_fixture_integrity,
     verify_fixture_registry,
 )
@@ -37,6 +39,29 @@ from .server_upgrade_harness import (
 
 def test_immutable_server_boundary_registry_is_complete() -> None:
     verify_fixture_registry()
+
+
+def test_release_catalog_is_complete_and_missing_sources_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tags = [f"v1.0.{index}" for index in range(125)]
+    releases = [{"tagName": tag, "isDraft": False, "isPrerelease": False} for tag in tags] + [
+        {"tagName": "v2.0.0", "isDraft": True, "isPrerelease": False},
+        {"tagName": "v2.0.1", "isDraft": False, "isPrerelease": True},
+        {"tagName": "build/1", "isDraft": False, "isPrerelease": False},
+    ]
+
+    def release_list(argv: list[str], *, cwd: Path) -> str:
+        assert argv[:3] == ["gh", "release", "list"]
+        return json.dumps(releases[: int(argv[argv.index("--limit") + 1])])
+
+    monkeypatch.setattr(server_upgrade_harness, "_capture", release_list)
+    assert published_release_tags() == tags
+    releases.clear()
+    with pytest.raises(ValueError):
+        published_release_tags()
+    with pytest.raises(subprocess.CalledProcessError):
+        build_release_checkout("refs/tags/upgrade-gate-missing-tag", tmp_path / "missing")
 
 
 def test_pre_ledger_fixture_records_migrations_and_never_rescans(
@@ -158,15 +183,16 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
 @pytest.mark.parametrize(
-    "release_index",
-    range(RECENT_RELEASE_COUNT),
-    ids=[f"release-{index}" for index in range(RECENT_RELEASE_COUNT)],
+    "release_tag",
+    published_release_tags() if exact_base_gate_enabled() else ["gate-disabled"],
 )
 @pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
-def test_release_update_from_a_recent_release_validates(
-    release_index: int, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_release_update_from_every_published_release_validates(
+    release_tag: str, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A release update prepared by a recent promoted release must pass here.
+    """An update prepared by every published non-prerelease v* release must pass.
+
+    No supported source floor is declared yet; that policy decision remains open.
 
     This is the server's update across versions, from the releases a team server may
     still run: the copied-state validation, then the switched release's live check
@@ -175,12 +201,8 @@ def test_release_update_from_a_recent_release_validates(
     """
     from rcp.server_ops.deployment import ValidateRequest, validate, verify_live_application
 
-    tags = latest_release_tags()
-    if not tags:
-        pytest.fail("the upgrade gate needs the newest release tags fetched")
-    if len(tags) <= release_index:
-        pytest.skip(f"only {len(tags)} promoted releases exist")
-    checkout = build_release_checkout(tags[release_index], tmp_path / "release")
+    # git archive fails for a missing tag; an incomplete fetch cannot skip a source.
+    checkout = build_release_checkout(release_tag, tmp_path / "release")
     root = tmp_path / "update"
     prepared = prepare_release_update_with(checkout, root, stale_cache=stale_cache)
     monkeypatch.setattr(
