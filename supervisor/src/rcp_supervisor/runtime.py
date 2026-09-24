@@ -419,7 +419,7 @@ class SystemRuntime:
             release=release,
         )
 
-    def require_capability(self, release: dict) -> None:
+    def require_capability(self, release: dict, *, extra_commands: tuple[str, ...] = ()) -> None:
         capability = self.application(release, "capabilities")
         if (
             capability.get("version") != 1
@@ -428,6 +428,11 @@ class SystemRuntime:
         ):
             raise SupervisorError(
                 "The release lacks the required application maintenance contract."
+            )
+        missing = set(extra_commands) - set(capability.get("commands", []))
+        if missing:
+            raise SupervisorError(
+                f"application_maintenance_commands_missing: {', '.join(sorted(missing))}"
             )
 
     def metadata(self) -> dict:

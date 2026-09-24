@@ -174,10 +174,10 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         )
         if installed.get("release_directory") != str(target):
             raise SupervisorError("The service account installed a different release directory.")
-        runtime.require_capability(receipt)
+        runtime.require_capability(receipt, extra_commands=("inventory", "rollback-copy"))
         if not os.path.lexists(sealed):
             write_root_json(sealed, receipt)
-    runtime.require_capability(receipt)
+    runtime.require_capability(receipt, extra_commands=("inventory", "rollback-copy"))
     return receipt
 
 

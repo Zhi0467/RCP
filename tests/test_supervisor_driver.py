@@ -377,9 +377,14 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
             startup_recover(paths=paths, startup=True)
 
 
-def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(monkeypatch, tmp_path):
+@pytest.mark.parametrize("missing_command", [None, "inventory", "rollback-copy"])
+def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(
+    monkeypatch, tmp_path, missing_command
+):
     """Retention removes a release tree but keeps the root-owned receipt that
     says the build is installed; selecting that version again must install."""
+
+    from rcp_supervisor.runtime import SystemRuntime
 
     releases = tmp_path / "releases"
     target = releases / "7"
@@ -387,8 +392,22 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
     (supervisor / "release-receipts").mkdir(parents=True)
     sealed = supervisor / "release-receipts" / "7.json"
     sealed.write_text("{}")
-    receipt = {"build": 7, "release_directory": str(target)}
+    receipt = {
+        "build": 7,
+        "release_directory": str(target),
+        "release_tag": "v0.3.5",
+        "manifest_sha256": "a" * 64,
+    }
     calls: list[str] = []
+
+    def application(release, action):
+        assert action == "capabilities"
+        calls.append("capability")
+        commands = {"prepare", "validate"}
+        if release == receipt:
+            commands |= {"inventory", "rollback-copy"} - {missing_command}
+        return {"version": 1, "maintenance_protocol": 10, "commands": sorted(commands)}
+
     runtime = SimpleNamespace(
         paths=SimpleNamespace(supervisor=supervisor, releases_root=releases),
         filesystem=lambda action, request: (
@@ -396,8 +415,9 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
             target.mkdir(parents=True),
             {"release_directory": str(target)},
         )[-1],
-        require_capability=lambda _receipt: calls.append("capability"),
+        application=application,
     )
+    runtime.require_capability = SystemRuntime.require_capability.__get__(runtime)
     monkeypatch.setattr(driver, "release_receipt", lambda *_args: receipt)
     monkeypatch.setattr(driver, "install_operator_console", lambda *_args: None)
     monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
@@ -405,7 +425,28 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
     monkeypatch.setattr(
         driver, "write_root_json", lambda *_args: pytest.fail("the sealed receipt is not rewritten")
     )
-    release = SimpleNamespace(build=7, directory=tmp_path / "bundle")
+    release = SimpleNamespace(build=7, directory=tmp_path / "bundle", supervisor_version="0.1.6")
+
+    if missing_command:
+        monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
+        monkeypatch.setattr(driver, "SystemRuntime", lambda paths: runtime)
+        monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 6})
+        monkeypatch.setattr(driver, "followed_release", lambda runtime: release)
+        monkeypatch.setattr(
+            driver, "store_for", lambda paths: pytest.fail("deployment must not begin maintenance")
+        )
+        arguments = SimpleNamespace(confirm_target=f"v0.3.5:{'a' * 64}")
+        # Both a new installation and a retained target must refuse. The old
+        # source advertises only prepare/validate and must pass its own check.
+        for expected in (["capability", "install", "capability"], ["capability", "capability"]):
+            calls.clear()
+            with pytest.raises(
+                SupervisorError,
+                match=f"application_maintenance_commands_missing: {missing_command}",
+            ):
+                driver.update(arguments, None, paths=runtime.paths)
+            assert calls == expected
+        return
 
     assert driver.prepare_release(runtime, release) == receipt
     assert calls == ["install", "capability", "capability"]
