@@ -32,6 +32,7 @@ from rcp.server_ops.deployment import (
     inventory,
     prepare,
     validate,
+    verify_live_application,
 )
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
@@ -344,6 +345,48 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         for node in experiments:
             node.update(proxies=[], limitations=[])
         assert current.read_model.projects[0].projection_sha256 == _canonical_sha256(graph)
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote"])
+def test_live_check_opens_a_remote_project_only_after_the_release_commits(
+    captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: bool
+) -> None:
+    request, _state, _metadata = captured
+    prepared = prepare(request)
+    checked = validate(
+        ValidateRequest(
+            version=1,
+            proof_path=prepared["proof_path"],
+            proof_sha256=prepared["proof_sha256"],
+            output_dir=str(tmp_path / "validated"),
+        )
+    )
+    data = Path(request.data_dir)
+    shutil.rmtree(data / "project-snapshots", ignore_errors=True)
+    live = create_app(data_dir=data)
+    store = live.state.background_tasks.store
+    project = store.project
+    monkeypatch.setattr(
+        store,
+        "project",
+        lambda project_id: project(project_id).model_copy(update={"state_remote": remote}),
+    )
+    opened = []
+    open_snapshot = live.state.catalog.open_snapshot
+    monkeypatch.setattr(
+        live.state.catalog,
+        "open_snapshot",
+        lambda project_id: opened.append(project_id) or open_snapshot(project_id),
+    )
+    assert verify_live_application(
+        Path(checked["proof_path"]),
+        proof_sha256=checked["proof_sha256"],
+        background=live.state.background_tasks,
+        catalog=live.state.catalog,
+        store=store,
+    )
+    # A missing cache is rebuilt for a local project, never opened for a remote one.
+    assert bool(opened) is not remote
 
 
 def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path: Path) -> None:

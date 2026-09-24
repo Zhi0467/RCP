@@ -524,26 +524,35 @@ def verify_live_application(
             # canonical history; rebuild it rather than refuse the release.
             if isinstance(graph, dict) and graph.get("revision") != expected.revision:
                 graph = None
-            if not isinstance(graph, dict):
-                try:
-                    _service, rebuilt = catalog.open_snapshot(expected.project_id)
-                    graph = rebuilt["graph"]
-                except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+            record = store.project(expected.project_id)
+            if not isinstance(graph, dict) and record is not None and record.state_remote:
+                # Two stages: before the release commits, nothing may write to a
+                # remote project, which no local rollback can undo. Validation already
+                # replayed its captured history on copies; its served projection is
+                # rebuilt on first open once the release is chosen.
+                observed = expected
+            else:
+                if not isinstance(graph, dict):
+                    try:
+                        _service, rebuilt = catalog.open_snapshot(expected.project_id)
+                        graph = rebuilt["graph"]
+                    except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+                        raise MaintenanceRefused(
+                            "The switched release could not reconstruct project projection "
+                            f"{expected.project_id}."
+                        ) from exc
+                if not isinstance(graph, dict):
                     raise MaintenanceRefused(
-                        "The switched release could not reconstruct project projection "
+                        "The switched release has no valid project projection for "
                         f"{expected.project_id}."
-                    ) from exc
-            if not isinstance(graph, dict):
-                raise MaintenanceRefused(
-                    f"The switched release has no valid project projection for {expected.project_id}."
+                    )
+                revision = graph.get("revision")
+                observed = CandidateProjectVerification(
+                    project_id=expected.project_id,
+                    status="verified",
+                    revision=revision if isinstance(revision, int) else None,
+                    projection_sha256=_canonical_sha256(graph),
                 )
-            revision = graph.get("revision")
-            observed = CandidateProjectVerification(
-                project_id=expected.project_id,
-                status="verified",
-                revision=revision if isinstance(revision, int) else None,
-                projection_sha256=_canonical_sha256(graph),
-            )
         if observed != expected:
             raise MaintenanceRefused(
                 f"The switched release changed project projection {expected.project_id}."

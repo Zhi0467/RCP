@@ -401,9 +401,12 @@ and validates only disposable copies.
 Whole-root capture includes credentials, jobs, cursors, unknown files and empty
 directories. Existing bounded traversal and filesystem-entry safety checks still
 apply; no backup inclusion list filters the snapshot. Provider homes, source
-checkouts and remote canonical roots remain outside replacement scope: an update
-never replaces a remote project's state, so rollback restores only local roots
-and updates proceed with remote projects registered. Kept artifacts
+checkouts and remote canonical roots remain outside replacement scope. An update
+runs in two stages: before the release commits it touches only local state, which
+rollback restores; the live check compares a remote project's local display cache
+when current and otherwise leaves it unopened, since validation already replayed
+its captured history on copies. A remote project is opened only after the release
+is chosen, where no rollback applies. Kept artifacts
 and result views outside replacement roots retain their typed checks.
 An intact startup-effect fence prevents probation from changing external state.
 

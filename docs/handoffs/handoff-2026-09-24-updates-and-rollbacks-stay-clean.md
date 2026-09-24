@@ -34,9 +34,10 @@ backup with no uncaptured projects.
    and ordinary startup using unmodified old wheels on disposable systemd hosts.
 4. **Legacy first-update entrance:** establish admission for sources without
    stronger quiescence capability; the current online entrance stays unchanged.
-5. **Read-only post-update check:** reconstructing a missing display cache can
-   rewrite derived files in a canonical folder, including a remote one that no
-   local checkpoint restores. Make that reconstruction read-only.
+5. **Read-only post-update check:** reconstructing a missing local display cache
+   can rewrite derived files in a local canonical folder; rollback restores them,
+   but a read-only reconstruction would be cleaner. Remote projects are already
+   left unopened until the release commits.
 
 ## Open human decisions
 
