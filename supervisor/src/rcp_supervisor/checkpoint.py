@@ -165,6 +165,7 @@ def _inventory(
     max_entries = MAX_CHECKPOINT_ENTRIES if max_entries is None else max_entries
     max_bytes = MAX_CHECKPOINT_BYTES if max_bytes is None else max_bytes
     _directory(root)
+    owner = _access_metadata(root) if exact else None
     result: list[dict] = []
     size = 0
     pending = [root]
@@ -183,7 +184,7 @@ def _inventory(
                     _fail("A checkpoint relative path exceeds the limit.")
                 try:
                     info = child.lstat()
-                    metadata = _access_metadata(child) if exact else {}
+                    metadata = _access_metadata(child, root=root, owner=owner) if exact else {}
                     if stat.S_ISDIR(info.st_mode):
                         _directory(child)
                         result.append({"path": relative, "kind": "directory", **metadata})
@@ -227,15 +228,33 @@ def _entry_name(relative: str) -> str:
     return json.dumps(relative, ensure_ascii=False)[:MAX_CHECKPOINT_DIFFERENCE_PATH]
 
 
-def _access_metadata(path: Path) -> dict:
-    metadata = {"mode": stat.S_IMODE(path.lstat().st_mode)}
+def _access_metadata(path: Path, *, root: Path | None = None, owner: dict | None = None) -> dict:
+    info = path.lstat()
+    relative = path.relative_to(root).as_posix() if root is not None else "."
+    try:
+        attributes = os.listxattr(path, follow_symlinks=False) if hasattr(os, "listxattr") else []
+    except OSError as exc:
+        raise SupervisorError(
+            f"checkpoint_unsafe_entry: cannot inspect xattrs on {_entry_name(relative)}."
+        ) from exc
+    if (
+        attributes
+        or owner is not None
+        and (info.st_uid, info.st_gid) != (owner["uid"], owner["gid"])
+    ):
+        _fail(
+            "checkpoint_unsafe_entry: xattrs or ownership differing from the root on "
+            f"{_entry_name(relative)}."
+        )
+    metadata = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid}
     _validate_metadata(metadata, symlink=path.is_symlink())
     return metadata
 
 
 def _validate_metadata(value: object, *, symlink: bool = False) -> None:
     if (
-        not _keys(value, {"mode"})
+        not _keys(value, {"mode", "uid", "gid"})
+        or any(type(value[key]) is not int or value[key] < 0 for key in ("uid", "gid"))
         or type(value["mode"]) is not int
         or not 0 <= value["mode"] <= 0o777
         or (not symlink and value["mode"] & 0o022)
@@ -244,6 +263,9 @@ def _validate_metadata(value: object, *, symlink: bool = False) -> None:
 
 
 def _apply_metadata(path: Path, metadata: dict) -> None:
+    info = path.lstat()
+    if (info.st_uid, info.st_gid) != (metadata["uid"], metadata["gid"]):
+        os.chown(path, metadata["uid"], metadata["gid"], follow_symlinks=False)
     if not path.is_symlink():
         os.chmod(path, metadata["mode"])
     elif stat.S_IMODE(path.lstat().st_mode) != metadata["mode"]:
@@ -339,9 +361,9 @@ def _validate_entries(entries: object, *, exact: bool = False) -> None:
         elif entry["kind"] == "symlink":
             names |= {"target"}
         if exact:
-            names.add("mode")
+            names |= {"mode", "uid", "gid"}
             _validate_metadata(
-                {"mode": entry.get("mode")},
+                {key: entry.get(key) for key in ("mode", "uid", "gid")},
                 symlink=entry["kind"] == "symlink",
             )
         if not _keys(entry, names):
@@ -405,7 +427,7 @@ def _verify_tree(
     if metadata is not None and not stored:
         try:
             if _access_metadata(root) != metadata:
-                _fail("Checkpoint root mode differs.")
+                _fail("Checkpoint root access metadata differs.")
         except (SupervisorError, OSError) as exc:
             raise SupervisorError("Checkpoint tree differs: .: changed.") from exc
     if actual != expected:
@@ -473,6 +495,8 @@ def _copy_tree(
                 _fail("Checkpoint copy SHA-256 mismatch.")
             writer.flush()
             os.fchmod(writer.fileno(), 0o400 if stored else entry["mode"])
+            if metadata is not None:
+                _apply_metadata(target, dict(entry, mode=0o400) if stored else entry)
             os.fsync(writer.fileno())
     if metadata is not None:
         for entry in reversed(entries):
@@ -484,7 +508,7 @@ def _copy_tree(
             _apply_metadata(destination / entry["path"], access)
         _apply_metadata(
             destination,
-            {"mode": 0o700} if stored else metadata,
+            dict(metadata, mode=0o700) if stored else metadata,
         )
     for directory in reversed(
         [
@@ -576,7 +600,8 @@ def create_offline_snapshot(destination: Path, live: Path, *, boundary_sha256: s
 def check_snapshot_space(directory: Path, roots: tuple[Path, ...]) -> None:
     """Refuse before service stop if a complete checkpoint cannot fit here."""
     _directory(directory)
-    block = os.statvfs(directory).f_frsize or 4096
+    filesystem = os.statvfs(directory)
+    block = filesystem.f_frsize or 4096
     required = MAX_CHECKPOINT_MANIFEST_BYTES + block * (len(roots) + 2)
     total_entries = total_bytes = 0
     for root in roots:
@@ -590,6 +615,12 @@ def check_snapshot_space(directory: Path, roots: tuple[Path, ...]) -> None:
         total_bytes += sum(entry.get("size", 0) for entry in entries)
         required += sum(
             max(1, (entry.get("size", 0) + block - 1) // block) * block for entry in entries
+        )
+    required_inodes = total_entries + len(roots) + 3  # destination, payload, manifest
+    if filesystem.f_favail < required_inodes:
+        _fail(
+            f"checkpoint_capacity: checkpoint filesystem needs {required_inodes} inodes; "
+            f"only {filesystem.f_favail} inodes are available."
         )
     available = shutil.disk_usage(directory).free
     if available < required:

@@ -387,8 +387,8 @@ quiescent boundary. The candidate's thin `inventory` command projects the roots
 from backup's captured registration receipt using `_project_restore_location`,
 shared with preparation; it does not reread SQLite or parse manifests separately.
 Before service stop, supervisor `check-space` refuses with `checkpoint_capacity`
-if the checkpoint filesystem cannot hold a full copy. Root then stops the
-service and proves its main PID is gone. Before old preparation can mutate live
+if the checkpoint filesystem lacks the bytes or free inodes for a full copy.
+Root then stops the service and proves its main PID is gone. Before old preparation can mutate live
 state, the supervisor seals a full snapshot of every entry in the data root and
 registered local canonical `.research` roots. It then checks that old preparation
 declares the same replacement roots. The old prepared payload remains
@@ -424,7 +424,10 @@ default must extend that list, or the update refuses.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 It uses bounded traversal, regular files, safe ownership and permissions,
-content hashes, and a sealed manifest. Publication journals are root-owned;
+content hashes, and a sealed manifest. Exact snapshots preserve and verify modes,
+UIDs and GIDs; `checkpoint_unsafe_entry` refuses any xattrs (including POSIX ACLs)
+or entries whose UID/GID differs from their root, naming offending relative paths
+before service stop and rechecking at sealing. Publication journals are root-owned;
 checkpoint payloads and filesystem replacement run as `rcp`. Before replacing a
 root, the filesystem worker writes and fsyncs its restoration journal, builds
 and verifies a sibling temporary tree, renames the current root to a retained

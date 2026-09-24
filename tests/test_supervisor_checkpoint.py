@@ -8,6 +8,7 @@ import socket
 import sqlite3
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rcp_supervisor import checkpoint
@@ -96,7 +97,8 @@ def _assert_restored(roots) -> None:
         for relative in expected_paths:
             actual = root.live / relative
             expected = root.payload / relative
-            assert actual.stat().st_uid == os.geteuid()
+            assert actual.lstat().st_uid == expected.lstat().st_uid
+            assert actual.lstat().st_gid == expected.lstat().st_gid
             if expected.is_symlink():
                 assert actual.is_symlink() and os.readlink(actual) == os.readlink(expected)
             elif expected.is_dir():
@@ -593,21 +595,66 @@ def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_p
         checkpoint.verify_checkpoint(legacy)
 
 
-@pytest.mark.parametrize("unsafe", ["link", "hardlink", "directory-mode"])
-def test_stopped_snapshot_refuses_uncopyable_metadata(tmp_path: Path, unsafe: str) -> None:
+@pytest.mark.parametrize(
+    "unsafe",
+    ["link", "hardlink", "directory-mode", "uid", "gid", "directory-gid", "xattr", "root-xattr"],
+)
+def test_stopped_snapshot_refuses_uncopyable_metadata(
+    tmp_path: Path, unsafe: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     live = _directory(tmp_path / "live")
     target = live / "file"
     _write(target, b"preserve or refuse")
+    saved = checkpoint.create_stopped_snapshot(
+        tmp_path / "baseline", (live,), boundary_sha256="b" * 64
+    )
+    checkpoint.restore_checkpoint(saved)
+    checkpoint.verify_checkpoint(saved)
+    document = json.loads((saved.directory / "checkpoint.json").read_text())
+    entry = document["roots"][0]["entries"][0]
+    assert (entry["uid"], entry["gid"]) == (target.stat().st_uid, target.stat().st_gid)
     if unsafe == "link":
         (live / "link").symlink_to("file")
     elif unsafe == "hardlink":
         os.link(target, live / "alias")
     elif unsafe == "directory-mode":
         live.chmod(0o1700)
-    with pytest.raises(SupervisorError):
-        checkpoint.create_stopped_snapshot(
-            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
+    elif unsafe in {"uid", "gid", "directory-gid"}:
+        if unsafe == "directory-gid":
+            target = _directory(live / "directory")
+        original = Path.lstat
+
+        def different_owner(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            if path == target:
+                values = list(info)
+                values[4 if unsafe == "uid" else 5] += 1
+                return os.stat_result(values)
+            return info
+
+        monkeypatch.setattr(Path, "lstat", different_owner)
+    elif unsafe in {"xattr", "root-xattr"}:
+        target = live if unsafe == "root-xattr" else target
+        monkeypatch.setattr(
+            os,
+            "listxattr",
+            lambda path, **kwargs: ["user.checkpoint-test"] if path == target else [],
+            raising=False,
         )
+    for capture in (
+        lambda: checkpoint.check_snapshot_space(tmp_path, (live,)),
+        lambda: checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
+        ),
+    ):
+        with pytest.raises(SupervisorError) as error:
+            capture()
+        if unsafe in {"uid", "gid", "directory-gid", "xattr", "root-xattr"}:
+            assert "checkpoint_unsafe_entry" in str(error.value)
+            assert json.dumps(target.relative_to(live).as_posix()) in str(error.value)
+    assert not (tmp_path / "checkpoint").exists()
+    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
+        checkpoint.verify_checkpoint(saved)
 
 
 def test_stopped_snapshot_rechecks_all_sources_before_sealing(
@@ -643,3 +690,16 @@ def test_restore_mismatch_report_is_bounded(tmp_path: Path) -> None:
     assert '"extra-04": extra' in message
     assert "must not be reported" not in message
     assert len(message) < 1500
+
+
+def test_snapshot_space_refuses_insufficient_inodes(tmp_path: Path, monkeypatch) -> None:
+    live = _directory(tmp_path / "live")
+    _write(live / "file", b"small")
+    _directory(live / "empty")
+    monkeypatch.setattr(checkpoint.shutil, "disk_usage", lambda _: SimpleNamespace(free=10**12))
+    filesystem = SimpleNamespace(f_frsize=4096, f_favail=5)
+    monkeypatch.setattr(os, "statvfs", lambda _: filesystem)
+    with pytest.raises(SupervisorError, match="checkpoint_capacity:.*inodes"):
+        checkpoint.check_snapshot_space(tmp_path, (live,))
+    filesystem.f_favail = 6
+    checkpoint.check_snapshot_space(tmp_path, (live,))
