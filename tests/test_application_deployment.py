@@ -17,6 +17,7 @@ from typing import get_args
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
 
 import rcp.storage.models as storage_models
@@ -208,7 +209,7 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
 
 
 def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
-    """Pin old paths; new fields/types require examples and explicit upgrades.
+    """Cover every model path and independently omit every defaulted field.
 
     These literal documents are a schema inventory, not a replay corpus. Never
     regenerate expected documents by validating/dumping the current models.
@@ -345,45 +346,54 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
     # Stored JSON has no shared object identities between repeated examples.
     current = json.loads(json.dumps(current))
     reachable = set()
+    unsafe_defaults = []
 
     def discover(annotation):
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             if annotation not in reachable:
                 reachable.add(annotation)
-                for field in annotation.model_fields.values():
+                for name, field in annotation.model_fields.items():
+                    factory = field.default_factory
+                    if factory is not None and factory not in (list, dict, tuple, set, frozenset):
+                        if isinstance(factory, type) and issubclass(factory, BaseModel):
+                            discover(factory)
+                        else:
+                            unsafe_defaults.append(f"{annotation.__name__}.{name}")
                     discover(field.annotation)
         else:
             for argument in get_args(annotation):
                 discover(argument)
 
     discover(GraphState)
+    assert not unsafe_defaults, (
+        "Defaults require explicit migration (unproven deterministic factory): "
+        + ", ".join(sorted(unsafe_defaults))
+    )
     covered = set()
+    upgrades = []
 
-    def check_paths(model, document, path="graph"):
+    def check_paths(model, document, path=()):
         if isinstance(model, BaseModel):
             covered.add(type(model))
             assert set(document) == set(type(model).model_fields), (
                 f"{path}: missing explicit field/upgrade example"
             )
-            for name in type(model).model_fields:
-                check_paths(getattr(model, name), document[name], f"{path}.{name}")
+            for name, field in type(model).model_fields.items():
+                if not field.is_required():
+                    default = to_jsonable_python(field.get_default(call_default_factory=True))
+                    upgrades.append(((*path, name), default))
+                check_paths(getattr(model, name), document[name], (*path, name))
         elif isinstance(model, dict):
             for key, value in model.items():
-                check_paths(value, document[key], f"{path}[{key}]")
+                check_paths(value, document[key], (*path, key))
         elif isinstance(model, list):
             for index, value in enumerate(model):
-                check_paths(value, document[index], f"{path}[{index}]")
+                check_paths(value, document[index], (*path, index))
 
     check_paths(GraphState.model_validate(deepcopy(current)), current)
     assert covered == reachable, f"Missing populated examples: {reachable - covered}"
-    # Explicit transitions from the previous shape. Every omitted path is tested
-    # independently, so one transition cannot hide another missing upgrade.
-    upgrades = [
-        (("nodes", "experiment", "proxies"), []),
-        (("nodes", "experiment", "limitations"), []),
-        (("edges", "edge", "expectation"), None),
-        (("edges", "blocked", "expectation"), None),
-    ]
+    # Every defaulted field is omitted independently, preserving all other
+    # explicit values. Model-derived defaults are the only expected additions.
     for path, default in upgrades:
         legacy = deepcopy(current)
         expected = deepcopy(current)
@@ -396,6 +406,9 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         assert legacy == expected, path
         upgrade_graph_projection(legacy)
         assert legacy == expected, path
+    current["future_graph_field"] = {"kept": True}
+    current["nodes"]["experiment"]["future_node_field"] = "kept"
+    current["edges"]["edge"]["assessment"]["scope"] = "  unnormalized  "
     preserved = deepcopy(current)
     preserved["coverage"] = coverage
     upgrade_graph_projection(preserved)

@@ -411,22 +411,26 @@ merge receipts, retained task/stage paths, imported histories, and startup
 recovery inventory. `migrate --check` alone is insufficient. Candidate and old
 live-state proofs are separate, exact application-owned documents. The
 supervisor handles only their digests and complete prepared filesystem trees.
-A candidate may change the graph projection only in listed ways. It verifies the
-retained baseline graph against its recorded digest, then removes the retired
-`coverage` report and fills fields added with empty defaults (edge `expectation`,
-Experiment `proxies` and `limitations`) where the baseline omits them. All
-remaining graph content and startup recovery reads must still match; the
-candidate proof records the current graph digest used by live verification. The
-list is `upgrade_graph_projection`; the project display cache applies it on load
-too, because live verification reads that cache and it must equal a fresh
-replay. A cache whose revision trails the proof, as a failed refresh leaves it,
-is rebuilt from canonical history instead. The retained baseline graph shares
-the display snapshot's size bound. A release that adds a graph field with a
-default must extend that list, or the update refuses. One recursive test walks
-the actual graph model variants and nested records against explicit serialized
-examples, including populated optional, list and map fields. It checks missing
-default restoration, upgrade idempotence, explicit values and stored edge layers;
-new fields or reachable types without an example fail the invariant.
+A candidate changes the graph projection through model-derived defaults and
+explicit migrations. It verifies the retained baseline graph against its recorded
+digest, then removes the retired
+`coverage` report and fills absent deterministic defaults by walking the real
+graph model, its discriminated variants, and nested records. Constant defaults,
+built-in empty container factories, and model factories composed of these defaults are
+safe; arbitrary factories are never executed to guess at determinism. Existing
+values, unknown keys and stored edge layers remain untouched. All remaining graph
+content and startup recovery reads must still match; the candidate proof records
+the current graph digest used by live verification. `upgrade_graph_projection`
+also upgrades the project display cache on load, because live verification reads
+that cache and it must equal a fresh replay. A cache whose revision trails the
+proof, as a failed refresh leaves it, is rebuilt from canonical history instead.
+The retained baseline graph shares the display snapshot's size bound. One
+recursive test covers every reachable model with explicit serialized examples,
+including populated optional, list and map fields, and independently omits every
+defaulted field to check restoration. It checks idempotence and preservation of
+explicit values and stored edge layers. New fields or types without an example
+fail the invariant; unproven default factories (including UUIDs and timestamps)
+fail with the field names and require a human-authored explicit migration.
 
 The old-data upgrade CI gate checks every published, non-draft, non-prerelease
 `v*` GitHub release, with separate current-cache and stale-cache cases for each
