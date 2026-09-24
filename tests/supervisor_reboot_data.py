@@ -220,9 +220,74 @@ def _prepare_data(
                             "type": "experiment",
                             "title": "Reboot recovery",
                             "objective": "Retain canonical history through deployment recovery.",
-                        }
+                        },
+                        {
+                            "id": "hyp/recovery-keeps-history",
+                            "type": "hypothesis",
+                            "title": "Recovery keeps history",
+                            "statement": "Deployment recovery retains every canonical patch.",
+                        },
+                        {
+                            "id": "rq/recovery",
+                            "type": "research_question",
+                            "title": "Does recovery keep history?",
+                            "question": "Does deployment recovery keep canonical history?",
+                        },
+                        {
+                            "id": "ev/recovery",
+                            "type": "evidence",
+                            "title": "Patches survived recovery",
+                            "observation": "Every canonical patch was present after recovery.",
+                            "origin": "internal_run",
+                        },
+                        {
+                            "id": "dec/recovery",
+                            "type": "decision",
+                            "title": "Keep the recovery path",
+                            "question": "Should the recovery path stay as is?",
+                        },
+                        {
+                            "id": "blk/recovery",
+                            "type": "blocker",
+                            "title": "Recovery host pending",
+                            "description": "The recovery host is not yet available.",
+                        },
                     ],
-                }
+                },
+                {
+                    # One node of every type and one edge per endpoint pairing, so a
+                    # field added with a default shows up in a cross-version update.
+                    "op": "create_edges",
+                    "edges": [
+                        {
+                            "source": "exp/recovery",
+                            "target": "hyp/recovery-keeps-history",
+                            "relation": "tests",
+                        },
+                        {
+                            "source": "rq/recovery",
+                            "target": "hyp/recovery-keeps-history",
+                            "relation": "has_hypothesis",
+                        },
+                        {"source": "exp/recovery", "target": "ev/recovery", "relation": "produces"},
+                        {
+                            "source": "ev/recovery",
+                            "target": "hyp/recovery-keeps-history",
+                            "relation": "supports",
+                            "assessment": {"relevance": "direct", "weight": "moderate"},
+                        },
+                        {
+                            "source": "rq/recovery",
+                            "target": "dec/recovery",
+                            "relation": "has_decision",
+                        },
+                        {
+                            "source": "exp/recovery",
+                            "target": "blk/recovery",
+                            "relation": "blocked_by",
+                        },
+                    ],
+                },
             ],
         )
     )

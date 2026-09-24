@@ -2,25 +2,33 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import os
+import pwd
 import re
 import shutil
 import sqlite3
 from contextlib import chdir
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 import rcp.storage.base as storage_base_module
+import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import (
+    build_exact_base_checkout,
     build_exact_base_fixture,
+    build_release_checkout,
     exact_base_gate_enabled,
     immutable_fixture_directories,
+    latest_release_tags,
+    prepare_release_update_with,
     verify_fixture_integrity,
     verify_fixture_registry,
 )
@@ -139,11 +147,50 @@ def test_immutable_server_boundaries_converge_on_the_baseline_schema(
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
 def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
-    fixture, base_commit = build_exact_base_fixture(tmp_path / "base-build")
+    checkout, base_commit = build_exact_base_checkout(tmp_path / "base-build")
+    fixture = build_exact_base_fixture(checkout, base_commit, tmp_path)
     metadata = verify_fixture_integrity(fixture)
 
     assert metadata["created_with_commit"] == base_commit
     _exercise_candidate_upgrade(fixture)
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+@pytest.mark.parametrize("release_index", [0, 1], ids=["latest-release", "previous-release"])
+def test_release_update_from_a_recent_release_validates(
+    release_index: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release update prepared by a recent promoted release must validate here.
+
+    This is the server's graph comparison across versions, from the releases a team
+    server may still run: a candidate that changes a replayed graph, or drops the
+    handling of an older one, without listing it in the update check is refused.
+    """
+    from rcp.server_ops.deployment import ValidateRequest, validate
+
+    tags = latest_release_tags()
+    if len(tags) <= release_index:
+        pytest.fail("the upgrade gate needs the two latest release tags fetched")
+    checkout = build_release_checkout(tags[release_index], tmp_path / "release")
+    root = tmp_path / "update"
+    prepared = prepare_release_update_with(checkout, root)
+    monkeypatch.setattr(
+        storage_models,
+        "DEFAULT_SERVER_LAYOUT",
+        SimpleNamespace(
+            service_account=pwd.getpwuid(os.geteuid()).pw_name,
+            projects_root=root / "projects",
+        ),
+    )
+    checked = validate(
+        ValidateRequest(
+            version=1,
+            proof_path=str(prepared["proof_path"]),
+            proof_sha256=str(prepared["proof_sha256"]),
+            output_dir=str(tmp_path / "validated"),
+        )
+    )
+    assert checked["status"] == "verified"
 
 
 def _exercise_candidate_upgrade(fixture: Path) -> None:

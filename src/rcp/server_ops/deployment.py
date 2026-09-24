@@ -391,7 +391,7 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         proof.project_receipt_sha256,
         Path(proof.capture_root),
     )
-    expected = _retire_coverage_projection(Path(request.proof_path), proof, observed)
+    expected = _upgrade_previous_projection(Path(request.proof_path), proof, observed)
     if observed != expected:
         raise MaintenanceRefused(
             "Candidate changed the captured graph or startup recovery read model."
@@ -410,14 +410,16 @@ def validate(request: ValidateRequest) -> dict[str, object]:
     }
 
 
-def _retire_coverage_projection(
+def _upgrade_previous_projection(
     proof_path: Path, proof: ApplicationProof, observed: CandidateRehearsalResult
 ) -> CandidateRehearsalResult:
-    """Decode the shipped graph digest before the coverage report was retired.
+    """Decode the shipped graph digest across known projection upgrades.
 
     Version-1 preparation retains its replayed graphs beside the proof. Bind each
-    old graph to that proof's digest before removing only the retired field; all
-    remaining graph content and the rest of the read model still compare exactly.
+    old graph to that proof's digest before applying only the listed upgrades: the
+    retired coverage report is removed, and fields added with empty defaults are
+    filled where absent. All remaining graph content and the rest of the read
+    model still compare exactly.
     """
     candidates = {item.project_id: item for item in observed.projects}
     captures = {item.project_id: item for item in proof.project_receipt.projects}
@@ -443,13 +445,30 @@ def _retire_coverage_projection(
             graph = json.loads(_read(graph_path))
             if _canonical_sha256(graph) != expected.projection_sha256:
                 raise MaintenanceRefused("The previous graph projection digest changed.")
-            if isinstance(graph, dict) and "coverage" in graph:
-                graph.pop("coverage")
+            if isinstance(graph, dict):
+                _apply_projection_upgrades(graph)
                 expected = expected.model_copy(
                     update={"projection_sha256": _canonical_sha256(graph)}
                 )
         projects.append(expected)
     return proof.read_model.model_copy(update={"projects": tuple(projects)})
+
+
+def _apply_projection_upgrades(graph: dict[str, object]) -> None:
+    graph.pop("coverage", None)
+    # Edge `expectation` and Experiment `proxies`/`limitations` arrived with
+    # empty defaults; an older replay omits them.
+    edges = graph.get("edges")
+    if isinstance(edges, dict):
+        for edge in edges.values():
+            if isinstance(edge, dict):
+                edge.setdefault("expectation", None)
+    nodes = graph.get("nodes")
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            if isinstance(node, dict) and node.get("type") == "experiment":
+                node.setdefault("proxies", [])
+                node.setdefault("limitations", [])
 
 
 def _read_model_digest(model: CandidateRehearsalResult) -> str:

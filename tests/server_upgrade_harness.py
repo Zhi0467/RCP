@@ -133,21 +133,43 @@ def exact_candidate_base() -> tuple[str, str]:
     return base_ref, _capture(["git", "rev-parse", base_ref], cwd=REPOSITORY_ROOT).strip()
 
 
-def build_exact_base_fixture(work_root: Path) -> tuple[Path, str]:
+def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     base_ref, base_commit = exact_candidate_base()
+    return _build_checkout(base_ref, work_root, web=True), base_commit
+
+
+def latest_release_tags(count: int = 2) -> list[str]:
+    """The newest promoted releases, the versions a team server may still run."""
+    output = _capture(["git", "tag", "--list", "v*", "--sort=-v:refname"], cwd=REPOSITORY_ROOT)
+    return output.split()[:count]
+
+
+def build_release_checkout(tag: str, work_root: Path) -> Path:
+    # A release update never serves the web bundle, so a placeholder satisfies the wheel.
+    return _build_checkout(tag, work_root, web=False)
+
+
+def _build_checkout(ref: str, work_root: Path, *, web: bool) -> Path:
     work_root.mkdir(parents=True)
     archive = work_root / "base.tar"
     checkout = work_root / "base"
     checkout.mkdir()
     _run(
-        ["git", "archive", "--format=tar", f"--output={archive}", base_ref],
+        ["git", "archive", "--format=tar", f"--output={archive}", ref],
         cwd=REPOSITORY_ROOT,
     )
     _extract_git_archive(archive, checkout)
-    _run(["npm", "ci"], cwd=checkout / "web")
-    _run(["npm", "run", "build"], cwd=checkout / "web")
+    if web:
+        _run(["npm", "ci"], cwd=checkout / "web")
+        _run(["npm", "run", "build"], cwd=checkout / "web")
+    else:
+        (checkout / "web" / "dist").mkdir(parents=True)
+        (checkout / "web" / "dist" / "index.html").write_text("<!doctype html>\n")
     _run(["uv", "sync", "--project", str(checkout), "--frozen"], cwd=REPOSITORY_ROOT)
+    return checkout
 
+
+def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) -> Path:
     fixture = work_root / "fixture"
     builder = REPOSITORY_ROOT / "tests" / "server_upgrade_fixture_builder.py"
     _run(
@@ -167,7 +189,28 @@ def build_exact_base_fixture(work_root: Path) -> tuple[Path, str]:
         ],
         cwd=work_root,
     )
-    return fixture, base_commit
+    return fixture
+
+
+def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]:
+    """Capture representative data and prepare its update with the checkout's code."""
+    script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
+    output = _capture(
+        # `-I` keeps an inherited PYTHONPATH from putting candidate code on the base side.
+        [
+            "uv",
+            "run",
+            "--project",
+            str(checkout),
+            "--frozen",
+            "python",
+            "-I",
+            str(script),
+            str(root),
+        ],
+        cwd=root.parent,
+    )
+    return json.loads(output.strip().splitlines()[-1])
 
 
 def exact_base_gate_enabled() -> bool:
@@ -200,11 +243,15 @@ def _run(argv: list[str], *, cwd: Path) -> None:
 __all__ = [
     "EXACT_BASE_ENV",
     "EXPECTED_BOUNDARIES",
+    "build_exact_base_checkout",
     "build_exact_base_fixture",
+    "build_release_checkout",
     "exact_base_gate_enabled",
     "exact_candidate_base",
     "fixture_bundle_digest",
     "immutable_fixture_directories",
+    "latest_release_tags",
+    "prepare_release_update_with",
     "verify_fixture_integrity",
     "verify_fixture_registry",
 ]
