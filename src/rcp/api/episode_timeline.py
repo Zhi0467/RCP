@@ -221,7 +221,16 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             links=EpisodeTimelineLinks(episode_id=child_id, control_node_id=route.control_node_id),
         )
         mark(actor_id, "started", route.created_at, child_id, actors[actor_id].started_by_span_id)
-        mark(actor_id, "stop_requested", child.stop_requested_at, child_id)
+        issuer = child.stop_initiated_by or ""
+        mark(
+            actor_id,
+            "stop_requested",
+            child.stop_requested_at,
+            child_id,
+            _span(issuer.removeprefix("orchestrator:"))
+            if issuer.startswith("orchestrator:")
+            else None,
+        )
         mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
     for owner in owners.values():
         # Report turns are hidden allocations; the roster shows them as report spans.
@@ -396,6 +405,8 @@ def _communications(
     ]
     mail_receipts = {key: receipt for receipt in receipts for key in receipt.message_ids}
     notice_receipts = {key: receipt for receipt in receipts for key in receipt.notice_ids}
+    chain_ids = {member.episode_id for member in chain}
+    orchestrator = f"actor:orchestrator:{chain[0].episode_id}"
     watchers_by_episode = {
         member.episode_id: store.episode_watchers(member.episode_id) for member in chain
     }
@@ -503,7 +514,9 @@ def _communications(
         for notice in store.auto_research_lifecycle_notices(member.episode_id) if auto else []:
             receipt = notice_receipts.get(notice.notice_id)
             source = task_actors.get(notice.source_id)
-            if notice.source_kind in {"experiment", "experiment_episode", "episode"}:
+            if notice.source_kind == "episode" and notice.source_id in chain_ids:
+                source = orchestrator  # A continuation notice names a chain member.
+            elif notice.source_kind in {"experiment", "experiment_episode", "episode"}:
                 candidate = f"actor:experiment:{notice.source_id}"
                 source = candidate if candidate in actors else None
             elif notice.source_kind in {"work", "worker"}:

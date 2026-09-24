@@ -709,3 +709,27 @@ def test_graph_watcher_names_node_without_inventing_episode(timeline, state, eve
     assert signal.armed_span_id == f"span:{prefix}-root"
     assert signal.armed_at == now
     assert signal.landed_span_id == (f"span:{prefix}-wake" if state == "completed" else None)
+
+
+def test_recorded_continuation_notice_and_child_stop_issuer_stay_linked(timeline):
+    store, episode, _ = timeline
+    prefix = episode.episode_id
+    child_id = store.auto_research_child_experiments(prefix)[0].child_episode_id
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO auto_research_lifecycle_notices (notice_id, episode_id, source_kind, source_id, source_event, state, payload_json, created_at) VALUES (?, ?, 'episode', ?, 'reauthorized', 'pending', '{}', ?)",
+            (f"{prefix}-continued", prefix, prefix, episode.updated_at),
+        )
+        connection.execute(
+            "UPDATE episodes SET stop_requested_at=?, stop_initiated_by=? WHERE episode_id=?",
+            (episode.updated_at, f"orchestrator:{prefix}-root", child_id),
+        )
+    response = build_episode_timeline(store, episode)
+    notice = next(s for s in response.signals if s.item_id.endswith(f"{prefix}-continued"))
+    assert notice.source_actor_id == f"actor:orchestrator:{prefix}"
+    stop = next(
+        m
+        for m in response.marks
+        if m.actor_id == f"actor:experiment:{child_id}" and m.kind == "stop_requested"
+    )
+    assert stop.by_span_id == f"span:{prefix}-root"

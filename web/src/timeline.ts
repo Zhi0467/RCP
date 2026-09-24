@@ -42,7 +42,7 @@ export function timelineActorLabel(
 export function timelineOutcome(actor: EpisodeTimelineActor): string {
   return actor.outcome === "exhausted"
     ? "out of turns"
-    : (actor.outcome ?? (actor.ended_at ? "unknown" : "running"));
+    : (actor.outcome ?? (actor.started_at && !actor.ended_at ? "running" : "unknown"));
 }
 
 export const messageDisposition = {
