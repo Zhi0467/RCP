@@ -204,7 +204,7 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
 
 
 @pytest.mark.parametrize("failure", [None, "changed_graph", "changed_startup", "tampered_graph"])
-def test_upgrade_retires_only_authenticated_legacy_coverage(
+def test_upgrade_accepts_only_authenticated_known_projection_changes(
     captured, tmp_path: Path, failure: str | None
 ) -> None:
     request, _state, _metadata = captured
@@ -231,6 +231,14 @@ def test_upgrade_retires_only_authenticated_legacy_coverage(
         "earliest_timestamp": None,
         "note": "Historical reading report.",
     }
+    # It also omitted fields later added with empty defaults.
+    for edge in graph["edges"].values():
+        edge.pop("expectation")
+    experiments = [node for node in graph["nodes"].values() if node["type"] == "experiment"]
+    for node in experiments:
+        node.pop("proxies")
+        node.pop("limitations")
+    assert experiments
     if failure == "changed_graph":
         graph["nodes"] = {}
     graph_path.write_text(json.dumps(graph))
@@ -269,6 +277,8 @@ def test_upgrade_retires_only_authenticated_legacy_coverage(
         assert checked["status"] == "verified"
         current = ApplicationProof.model_validate_json(Path(checked["proof_path"]).read_bytes())
         graph.pop("coverage")
+        for node in experiments:
+            node.update(proxies=[], limitations=[])
         assert current.read_model.projects[0].projection_sha256 == _canonical_sha256(graph)
 
 
