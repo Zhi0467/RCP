@@ -426,6 +426,9 @@ def test_handoff_joins_planned_child_not_neighboring_task(timeline, kind):
     from rcp.limits import EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
 
     assert len(handoff.preview) == EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
+    with store.connection() as connection:
+        connection.execute("UPDATE auto_research_child_admissions SET state='cancelled'")
+    assert build_episode_timeline(store, episode).handoffs == []  # Never created its child.
 
 
 def test_bound_counts_spans_and_items_newest_first(timeline, monkeypatch):
@@ -529,6 +532,7 @@ def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
     report = _task(store, "report", episode_id).model_copy(
         update={
             "kind": "episode_report",
+            "visible": False,
             "request": {"provider": "codex"},
             "parent_operation_id": retry.operation_id,
         }
@@ -574,22 +578,23 @@ def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "answer, expected",
+    "messages, expected",
     [
-        ("First finding. More detail.", "First finding."),
-        (None, None),
+        (["First finding. More detail."], "First finding."),
+        (["A trace before the answer.", "Final answer. Detail."], "Final answer."),
+        ([], None),
         (
-            "A" * (EPISODE_TIMELINE_HEADLINE_MAX_LENGTH + 1),
+            ["A" * (EPISODE_TIMELINE_HEADLINE_MAX_LENGTH + 1)],
             "A" * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH,
         ),
     ],
 )
-def test_headline_uses_stored_answer_only(timeline, answer, expected):
+def test_headline_uses_stored_answer_only(timeline, messages, expected):
     store, episode, _ = timeline
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET result_json=?, status_message='Not an answer' WHERE operation_id=?",
-            (json.dumps({"messages": [answer] if answer else []}), f"{episode.episode_id}-root"),
+            (json.dumps({"messages": messages}), f"{episode.episode_id}-root"),
         )
     span = next(
         span

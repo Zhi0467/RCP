@@ -45,7 +45,7 @@ under unrelated rows, and every turn reads "Agent task completed."
   assignment's first heading, subtitled by its node), and each Experiment
   episode. Experiment episodes on the same node share one row, in order. In
   `experiment_loop` mode the rows are the Experiment agent itself and one row
-  per shell watcher.
+  per shell-watcher group (a watcher without a group gets its own row).
 - **Spans are what an actor did.** Orchestrator turns, worker attempts,
   Experiment turns, and report turns, each with start, finish, status,
   invocation number when one was spent, error text, and a nullable headline:
@@ -131,7 +131,7 @@ marks:    [{item_id, actor_id, kind: started|stop_requested|stopped, at,
 - **`experiment_loop`:** actors are the human, the Experiment `agent` (its turns,
   retries as later attempts on the same row, reports as `report` spans), and
   one `watcher` actor per shell watcher, spanning armed to completed or
-  stopped. A watcher's `started_by_span_id` is its origin turn, and its
+  stopped; watchers in one group share a `row_key`. A watcher's `started_by_span_id` is its origin turn, and its
   notification is a signal that woke a turn. Continuation boundaries come from
   `members`.
 - **Text:** `GET /api/projects/{project_id}/episodes/{episode_id}/timeline/text/{text_ref}`

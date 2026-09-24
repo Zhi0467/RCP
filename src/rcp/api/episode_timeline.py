@@ -40,8 +40,10 @@ def _headline(task: AgentTaskRecord) -> str | None:
     messages = (task.result or {}).get("messages")
     if not isinstance(messages, list):
         return None
+    # The collector appends the final answer after any trace text, so it is the last entry.
     answer = next(
-        (text.strip() for text in messages if isinstance(text, str) and text.strip()), None
+        (text.strip() for text in reversed(messages) if isinstance(text, str) and text.strip()),
+        None,
     )
     if answer is None:
         return None
@@ -52,6 +54,9 @@ def _handoffs(store: AppStore, chain: list[EpisodeRecord]) -> list[EpisodeTimeli
     result = []
     for member in chain:
         for admission in store.auto_research_child_admissions(member.episode_id):
+            # A cancelled admission never created its child; its command is no hand-off.
+            if admission.state == "cancelled":
+                continue
             command = store.auto_research_child_admission_command(admission.admission_id)
             if command is None:
                 continue
@@ -92,20 +97,14 @@ def episode_timeline_text(
                 sha256=snapshot.sha256,
             )
     elif prefix == "message":
-        # Read the immutable database body, without the model's whitespace normalization.
-        with store.connection() as connection:
-            row = connection.execute(
-                "SELECT episode_id, body FROM auto_research_messages WHERE message_id = ?",
-                (record_id,),
-            ).fetchone()
-        if row is not None and row["episode_id"] in {m.episode_id for m in chain}:
-            body = row["body"]
+        message = store.auto_research_message(record_id)
+        if message is not None and message.episode_id in {m.episode_id for m in chain}:
             return EpisodeTimelineText(
                 text_ref=text_ref,
                 kind="message",
-                owner_episode_id=row["episode_id"],
-                body=body,
-                sha256=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                owner_episode_id=message.episode_id,
+                body=message.body,
+                sha256=hashlib.sha256(message.body.encode("utf-8")).hexdigest(),
             )
     return None
 
@@ -221,7 +220,8 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             mark(actor_id, "stop_requested", child.stop_requested_at, child_id)
             mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
     for owner in owners.values():
-        for task in store.episode_tasks(owner.episode_id):
+        # Report turns are hidden allocations; the roster shows them as report spans.
+        for task in store.episode_tasks(owner.episode_id, include_hidden=True):
             if task.project_id != episode.project_id or task.kind == "branch_merge":
                 continue
             if task.visible or task.kind == "episode_report":
@@ -254,6 +254,12 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
                 )
         else:
             task_actors[task.operation_id] = primary_id
+    waiting_workers = {
+        watcher.worker_id
+        for member in chain
+        for watcher in store.episode_watchers(member.episode_id)
+        if watcher.worker_id and watcher.status == "active"
+    }
     for work in works.values():
         actor_id = f"actor:worker:{work.worker_id}"
         heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", work.instruction, re.MULTILINE)
@@ -266,7 +272,10 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             work.episode_id,
             subtitle=work.control_node_id,
             started_at=work.created_at,
-            ended_at=current.finished_at if current else None,
+            # A worker waiting on its own watcher is still alive after its attempt finishes.
+            ended_at=current.finished_at
+            if current and work.worker_id not in waiting_workers
+            else None,
             outcome=current.status if current else None,
             started_by_span_id=handoff.from_span_id
             if handoff
@@ -286,14 +295,8 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             work.worker_id,
             actors[actor_id].started_by_span_id,
         )
-        # Worker stop issuer is not recorded.
+        # Only the request time is recorded: no issuer, and no settled stop time.
         mark(actor_id, "stop_requested", work.stop_requested_at, work.worker_id)
-        mark(
-            actor_id,
-            "stopped",
-            current.finished_at if current and work.stop_requested_at else None,
-            work.worker_id,
-        )
     causes = store.agent_task_continuation_causes(list(tasks))
     for task in tasks.values():
         actor_id = task_actors[task.operation_id]
@@ -438,7 +441,14 @@ def _communications(
                 continue
             actor_id = None if graph else f"actor:watcher:{watcher.watcher_id}"
             node = watcher.condition.node_id if graph else watcher.node_id
-            row_key = f"node:{node}" if graph else actor_id
+            # A shell-watcher group shares one row, as it does in the Watchers fold.
+            row_key = (
+                f"node:{node}"
+                if graph
+                else f"watchers:{watcher.group_label}"
+                if watcher.group_label
+                else actor_id
+            )
             if actor_id:
                 actors[actor_id] = EpisodeTimelineActor(
                     actor_id=actor_id,
