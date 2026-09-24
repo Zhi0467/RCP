@@ -62,6 +62,7 @@ from rcp.runs.chat import (
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
     _stage_chat_patch_inputs,
+    _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     finalize_artifact_revision,
@@ -287,7 +288,7 @@ def _prepare_work_chat_prompt(
             execution_instructions_path, write_scope.workspace_root
         ),
     )
-    return prompt, retained_master_path
+    return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
 def _work_execution_instructions(turn: WorkTurn) -> str:
@@ -1010,7 +1011,7 @@ def _compose_fresh_prompt(
         },
         "workspace": {"path": str(turn.workspace)},
     }
-    prompt, retained_master_path = _prepare_work_chat_prompt(
+    prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
         execution_instructions=_work_execution_instructions(turn),
@@ -1025,9 +1026,9 @@ def _compose_fresh_prompt(
         write_scope=turn.write_scope,
     )
     return _ComposedWorkPrompt(
-        contract_path=retained_master_path,
+        contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=retained_master_path,
+        base_contract_path=contract_path,
     )
 
 

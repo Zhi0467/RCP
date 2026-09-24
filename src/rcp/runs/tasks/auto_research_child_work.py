@@ -797,7 +797,7 @@ def _compose_child_fresh_prompt(
             ),
         },
     }
-    prompt, retained_master_path = _prepare_work_chat_prompt(
+    prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
         execution_instructions=(
@@ -815,7 +815,7 @@ def _compose_child_fresh_prompt(
         result_view=staged.prepared_result_view,
         write_scope=turn.write_scope,
     )
-    return _ComposedWorkPrompt(retained_master_path, prompt, retained_master_path)
+    return _ComposedWorkPrompt(contract_path, prompt, contract_path)
 
 
 def _compose_child_retry_prompt(

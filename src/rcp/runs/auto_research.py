@@ -38,9 +38,9 @@ from rcp.agents.command_protocol import (
 )
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
-    AGENT_TASK_RECEIPT_MAX_BYTES,
     AUTO_RESEARCH_APPLY_MAX_PER_TURN,
     AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+    EPISODE_RECEIPT_MAX_BYTES,
     PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
 )
 from rcp.providers import ProviderId, ProviderSkillReference
@@ -589,7 +589,7 @@ def auto_research_wrapup_spec(
                 compact_diagnostic=False,
             )
         )
-        return len(stored.encode("utf-8")) <= AGENT_TASK_RECEIPT_MAX_BYTES
+        return len(stored.encode("utf-8")) <= EPISODE_RECEIPT_MAX_BYTES
 
     lifecycle = receipt["lifecycle"]
     assert isinstance(lifecycle, dict)

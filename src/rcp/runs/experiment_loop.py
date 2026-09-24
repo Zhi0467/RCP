@@ -32,7 +32,7 @@ from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.runs.shared import _stage_json_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
@@ -553,11 +553,11 @@ def experiment_loop_ending_signal(
     for observation in reversed(candidate_attempts):
         selected_attempts.insert(0, observation)
         receipt["omitted_attempt_count"] = attempt_count - len(selected_attempts)
-        if _receipt_payload_size(signal) > AGENT_TASK_RECEIPT_MAX_BYTES:
+        if _receipt_payload_size(signal) > EPISODE_RECEIPT_MAX_BYTES:
             selected_attempts.pop(0)
             receipt["omitted_attempt_count"] = attempt_count - len(selected_attempts)
             break
-    if _receipt_payload_size(signal) > AGENT_TASK_RECEIPT_MAX_BYTES:
+    if _receipt_payload_size(signal) > EPISODE_RECEIPT_MAX_BYTES:
         raise ValueError("The compact Experiment ending receipt exceeds its storage boundary.")
     return signal
 

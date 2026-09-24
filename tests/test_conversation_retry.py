@@ -40,12 +40,14 @@ class _FailThenSucceedLauncher:
         self.native_session_id = str(uuid.uuid4())
         self.contract_paths: list[Path] = []
         self.contracts: list[str] = []
+        self.prompts: list[str] = []
         self.input_snapshots: list[dict[str, str]] = []
         self.sessions: list[str | None] = []
         self.workspaces: list[Path] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         attempt = len(self.contracts)
+        self.prompts.append(prompt)
         contract_path = Path(prompt.splitlines()[1])
         inputs = contract_path.parent
         workspace = Path(kwargs["cwd"])
@@ -97,6 +99,16 @@ def _retry_task(
     return failed, retried
 
 
+def _first_prompt_contract(launcher: _FailThenSucceedLauncher) -> Path:
+    """The first attempt's original contract: its staged inline prompt, or the
+    contract file its pointer prompt names."""
+    inputs = launcher.contract_paths[1].parent
+    staged = [
+        name for name, text in launcher.input_snapshots[1].items() if text == launcher.prompts[0]
+    ]
+    return inputs / staged[0] if staged else launcher.contract_paths[0]
+
+
 def _assert_retry_contract(
     launcher: _FailThenSucceedLauncher,
     *,
@@ -113,7 +125,7 @@ def _assert_retry_contract(
     expected_diagnostics = [f"Attempt 1 (failed) failed with: {expected_failure}"]
 
     assert str(diagnostics_path) in retry_contract
-    assert str(launcher.contract_paths[0]) in retry_contract
+    assert str(_first_prompt_contract(launcher)) in retry_contract
     current_contract_path = stage_inputs / f"{prefix}-base.md"
     assert str(current_contract_path) in retry_contract
     assert current_contract_path.is_file()
@@ -589,7 +601,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     assert updated_guidance in current_contract
     assert updated_guidance not in launcher.contracts[0]
     assert current_name in launcher.contracts[1]
-    assert str(launcher.contract_paths[0]) in launcher.contracts[1]
+    assert str(_first_prompt_contract(launcher)) in launcher.contracts[1]
     assert (
         launcher.input_snapshots[1][f"task-{completed['operation_id']}-human-request.txt"]
         == objective

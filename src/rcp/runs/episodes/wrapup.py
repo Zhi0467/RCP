@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.skill_registry import official_registry
 from rcp.storage import (
@@ -78,8 +78,7 @@ def episode_wrapup_receipt(
         # The episode retains the full immutable diagnostic. Only its receipt
         # copy is reduced, after the mode adapter has compacted the ending facts.
         while (
-            len(compact_episode_receipt(envelope)[0].encode("utf-8"))
-            > (AGENT_TASK_RECEIPT_MAX_BYTES)
+            len(compact_episode_receipt(envelope)[0].encode("utf-8")) > (EPISODE_RECEIPT_MAX_BYTES)
             and len(diagnostic) > 1
         ):
             diagnostic = diagnostic[: len(diagnostic) // 2 - 1] + "…"
