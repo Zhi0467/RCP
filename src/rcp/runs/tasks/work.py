@@ -287,7 +287,17 @@ def _prepare_work_chat_prompt(
             execution_instructions_path, write_scope.workspace_root
         ),
     )
-    return prompt, retained_master_path
+    # The inline prompt is the turn's original contract. Record it durably so a
+    # later Resume or Retry finds it without the bounded launch receipt.
+    contract_path, _ = _stage_task_contract(
+        local_stage,
+        remote_stage,
+        f"task-{_task_token(execution)}-prompt.md",
+        prompt,
+        execution=execution,
+        role="work",
+    )
+    return prompt, contract_path
 
 
 def _work_execution_instructions(turn: WorkTurn) -> str:
@@ -1010,7 +1020,7 @@ def _compose_fresh_prompt(
         },
         "workspace": {"path": str(turn.workspace)},
     }
-    prompt, retained_master_path = _prepare_work_chat_prompt(
+    prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
         execution_instructions=_work_execution_instructions(turn),
@@ -1025,9 +1035,9 @@ def _compose_fresh_prompt(
         write_scope=turn.write_scope,
     )
     return _ComposedWorkPrompt(
-        contract_path=retained_master_path,
+        contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=retained_master_path,
+        base_contract_path=contract_path,
     )
 
 

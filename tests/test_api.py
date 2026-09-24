@@ -5473,7 +5473,8 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         for item in store.agent_task_receipts(second_operation_id)
         if item.category == "agent_prompt"
     )
-    assert launch_receipt.payload["contract_path"] == str(master_path)
+    contract_path = Path(launch_receipt.payload["contract_path"])
+    assert contract_path.read_text(encoding="utf-8") == second_prompt
 
     third_message = "Use deeper reasoning for this turn."
     third_response = client.post(

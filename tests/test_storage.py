@@ -15,7 +15,7 @@ import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
-from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -3446,7 +3446,7 @@ def test_oversized_agent_task_receipt_omits_values_but_keeps_safe_metadata(tmp_p
             status_message="failed",
         )
     )
-    raw_evidence = "sensitive transcript fragment" * 1000
+    raw_evidence = "x" * (AGENT_TASK_RECEIPT_MAX_BYTES + 1)
 
     store.record_agent_task_receipt(
         "operation",

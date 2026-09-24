@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -2063,7 +2063,7 @@ class ExperimentStoreMixin:
                 )
             except (TypeError, ValueError) as exc:
                 raise ValueError("The Experiment ending receipt is not valid JSON.") from exc
-            if len(ending_payload_json.encode("utf-8")) > AGENT_TASK_RECEIPT_MAX_BYTES:
+            if len(ending_payload_json.encode("utf-8")) > EPISODE_RECEIPT_MAX_BYTES:
                 raise ValueError("The compact Experiment ending receipt exceeds its storage limit.")
         now = self.now()
         existing = self._experiment_episode_row(connection, episode_id)

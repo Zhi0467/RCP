@@ -927,3 +927,65 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
     assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]
+
+
+def test_a_work_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
+    manifest, tmp_path
+) -> None:
+    """The launch receipt drops an oversized prompt whole; the durable contract
+    must still let a later continuation find the turn's original prompt."""
+
+    from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+    from rcp.runs.shared import _parent_task_contract_path
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    launcher = _RecordingLauncher("oversized-session")
+
+    async def stream(_project_id, kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": "7d1e2f30-4a5b-4c6d-8e7f-90a1b2c3d4e5",
+            "message": "Long assignment. " * (AGENT_TASK_RECEIPT_MAX_BYTES // 16),
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert response.status_code == 202, response.text
+    operation_id = response.json()["operation_id"]
+    wait_for_task_response(client, project_id, operation_id)
+
+    receipt = next(
+        r for r in store.agent_task_receipts(operation_id) if r.category == "agent_prompt"
+    )
+    assert receipt.payload["reason"] == "payload_exceeded_limit"
+    first = store.agent_task(operation_id)
+    assert first is not None and first.stage_root is not None
+    now = store.now()
+    store.create_agent_task(
+        first.model_copy(
+            update={
+                "operation_id": "wake",
+                "status": "running",
+                "parent_operation_id": operation_id,
+                "attempt": 2,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    )
+    wake = AgentTaskExecution(operation_id="wake", store=store, control=AgentProcessControl())
+
+    path = _parent_task_contract_path(wake, Path(first.stage_root), None)
+    assert Path(path).read_text(encoding="utf-8") == launcher.prompts[0]
