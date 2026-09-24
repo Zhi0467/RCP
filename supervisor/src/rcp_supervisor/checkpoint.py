@@ -598,11 +598,24 @@ def create_offline_snapshot(destination: Path, live: Path, *, boundary_sha256: s
 
 
 def check_snapshot_space(directory: Path, roots: tuple[Path, ...]) -> None:
-    """Refuse before service stop if a complete checkpoint cannot fit here."""
+    """Refuse before service stop unless the checkpoint and a rollback both fit.
+
+    The checkpoint holds one full copy of every root; a rollback then builds another
+    full sibling copy beside each live root before swapping it in. Both land on
+    whichever filesystems hold them, often the same one.
+    """
     _directory(directory)
-    filesystem = os.statvfs(directory)
-    block = filesystem.f_frsize or 4096
-    required = MAX_CHECKPOINT_MANIFEST_BYTES + block * (len(roots) + 2)
+    need: dict[int, list[int]] = {}  # st_dev -> [bytes, inodes]
+    paths: dict[int, Path] = {}
+
+    def reserve(path: Path, size: int, inodes: int) -> None:
+        device = os.stat(path).st_dev
+        paths.setdefault(device, path)
+        entry = need.setdefault(device, [0, 0])
+        entry[0] += size
+        entry[1] += inodes
+
+    reserve(directory, MAX_CHECKPOINT_MANIFEST_BYTES, 3)  # destination, payload, manifest
     total_entries = total_bytes = 0
     for root in roots:
         entries = _inventory(
@@ -613,21 +626,25 @@ def check_snapshot_space(directory: Path, roots: tuple[Path, ...]) -> None:
         )
         total_entries += len(entries)
         total_bytes += sum(entry.get("size", 0) for entry in entries)
-        required += sum(
+        block = os.statvfs(directory).f_frsize or 4096
+        size = block + sum(
             max(1, (entry.get("size", 0) + block - 1) // block) * block for entry in entries
         )
-    required_inodes = total_entries + len(roots) + 3  # destination, payload, manifest
-    if filesystem.f_favail < required_inodes:
-        _fail(
-            f"checkpoint_capacity: checkpoint filesystem needs {required_inodes} inodes; "
-            f"only {filesystem.f_favail} inodes are available."
-        )
-    available = shutil.disk_usage(directory).free
-    if available < required:
-        _fail(
-            f"checkpoint_capacity: checkpoint filesystem needs {required} bytes; "
-            f"only {available} bytes are available."
-        )
+        reserve(directory, size, len(entries) + 1)
+        reserve(root.parent, size, len(entries) + 1)
+    for device, (required, required_inodes) in need.items():
+        filesystem = os.statvfs(paths[device])
+        if filesystem.f_favail < required_inodes:
+            _fail(
+                f"checkpoint_capacity: {paths[device]} needs {required_inodes} inodes for the "
+                f"checkpoint and a rollback; only {filesystem.f_favail} are available."
+            )
+        available = shutil.disk_usage(paths[device]).free
+        if available < required:
+            _fail(
+                f"checkpoint_capacity: {paths[device]} needs {required} bytes for the "
+                f"checkpoint and a rollback; only {available} bytes are available."
+            )
 
 
 def create_stopped_snapshot(

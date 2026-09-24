@@ -27,6 +27,7 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.limits import (
     APP_COMMAND_TIMEOUT_SECONDS,
+    CHECKPOINT_COPY_TIMEOUT_SECONDS,
     CONTROL_MAX_RESPONSE_BYTES,
     INSTALL_TIMEOUT_SECONDS,
     MAINTENANCE_TIMEOUT_SECONDS,
@@ -391,6 +392,8 @@ class SystemRuntime:
             timeout=(
                 INSTALL_TIMEOUT_SECONDS
                 if action in {"install", "remove"}
+                else CHECKPOINT_COPY_TIMEOUT_SECONDS
+                if action in {"check-space", "snapshot-roots", "restore", "verify"}
                 else APP_COMMAND_TIMEOUT_SECONDS
             ),
         )

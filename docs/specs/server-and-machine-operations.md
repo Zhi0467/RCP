@@ -387,7 +387,10 @@ quiescent boundary. The candidate's thin `inventory` command projects the roots
 from backup's captured registration receipt using `_project_restore_location`,
 shared with preparation; it does not reread SQLite or parse manifests separately.
 Before service stop, supervisor `check-space` refuses with `checkpoint_capacity`
-if the checkpoint filesystem lacks the bytes or free inodes for a full copy.
+unless every filesystem involved has the bytes and free inodes for both copies an
+update may need: the checkpoint, and the full sibling tree a rollback builds
+beside each live root. Checkpoint copies, restores and checks run under a
+checkpoint-sized timeout rather than the ordinary command timeout.
 Root then stops the service and proves its main PID is gone. Before old preparation can mutate live
 state, the supervisor seals a full snapshot of every entry in the data root and
 registered local canonical `.research` roots. It then checks that old preparation

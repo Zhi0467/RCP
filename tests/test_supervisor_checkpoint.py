@@ -701,5 +701,10 @@ def test_snapshot_space_refuses_insufficient_inodes(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(os, "statvfs", lambda _: filesystem)
     with pytest.raises(SupervisorError, match="checkpoint_capacity:.*inodes"):
         checkpoint.check_snapshot_space(tmp_path, (live,))
+    # One copy fits (three checkpoint files, root, file, empty); the rollback's
+    # sibling copy on the same filesystem does not.
     filesystem.f_favail = 6
+    with pytest.raises(SupervisorError, match="checkpoint_capacity:.*rollback"):
+        checkpoint.check_snapshot_space(tmp_path, (live,))
+    filesystem.f_favail = 9
     checkpoint.check_snapshot_space(tmp_path, (live,))
