@@ -100,6 +100,6 @@ provisions one. No silent credential-less launch.
    Terminal uses it. Tests: environment per case, missing-key refusal.
 2. Provider launches receive it, local and remote, for Discuss and Work.
    Test: a PATH-shimmed `git` sees the variables in both modes.
-3. Member settings: add or remove own key and identity; missing-key notice.
+3. Member settings: add or remove own key; missing-key notice.
 4. Live team-space run: terminal, Discuss, and Work each fetch, commit, and
    push. This also closes the deploy-key run the terminal handoff still owes.
