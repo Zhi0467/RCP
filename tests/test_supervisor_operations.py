@@ -486,7 +486,6 @@ def test_insufficient_checkpoint_space_refuses_before_service_stop(tmp_path, mon
     }
     runtime.application = lambda *args: {
         "roots": [{"live": str(runtime.data)}],
-        "external_references": [],
     }
 
     def filesystem(action, request):

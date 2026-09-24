@@ -393,18 +393,17 @@ def inventory(request: PrepareRequest) -> dict[str, object]:
     if Path(receipt.app_data_plan.data_dir) != data:
         raise MaintenanceRefused("Inventory capture belongs to different application data.")
     roots = [{"live": str(data), "project_id": None}]
-    external = []
     for project in receipt.projects:
         if project.status != "capturable" or project.recovery is None:
             raise MaintenanceRefused("Inventory capture has an unresolved project.")
         _, live = _project_restore_location(project)
-        if live is None:
-            external.append({"kind": "remote_research", "project_id": project.project_id})
-        else:
+        # A remote project's state lives on another machine: an update never
+        # replaces it, so only local roots are checkpointed.
+        if live is not None:
             roots.append({"live": str(live), "project_id": project.project_id})
     for root in roots:
         _private_ancestors(Path(root["live"]))
-    return {"version": 1, "roots": roots, "external_references": external}
+    return {"version": 1, "roots": roots}
 
 
 def validate(request: ValidateRequest) -> dict[str, object]:

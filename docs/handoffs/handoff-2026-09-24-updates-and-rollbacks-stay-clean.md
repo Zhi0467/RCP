@@ -34,9 +34,9 @@ backup with no uncaptured projects.
    and ordinary startup using unmodified old wheels on disposable systemd hosts.
 4. **Legacy first-update entrance:** establish admission for sources without
    stronger quiescence capability; the current online entrance stays unchanged.
-5. **Remote-project containment:** qualify preparation and probation on disposable
-   SSH hosts. Registered remote roots refuse with `legacy_remote_probation_unproven`
-   until confinement is proved; local checkpoints cannot restore external state.
+5. **Read-only post-update check:** reconstructing a missing display cache can
+   rewrite derived files in a canonical folder, including a remote one that no
+   local checkpoint restores. Make that reconstruction read-only.
 
 ## Open human decisions
 

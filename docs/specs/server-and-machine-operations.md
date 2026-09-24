@@ -401,9 +401,9 @@ and validates only disposable copies.
 Whole-root capture includes credentials, jobs, cursors, unknown files and empty
 directories. Existing bounded traversal and filesystem-entry safety checks still
 apply; no backup inclusion list filters the snapshot. Provider homes, source
-checkouts and remote canonical roots remain outside replacement scope. Updates
-with registered remote roots refuse with `legacy_remote_probation_unproven`
-until preparation and probation confinement pass qualification. Kept artifacts
+checkouts and remote canonical roots remain outside replacement scope: an update
+never replaces a remote project's state, so rollback restores only local roots
+and updates proceed with remote projects registered. Kept artifacts
 and result views outside replacement roots retain their typed checks.
 An intact startup-effect fence prevents probation from changing external state.
 

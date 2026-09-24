@@ -140,7 +140,6 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
         )
         discovered = inventory(request)
     assert not Path(request.output_dir).exists()
-    assert discovered["external_references"] == []
     assert [item["live"] for item in discovered["roots"]] == [str(data), str(research)]
     assert {root: _tree_state(root) for root in before} == before
     checkpoint = create_stopped_snapshot(

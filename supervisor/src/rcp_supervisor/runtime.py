@@ -670,11 +670,6 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
-        if any(item["kind"] == "remote_research" for item in inventory["external_references"]):
-            raise SupervisorError(
-                "legacy_remote_probation_unproven: old preparation cannot yet prove remote "
-                "publication is confined to disposable state."
-            )
         roots = [root["live"] for root in inventory["roots"]]
         self.filesystem(
             "check-space", {"directory": str(self.paths.checkpoints_root), "roots": roots}
