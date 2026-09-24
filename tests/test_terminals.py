@@ -230,6 +230,8 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
     state.mkdir(exist_ok=True)
     credential = tmp_path / "git key"
     credential.write_text("test-only")
+    identity = tmp_path / "member.gitconfig"
+    identity.write_text("[user]\nname = Member\n")
     empty = tmp_path / "empty"
     empty.mkdir()
     missing = root / "nested" / ".research"
@@ -237,8 +239,8 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
         unit="rcp-terminal-test",
         repository=root,
         protected_paths=[str(state), str(missing)],
-        git_read_paths=(str(credential),),
-        git_environment={"GIT_SSH_COMMAND": "ssh -F /dev/null"},
+        git_read_paths=(str(credential), str(identity)),
+        git_environment={"GIT_CONFIG_SYSTEM": str(identity)},
         empty_directory=empty,
     )
     properties = [argv[index + 1] for index, item in enumerate(argv) if item == "--property"]
@@ -255,7 +257,8 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
     assert "ReadWritePaths" not in " ".join(properties)
     shell_start = argv.index("--")
     assert argv[shell_start + 1 : shell_start + 3] == ["/usr/bin/env", "-i"]
-    assert "GIT_SSH_COMMAND=ssh -F /dev/null" in argv
+    assert f"GIT_CONFIG_SYSTEM={identity}" in argv
+    assert f'BindReadOnlyPaths="{identity}"' in properties
     assert "HISTFILE=/dev/null" in argv
 
 

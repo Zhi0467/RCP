@@ -18,6 +18,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import mutation_origin_matches
 from rcp.api.terminal_projection import running_repository_work, terminal_session_payload
+from rcp.git_identity import GitIdentity
 from rcp.limits import (
     TERMINAL_IO_CHUNK_BYTES,
     TERMINAL_MAX_DIMENSION,
@@ -176,6 +177,8 @@ async def open_session(
         session = await services.terminals.open(
             project_id=project_id,
             member_id=member.user_id,
+            git_identity=GitIdentity(member.user_id, member.display_name),
+            git_key=key if not machine.host else None,
             manifest=manifest,
             repository_alias=body.repository_id,
             repository_inventory=inventory,

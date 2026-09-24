@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import json
 import os
+import shlex
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
+
+from rcp.git_identity import GitIdentity, write_git_identity
 
 
 class CredentialRecord(BaseModel):
@@ -34,6 +38,29 @@ class ProviderProcessEnvironment:
 
     local_env: dict[str, str] | None = None
     remote_prefix: str | None = None
+
+    def with_git_identity(
+        self, identity: GitIdentity, *, data_dir: Path, remote: bool = False
+    ) -> ProviderProcessEnvironment:
+        """Compose member defaults with the provider's existing credentials."""
+        if remote:
+            source = importlib.resources.files("rcp").joinpath("git_identity.py").read_text()
+            command = shlex.join(
+                ["python3", "-c", source, str(data_dir), identity.user_id, identity.display_name]
+            )
+            prefix = f'GIT_CONFIG_SYSTEM="$({command})" || exit $?; export GIT_CONFIG_SYSTEM'
+            return ProviderProcessEnvironment(
+                local_env=self.local_env,
+                remote_prefix="; ".join(part for part in (self.remote_prefix, prefix) if part),
+            )
+        path = write_git_identity(data_dir, identity)
+        return ProviderProcessEnvironment(
+            local_env={
+                **(os.environ if self.local_env is None else self.local_env),
+                "GIT_CONFIG_SYSTEM": str(path),
+            },
+            remote_prefix=self.remote_prefix,
+        )
 
 
 def account_directory_name(host: str) -> str:

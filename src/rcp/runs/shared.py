@@ -840,6 +840,7 @@ async def _stream_agent_events(
             supervise_remote=supervise_remote,
             supervisor_path=supervisor_path,
             operation_id=execution.operation_id if execution is not None else None,
+            git_access=execution.git_access if execution is not None else None,
         )
     ) as stream:
         async for event in stream:

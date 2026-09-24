@@ -21,7 +21,22 @@ from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
 
 from .helpers import wait_until
-from .test_project_membership import _create_project, _team_app
+from .test_project_membership import _create_project as _create_membership_project
+from .test_project_membership import _team_app
+from .test_team_project_provisioning import _test_server_layout
+
+
+def _create_project(client, repository_path, **kwargs):
+    project_id = _create_membership_project(client, repository_path, **kwargs)
+    client.app.state.server_layout = _test_server_layout(repository_path.parent / "installation")
+    key = client.app.state.server_layout.project_deploy_key_path(project_id, "paper-repo")
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("terminal-fixture-key")
+    git = repository_path / ".git"
+    (git / "objects").mkdir(parents=True, exist_ok=True)
+    (git / "refs").mkdir(exist_ok=True)
+    (git / "HEAD").write_text("ref: refs/heads/main\n")
+    return project_id
 
 
 @pytest.fixture(autouse=True)
@@ -661,11 +676,34 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
+    from rcp.terminals import manager, profile
+    from rcp.terminals.backends import TerminalBackend
+
+    start = TerminalBackend.start
+    captured = {}
+
+    def capture_start(self, **kwargs):
+        captured.update(kwargs)
+        return start(self, **kwargs)
+
+    write_identity = manager.write_git_identity
+
+    def capture_identity(*args, git_path):
+        assert f"PATH={git_path}" in profile.shell_environment({})
+        return write_identity(*args, git_path=git_path)
+
+    monkeypatch.setattr(manager, "write_git_identity", capture_identity)
+    monkeypatch.setattr(TerminalBackend, "start", capture_start)
     path = f"/api/projects/{project_id}/terminals"
     with client:
         response = client.post(path, json={"repository_id": "paper-repo"})
         assert response.status_code == 200, response.text
         session = response.json()
+        identity_path = captured["git_environment"]["GIT_CONFIG_SYSTEM"]
+        assert identity_path in captured["git_read_paths"]
+        assert "GIT_SSH_COMMAND" not in captured["git_environment"]
+        assert _people[0].display_name in Path(identity_path).read_text()
+        assert f"{_people[0].user_id}@members.rcp.invalid" in Path(identity_path).read_text()
         assert session["containment"] == "cooperative"
         assert "protection is unavailable" in session["protection_notice"]
         assert "no filesystem fence" in session["protection_notice"]
@@ -886,3 +924,16 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
 
     work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest())
     assert [entry["operation_id"] for entry in work["code"]] == ["op-1"]
+
+
+def test_terminal_missing_deploy_key_names_provisioning_action(tmp_path, terminal_pty):
+    app, client, _store, _people, _acting = _team_app(tmp_path)
+    project_id = _create_membership_project(client, tmp_path / "repo")
+    with client:
+        response = client.post(
+            f"/api/projects/{project_id}/terminals", json={"repository_id": "paper-repo"}
+        )
+    assert response.status_code == 503
+    assert "no deploy key" in response.json()["detail"]
+    assert "rcp server project provision" in response.json()["detail"]
+    assert not terminal_pty

@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
+from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
@@ -1118,6 +1119,7 @@ class AgentLauncher:
         supervise_remote: bool = False,
         supervisor_path: str | None = None,
         operation_id: str | None = None,
+        git_access: ProviderGitAccess | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1158,6 +1160,7 @@ class AgentLauncher:
                         supervise_remote=supervise_remote,
                         supervisor_path=supervisor_path,
                         operation_id=operation_id,
+                        git_access=git_access,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1204,6 +1207,7 @@ class AgentLauncher:
         supervise_remote: bool = False,
         supervisor_path: str | None = None,
         operation_id: str | None = None,
+        git_access: ProviderGitAccess | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1344,6 +1348,12 @@ class AgentLauncher:
             if reason := self._login_refusal(provider, host):
                 raise ValueError(reason)
             environment = self.process_environment(provider, host)
+            if git_access is not None:
+                if git_access.host != host:
+                    raise ValueError("Git access does not match the provider execution host.")
+                environment, notices = await git_access.prepare(environment)
+                for notice in notices:
+                    yield AgentEvent(event="message", text=notice)
             local_cwd: str | None = str(cwd)
             if host:
                 command = ssh_arguments(

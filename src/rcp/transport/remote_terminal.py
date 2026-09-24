@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 EXIT_PREFIX = b"\x1ercp-terminal-exit:"
@@ -21,7 +22,9 @@ EXIT_SUFFIX = b"\x1f"
 
 
 def load_source(source: str) -> dict[str, Any]:
-    namespace: dict[str, Any] = {"__name__": "rcp_terminal_shipped"}
+    module = ModuleType("rcp_terminal_shipped")
+    sys.modules[module.__name__] = module
+    namespace = module.__dict__
     exec(compile(source, "<rcp-terminal-shipped>", "exec"), namespace)
     return namespace
 
@@ -107,7 +110,25 @@ def run_session(settings: dict[str, Any]) -> int:
             # session gets; the shell scrubs the ambient environment.
             relative = settings.get("git_key_relative")
             key = (Path.home() / relative) if relative else None
+            if key is not None:
+                checkout_access = load_source(settings["checkout_git_access_source"])
+                if (
+                    checkout_access["ensure_checkout_git_access"](
+                        str(repository), str(key), timeout=timeout
+                    )
+                    is None
+                ):
+                    raise RuntimeError(checkout_access["missing_deploy_key"](str(repository)))
             paths, environment = git_access["terminal_git_access"](key)
+            if settings.get("git_identity") is not None:
+                identity = load_source(settings["git_identity_source"])
+                identity_path = identity["write_git_identity"](
+                    Path.home() / ".local" / "share" / "rcp",
+                    identity["GitIdentity"](**settings["git_identity"]),
+                    git_path=profile["SHELL_PATH"],
+                )
+                paths = (*paths, str(identity_path))
+                environment["GIT_CONFIG_SYSTEM"] = str(identity_path)
             if mirrored:
                 command = profile["launch_command"](
                     unit=settings["unit"],

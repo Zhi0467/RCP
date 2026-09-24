@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from rcp import git_identity
 from rcp.terminals import git_access, launch, profile, remote
 from rcp.terminals.models import TerminalUnavailable
 from rcp.transport import remote_terminal
@@ -99,14 +100,27 @@ def test_shipped_cooperative_shell_emits_completion_even_for_exit_255(tmp_path):
     # Execute the exact shipped module in a subprocess with a disposable HOME;
     # no SSH process, key, config or remote host participates in this test.
     result = subprocess.run(
-        [sys.executable, "-c", inspect.getsource(remote_terminal), json.dumps(settings(tmp_path))],
-        input=b"printf 'remote-shell-output\\n'\nexit 255\n",
+        [
+            sys.executable,
+            "-c",
+            inspect.getsource(remote_terminal),
+            json.dumps(
+                {
+                    **settings(tmp_path),
+                    "git_identity": {"user_id": "member", "display_name": "Member Name"},
+                    "git_identity_source": inspect.getsource(git_identity),
+                }
+            ),
+        ],
+        input=b"git config user.name\ngit config user.email\nprintf 'remote-shell-output\\n'\nexit 255\n",
         capture_output=True,
         env={**os.environ, "HOME": str(tmp_path)},
         timeout=10,
     )
     assert result.returncode == 255
     assert profile._READY_MARKER in result.stdout
+    assert b"Member Name" in result.stdout
+    assert b"member@members.rcp.invalid" in result.stdout
     assert b"remote-shell-output" in result.stdout
     assert result.stdout.endswith(
         remote_terminal.EXIT_PREFIX + b"255" + remote_terminal.EXIT_SUFFIX

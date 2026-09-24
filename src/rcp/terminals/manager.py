@@ -23,12 +23,15 @@ from pathlib import Path
 
 from rcp.agents.write_scope import RegisteredRepositoryRoot
 from rcp.config import MachineConfig, Manifest
+from rcp.git_access import ensure_checkout_git_access, missing_deploy_key
+from rcp.git_identity import GitIdentity, write_git_identity
 from rcp.limits import (
     TERMINAL_IDLE_TIMEOUT_SECONDS,
     TERMINAL_MAX_DIMENSION,
     TERMINAL_POLL_INTERVAL_SECONDS,
     TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS,
     TERMINAL_STOP_THREADS,
+    TERMINAL_STOP_TIMEOUT_SECONDS,
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
 from rcp.terminals import launch, remote
@@ -40,6 +43,7 @@ from rcp.terminals.models import (
     TerminalUnavailable,
 )
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
+from rcp.terminals.profile import SHELL_PATH
 from rcp.terminals.runtime import (
     end_runtime,
     get_runtime,
@@ -501,6 +505,8 @@ class TerminalManager:
         git_read_paths: tuple[str, ...] = (),
         git_environment: dict[str, str] | None = None,
         remote_git_key_relative: str | None = None,
+        git_identity: GitIdentity | None = None,
+        git_key: Path | None = None,
     ) -> TerminalSession:
         key = (project_id, repository_alias)
         async with self._lock:
@@ -524,6 +530,8 @@ class TerminalManager:
                 git_read_paths=git_read_paths,
                 git_environment=git_environment,
                 remote_git_key_relative=remote_git_key_relative,
+                git_identity=git_identity,
+                git_key=git_key,
             )
         finally:
             self._opening.discard(key)
@@ -583,6 +591,8 @@ class TerminalManager:
         git_read_paths: tuple[str, ...],
         git_environment: dict[str, str] | None,
         remote_git_key_relative: str | None,
+        git_identity: GitIdentity | None,
+        git_key: Path | None,
     ) -> TerminalSession:
         """Probe, resolve and launch without the manager lock.
 
@@ -605,6 +615,25 @@ class TerminalManager:
             data_dir=self.data_dir,
             remote_stage=RemoteRunStage(machine.host) if machine.host else None,
         )
+        if not machine.host:
+            if git_key is not None:
+                resolved = await asyncio.to_thread(
+                    ensure_checkout_git_access,
+                    str(root),
+                    str(git_key),
+                    timeout=TERMINAL_STOP_TIMEOUT_SECONDS,
+                )
+                if resolved is None:
+                    raise RuntimeError(missing_deploy_key(str(root)))
+            if git_identity is not None:
+                identity_path = await asyncio.to_thread(
+                    write_git_identity, self.data_dir, git_identity, git_path=SHELL_PATH
+                )
+                git_read_paths = (*git_read_paths, str(identity_path))
+                git_environment = {
+                    **(git_environment or {}),
+                    "GIT_CONFIG_SYSTEM": str(identity_path),
+                }
         # A record retained on this tree blocks the open whatever alias filed
         # it, and a stop that can now be finished releases it.
         await self._resolve_unfinished(project_id, repository_alias, (str(root), machine.host))
@@ -636,6 +665,7 @@ class TerminalManager:
                     containment=session.containment,
                     expand_environment_option=(probe.expand_environment_option if probe else True),
                     git_key_relative=remote_git_key_relative,
+                    git_identity=git_identity,
                     os_account=machine.os_account,
                 )
             else:
