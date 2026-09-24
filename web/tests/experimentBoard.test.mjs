@@ -24,7 +24,6 @@ const {
   projectHashAfterViewChange,
   projectRunsNeedsExperimentIndex,
 } = await server.ssrLoadModule("/src/experimentBoard.ts");
-const { EpisodeTimeline } = await server.ssrLoadModule("/src/components/EpisodeTimeline.tsx");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
@@ -504,54 +503,6 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
   // the child run card and must not recreate the retired Turns projection.
   assert.doesNotMatch(html, /campaign-task depth-1/);
   assert.doesNotMatch(html, /Turns<\/h3>/);
-  const timelineEvent = (id, kind, minute, parent, title) => ({
-    event_id: id,
-    kind,
-    at: `2026-09-14T10:0${minute}:00Z`,
-    actor: {
-      kind: kind === "child" ? "child" : "orchestrator",
-      id: null,
-      label: kind,
-      member: null,
-    },
-    parent_event_id: parent,
-    title,
-    detail: null,
-    status: "running",
-    cause: null,
-    links: {
-      task_id: kind === "turn" ? id : null,
-      message_id: null,
-      notice_id: null,
-      episode_id: kind === "child" ? "child-experiment-episode" : "auto-research-parent",
-      control_node_id: kind === "child" ? "experiment/branch-child" : null,
-    },
-    provenance: "recorded",
-  });
-  const timeline = renderToStaticMarkup(
-    React.createElement(EpisodeTimeline, {
-      events: [
-        timelineEvent("turn:before", "turn", 0, null, "Parent turn before child."),
-        timelineEvent("child:one", "child", 1, "turn:before", "Reproduce the baseline"),
-        timelineEvent("turn:after", "turn", 2, null, "Parent wake after child."),
-      ],
-      apiBase: "/api/projects/project-one",
-      episodeId: "auto-research-parent",
-      graphTarget: { kind: "branch", branch_id: "auto-research-parent" },
-      onInspectTask() {},
-    }),
-  );
-  assert.match(timeline, /<h3>Timeline<\/h3>/);
-  assert.match(timeline, /episode-timeline-children[\s\S]*Reproduce the baseline/);
-  assert.ok(
-    timeline.indexOf("Parent turn before child.") < timeline.indexOf("Reproduce the baseline"),
-  );
-  assert.ok(
-    timeline.indexOf("Reproduce the baseline") < timeline.indexOf("Parent wake after child."),
-  );
-  assert.match(timeline, /episode=child-experiment-episode/);
-  assert.match(timeline, /branch=auto-research-parent/);
-
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(html, /1 \/ 5 invocations/);
   assert.match(html, /Wait for the active Experiment turn/);

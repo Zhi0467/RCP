@@ -21,7 +21,8 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
-from rcp.api.episode_timeline import EpisodeTimelineResponse, build_episode_timeline
+from rcp.api.episode_timeline import build_episode_timeline, episode_timeline_text
+from rcp.api.episode_timeline_models import EpisodeTimelineResponse, EpisodeTimelineText
 from rcp.api.episodes import (
     ContinueEpisodeBody,
     EpisodeMessageBody,
@@ -140,6 +141,25 @@ def episode_timeline(
 ) -> EpisodeTimelineResponse:
     episode = _episode_for_http(store, catalog, project_id, episode_id)
     return build_episode_timeline(store, episode)
+
+
+@router.get(
+    "/api/projects/{project_id}/episodes/{episode_id}/timeline/text/{text_ref}",
+    response_model=EpisodeTimelineText,
+)
+def episode_timeline_body(
+    project_id: str,
+    episode_id: str,
+    text_ref: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> EpisodeTimelineText:
+    episode = _episode_for_http(store, catalog, project_id, episode_id)
+    result = episode_timeline_text(store, episode, text_ref)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Timeline text not found")
+    return result
 
 
 @router.post(

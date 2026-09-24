@@ -245,6 +245,26 @@ class AutoResearchChildrenStoreMixin:
             ).fetchone()
         return self._child_admission_record(row) if row is not None else None
 
+    def auto_research_child_admissions(
+        self, episode_id: str
+    ) -> list[AutoResearchChildAdmissionRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM auto_research_child_admissions WHERE episode_id = ? "
+                "ORDER BY created_at, admission_id",
+                (episode_id,),
+            ).fetchall()
+        return [self._child_admission_record(row) for row in rows]
+
+    def auto_research_inbox_receipts(self, episode_id: str) -> list[AutoResearchInboxReceiptRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM auto_research_inbox_receipts WHERE episode_id = ? "
+                "ORDER BY created_at, effect_id",
+                (episode_id,),
+            ).fetchall()
+        return [self._inbox_receipt_record(row) for row in rows]
+
     def pending_auto_research_child_admissions(
         self,
         episode_id: str | None = None,

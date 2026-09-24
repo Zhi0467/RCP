@@ -1,543 +1,561 @@
+"""Read-only actor projection; resolve recorded joins before applying the wire bound."""
+
 from __future__ import annotations
 
-from typing import Literal
+import hashlib
+import re
+from collections.abc import Callable
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from rcp.api.episodes import episode_chain_records, operational_episode_tasks
-from rcp.core.models import AuthorizedHuman
-from rcp.limits import EPISODE_TIMELINE_EVENT_LIMIT
-from rcp.storage import AppStore, EpisodeRecord
-from rcp.storage.models import (
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    StoredWatcherRecord,
+from rcp.api.episode_timeline_models import (
+    EpisodeTimelineActor,
+    EpisodeTimelineHandoff,
+    EpisodeTimelineLinks,
+    EpisodeTimelineMark,
+    EpisodeTimelineMember,
+    EpisodeTimelineMessage,
+    EpisodeTimelineResponse,
+    EpisodeTimelineSignal,
+    EpisodeTimelineSpan,
+    EpisodeTimelineText,
 )
-
-EpisodeTimelineEventKind = Literal[
-    "turn", "retry", "wake", "mail", "notice", "child", "lifecycle", "human"
-]
-
-
-_EVENT_TITLE_MAX = 120
-
-
-def _armed_label(watcher: StoredWatcherRecord) -> str:
-    """Name what an armed watcher waits for, so a parked episode reads as parked."""
-
-    if not isinstance(watcher, GraphWatcherRecord):
-        return "Watcher armed"
-    condition = watcher.condition
-    if isinstance(condition, NodeStatusGraphCondition):
-        statuses = " or ".join(condition.status_in)
-        label = f"Waiting for {condition.node_id} to reach {statuses}"
-    else:
-        label = f"Waiting for a Proposal on {condition.node_id} to resolve"
-    # Node ids are agent-authored; the event title is bounded at 120.
-    limit = _EVENT_TITLE_MAX
-    return label if len(label) <= limit else label[: limit - 1] + "\u2026"
+from rcp.api.episodes import episode_chain_records
+from rcp.core.models import AuthorizedHuman
+from rcp.limits import (
+    EPISODE_TIMELINE_ERROR_MAX_LENGTH,
+    EPISODE_TIMELINE_EVENT_LIMIT,
+    EPISODE_TIMELINE_HEADLINE_MAX_LENGTH,
+    EPISODE_TIMELINE_PREVIEW_MAX_LENGTH,
+)
+from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage.models import GraphWatcherRecord
 
 
-class EpisodeTimelineActor(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    kind: Literal["orchestrator", "worker", "wake", "human", "rcp", "child"]
-    id: str | None = None
-    label: str
-    member: AuthorizedHuman | None = None
+def _span(operation_id: str | None) -> str | None:
+    return f"span:{operation_id}" if operation_id else None
 
 
-class EpisodeTimelineLinks(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    task_id: str | None = None
-    message_id: str | None = None
-    notice_id: str | None = None
-    episode_id: str | None = None
-    control_node_id: str | None = None
-
-
-class EpisodeTimelineEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    event_id: str
-    kind: EpisodeTimelineEventKind
-    at: str
-    actor: EpisodeTimelineActor
-    parent_event_id: str | None = None
-    title: str = Field(max_length=120)
-    detail: str | None = Field(default=None, max_length=500)
-    status: str | None = None
-    cause: str | None = None
-    links: EpisodeTimelineLinks = Field(default_factory=EpisodeTimelineLinks)
-    provenance: Literal["recorded", "unknown"] = "recorded"
-
-
-class EpisodeTimelineResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    episode_id: str
-    mode: Literal["auto_research", "experiment_loop"]
-    events: list[EpisodeTimelineEvent]
-    truncated: bool
-
-
-def _detail(value: str | None) -> str | None:
-    return " ".join(value.split())[:500] if value else None
-
-
-def _human(member: AuthorizedHuman | None, user_id: str | None = None) -> EpisodeTimelineActor:
-    return EpisodeTimelineActor(
-        kind="human",
-        id=member.user_id if member else user_id,
-        label=member.display_name if member else "Human",
-        member=member,
+def _headline(task: AgentTaskRecord) -> str | None:
+    if task.kind == "episode_report":
+        return None
+    messages = (task.result or {}).get("messages")
+    if not isinstance(messages, list):
+        return None
+    # The collector appends the final answer after any trace text, so it is the last entry.
+    answer = next(
+        (text.strip() for text in reversed(messages) if isinstance(text, str) and text.strip()),
+        None,
     )
+    if answer is None:
+        return None
+    sentence = re.split(r"(?<=[.!?])\s+", answer, maxsplit=1)[0]
+    if len(sentence) <= EPISODE_TIMELINE_HEADLINE_MAX_LENGTH:
+        return sentence
+    return sentence[: EPISODE_TIMELINE_HEADLINE_MAX_LENGTH - 1].rsplit(" ", 1)[0] + "…"
+
+
+def _handoffs(store: AppStore, chain: list[EpisodeRecord]) -> list[EpisodeTimelineHandoff]:
+    result = []
+    for member in chain:
+        for admission in store.auto_research_child_admissions(member.episode_id):
+            # Only a reflected admission created its child; accepted is still pending, cancelled never ran.
+            if admission.state != "reflected":
+                continue
+            command = store.auto_research_child_admission_command(admission.admission_id)
+            if command is None:
+                continue
+            snapshot = store.auto_research_command_file(command.command_id)
+            if snapshot is None or snapshot.kind not in {"instruction", "goal"}:
+                continue
+            kind = "worker" if admission.child_kind == "work" else "experiment"
+            result.append(
+                EpisodeTimelineHandoff(
+                    item_id=f"handoff:{command.command_id}",
+                    kind="assignment" if snapshot.kind == "instruction" else "goal",
+                    from_span_id=f"span:{command.operation_id}",
+                    to_actor_id=f"actor:{kind}:{admission.child_id}",
+                    at=command.started_at,
+                    preview=snapshot.content[:EPISODE_TIMELINE_PREVIEW_MAX_LENGTH],
+                    text_ref=f"handoff:{command.command_id}",
+                )
+            )
+    return result
+
+
+def episode_timeline_text(
+    store: AppStore, episode: EpisodeRecord, text_ref: str
+) -> EpisodeTimelineText | None:
+    chain = episode_chain_records(store, episode)
+    prefix, _, record_id = text_ref.partition(":")
+    if prefix == "handoff":
+        # Only admission-backed assignment/goal snapshots are timeline bodies.
+        if not any(item.text_ref == text_ref for item in _handoffs(store, chain)):
+            return None
+        snapshot = store.auto_research_command_file(record_id)
+        if snapshot is not None and snapshot.episode_id in {m.episode_id for m in chain}:
+            return EpisodeTimelineText(
+                text_ref=text_ref,
+                kind="assignment" if snapshot.kind == "instruction" else "goal",
+                owner_episode_id=snapshot.episode_id,
+                body=snapshot.content,
+                sha256=snapshot.sha256,
+            )
+    elif prefix == "message":
+        message = store.auto_research_message(record_id)
+        if message is not None and message.episode_id in {m.episode_id for m in chain}:
+            return EpisodeTimelineText(
+                text_ref=text_ref,
+                kind="message",
+                owner_episode_id=message.episode_id,
+                body=message.body,
+                sha256=hashlib.sha256(message.body.encode("utf-8")).hexdigest(),
+            )
+    return None
 
 
 def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTimelineResponse:
-    """Project recorded facts without dispatching work or inferring lifecycle decisions.
-
-    A continuation chain is one run, so the timeline spans every member with a
-    ``continued`` boundary between them. The requested episode keeps its plain
-    event ids; other members' ids carry their episode id.
-    """
-
-    events: list[EpisodeTimelineEvent] = []
     chain = episode_chain_records(store, episode)
-    skipped_members = False
-    # Newest member first: a continuation is created after its source ended, so
-    # once the newer members alone overflow the response no older member can
-    # place an event in it, and its hydration is skipped.
-    for position in range(len(chain) - 1, -1, -1):
-        if len(events) > EPISODE_TIMELINE_EVENT_LIMIT:
-            skipped_members = True
-            break
-        member = chain[position]
-        primary = member.episode_id == episode.episode_id
-        if position:
-            events.append(
-                EpisodeTimelineEvent(
-                    kind="lifecycle",
-                    event_id=f"lifecycle:continued:{member.episode_id}",
-                    at=member.created_at,
-                    title="Continued with more turns",
-                    actor=_human(member.authorized_by),
-                    status=str(member.invocation_ceiling),
-                    provenance="recorded" if member.authorized_by else "unknown",
-                    links=EpisodeTimelineLinks(episode_id=member.episode_id),
+    auto = episode.mode == "auto_research"
+    primary_kind = "orchestrator" if auto else "agent"
+    primary_id = f"actor:{primary_kind}:{chain[0].episode_id}"
+    actors: dict[str, EpisodeTimelineActor] = {}
+    spans: list[EpisodeTimelineSpan] = []
+    messages: list[EpisodeTimelineMessage] = []
+    signals: list[EpisodeTimelineSignal] = []
+    marks: list[EpisodeTimelineMark] = []
+    handoffs = _handoffs(store, chain)
+    handoff_by_actor = {item.to_actor_id: item for item in handoffs}
+    tasks: dict[str, AgentTaskRecord] = {}
+    task_actors: dict[str, str] = {}
+    invocations: dict[str, int] = {}
+    works = (
+        {
+            work.worker_id: work
+            for member in chain
+            for work in store.auto_research_child_works(member.episode_id)
+        }
+        if auto
+        else {}
+    )
+    routes = (
+        {
+            route.child_episode_id: route
+            for member in chain
+            for route in store.auto_research_child_experiments(member.episode_id)
+        }
+        if auto
+        else {}
+    )
+    children = store.episodes_by_ids(list(routes))
+    owners = {member.episode_id: member for member in chain} | children
+
+    def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: object) -> None:
+        actors[actor_id] = EpisodeTimelineActor(
+            actor_id=actor_id,
+            kind=kind,
+            label=label,
+            row_key=values.pop("row_key", actor_id),
+            owner_episode_id=owner,
+            **values,
+        )
+
+    def human(member: EpisodeRecord, identity: AuthorizedHuman | None) -> str:
+        actor_id = f"actor:human:{identity.user_id if identity else member.episode_id}"
+        if actor_id not in actors:
+            add_actor(
+                actor_id, "human", identity.display_name if identity else "Human", member.episode_id
+            )
+        return actor_id
+
+    def mark(actor_id: str, kind: str, at: str | None, key: str, by: str | None = None) -> None:
+        if at:
+            marks.append(
+                EpisodeTimelineMark(
+                    item_id=f"mark:{key}:{kind}",
+                    actor_id=actor_id,
+                    kind=kind,
+                    at=at,
+                    by_span_id=by,
                 )
             )
-        events.extend(_member_events(store, member, primary=primary))
-    events.sort(key=lambda event: (event.at, event.event_id))
+
+    add_actor(
+        primary_id,
+        primary_kind,
+        "Orchestrator" if auto else "Experiment agent",
+        chain[0].episode_id,
+        started_at=chain[0].created_at,
+        ended_at=chain[-1].ended_at,
+        outcome=chain[-1].ending,
+        links=EpisodeTimelineLinks(
+            episode_id=episode.episode_id, control_node_id=episode.control_node_id
+        ),
+    )
+    for member in chain:
+        mark(human(member, member.authorized_by), "started", member.created_at, member.episode_id)
+        mark(primary_id, "stop_requested", member.stop_requested_at, member.episode_id)
+        mark(
+            primary_id,
+            "stopped",
+            member.ended_at if member.stop_requested_at else None,
+            member.episode_id,
+        )
+    for child_id, route in routes.items():
+        child = children.get(child_id)
+        if child is None:
+            continue  # A pending or cancelled route never created its episode.
+        actor_id = f"actor:experiment:{child_id}"
+        handoff = handoff_by_actor.get(actor_id)
+        add_actor(
+            actor_id,
+            "experiment",
+            "Experiment",
+            route.auto_research_episode_id,
+            subtitle=route.control_node_id,
+            row_key=f"node:{route.control_node_id}",
+            started_at=child.created_at,
+            ended_at=child.ended_at,
+            outcome=child.ending,
+            started_by_span_id=handoff.from_span_id
+            if handoff
+            else _span(route.parent_operation_id),
+            links=EpisodeTimelineLinks(episode_id=child_id, control_node_id=route.control_node_id),
+        )
+        mark(actor_id, "started", route.created_at, child_id, actors[actor_id].started_by_span_id)
+        issuer = child.stop_initiated_by or ""
+        mark(
+            actor_id,
+            "stop_requested",
+            child.stop_requested_at,
+            child_id,
+            _span(issuer.removeprefix("orchestrator:"))
+            if issuer.startswith("orchestrator:")
+            else None,
+        )
+        mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
+    for owner in owners.values():
+        # Report turns are hidden allocations; the roster shows them as report spans.
+        for task in store.episode_tasks(owner.episode_id, include_hidden=True):
+            if task.project_id != episode.project_id or task.kind == "branch_merge":
+                continue
+            if task.visible or task.kind == "episode_report":
+                tasks[task.operation_id] = task
+        invocations.update(
+            {
+                row.operation_id: row.invocation_number
+                for row in store.episode_invocations(owner.episode_id)
+            }
+        )
+    roles = store.auto_research_invocations(list(tasks)) if auto else {}
+    for task in tasks.values():
+        work = store.auto_research_child_work_for_operation(task.operation_id) if auto else None
+        if work and work.worker_id in works:
+            task_actors[task.operation_id] = f"actor:worker:{work.worker_id}"
+        elif task.episode_id in children:
+            task_actors[task.operation_id] = f"actor:experiment:{task.episode_id}"
+        elif (role := roles.get(task.operation_id)) and role.role == "worker":
+            task_actors[task.operation_id] = f"actor:worker:{role.actor_operation_id}"
+            if role.actor_operation_id not in works:
+                add_actor(
+                    task_actors[task.operation_id],
+                    "worker",
+                    "Worker",
+                    role.episode_id,
+                    subtitle=role.control_node_id,
+                    links=EpisodeTimelineLinks(
+                        task_id=role.actor_operation_id, control_node_id=role.control_node_id
+                    ),
+                )
+        else:
+            task_actors[task.operation_id] = primary_id
+    waiting_workers = {
+        worker_id
+        for member in chain
+        for worker_id in store.auto_research_waiting_child_work_ids(member.episode_id)
+    }
+    for work in works.values():
+        actor_id = f"actor:worker:{work.worker_id}"
+        heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", work.instruction, re.MULTILINE)
+        current = tasks.get(work.current_operation_id)
+        handoff = handoff_by_actor.get(actor_id)
+        add_actor(
+            actor_id,
+            "worker",
+            heading.group(1) if heading else "Worker",
+            work.episode_id,
+            subtitle=work.control_node_id,
+            started_at=work.created_at,
+            # A worker waiting on its own watcher is still alive after its attempt finishes.
+            ended_at=current.finished_at
+            if current and work.worker_id not in waiting_workers
+            else None,
+            outcome=current.status if current else None,
+            started_by_span_id=handoff.from_span_id
+            if handoff
+            else _span(work.admitted_by_operation_id),
+            links=EpisodeTimelineLinks(
+                task_id=work.current_operation_id,
+                control_node_id=work.control_node_id,
+                episode_id=work.episode_id,
+            ),
+        )
+        task_actors[work.root_operation_id] = actor_id
+        task_actors[work.worker_id] = actor_id
+        mark(
+            actor_id,
+            "started",
+            work.created_at,
+            work.worker_id,
+            actors[actor_id].started_by_span_id,
+        )
+        # Only the request time is recorded: no issuer, and no settled stop time.
+        mark(actor_id, "stop_requested", work.stop_requested_at, work.worker_id)
+    causes = store.agent_task_continuation_causes(list(tasks))
+    for task in tasks.values():
+        actor_id = task_actors[task.operation_id]
+        cause = task.request.get("wake_cause") or causes.get(task.operation_id)
+        spans.append(
+            EpisodeTimelineSpan(
+                span_id=f"span:{task.operation_id}",
+                actor_id=actor_id,
+                kind="report"
+                if task.kind == "episode_report"
+                else "attempt"
+                if actors[actor_id].kind == "worker" or task.attempt > 1
+                else "turn",
+                started_at=task.started_at or task.created_at,
+                finished_at=task.finished_at,
+                status=task.status,
+                attempt=task.attempt,
+                invocation_number=invocations.get(task.operation_id),
+                headline=_headline(task),
+                error=task.error[:EPISODE_TIMELINE_ERROR_MAX_LENGTH] if task.error else None,
+                cause=cause if isinstance(cause, str) else None,
+                task_id=task.operation_id,
+                owner_episode_id=task.episode_id,
+            )
+        )
+    _communications(store, chain, actors, tasks, task_actors, human, messages, signals, auto)
+    collections = {
+        "spans": spans,
+        "handoffs": handoffs,
+        "messages": messages,
+        "signals": signals,
+        "marks": marks,
+    }
+    dated = []
+    for name, items in collections.items():
+        for item in items:
+            at = (
+                item.started_at
+                if name == "spans"
+                else item.sent_at
+                if name == "messages"
+                else item.recorded_at
+                if name == "signals"
+                else item.at
+            )
+            key = item.span_id if name == "spans" else item.item_id
+            dated.append((at, key, name, item))
+    dated.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    retained = dated[:EPISODE_TIMELINE_EVENT_LIMIT]
+    selected = {name: [] for name in collections}
+    actor_ids = set()
+    span_actors = {span.span_id: span.actor_id for span in spans}
+    for _, _, name, item in retained:
+        selected[name].append(item)
+        for field, value in item.model_dump().items():
+            if field.endswith("actor_id") and value:
+                actor_ids.add(value)
+            elif field.endswith("span_id") and value in span_actors:
+                actor_ids.add(span_actors[value])
     return EpisodeTimelineResponse(
         episode_id=episode.episode_id,
         mode=episode.mode,
-        events=events[-EPISODE_TIMELINE_EVENT_LIMIT:],
-        truncated=skipped_members or len(events) > EPISODE_TIMELINE_EVENT_LIMIT,
+        generated_at=store.now(),
+        truncated=len(dated) > len(retained),
+        members=[
+            EpisodeTimelineMember(
+                episode_id=m.episode_id,
+                started_at=m.created_at,
+                ended_at=m.ended_at,
+                continues_episode_id=m.continues_episode_id,
+            )
+            for m in chain
+        ],
+        actors=[actor for actor in actors.values() if actor.actor_id in actor_ids],
+        **selected,
     )
 
 
-def _member_events(
-    store: AppStore, episode: EpisodeRecord, *, primary: bool
-) -> list[EpisodeTimelineEvent]:
-    auto = episode.mode == "auto_research"
-    # The response keeps the newest EPISODE_TIMELINE_EVENT_LIMIT events. Every task
-    # is exactly one event at its creation time, so no task older than the newest
-    # limit + 1 can reach the wire; the extra row keeps ``truncated`` honest.
-    newest = EPISODE_TIMELINE_EVENT_LIMIT + 1
-    tasks = (
-        [
-            task
-            for task in store.auto_research_tasks(episode.episode_id, newest=newest)
-            if task.visible
-        ]
-        if auto
-        else operational_episode_tasks(store, episode, newest=newest)
-    )
-    by_task = {task.operation_id: task for task in tasks}
-    if auto:
-        # Ordinary child Work allocations are outside auto_research_invocations.
-        for task in operational_episode_tasks(store, episode, newest=newest):
-            by_task.setdefault(task.operation_id, task)
-        tasks = list(by_task.values())
-    degradations = store.agent_task_degradations(list(by_task))
-    roles = store.auto_research_invocations(list(by_task)) if auto else {}
-    recoveries = store.auto_research_recoveries(episode.episode_id, newest=newest) if auto else []
-    recovery_by_task = {row.admitted_operation_id: row for row in recoveries}
-    # Child routes and watchers are bounded the same way: each is at least one
-    # event, so only the newest limit + 1 can reach the wire.
-    works = store.auto_research_child_works(episode.episode_id, newest=newest) if auto else []
-    work_origins = {row.root_operation_id: row for row in works}
-    work_for_task = {}
-    for task in tasks:
-        current = task
-        seen: set[str] = set()
-        while current.operation_id not in seen:
-            seen.add(current.operation_id)
-            if current.operation_id in work_origins:
-                work_for_task[task.operation_id] = work_origins[current.operation_id]
-                break
-            parent = by_task.get(current.parent_operation_id)
-            if parent is None:
-                break
-            current = parent
-    routes = (
-        store.auto_research_child_experiments(episode.episode_id, newest=newest) if auto else []
-    )
-    children = store.episodes_by_ids([route.child_episode_id for route in routes])
-    # Notice and message bodies run up to 16 KB; hydrate only as many as could reach the wire.
-    notices = (
-        store.auto_research_lifecycle_notices(episode.episode_id, newest=newest) if auto else []
-    )
-    messages = store.auto_research_messages(episode.episode_id, newest=newest) if auto else []
-    # An Auto-research episode's own watchers are graph conditions, and between
-    # turns they are the only record of what the orchestrator is waiting for.
-    # Its shell watchers belong to child episodes and stay on their timelines.
-    watchers = [
-        watcher
-        for watcher in store.episode_watchers(episode.episode_id, newest=newest)
-        if not auto or isinstance(watcher, GraphWatcherRecord)
+def _communications(
+    store: AppStore,
+    chain: list[EpisodeRecord],
+    actors: dict[str, EpisodeTimelineActor],
+    tasks: dict[str, AgentTaskRecord],
+    task_actors: dict[str, str],
+    human: Callable[[EpisodeRecord, AuthorizedHuman | None], str],
+    messages: list[EpisodeTimelineMessage],
+    signals: list[EpisodeTimelineSignal],
+    auto: bool,
+) -> None:
+    receipts = [
+        receipt
+        for member in chain
+        for receipt in (store.auto_research_inbox_receipts(member.episode_id) if auto else [])
     ]
-    wrapup = store.episode_wrapup(episode.episode_id)
-    report = store.episode_report(episode.episode_id)
-    members = {member.user_id: member for member in store.space_users()}
-    causes = store.agent_task_continuation_causes([task.operation_id for task in tasks])
-    kinds: dict[str, EpisodeTimelineEventKind] = {}
-    actors: dict[str, EpisodeTimelineActor] = {}
-    for task in tasks:
-        invocation = roles.get(task.operation_id)
-        cause = causes[task.operation_id]
-        wake = (
-            bool(task.request.get("wake_cause"))
-            or cause in {"watcher_wake", "graph_condition_wake", "message_wake", "lifecycle_wake"}
-            or task.request.get("trigger") == "watcher"
-        )
-        kinds[task.operation_id] = (
-            "retry" if task.attempt > 1 and task.parent_operation_id else "wake" if wake else "turn"
-        )
-        role = (
-            "wake"
-            if wake
-            else invocation.role
-            if invocation
-            else "orchestrator"
-            if task.operation_id == episode.root_operation_id
-            else "worker"
-        )
-        actors[task.operation_id] = EpisodeTimelineActor(
-            kind=role,
-            id=invocation.actor_operation_id if invocation else task.operation_id,
-            label=role.capitalize(),
-        )
-
-    def event_key(event_id: str) -> str:
-        return event_id if primary else f"{episode.episode_id}:{event_id}"
-
-    def task_event(operation_id: str | None) -> str | None:
-        return event_key(f"{kinds[operation_id]}:{operation_id}") if operation_id in kinds else None
-
-    events: list[EpisodeTimelineEvent] = []
-    rcp = EpisodeTimelineActor(kind="rcp", label="RCP")
-
-    def add(
-        kind: EpisodeTimelineEventKind,
-        event_id: str,
-        at: str | None,
-        title: str,
-        *,
-        actor: EpisodeTimelineActor = rcp,
-        **values: object,
-    ) -> None:
-        if at is None:
-            values["provenance"] = "unknown"
-        events.append(
-            EpisodeTimelineEvent(
-                kind=kind,
-                event_id=event_key(event_id),
-                at=at or episode.updated_at,
-                title=title[:120],
-                actor=actor,
-                **values,
+    mail_receipts = {key: receipt for receipt in receipts for key in receipt.message_ids}
+    notice_receipts = {key: receipt for receipt in receipts for key in receipt.notice_ids}
+    chain_ids = {member.episode_id for member in chain}
+    orchestrator = f"actor:orchestrator:{chain[0].episode_id}"
+    watchers_by_episode = {
+        member.episode_id: store.episode_watchers(member.episode_id) for member in chain
+    }
+    watcher_by_id = {
+        watcher.watcher_id: watcher
+        for watchers in watchers_by_episode.values()
+        for watcher in watchers
+    }
+    for member in chain:
+        for message in store.auto_research_messages(member.episode_id) if auto else []:
+            receipt = mail_receipts.get(message.message_id)
+            delivered = tasks.get(message.delivery_operation_id)
+            # A failed receiving attempt outranks how the message was consumed.
+            disposition = (
+                "failed_attempt"
+                if delivered is not None and delivered.status in {"failed", "interrupted"}
+                else "harvested"
+                if receipt and receipt.mode == "harvest"
+                else "cleared"
+                if receipt
+                else "undelivered"
+                if not message.delivered_at and not message.delivery_operation_id
+                else "unknown"
+                if delivered is None
+                else "wake"
             )
-        )
-
-    for task in tasks:
-        kind = kinds[task.operation_id]
-        parent = task_event(task.parent_operation_id) if kind == "retry" else None
-        invocation = roles.get(task.operation_id)
-        work = work_for_task.get(task.operation_id)
-        if work is None and invocation:
-            work = work_origins.get(invocation.actor_operation_id)
-        if kind != "retry" and work:
-            parent = task_event(work.admitted_by_operation_id)
-        cause = (
-            task.request.get("wake_cause") or causes[task.operation_id] if kind == "wake" else None
-        )
-        provenance = "recorded"
-        if kind == "retry":
-            cause = "automatic recovery" if task.operation_id in recovery_by_task else None
-            if cause is None:
-                provenance = "unknown"
-        if (
-            kind == "turn"
-            and auto
-            and task.operation_id not in roles
-            and task.operation_id not in work_for_task
-        ):
-            provenance = "unknown"
-        add(
-            kind,
-            f"{kind}:{task.operation_id}",
-            task.created_at,
-            ("Wake" if kind == "wake" else f"{actors[task.operation_id].label} {kind}")
-            + (f" · attempt {task.attempt}" if kind == "retry" else ""),
-            actor=actors[task.operation_id],
-            parent_event_id=parent,
-            detail=_detail(
-                " · ".join(filter(None, (degradations.get(task.operation_id), task.status_message)))
-            ),
-            status=task.status,
-            cause=cause if isinstance(cause, str) else None,
-            links=EpisodeTimelineLinks(
-                task_id=task.operation_id,
-                episode_id=episode.episode_id,
-                control_node_id=work.control_node_id
-                if work
-                else invocation.control_node_id
-                if invocation
-                else episode.control_node_id
-                or (
-                    task.request.get("node_id")
-                    if isinstance(task.request.get("node_id"), str)
-                    else None
-                ),
-            ),
-            provenance=provenance,
-        )
-
-    for notice in notices:
-        cause = notice.source_event
-        if notice.wake_suppressed:
-            cause += f"; wake_suppressed={notice.wake_suppressed}"
-        add(
-            "notice",
-            f"notice:{notice.notice_id}",
-            notice.created_at,
-            f"{notice.source_kind} {notice.source_event}".replace("_", " ").capitalize(),
-            parent_event_id=task_event(notice.delivery_operation_id)
-            or task_event(notice.acknowledged_operation_id),
-            status=notice.state,
-            cause=cause,
-            links=EpisodeTimelineLinks(notice_id=notice.notice_id, episode_id=episode.episode_id),
-        )
-    for message in messages:
-        # The sender role is the record's own attribution; the sending task's
-        # kind is not, since an orchestrator writes mail from a wake turn too.
-        actor = (
-            _human(message.authorized_by)
-            if message.sender_role == "human"
-            else EpisodeTimelineActor(
-                kind=message.sender_role,
-                id=message.sender_task_id,
-                label=message.sender_role.capitalize(),
+            messages.append(
+                EpisodeTimelineMessage(
+                    item_id=f"message:{message.message_id}",
+                    from_actor_id=human(member, message.authorized_by)
+                    if message.sender_role == "human"
+                    else task_actors.get(message.sender_task_id),
+                    to_actor_id=task_actors.get(message.recipient_task_id),
+                    sent_at=message.created_at,
+                    sent_span_id=_span(message.sender_task_id),
+                    delivered_at=message.delivered_at,
+                    delivered_span_id=_span(message.delivery_operation_id),
+                    disposition=disposition,
+                    preview=message.body[:EPISODE_TIMELINE_PREVIEW_MAX_LENGTH],
+                    text_ref=f"message:{message.message_id}",
+                )
             )
-        )
-        add(
-            "mail",
-            f"mail:{message.message_id}",
-            message.created_at,
-            f"Message from {actor.label}",
-            actor=actor,
-            detail=_detail(message.body),
-            parent_event_id=task_event(message.delivery_operation_id),
-            status="delivered" if message.delivery_operation_id else "pending",
-            provenance="unknown"
-            if message.sender_role == "human" and message.authorized_by is None
-            else "recorded",
-            links=EpisodeTimelineLinks(
-                message_id=message.message_id,
-                task_id=message.sender_task_id,
-                episode_id=episode.episode_id,
-                control_node_id=message.control_node_id,
-            ),
-        )
-    for work in works:
-        task = by_task.get(work.current_operation_id)
-        add(
-            "child",
-            f"child:{work.worker_id}:admitted",
-            work.created_at,
-            "Work admitted",
-            actor=EpisodeTimelineActor(kind="child", id=work.worker_id, label="Work"),
-            parent_event_id=task_event(work.admitted_by_operation_id),
-            status=task.status if task else None,
-            links=EpisodeTimelineLinks(
-                task_id=work.current_operation_id,
-                episode_id=episode.episode_id,
-                control_node_id=work.control_node_id,
-            ),
-        )
-    for route in routes:
-        child = children.get(route.child_episode_id)
-        links = EpisodeTimelineLinks(
-            episode_id=route.child_episode_id, control_node_id=route.control_node_id
-        )
-        actor = EpisodeTimelineActor(kind="child", id=route.child_episode_id, label="Experiment")
-        created_id = f"child:{route.child_episode_id}:created"
-        add(
-            "child",
-            created_id,
-            route.created_at,
-            "Experiment created",
-            actor=actor,
-            parent_event_id=task_event(route.parent_operation_id),
-            status=route.state,
-            links=links,
-        )
-        if child and child.ended_at:
-            add(
-                "child",
-                f"child:{child.episode_id}:ended",
-                child.ended_at,
-                "Experiment ended",
-                actor=actor,
-                parent_event_id=event_key(created_id),
-                status=child.ending,
-                links=links,
+        watchers = watchers_by_episode[member.episode_id]
+        for watcher in watchers:
+            graph = isinstance(watcher, GraphWatcherRecord)
+            if auto and not graph:
+                continue
+            actor_id = None if graph else f"actor:watcher:{watcher.watcher_id}"
+            node = watcher.condition.node_id if graph else watcher.node_id
+            # A shell-watcher group shares one row, as it does in the Watchers fold.
+            row_key = (
+                f"node:{node}"
+                if graph
+                else f"watchers:{watcher.group_label}"
+                if watcher.group_label
+                else actor_id
             )
-        if child and child.stop_requested_at:
-            add(
-                "child",
-                f"child:{child.episode_id}:stopped",
-                child.stop_requested_at,
-                "Experiment stopped",
-                actor=actor,
-                parent_event_id=event_key(created_id),
-                cause=child.stop_initiated_by,
-                provenance="recorded" if child.stop_initiated_by else "unknown",
-                links=links,
+            if actor_id:
+                actors[actor_id] = EpisodeTimelineActor(
+                    actor_id=actor_id,
+                    kind="watcher",
+                    label=watcher.group_label or "Watcher",
+                    subtitle=node,
+                    row_key=row_key,
+                    owner_episode_id=member.episode_id,
+                    started_at=watcher.created_at,
+                    ended_at=watcher.completed_at or watcher.stopped_at,
+                    outcome=watcher.status,
+                    started_by_span_id=_span(watcher.origin_operation_id),
+                    links=EpisodeTimelineLinks(
+                        watcher_id=watcher.watcher_id,
+                        control_node_id=node,
+                        episode_id=member.episode_id,
+                    ),
+                )
+            notification = tasks.get(watcher.notification_operation_id)
+            signals.append(
+                EpisodeTimelineSignal(
+                    item_id=f"watcher:{watcher.watcher_id}",
+                    kind="watcher",
+                    source_actor_id=actor_id,
+                    source_row_key=row_key,
+                    event="fired"
+                    if watcher.completed_at
+                    else "stopped"
+                    if watcher.stopped_at
+                    else "armed",
+                    recorded_at=watcher.completed_at or watcher.stopped_at or watcher.created_at,
+                    landed_at=(notification.started_at or notification.created_at)
+                    if notification
+                    else None,
+                    landed_span_id=_span(watcher.notification_operation_id),
+                    landing="woke" if watcher.notification_operation_id else None,
+                    armed_span_id=_span(watcher.origin_operation_id),
+                    armed_at=watcher.created_at,
+                    state=watcher.status,
+                    payload=watcher.condition.model_dump(mode="json")
+                    if graph
+                    else {
+                        "check_command": watcher.check_command,
+                        "stop_reason": watcher.stop_reason,
+                    },
+                )
             )
-    for watcher in watchers:
-        links = EpisodeTimelineLinks(
-            task_id=watcher.notification_operation_id or watcher.origin_operation_id,
-            episode_id=episode.episode_id,
-            control_node_id=watcher.node_id,
-        )
-        add(
-            "notice",
-            f"notice:{watcher.watcher_id}:armed",
-            watcher.created_at,
-            _armed_label(watcher),
-            parent_event_id=task_event(watcher.origin_operation_id),
-            status="armed",
-            cause="watcher_armed",
-            links=links,
-        )
-        if watcher.completed_at:
-            add(
-                "notice",
-                f"notice:{watcher.watcher_id}:completed",
-                watcher.completed_at,
-                "Watcher completed",
-                parent_event_id=task_event(watcher.notification_operation_id),
-                status="completed",
-                cause="watcher_completed",
-                links=links,
+        for notice in store.auto_research_lifecycle_notices(member.episode_id) if auto else []:
+            receipt = notice_receipts.get(notice.notice_id)
+            source = task_actors.get(notice.source_id)
+            if notice.source_kind == "episode" and notice.source_id in chain_ids:
+                source = orchestrator  # A continuation notice names a chain member.
+            elif notice.source_kind in {"experiment", "experiment_episode", "episode"}:
+                candidate = f"actor:experiment:{notice.source_id}"
+                source = candidate if candidate in actors else None
+            elif notice.source_kind in {"work", "worker"}:
+                candidate = f"actor:worker:{notice.source_id}"
+                source = candidate if candidate in actors else source
+            watcher = (
+                watcher_by_id.get(notice.source_id) if notice.source_kind == "watcher" else None
             )
-        if watcher.stopped_at:
-            add(
-                "notice",
-                f"notice:{watcher.watcher_id}:stopped",
-                watcher.stopped_at,
-                "Watcher stopped",
-                parent_event_id=task_event(watcher.stop_operation_id),
-                status="stopped",
-                cause=watcher.stop_reason,
-                links=links,
+            source_row = (
+                actors[source].row_key
+                if source in actors
+                else f"{notice.source_kind}:{notice.source_id}"
             )
-    if episode.invocations_used == episode.invocation_ceiling:
-        # Only the ceiling invocation is an event; it is the newest one by number.
-        invocation = next(
-            (
-                row
-                for row in store.episode_invocations(episode.episode_id, newest=1)
-                if row.invocation_number == episode.invocation_ceiling
-            ),
-            None,
-        )
-        add(
-            "lifecycle",
-            "lifecycle:ceiling_reached",
-            invocation.created_at if invocation else None,
-            "Invocation ceiling reached",
-            links=EpisodeTimelineLinks(task_id=invocation.operation_id if invocation else None),
-        )
-    if episode.ending:
-        add(
-            "lifecycle",
-            "lifecycle:ending_fenced",
-            wrapup.created_at if wrapup else episode.ended_at,
-            "Ending fenced",
-            status=episode.ending,
-        )
-    for recovery in recoveries:
-        if recovery.status in {"exhausted", "blocked"}:
-            name = "recovery_exhausted" if recovery.status == "exhausted" else "recovery_blocked"
-            add(
-                "lifecycle",
-                f"lifecycle:{name}:{recovery.recovery_id}",
-                recovery.updated_at,
-                name.replace("_", " ").capitalize(),
-                parent_event_id=task_event(recovery.operation_id),
-                status=recovery.status,
-                detail=_detail(recovery.diagnostic),
-                cause=recovery.failure_kind,
-                links=EpisodeTimelineLinks(task_id=recovery.operation_id),
+            if isinstance(watcher, GraphWatcherRecord):
+                source = None
+                source_row = f"node:{watcher.condition.node_id}"
+            landing = (
+                "woke"
+                if notice.delivery_operation_id
+                else "harvested"
+                if receipt and receipt.mode == "harvest"
+                else "acknowledged"
+                if notice.acknowledged_at
+                else None
             )
-    if episode.wrapup_state in {"failed", "ready"}:
-        name = "wrapup_failed" if episode.wrapup_state == "failed" else "report_ready"
-        add(
-            "lifecycle",
-            f"lifecycle:{name}",
-            wrapup.finished_at if wrapup else report.created_at if report else None,
-            name.replace("_", " ").capitalize(),
-            status=episode.wrapup_state,
-            detail=_detail(episode.wrapup_error),
-        )
-    add(
-        "human",
-        f"human:started:{episode.created_at}",
-        episode.created_at,
-        "Started",
-        actor=_human(episode.authorized_by),
-        provenance="recorded" if episode.authorized_by else "unknown",
-    )
-    if episode.stop_requested_at:
-        initiator = episode.stop_initiated_by
-        user_id = (
-            initiator.removeprefix("human:")
-            if initiator and initiator.startswith("human:")
-            else None
-        )
-        user = members.get(user_id)
-        member = (
-            AuthorizedHuman(
-                space_id=store.space_id, user_id=user.user_id, display_name=user.display_name
+            signals.append(
+                EpisodeTimelineSignal(
+                    item_id=f"notice:{notice.notice_id}",
+                    kind="notice",
+                    source_actor_id=source,
+                    source_row_key=source_row,
+                    event=notice.source_event,
+                    recorded_at=notice.created_at,
+                    landed_at=notice.delivered_at or notice.acknowledged_at,
+                    landed_span_id=_span(
+                        notice.delivery_operation_id or notice.acknowledged_operation_id
+                    ),
+                    landing=landing,
+                    state=notice.state,
+                    payload=notice.payload,
+                )
             )
-            if user and user.display_name
-            else None
-        )
-        actor = _human(member, user_id) if user_id or not initiator else rcp
-        add(
-            "human" if user_id or not initiator else "lifecycle",
-            f"human:stopped:{episode.stop_requested_at}"
-            if user_id or not initiator
-            else "lifecycle:stopped",
-            episode.stop_requested_at,
-            "Stopped",
-            actor=actor,
-            cause=initiator,
-            provenance="recorded" if initiator else "unknown",
-        )
-    return events

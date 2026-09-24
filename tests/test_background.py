@@ -2654,6 +2654,8 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
     async def recorded_stream(_project_id, _kind, _request, execution, _recorded):
         seen.append(execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="recorded-session"))
+        for index in range(32):  # A full trace list must not crowd out the answer.
+            yield _sse(AgentEvent(event="message", text=f"Trace {index}."))
         yield _sse(AgentEvent(event="answer", text="Recovered answer."))
         yield _sse(AgentEvent(event="done"))
 
@@ -2674,7 +2676,9 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
     settled = store.agent_task(waiting.operation_id)
     assert settled is not None and settled.status == "succeeded"
     assert settled.native_session_id == "recorded-session"
-    assert settled.result == {"messages": ["Recovered answer."]}
+    assert settled.result == {
+        "messages": [f"Trace {index}." for index in range(31)] + ["Recovered answer."]
+    }
     assert seen == [waiting.operation_id]
     assert store.unresolved_remote_provider_passes("remote", "/stage") == []
     assert len(store.agent_tasks("project", include_hidden=True)) == 1

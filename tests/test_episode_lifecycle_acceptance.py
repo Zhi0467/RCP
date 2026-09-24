@@ -537,9 +537,12 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
         timeline = client.get(
             f"/api/projects/{project_id}/episodes/{continuation_id}/timeline"
         ).json()
-        event_ids = {event["event_id"] for event in timeline["events"]}
-        assert f"lifecycle:continued:{continuation_id}" in event_ids
-        assert f"{old_episode_id}:turn:{old_root_operation_id}" in event_ids
+        assert [member["episode_id"] for member in timeline["members"]] == [
+            old_episode_id,
+            continuation_id,
+        ]
+        span_ids = {span["span_id"] for span in timeline["spans"]}
+        assert f"span:{old_root_operation_id}" in span_ids
 
     old_root = store.agent_task(old_root_operation_id)
     continuation_root = store.agent_task(continuation_root_id)

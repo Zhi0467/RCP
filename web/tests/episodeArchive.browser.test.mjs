@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { timelineFixture } from "./fixtures/timeline.mjs";
 
 const ada = { space_id: "team", user_id: "ada", display_name: "Ada Lovelace" };
 const grace = { space_id: "team", user_id: "grace", display_name: "Grace Hopper" };
@@ -320,12 +321,10 @@ test("active and unresolved episodes archive without stopping work and restore a
           (record) => record.episode_id === decodeURIComponent(timelineMatch[1]),
         );
         await route.fulfill({
-          json: {
-            episode_id: item?.episode_id ?? decodeURIComponent(timelineMatch[1]),
-            mode: item?.mode ?? "auto_research",
-            events: [],
-            truncated: false,
-          },
+          json: timelineFixture(
+            item?.episode_id ?? decodeURIComponent(timelineMatch[1]),
+            item?.mode ?? "auto_research",
+          ),
         });
         return;
       }

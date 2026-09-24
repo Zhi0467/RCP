@@ -2561,7 +2561,10 @@ class BackgroundAgentTasks:
                         and len(messages) < 32
                     ):
                         messages.append(event.text.strip()[:16_000])
-                if event.event == "answer" and event.text.strip() and len(messages) < 32:
+                if event.event == "answer" and event.text.strip():
+                    # The final answer always survives the cap: it replaces the newest trace.
+                    if len(messages) >= 32:
+                        messages.pop()
                     messages.append(event.text.strip()[:16_000])
                 if (
                     event.event == "artifact"

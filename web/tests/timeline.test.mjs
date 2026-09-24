@@ -1,195 +1,200 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EpisodeTimeline, DEFAULT_TIMELINE_CONFIG } from "../src/timeline.ts";
-import { fetchEpisodeTimeline } from "../src/api.ts";
+import {
+  timelineRows,
+  timelineBounds,
+  clampWindow,
+  zoomWindow,
+  panWindow,
+  timelineRelated,
+  timelineWakeRows,
+  timelineSummary,
+} from "../src/timeline.ts";
 
-function event(event_id, kind, minute, parent_event_id = null, actor = "orchestrator") {
-  return {
-    event_id,
-    kind,
-    at: `2026-09-14T10:${String(minute).padStart(2, "0")}:00Z`,
-    actor: { kind: actor, id: null, label: actor, member: null },
-    parent_event_id,
-    title: event_id,
-    detail: null,
-    status: null,
-    cause: null,
-    links: {
-      task_id: null,
-      message_id: null,
-      notice_id: null,
-      episode_id: null,
-      control_node_id: null,
-    },
-    provenance: "recorded",
-  };
-}
+const at = (minutes) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+const actor = (id, kind, row = id, extra = {}) => ({
+  actor_id: id,
+  kind,
+  row_key: row,
+  label: id,
+  subtitle: null,
+  started_at: at(0),
+  ended_at: at(120),
+  outcome: "completed",
+  started_by_span_id: null,
+  links: {},
+  ...extra,
+});
+const span = (id, actorId, minute = 0) => ({
+  span_id: id,
+  actor_id: actorId,
+  kind: "turn",
+  started_at: at(minute),
+  finished_at: at(minute + 2),
+  status: "succeeded",
+  task_id: id,
+  headline: null,
+});
+const data = (extra = {}) => ({
+  episode_id: "run",
+  mode: "auto_research",
+  generated_at: at(150),
+  truncated: false,
+  members: [{ episode_id: "run", started_at: at(0), ended_at: at(120) }],
+  actors: [],
+  spans: [],
+  handoffs: [],
+  messages: [],
+  signals: [],
+  marks: [],
+  ...extra,
+});
 
-test("sorts without mutating input and nests causal records in time order", () => {
-  const events = [
-    event("notice:b", "notice", 3, "wake:one"),
-    event("retry:r", "retry", 5, "turn:root"),
-    event("turn:root", "turn", 0),
-    event("mail:m", "mail", 3, "wake:one"),
-    event("wake:one", "wake", 2),
-    event("turn:worker", "turn", 1, "turn:root", "worker"),
-    event("child:c:created", "child", 4, "turn:root", "child"),
-    event("human:start", "human", 0, null, "human"),
-  ];
-  const original = [...events];
-  const timeline = new EpisodeTimeline(events);
-  assert.deepEqual(events, original);
-  assert.deepEqual(
-    timeline.events.map((item) => item.event_id),
+test("actors group by recorded row key in kind and start order; actorless watcher nodes get a row", () => {
+  const rows = timelineRows(
+    data({
+      actors: [
+        actor("late", "experiment", "node", {
+          started_at: at(30),
+          links: { episode_id: "latest", control_node_id: "node" },
+        }),
+        actor("worker", "worker", "worker", { label: "Assignment: Inspect results" }),
+        actor("early", "experiment", "node", {
+          links: { episode_id: "earlier", control_node_id: "node" },
+        }),
+        actor("person", "human"),
+        actor("w1", "watcher", "group"),
+        actor("w2", "watcher", "group"),
+      ],
+      signals: [{ item_id: "signal:g", kind: "watcher", source_row_key: "node:orphan" }],
+    }),
     [
-      "human:start",
-      "turn:root",
-      "turn:worker",
-      "wake:one",
-      "mail:m",
-      "notice:b",
-      "child:c:created",
-      "retry:r",
+      { episode: { episode_id: "latest" }, node: { title: "Latest experiment" } },
+      { episode: { episode_id: "earlier" }, node: { title: "Earlier experiment" } },
     ],
   );
   assert.deepEqual(
-    timeline
-      .rows()
-      .map((row) => [row.event.event_id, row.children.map((child) => child.event.event_id)]),
-    [
-      ["human:start", []],
-      ["turn:root", ["turn:worker", "child:c:created", "retry:r"]],
-      ["wake:one", ["mail:m", "notice:b"]],
-    ],
+    rows.map((r) => r.rowKey),
+    ["person", "worker", "node", "group", "node:orphan"],
   );
-  assert.deepEqual(timeline.lanes(), ["orchestrator", "workers", "children", "mail", "human"]);
-  assert.deepEqual(timeline.summary(), { turns: 2, wakes: 1, retries: 1, mail: 1, children: 1 });
+  assert.equal(rows[4].kind, "watcher");
+  assert.deepEqual(
+    rows[2].actors.map((a) => a.actor_id),
+    ["early", "late"],
+  );
+  assert.equal(rows[3].actors.length, 2);
 });
 
-test("configuration controls lane order, glyph, fold defaults, and status tone", () => {
-  const mail = event("mail:m", "mail", 1);
-  const worker = { ...event("turn:w", "turn", 0, null, "worker"), status: "running" };
-  const defaultTimeline = new EpisodeTimeline([mail, worker]);
-  assert.equal(defaultTimeline.rule(worker).lane, "workers");
-  assert.equal(defaultTimeline.rule(worker).tone, "active");
-  assert.equal(defaultTimeline.isFolded(mail.event_id, new Set()), true);
-  assert.equal(defaultTimeline.isFolded(mail.event_id, new Set([mail.event_id])), false);
-  const config = {
-    ...DEFAULT_TIMELINE_CONFIG,
-    turn: { lane: "human", glyph: "!", tone: "neutral", fold: "always" },
-    mail: { lane: "children", glyph: "M", tone: "success", fold: "never" },
-    statusTone: (item) => (item.status === "running" ? "warning" : undefined),
-  };
-  const custom = new EpisodeTimeline([mail, worker], config);
-  assert.deepEqual(custom.lanes(), ["human", "children"]);
-  assert.deepEqual(custom.rule(worker), {
-    lane: "human",
-    glyph: "!",
-    tone: "warning",
-    fold: "always",
-  });
-  assert.equal(custom.rule(mail).glyph, "M");
-  assert.equal(custom.isFolded(mail.event_id, new Set([mail.event_id])), false);
-  assert.equal(custom.isFolded(worker.event_id, new Set()), false);
-  assert.equal(custom.isFolded(worker.event_id, new Set([worker.event_id])), true);
-});
-
-test("missing parents after truncation and malformed cycles remain visible", () => {
-  const timeline = new EpisodeTimeline([
-    event("mail:orphan", "mail", 0, "wake:dropped"),
-    event("turn:a", "turn", 1, "turn:b"),
-    event("turn:b", "turn", 2, "turn:a"),
-    event("turn:self", "turn", 3, "turn:self"),
+test("time windows honor run bounds, ten minute minimum and cursor anchored zoom", () => {
+  const run = data();
+  const bounds = timelineBounds(run);
+  const minute = 60_000;
+  assert.deepEqual(bounds, [Date.parse(at(0)), Date.parse(at(120))]);
+  assert.equal(
+    timelineBounds(data({ members: [{ started_at: at(0), ended_at: null }] }))[1],
+    Date.parse(at(150)),
+  );
+  const simple = [0, 120 * minute];
+  assert.deepEqual(zoomWindow(simple, simple, 30 * minute, 0.5), [15 * minute, 75 * minute]);
+  assert.deepEqual(clampWindow([-minute, minute], simple), [0, 10 * minute]);
+  assert.deepEqual(panWindow([20 * minute, 40 * minute], simple, 200 * minute), [
+    100 * minute,
+    120 * minute,
   ]);
-  assert.equal(timeline.rows().length, 4);
-  assert.equal(new EpisodeTimeline([]).rows().length, 0);
-  assert.deepEqual(new EpisodeTimeline([]).lanes(), []);
+  assert.deepEqual(zoomWindow(simple, simple, 60 * minute, 5), simple);
 });
 
-test("timeline API uses the read-only project episode endpoint", async () => {
-  const original = globalThis.fetch;
-  let path;
-  globalThis.fetch = async (url, init) => {
-    path = url;
-    assert.equal(init?.method ?? "GET", "GET");
-    return new Response(
-      JSON.stringify({
-        episode_id: "episode/one",
-        mode: "auto_research",
-        events: [],
-        truncated: false,
-      }),
-      { headers: { "Content-Type": "application/json" } },
-    );
-  };
-  try {
-    await fetchEpisodeTimeline("/api/projects/demo", "episode/one");
-  } finally {
-    globalThis.fetch = original;
-  }
-  assert.equal(path, "/api/projects/demo/episodes/episode%2Fone/timeline");
-});
-
-test("component renders configured lanes and folds, unknown provenance, and exact child links", async () => {
-  const { createServer } = await import("vite");
-  const React = await import("react");
-  const { renderToStaticMarkup } = await import("react-dom/server");
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { middlewareMode: true },
+test("relations keep recorded direct joins, including absent and node-row endpoints", () => {
+  const run = data({
+    actors: [
+      actor("orchestrator", "orchestrator"),
+      actor("child", "experiment", "node", { started_by_span_id: "outside" }),
+    ],
+    spans: [span("turn", "orchestrator"), span("unrelated", "orchestrator", 30)],
+    handoffs: [{ item_id: "handoff", from_span_id: "outside", to_actor_id: "child" }],
+    signals: [
+      {
+        item_id: "watch",
+        kind: "watcher",
+        source_actor_id: null,
+        source_row_key: "node",
+        landed_span_id: "turn",
+        armed_span_id: null,
+      },
+    ],
+    marks: [{ item_id: "stop", actor_id: "child", by_span_id: null }],
   });
-  try {
-    const { EpisodeTimeline: Component } = await server.ssrLoadModule(
-      "/src/components/EpisodeTimeline.tsx",
+  const related = timelineRelated(run, "child");
+  for (const id of ["child", "outside", "handoff", "watch", "turn", "stop"])
+    assert.ok(related.has(id), id);
+  assert.ok(!related.has("unrelated"));
+  assert.deepEqual([...timelineRelated(run, "stop")].sort(), ["child", "stop"]);
+});
+
+test("wake rows derive consumption and actions from span IDs", () => {
+  const run = data({
+    actors: [actor("o", "orchestrator"), actor("worker", "worker")],
+    spans: [span("second", "o", 30), span("worker-turn", "worker", 2), span("first", "o")],
+    messages: [
+      { item_id: "received", delivered_span_id: "second", sent_span_id: "first" },
+      { item_id: "failed", delivered_span_id: null, sent_span_id: null },
+    ],
+    signals: [
+      {
+        item_id: "signal",
+        kind: "watcher",
+        source_row_key: "node:test",
+        landed_span_id: "second",
+        armed_span_id: "first",
+      },
+    ],
+    handoffs: [{ item_id: "assignment", from_span_id: "first" }],
+  });
+  const rows = timelineWakeRows(run);
+  assert.deepEqual(
+    rows.map((r) => [r.number, r.span.span_id]),
+    [
+      [1, "first"],
+      [2, "second"],
+    ],
+  );
+  assert.deepEqual(
+    rows[1].landed.map((i) => i.item_id),
+    ["signal", "received"],
+  );
+  assert.deepEqual(
+    rows[0].actions.map((i) => i.item_id),
+    ["assignment", "received", "signal"],
+  );
+});
+
+test("summary partitions every shown actor and message exactly once", () => {
+  const dispositions = ["wake", "harvested", "cleared", "failed_attempt", "undelivered", "unknown"];
+  const run = data({
+    truncated: true,
+    actors: [
+      actor("a", "worker"),
+      actor("b", "worker", "b", { outcome: "failed" }),
+      actor("c", "human", "c", { outcome: null }),
+    ],
+    messages: dispositions.map((disposition) => ({ disposition })),
+    handoffs: [{}],
+  });
+  const summary = timelineSummary(run);
+  assert.equal(
+    summary.actors.reduce((n, k) => n + k.total, 0),
+    summary.totalActors,
+  );
+  for (const kind of summary.actors)
+    assert.equal(
+      Object.values(kind.outcomes).reduce((a, b) => a + b, 0),
+      kind.total,
     );
-    const mail = {
-      ...event("mail:m", "mail", 1),
-      detail: "A folded message",
-      provenance: "unknown",
-    };
-    const child = {
-      ...event("child:c:ended", "child", 2),
-      links: { ...mail.links, episode_id: "child-episode", control_node_id: "experiment/one" },
-    };
-    const html = renderToStaticMarkup(
-      React.createElement(Component, {
-        events: [mail, child],
-        apiBase: "/api/projects/demo",
-        episodeId: "parent",
-        graphTarget: { kind: "branch", branch_id: "parent" },
-        onInspectTask() {},
-        config: {
-          ...DEFAULT_TIMELINE_CONFIG,
-          mail: { lane: "human", glyph: "M", tone: "warning", fold: "folded" },
-        },
-      }),
-    );
-    assert.match(html, /data-lane="human"/);
-    assert.match(html, /aria-expanded="false"/);
-    assert.match(html, /provenance unknown/);
-    assert.match(html, /A folded message/);
-    assert.match(html, /episode=child-episode/);
-    assert.match(html, /branch=parent/);
-    assert.match(html, /parent=parent/);
-    const workHtml = renderToStaticMarkup(
-      React.createElement(Component, {
-        events: [
-          {
-            ...child,
-            event_id: "child:worker:admitted",
-            links: { ...child.links, episode_id: "parent", task_id: "worker-turn" },
-          },
-        ],
-        apiBase: "/api/projects/demo",
-        episodeId: "parent",
-        graphTarget: { kind: "branch", branch_id: "parent" },
-        onInspectTask() {},
-      }),
-    );
-    assert.match(workHtml, /<button type="button" class="episode-timeline-heading"/);
-    assert.doesNotMatch(workHtml, /href=/);
-  } finally {
-    await server.close();
-  }
+  assert.equal(
+    Object.values(summary.messages).reduce((a, b) => a + b, 0),
+    summary.totalMessages,
+  );
+  assert.equal(summary.totalMessages, 6);
+  assert.equal(summary.handoffs, 1);
+  assert.equal(summary.truncated, true);
 });

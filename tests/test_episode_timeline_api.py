@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api.episode_timeline import build_episode_timeline
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.limits import EPISODE_TIMELINE_ERROR_MAX_LENGTH, EPISODE_TIMELINE_HEADLINE_MAX_LENGTH
 from rcp.storage import AgentTaskRecord, AppStore, AutoResearchStateRecord, EpisodeRecord
 
 from .helpers import authorized_human, create_named_app
@@ -216,88 +219,314 @@ def seed_episode_timeline(store: AppStore, project_id: str) -> EpisodeRecord:
     return result
 
 
-def test_timeline_facts_route_ownership_and_read_only(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
-    episode = seed_episode_timeline(store, project_id)
-    with store.connection() as connection:
-        before = list(connection.iterdump())
-    client = TestClient(app)
-    response = client.get(f"/api/projects/{project_id}/episodes/{episode.episode_id}/timeline")
-    assert response.status_code == 200, response.text
-    assert (
-        client.get(f"/api/projects/foreign/episodes/{episode.episode_id}/timeline").status_code
-        == 404
-    )
-    with store.connection() as connection:
-        after = list(connection.iterdump())
-    assert before == after
-    data = response.json()
-    events = data["events"]
-    assert events == sorted(events, key=lambda event: (event["at"], event["event_id"]))
-    by_id = {event["event_id"]: event for event in events}
-    prefix = episode.episode_id
-    root = f"turn:{prefix}-root"
-    wake = f"wake:{prefix}-wake"
-    assert by_id[f"turn:{prefix}-worker"]["parent_event_id"] == root
-    assert by_id[wake]["cause"] == "watcher_completed"
-    assert by_id[f"retry:{prefix}-retry"]["parent_event_id"] == wake
-    assert by_id[f"retry:{prefix}-retry"]["cause"] == "automatic recovery"
-    assert by_id[f"mail:{prefix}-mail"]["parent_event_id"] == wake
-    assert len(by_id[f"mail:{prefix}-mail"]["detail"]) == 500
-    assert by_id[f"mail:{prefix}-human"]["actor"]["member"] == episode.authorized_by.model_dump()
-    assert by_id[f"mail:{prefix}-human"]["status"] == "pending"
-    for index in range(2):
-        assert by_id[f"notice:{prefix}-notice-{index}"]["parent_event_id"] == wake
-    child = next(event for event in events if event["title"] == "Experiment created")
-    assert child["parent_event_id"] == root
-    ended = next(event for event in events if event["title"] == "Experiment ended")
-    assert ended["parent_event_id"] == child["event_id"]
-    assert ended["status"] == "completed"
-    stop = next(event for event in events if event["title"] == "Stopped")
-    assert stop["actor"]["member"] == episode.authorized_by.model_dump()
-    assert by_id["lifecycle:ending_fenced"]["status"] == "exhausted"
-    assert any(event["title"] == "Recovery exhausted" for event in events)
-    assert not data["truncated"]
-    # The requested project exists and the caller is its member; the episode
-    # itself belongs elsewhere, so the ownership check must still refuse it.
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE episodes SET project_id=? WHERE episode_id=?",
-            (str(uuid.uuid4()), episode.episode_id),
-        )
-    assert (
-        client.get(f"/api/projects/{project_id}/episodes/{episode.episode_id}/timeline").status_code
-        == 404
-    )
-
-
-def test_unknown_stop_and_truncation(manifest, tmp_path):
+@pytest.fixture
+def timeline(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     episode = seed_episode_timeline(store, app.state.default_project_id)
-    unknown = episode.model_copy(update={"stop_initiated_by": None})
-    stop = next(
-        event for event in build_episode_timeline(store, unknown).events if event.title == "Stopped"
-    )
-    assert stop.provenance == "unknown"
+    return store, episode, TestClient(app)
+
+
+def test_actor_kinds_and_recorded_links(timeline):
+    store, episode, client = timeline
+    prefix = episode.episode_id
     with store.connection() as connection:
-        for index in range(401):
+        connection.execute(
+            "UPDATE auto_research_child_work SET instruction=?, instruction_sha256=?, stop_requested_at=? WHERE worker_id=?",
+            (
+                "# Evidence check\nInvestigate",
+                hashlib.sha256(b"# Evidence check\nInvestigate").hexdigest(),
+                episode.updated_at,
+                f"{prefix}-worker",
+            ),
+        )
+        connection.execute(
+            "UPDATE graph_runs SET error=? WHERE operation_id=?",
+            ("E" * (EPISODE_TIMELINE_ERROR_MAX_LENGTH + 1), f"{prefix}-root"),
+        )
+        # A pending route has not created its episode yet: no actor.
+        connection.execute(
+            "INSERT INTO auto_research_child_experiments (child_episode_id, auto_research_episode_id, project_id, control_node_id, state, request_json, parent_operation_id, created_at, updated_at) VALUES (?, ?, ?, 'exp/pending', 'pending', '{}', ?, ?, ?)",
+            (
+                f"{prefix}-unstarted",
+                prefix,
+                episode.project_id,
+                f"{prefix}-root",
+                episode.updated_at,
+                episode.updated_at,
+            ),
+        )
+        before = list(connection.iterdump())
+    response = client.get(f"/api/projects/{episode.project_id}/episodes/{prefix}/timeline")
+    assert response.status_code == 200
+    data = response.json()
+    root_span = next(span for span in data["spans"] if span["task_id"] == f"{prefix}-root")
+    assert root_span["error"] == "E" * EPISODE_TIMELINE_ERROR_MAX_LENGTH
+    assert {actor["kind"] for actor in data["actors"]} == {
+        "human",
+        "orchestrator",
+        "worker",
+        "experiment",
+    }
+    assert [actor["subtitle"] for actor in data["actors"] if actor["kind"] == "experiment"] == [
+        "exp/timeline"
+    ]
+    worker = next(actor for actor in data["actors"] if actor["kind"] == "worker")
+    assert worker["label"] == "Evidence check"
+    assert worker["subtitle"] == "exp/timeline"
+    assert worker["started_by_span_id"] == f"span:{prefix}-root"
+    stop = next(
+        mark
+        for mark in data["marks"]
+        if mark["actor_id"] == worker["actor_id"] and mark["kind"] == "stop_requested"
+    )
+    assert stop["by_span_id"] is None
+    assert not data["truncated"]
+    with store.connection() as connection:
+        assert list(connection.iterdump()) == before
+    assert client.get(f"/api/projects/foreign/episodes/{prefix}/timeline").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "disposition", ["wake", "harvested", "cleared", "failed_attempt", "undelivered", "unknown"]
+)
+def test_message_disposition(timeline, disposition):
+    store, episode, _ = timeline
+    prefix = episode.episode_id
+    message_id = f"{prefix}-mail"
+    with store.connection() as connection:
+        if disposition in {"harvested", "cleared", "undelivered", "unknown"}:
             connection.execute(
-                "INSERT INTO auto_research_lifecycle_notices (notice_id, episode_id, source_kind, source_id, source_event, state, payload_json, created_at) VALUES (?, ?, 'watcher', ?, 'completed', 'pending', '{}', ?)",
-                (f"extra-{index:04}", episode.episode_id, f"extra-{index}", episode.updated_at),
+                "UPDATE auto_research_messages SET delivered_at=?, delivery_operation_id=NULL WHERE message_id=?",
+                (episode.updated_at if disposition == "unknown" else None, message_id),
             )
+        if disposition == "failed_attempt":
+            connection.execute(
+                "UPDATE graph_runs SET status='failed' WHERE operation_id=?", (f"{prefix}-wake",)
+            )
+    if disposition in {"harvested", "cleared", "failed_attempt"}:
+        # A later harvest does not hide that the receiving attempt failed.
+        store.process_auto_research_lifecycle_inbox(
+            prefix,
+            effect_id="consume",
+            mode="clear" if disposition == "cleared" else "harvest",
+            acknowledged_by=f"{prefix}-root",
+            delivery_operation_id=f"{prefix}-retry",
+        )
+    message = next(
+        item
+        for item in build_episode_timeline(store, episode).messages
+        if item.item_id == f"message:{message_id}"
+    )
+    assert message.disposition == disposition
+    assert message.sent_span_id == f"span:{prefix}-worker"
+    expected = (
+        f"span:{prefix}-retry"
+        if disposition in {"harvested", "cleared"}
+        else f"span:{prefix}-wake"
+        if disposition in {"wake", "failed_attempt"}
+        else None
+    )
+    assert message.delivered_span_id == expected
+
+
+@pytest.mark.parametrize("landing", ["woke", "harvested", "acknowledged", None])
+def test_signal_landing(timeline, landing):
+    store, episode, _ = timeline
+    prefix = episode.episode_id
+    notice_id = f"{prefix}-notice-0"
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE auto_research_lifecycle_notices SET payload_json=? WHERE notice_id=?",
+            (json.dumps({"detail": "verbatim payload"}), notice_id),
+        )
+        if landing != "woke":
+            connection.execute(
+                "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='pending' WHERE notice_id=?",
+                (notice_id,),
+            )
+    if landing in {"harvested", "acknowledged"}:
+        store.process_auto_research_lifecycle_inbox(
+            prefix,
+            effect_id="consume",
+            mode="harvest" if landing == "harvested" else "clear",
+            acknowledged_by=f"{prefix}-root",
+            delivery_operation_id=f"{prefix}-retry",
+        )
+    signal = next(
+        item
+        for item in build_episode_timeline(store, episode).signals
+        if item.item_id == f"notice:{notice_id}"
+    )
+    assert signal.landing == landing
+    assert signal.payload == {"detail": "verbatim payload"}
+    assert signal.landed_span_id == (
+        f"span:{prefix}-wake" if landing == "woke" else f"span:{prefix}-retry" if landing else None
+    )
+    assert signal.source_actor_id is None  # The watcher id does not name a stored watcher.
+
+
+def _handoff(store, episode, kind="assignment"):
+    from rcp.storage import AutoResearchCommandFileRecord
+
+    from .test_auto_research_children_storage import _admission
+
+    prefix = episode.episode_id
+    body = "# Check evidence\n" + "Evidence " * 100
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status='running', ending=NULL, wrapup_state='not_started', wrapup_error=NULL, stop_requested_at=NULL, ended_at=NULL, invocation_ceiling=20 WHERE episode_id=?",
+            (prefix,),
+        )
+    child_id = (
+        f"{prefix}-worker"
+        if kind == "assignment"
+        else store.auto_research_child_experiments(prefix)[0].child_episode_id
+    )
+    admission = _admission(
+        store,
+        episode,
+        admission_id="admission",
+        child_kind="work" if kind == "assignment" else "experiment",
+        child_id=child_id,
+    )
+    store.start_agent_command(
+        operation_id=f"{prefix}-root",
+        command_id="spawn-command",
+        episode_id=prefix,
+        verb="spawn" if kind == "assignment" else "episode",
+        idempotency_key="spawn-key",
+        payload={
+            "planned_worker_id"
+            if kind == "assignment"
+            else "planned_episode_effect_id": admission.child_id
+        },
+        child_admission=admission,
+        file_snapshot=AutoResearchCommandFileRecord(
+            command_id="spawn-command",
+            episode_id=prefix,
+            operation_id=f"{prefix}-root",
+            kind="instruction" if kind == "assignment" else "goal",
+            filename="assignment.md",
+            sha256=hashlib.sha256(body.encode()).hexdigest(),
+            content=body,
+            created_at=store.now(),
+        ),
+    )
+    with store.connection() as connection:
+        connection.execute("UPDATE auto_research_child_admissions SET state='reflected'")
+        connection.execute(
+            "UPDATE episodes SET status='completed', ending='completed', ended_at=? WHERE episode_id=?",
+            (episode.ended_at, prefix),
+        )
+    return body
+
+
+@pytest.mark.parametrize("kind", ["assignment", "goal"])
+def test_handoff_joins_planned_child_not_neighboring_task(timeline, kind):
+    store, episode, _ = timeline
+    assert build_episode_timeline(store, episode).handoffs == []  # No recorded goal or assignment.
+    body = _handoff(store, episode, kind)
     response = build_episode_timeline(store, episode)
-    assert response.truncated
-    assert len(response.events) == 400
-    assert response.events[-1].event_id == "notice:extra-0400"
-    assert all(event.at == episode.updated_at for event in response.events)
+    assert len(response.handoffs) == 1
+    handoff = response.handoffs[0]
+    assert handoff.item_id == handoff.text_ref == "handoff:spawn-command"
+    assert handoff.kind == kind
+    assert handoff.from_span_id == f"span:{episode.episode_id}-root"
+    child = next(
+        actor
+        for actor in response.actors
+        if actor.kind == ("worker" if kind == "assignment" else "experiment")
+    )
+    assert handoff.to_actor_id == child.actor_id
+    assert body.startswith(handoff.preview.rstrip("…"))
+    from rcp.limits import EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
+
+    assert len(handoff.preview) == EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
+    with store.connection() as connection:
+        connection.execute("UPDATE auto_research_child_admissions SET state='accepted'")
+    assert build_episode_timeline(store, episode).handoffs == []  # No child exists yet.
 
 
-def test_experiment_timeline_watcher_history(tmp_path):
-    from rcp.storage import GraphWatcherRecord, WatcherRecord
-    from rcp.storage.models import NodeStatusGraphCondition
+def test_bound_counts_spans_and_items_newest_first(timeline, monkeypatch):
+    import rcp.api.episode_timeline as projection
+
+    store, episode, _ = timeline
+    _handoff(store, episode)
+    full = build_episode_timeline(store, episode)
+
+    def retained(response):
+        result = [(span.started_at, span.span_id) for span in response.spans]
+        result += [(item.at, item.item_id) for item in response.handoffs + response.marks]
+        result += [(item.sent_at, item.item_id) for item in response.messages]
+        result += [(item.recorded_at, item.item_id) for item in response.signals]
+        return sorted(result, reverse=True)
+
+    monkeypatch.setattr(projection, "EPISODE_TIMELINE_EVENT_LIMIT", 5)
+    bounded = build_episode_timeline(store, episode)
+    assert bounded.truncated
+    assert retained(bounded) == retained(full)[:5]
+    # The retained handoff keeps its worker and issuing orchestrator; older
+    # human and Experiment items no longer contribute rows.
+    assert {actor.kind for actor in bounded.actors} == {"worker", "orchestrator"}
+
+
+def test_chain_joins_moved_child_to_original_issuer(timeline, monkeypatch):
+    import rcp.api.episode_timeline as projection
+
+    store, episode, _ = timeline
+    _handoff(store, episode)
+    store.process_auto_research_lifecycle_inbox(
+        episode.episode_id,
+        effect_id="chain-harvest",
+        mode="harvest",
+        acknowledged_by=f"{episode.episode_id}-root",
+        delivery_operation_id=f"{episode.episode_id}-retry",
+    )
+    newer = episode.model_copy(
+        update={
+            "episode_id": str(uuid.uuid4()),
+            "continues_episode_id": episode.episode_id,
+            "root_operation_id": None,
+            "created_at": episode.updated_at,
+        }
+    )
+    with store.connection() as connection:
+        store._insert_episode(connection, newer)
+        connection.execute(
+            "UPDATE auto_research_child_work SET episode_id=? WHERE worker_id=?",
+            (newer.episode_id, f"{episode.episode_id}-worker"),
+        )
+        connection.execute(
+            "UPDATE auto_research_messages SET episode_id=? WHERE message_id=?",
+            (newer.episode_id, f"{episode.episode_id}-human"),
+        )
+    response = build_episode_timeline(store, newer)
+    moved_message = next(
+        message
+        for message in response.messages
+        if message.item_id == f"message:{episode.episode_id}-human"
+    )
+    assert moved_message.disposition == "harvested"
+    assert moved_message.delivered_span_id == f"span:{episode.episode_id}-retry"
+
+    assert [member.episode_id for member in response.members] == [
+        episode.episode_id,
+        newer.episode_id,
+    ]
+    worker = next(actor for actor in response.actors if actor.kind == "worker")
+    assert worker.started_by_span_id == f"span:{episode.episode_id}-root"
+    assert response.handoffs[0].to_actor_id == worker.actor_id
+    assert response.handoffs[0].from_span_id == worker.started_by_span_id
+
+    monkeypatch.setattr(projection, "EPISODE_TIMELINE_EVENT_LIMIT", 1)
+    bounded = build_episode_timeline(store, newer)
+    assert bounded.truncated and bounded.spans == []
+    assert bounded.handoffs[0].from_span_id == worker.started_by_span_id
+
+
+def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
+    from rcp.storage import WatcherRecord
 
     from .test_episode_api_serialization import _project
     from .test_experiment_episode_storage import _admit_root, _bind, _continuation, _task
@@ -307,212 +536,200 @@ def test_experiment_timeline_watcher_history(tmp_path):
     episode_id, root = _admit_root(store)
     _bind(store, episode_id, root.operation_id, invocation=1)
     now = store.now()
-    wake = _task(
+    retry = _task(
         store,
-        "watcher-wake",
+        "retry",
         episode_id,
-        trigger="watcher",
         invocation=2,
+        attempt=2,
+        trigger="watcher",
         session_id="native-session",
         stage_root="/tmp/exact-experiment-stage",
     )
-    with store.connection() as connection:
-        store._insert_agent_task(connection, wake, continuation_cause="watcher_wake")
-    common = dict(
-        project_id="project",
-        origin_operation_id=root.operation_id,
-        origin_task_kind="node_chat",
-        chat_id="episode-chat",
-        node_id="exp-one",
-        episode_id=episode_id,
-        continuation=_continuation(episode_id),
-        created_at=now,
+    report = _task(store, "report", episode_id).model_copy(
+        update={
+            "kind": "episode_report",
+            "visible": False,
+            "request": {"provider": "codex"},
+            "parent_operation_id": retry.operation_id,
+        }
     )
+    with store.connection() as connection:
+        for task in (retry, report):
+            store._insert_agent_task(connection, task, continuation_cause="fresh")
     store.create_watchers(
         [
             WatcherRecord(
                 watcher_id="shell",
+                project_id="project",
+                origin_operation_id=root.operation_id,
+                origin_task_kind="node_chat",
+                chat_id="episode-chat",
+                node_id="exp-one",
+                episode_id=episode_id,
+                continuation=_continuation(episode_id),
+                created_at=now,
                 check_command="true",
                 log_path="/tmp/check.log",
                 cwd="/tmp",
                 status="completed",
                 completed_at=now,
-                notification_operation_id=wake.operation_id,
-                **common,
-            ),
-            GraphWatcherRecord(
-                watcher_id="graph",
-                armed_revision=1,
-                condition=NodeStatusGraphCondition(node_id="exp-one", status_in=["completed"]),
-                status="stopped",
-                stopped_at=now,
-                stop_operation_id=root.operation_id,
-                stop_reason="Human stopped observing",
-                **common,
-            ),
+                notification_operation_id=retry.operation_id,
+            )
         ]
     )
-    episode = store.episode(episode_id)
-    assert episode is not None
-    response = build_episode_timeline(store, episode)
-    by_id = {event.event_id: event for event in response.events}
-    assert response.mode == "experiment_loop"
-    assert by_id["wake:watcher-wake"].cause == "watcher_wake"
-    assert by_id["notice:shell:armed"].parent_event_id == "turn:loop-root"
-    assert by_id["notice:shell:completed"].parent_event_id == "wake:watcher-wake"
-    assert by_id["notice:graph:stopped"].parent_event_id == "turn:loop-root"
+    response = build_episode_timeline(store, store.episode(episode_id))
+    assert {actor.kind for actor in response.actors} == {"human", "agent", "watcher"}
+    spans = {span.task_id: span for span in response.spans}
+    assert len({span.actor_id for span in response.spans}) == 1
+    assert spans["retry"].attempt == 2
+    assert spans["retry"].invocation_number is None
+    assert spans["report"].kind == "report"
+    assert spans["report"].headline is None
+    watcher = next(actor for actor in response.actors if actor.kind == "watcher")
+    assert watcher.started_by_span_id == f"span:{root.operation_id}"
+    assert watcher.started_at == watcher.ended_at == now
+    signal = next(signal for signal in response.signals if signal.kind == "watcher")
+    assert signal.landing == "woke"
+    assert signal.landed_span_id == "span:retry"
 
 
-def test_harvested_notice_and_suppressed_wake_provenance(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    episode = seed_episode_timeline(store, app.state.default_project_id)
-    prefix = episode.episode_id
+@pytest.mark.parametrize(
+    "messages, expected",
+    [
+        (["First finding. More detail."], "First finding."),
+        (["A trace before the answer.", "Final answer. Detail."], "Final answer."),
+        ([], None),
+        (
+            ["word " * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH],
+            ("word " * EPISODE_TIMELINE_HEADLINE_MAX_LENGTH)[
+                : EPISODE_TIMELINE_HEADLINE_MAX_LENGTH - 1
+            ].rsplit(" ", 1)[0]
+            + "…",
+        ),
+    ],
+)
+def test_headline_uses_stored_answer_only(timeline, messages, expected):
+    store, episode, _ = timeline
     with store.connection() as connection:
         connection.execute(
-            "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='acknowledged', acknowledged_at=?, acknowledged_by=?, acknowledged_operation_id=?, wake_suppressed='self_caused' WHERE notice_id=?",
-            (episode.updated_at, f"{prefix}-root", f"{prefix}-wake", f"{prefix}-notice-0"),
+            "UPDATE graph_runs SET result_json=?, status_message='Not an answer' WHERE operation_id=?",
+            (json.dumps({"messages": messages}), f"{episode.episode_id}-root"),
         )
-        # A notice harvested before the consuming turn was recorded has no proven parent.
-        connection.execute(
-            "UPDATE auto_research_lifecycle_notices SET delivered_at=NULL, delivery_operation_id=NULL, state='acknowledged', acknowledged_at=?, acknowledged_by=? WHERE notice_id=?",
-            (episode.updated_at, f"{prefix}-root", f"{prefix}-notice-1"),
-        )
-        connection.execute("DELETE FROM auto_research_recoveries WHERE episode_id=?", (prefix,))
-    events = {event.event_id: event for event in build_episode_timeline(store, episode).events}
-    notice = events[f"notice:{prefix}-notice-0"]
-    # The harvesting turn, not the stable actor id that `acknowledged_by` carries.
-    assert notice.parent_event_id == f"wake:{prefix}-wake"
-    assert events[f"notice:{prefix}-notice-1"].parent_event_id is None
-    assert notice.cause == "completed; wake_suppressed=self_caused"
-    assert notice.provenance == "recorded"
-    assert events[f"turn:{prefix}-worker"].links.control_node_id == "exp/timeline"
-    assert events[f"turn:{prefix}-worker"].provenance == "recorded"
-    assert events[f"retry:{prefix}-retry"].cause is None
-    assert events[f"retry:{prefix}-retry"].provenance == "unknown"
+    span = next(
+        span
+        for span in build_episode_timeline(store, episode).spans
+        if span.task_id == f"{episode.episode_id}-root"
+    )
+    assert span.headline == expected
 
 
-def test_task_degradation_survives_detail_bound(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    episode = seed_episode_timeline(store, app.state.default_project_id)
-    note = "Provider ignored the requested reasoning effort and used its own default."
-    store.record_agent_task_receipt(
-        episode.root_operation_id, "provider_exit", {"degradation": note}
+@pytest.mark.parametrize("kind", ["handoff", "message"])
+def test_text_endpoint_immutable_body_and_chain_ownership(timeline, kind):
+    store, episode, client = timeline
+    body = _handoff(store, episode) if kind == "handoff" else "Please check the final evidence."
+    ref = "handoff:spawn-command" if kind == "handoff" else f"message:{episode.episode_id}-human"
+    base = f"/api/projects/{episode.project_id}/episodes"
+    response = client.get(f"{base}/{episode.episode_id}/timeline/text/{ref}")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "text_ref": ref,
+        "kind": "assignment" if kind == "handoff" else "message",
+        "owner_episode_id": episode.episode_id,
+        "body": body,
+        "sha256": hashlib.sha256(body.encode()).hexdigest(),
+    }
+    newer = episode.model_copy(
+        update={
+            "episode_id": str(uuid.uuid4()),
+            "continues_episode_id": episode.episode_id,
+            "root_operation_id": None,
+            "created_at": store.now(),
+        }
     )
     with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET status_message=? WHERE operation_id=?",
-            ("Status " * 100, episode.root_operation_id),
-        )
-    event = next(
-        event
-        for event in build_episode_timeline(store, episode).events
-        if event.links.task_id == episode.root_operation_id
+        store._insert_episode(connection, newer)
+    assert client.get(f"{base}/{newer.episode_id}/timeline/text/{ref}").json() == response.json()
+    other = seed_episode_timeline(store, episode.project_id)
+    assert client.get(f"{base}/{other.episode_id}/timeline/text/{ref}").status_code == 404
+    assert (
+        client.get(f"{base}/{episode.episode_id}/timeline/text/message:missing").status_code == 404
     )
-    assert event.detail.startswith(note)
-    assert len(event.detail) == 500
+    assert (
+        client.get(
+            f"/api/projects/foreign/episodes/{episode.episode_id}/timeline/text/{ref}"
+        ).status_code
+        == 404
+    )
 
 
-def test_timeline_reads_hydrate_only_the_newest_suffix(tmp_path):
-    """The timeline keeps the newest events, so its store reads take a ``newest`` bound.
-
-    Bounded reads return the same records as the tail of the full read, in the
-    same order; only the rows that can never reach the wire are left unread.
-    """
-
-    from .test_auto_research_children_storage import _work_pair
-    from .test_branch_target_storage import _create_auto_episode, _store, _worker_authority
-
-    store = _store(tmp_path)
-    episode, root = _create_auto_episode(store)
-    # The ceiling is 4: the root, one worker, and two child Work routes.
-    for index in range(1):
-        worker_id = f"worker-{index}"
-        store.create_auto_research_agent_task(
-            root.model_copy(
-                update={
-                    "operation_id": worker_id,
-                    "parent_operation_id": root.operation_id,
-                    "request": {
-                        **root.request,
-                        "role": "worker",
-                        "actor_operation_id": worker_id,
-                        "control_node_id": f"exp/{index}",
-                    },
-                    "dispatch_authority": _worker_authority(episode.episode_id),
-                }
-            ),
-            role="worker",
-        )
-    for index in range(2):
-        route, task = _work_pair(store, episode, root, worker_id=f"child-work-{index}")
-        store.create_auto_research_child_work(route, task)
-    works = store.auto_research_child_works(episode.episode_id)
-    assert len(works) == 2
-    assert store.auto_research_child_works(episode.episode_id, newest=1) == works[-1:]
-    assert set(store.episodes_by_ids([episode.episode_id, "missing"])) == {episode.episode_id}
-    assert store.episode_watchers(episode.episode_id) == []
-    # Child Work spends invocations without joining the paid orchestrator or worker turns.
-    paid = store.auto_research_tasks(episode.episode_id)
-    assert len(paid) == 2
-    assert store.auto_research_tasks(episode.episode_id, newest=1) == paid[-1:]
-    tasks = store.episode_tasks(episode.episode_id)
-    assert len(tasks) == 4
-    assert store.episode_tasks(episode.episode_id, newest=2) == tasks[-2:]
-    invocations = store.episode_invocations(episode.episode_id)
-    assert [row.invocation_number for row in invocations] == [1, 2, 3, 4]
-    assert store.episode_invocations(episode.episode_id, newest=1) == invocations[-1:]
-    with store.connection() as connection:
-        for recovery_id, created_at, updated_at in (
-            ("recovery-old", "2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z"),
-            ("recovery-new", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z"),
-        ):
-            connection.execute(
-                "INSERT INTO auto_research_recoveries (recovery_id, episode_id, operation_id,"
-                " failure_kind, retry_mode, attempts, max_attempts, status, diagnostic,"
-                " created_at, updated_at) VALUES (?, ?, ?, 'provider', 'exact', 1, 3,"
-                " 'exhausted', 'diag', ?, ?)",
-                (recovery_id, episode.episode_id, root.operation_id, created_at, updated_at),
-            )
-    recoveries = store.auto_research_recoveries(episode.episode_id)
-    assert [row.recovery_id for row in recoveries] == ["recovery-old", "recovery-new"]
-    # A recovery is an event at its last update, so the bound keeps the latest-updated row.
-    assert store.auto_research_recoveries(episode.episode_id, newest=1) == recoveries[:1]
-
-
-def test_auto_research_timeline_names_its_armed_graph_conditions(tmp_path):
-    """A parked Auto-research run shows what it waits for, not a bare "armed"."""
-
+@pytest.mark.parametrize(
+    "state,event", [("active", "armed"), ("completed", "fired"), ("stopped", "stopped")]
+)
+def test_graph_watcher_names_node_without_inventing_episode(timeline, state, event):
     from rcp.storage import GraphWatcherRecord
     from rcp.storage.models import NodeStatusGraphCondition
 
-    from .test_episode_api_serialization import _project
     from .test_experiment_episode_storage import _continuation
 
-    store = AppStore(tmp_path / "data")
-    _project(store)
-    episode = seed_episode_timeline(store, "project")
+    store, episode, _ = timeline
+    prefix = episode.episode_id
+    now = store.now()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status='running', ending=NULL, wrapup_state='not_started', wrapup_error=NULL, stop_requested_at=NULL, ended_at=NULL WHERE episode_id=?",
+            (prefix,),
+        )
     store.create_watchers(
         [
             GraphWatcherRecord(
                 watcher_id="graph",
-                project_id="project",
-                origin_operation_id=f"{episode.episode_id}-root",
+                project_id=episode.project_id,
+                origin_operation_id=f"{prefix}-root",
                 origin_task_kind="auto_research",
                 chat_id="episode-chat",
-                episode_id=episode.episode_id,
-                continuation=_continuation(episode.episode_id),
-                created_at=store.now(),
+                episode_id=prefix,
+                continuation=_continuation(prefix),
+                created_at=now,
                 graph_target=episode.graph_target,
                 armed_revision=1,
-                condition=NodeStatusGraphCondition(
-                    node_id="dec/direction", status_in=["decided", "revisit"]
-                ),
+                condition=NodeStatusGraphCondition(node_id="exp/timeline", status_in=["completed"]),
+                status=state,
+                completed_at=now if state == "completed" else None,
+                stopped_at=now if state == "stopped" else None,
+                notification_operation_id=f"{prefix}-wake" if state == "completed" else None,
             )
         ]
     )
-    events = {event.event_id: event for event in build_episode_timeline(store, episode).events}
-    armed = events["notice:graph:armed"]
-    assert "dec/direction" in armed.title
-    assert "decided" in armed.title and "revisit" in armed.title
+    response = build_episode_timeline(store, episode)
+    signal = next(item for item in response.signals if item.item_id == "watcher:graph")
+    assert signal.event == event
+    assert signal.source_actor_id is None
+    assert signal.source_row_key == "node:exp/timeline"
+    assert signal.armed_span_id == f"span:{prefix}-root"
+    assert signal.armed_at == now
+    assert signal.landed_span_id == (f"span:{prefix}-wake" if state == "completed" else None)
+
+
+def test_recorded_continuation_notice_and_child_stop_issuer_stay_linked(timeline):
+    store, episode, _ = timeline
+    prefix = episode.episode_id
+    child_id = store.auto_research_child_experiments(prefix)[0].child_episode_id
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO auto_research_lifecycle_notices (notice_id, episode_id, source_kind, source_id, source_event, state, payload_json, created_at) VALUES (?, ?, 'episode', ?, 'reauthorized', 'pending', '{}', ?)",
+            (f"{prefix}-continued", prefix, prefix, episode.updated_at),
+        )
+        connection.execute(
+            "UPDATE episodes SET stop_requested_at=?, stop_initiated_by=? WHERE episode_id=?",
+            (episode.updated_at, f"orchestrator:{prefix}-root", child_id),
+        )
+    response = build_episode_timeline(store, episode)
+    notice = next(s for s in response.signals if s.item_id.endswith(f"{prefix}-continued"))
+    assert notice.source_actor_id == f"actor:orchestrator:{prefix}"
+    stop = next(
+        m
+        for m in response.marks
+        if m.actor_id == f"actor:experiment:{child_id}" and m.kind == "stop_requested"
+    )
+    assert stop.by_span_id == f"span:{prefix}-root"

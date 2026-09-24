@@ -157,10 +157,11 @@ RCP starts a fresh provider process per turn and per probe.
    child failure classified as a login failure, never spend a wake; the notice
    records why it did not wake anyone instead of pretending it was read. The
    coalescing window stays at five seconds.
-10. **Timeline.** One time axis with events branching off it, built from
-    persisted causal facts written by the earlier slices. The backend emits
-    typed events; the web holds one timeline model class and a render
-    configuration. It replaces the Turns and Mail sections for both modes.
+10. **Timeline.** One time axis built from persisted causal facts written by
+    the earlier slices. It replaces the Turns and Mail sections for both
+    modes. The typed-event list this slice shipped has since been replaced by
+    the actor roster; `docs/specs/api-web-and-desktop-projections.md`
+    (Episode timeline) is the current contract.
 11. **No periodic logging.** RCP verifies how its own warnings reach the
     service journal before claiming anything about that route; repeating
     failures are durable state (decision 2) and are logged on the first durable
@@ -405,19 +406,9 @@ harvest stays pending for a later wake.
 
 ### Timeline
 
-`GET /api/projects/{project_id}/episodes/{episode_id}/timeline` returns typed
-events in time order across a continuation chain: `turn` (role, cause, revision,
-status, attempt), `retry` (parent turn), `wake` (cause and the notice or message
-ids it delivered), `mail`, `child` (episode id, control node, event), `lifecycle`
-(ending fenced, ceiling reached, recovery exhausted, wrap-up failed, continued,
-signed out, sign-in), and `human` (stop, retry, continue, message, with the
-member). Each event carries `at`, `actor`, `parent_event_id`, and the task,
-message, or episode it links to. Facts the earlier slices persist are the source;
-history without provenance is labelled unknown, not guessed. The web holds one
-`EpisodeTimeline` model class and a `TimelineRenderConfig` mapping event kinds to
-lane, glyph, color token, and fold behavior. Mail is folded and opens on click; a
-task event opens the task inspector; a child event opens the child episode. It
-replaces the Turns and Mail sections in the Runs card for both modes.
+Implemented as a typed-event list, then replaced by the actor roster. The
+current contract is the Episode timeline section of
+`docs/specs/api-web-and-desktop-projections.md`; nothing here remains to build.
 
 ## Slices
 
@@ -673,9 +664,8 @@ On codex 0.154.0, in a logged-out scratch `CODEX_HOME`, 2026-09-14:
   the next wake, which is why the prompt tells the orchestrator to harvest once
   more before finishing. A self-requested stop or replacement causes no wake; a
   child login failure causes no wake and does not block mail.
-- The Runs card shows the timeline for the production copy with six wakes
-  labelled by cause and five retries nested under their turns, and the Turns and
-  Mail sections are gone.
+- The Runs card shows the timeline for the production copy with its wakes
+  labelled by cause, and the Turns and Mail sections are gone.
 - Every document and prompt listed above says what the code does.
 
 Verified on the copy (2026-09-14, this branch, schema 17 migrated to 22 on the
