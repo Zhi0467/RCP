@@ -836,7 +836,8 @@ Every team checkout's local Git config pins `core.sshCommand` to its own deploy
 key, so any process in that repository, whether terminal, Discuss, Work, or
 episode, fetches and pushes with it. Provisioning writes it and checkout
 verification backfills it. This grants transport only: a launch's write roots
-still decide where it may commit. Every terminal and provider launch also gets
+still decide where it may commit, though any launch, Discuss included, can push
+refs that already exist or delete a remote branch. Every terminal and provider launch also gets
 `GIT_CONFIG_SYSTEM` naming a generated file with the member's default identity,
 their display name and `<member-id>@members.rcp.invalid`. It sits at Git's
 lowest precedence, so any repository or global `git config` overrides it; on a

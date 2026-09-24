@@ -28,12 +28,13 @@ def write_git_identity(
     data_dir: Path, identity: GitIdentity, *, git_path: str | None = None
 ) -> Path:
     """Write one member's lowest-precedence config on the execution machine."""
-    content = (
+    # The host's system config comes first: within one file the later value
+    # wins, so the member default must follow any system-wide identity.
+    content = '[include]\n\tpath = "/etc/gitconfig"\n' if Path("/etc/gitconfig").is_file() else ""
+    content += (
         f"[user]\n\tname = {_quoted(identity.display_name)}\n"
         f"\temail = {_quoted(identity.user_id + '@members.rcp.invalid')}\n"
     )
-    if Path("/etc/gitconfig").is_file():
-        content += '[include]\n\tpath = "/etc/gitconfig"\n'
     try:
         version = subprocess.run(
             ["git", "--version"],

@@ -14,8 +14,10 @@ Settled by the human on 2026-09-24:
 - The default push credential is the repository's deploy key, the one RCP
   already provisions for a team checkout.
 - Discuss and Work turns both get it, as does the member terminal. Discuss
-  keeps no repository writes, so it can reach the remote (`git ls-remote`) but
-  cannot fetch, commit, or push; those happen in Work or the terminal.
+  keeps no repository writes, so it cannot fetch, commit, or merge. It can
+  still push refs that already exist in the checkout, or delete a remote
+  branch, because a push only reads the local repository. RCP cannot fence
+  that in Discuss: the provider sandbox lets it read the key.
 - RCP adds no per-member Git setting: no personal key, name, or email. It
   supplies a default identity that any Git configuration overrides.
 - RCP membership becomes write access to the repository, because pushes

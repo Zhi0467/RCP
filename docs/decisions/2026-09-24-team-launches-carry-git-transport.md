@@ -16,9 +16,11 @@ identity and stores no per-member Git key, name, or email.
   Removing them from the project is the revocation.
 - **Authorship is unverified.** The commit author is whatever Git config says.
   Anyone can claim any name unless the repository requires signed commits.
-- **Discuss is no longer transport-free.** It can reach the remote. Its
-  repository writes stay at none, confirmed by the human, so it cannot fetch,
-  commit, or push; letting it write `.git` was rejected as a wider Discuss.
+- **Discuss is no longer transport-free.** Its repository writes stay at none,
+  confirmed by the human, so it cannot fetch, commit, or merge. It can still
+  push existing refs or delete a remote branch, since a push only reads the
+  local repository, and its sandbox can read the key. Letting it write `.git`
+  was rejected as a wider Discuss.
 
 ## Why
 
