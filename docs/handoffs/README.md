@@ -3,7 +3,8 @@
 Active:
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
-  — confirmed 2026-09-24, not implemented. The deploy key is the default push
+  — confirmed and implemented 2026-09-24; the live team-space push run and
+  real remote-machine SSH remain. The deploy key is the default push
   credential for the terminal, Discuss, and Work, with no per-member Git
   setting. RCP supplies a default commit identity that any Git config
   overrides.

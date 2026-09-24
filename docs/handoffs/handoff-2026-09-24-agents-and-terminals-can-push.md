@@ -1,7 +1,13 @@
 # Agents and terminals can push to their repositories
 
 Date: 2026-09-24
-Status: design confirmed by the human on 2026-09-24. Nothing is implemented.
+Status: design confirmed by the human on 2026-09-24. Implemented with
+automated coverage: per-checkout `core.sshCommand`, the member identity file
+for local and remote terminals and provider launches, and the missing-key
+notice. The affected test files, ruff, and pre-commit pass. Remaining: the
+live team-space run in the closure condition, and real SSH to a remote
+execution machine, which tests exercise only by running the shipped payload
+locally.
 
 Settled by the human on 2026-09-24:
 
@@ -84,8 +90,10 @@ launch preflight refuses an older Git rather than dropping the default.
 
 ### A missing deploy key is visible
 
-If a repository has no deploy key, the terminal and the chat composer say so, and name the operator action that
-provisions one. No silent credential-less launch.
+If a repository has no deploy key, a chat turn records a trace notice naming
+the operator action that provisions one and still runs, so one keyless
+repository cannot block every turn. A terminal open on that repository refuses
+with the same message. No silent credential-less launch.
 
 ## Invariants and docs that change
 
@@ -101,7 +109,7 @@ provisions one. No silent credential-less launch.
 
 ## Work and checks
 
-One pull request.
+One pull request. The first three items are implemented; the live run remains.
 
 - Team checkouts carry `core.sshCommand` for their deploy key, written at
   provisioning and backfilled on verification. Test: a provisioned checkout's
