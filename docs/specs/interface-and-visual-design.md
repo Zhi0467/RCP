@@ -309,14 +309,17 @@ are dotted to the recorded landing time. Watcher lines originate from their
 recorded node row, and missing stop attribution stays unattributed. Delivery
 labels never claim a message was read.
 
-One popover beneath the selected icon shows fetched hand-off or message text,
-including loading and error states, or the inline signal payload. Close, Escape,
-and outside click dismiss it. Selection highlights related actors, spans, and
-items and dims others. A detail panel links turn and attempt spans to the task
-inspector and child episodes to their existing Experiment detail; report spans
-do not open the task inspector. The panel appears only after a selection; for
-an orchestrator turn it shows the cause, what landed in the turn, what the turn
-did, and its headline. There is no separate wake table. Summary counts cover returned actors, hand-offs, and message
+One popover beneath the selected item shows its details: fetched hand-off or
+message text, including loading and error states, the inline signal payload,
+or an actor or span summary. For an orchestrator turn it shows the cause, what
+landed in the turn, what the turn did, and its headline. It links turn and
+attempt spans to the task inspector and child episodes to their existing
+Experiment detail; report spans do not open the task inspector. Close, Escape,
+and outside click dismiss it. Selection draws a thin outline on the selected
+block, highlights related actors, spans, and items, and dims others. There is no
+panel or table below the chart.
+
+Summary counts cover returned actors, hand-offs, and message
 dispositions and explicitly say when only truncated items are counted.
 
 Pinch or Ctrl/Cmd+wheel zooms at the cursor; buttons and double-click zoom, with

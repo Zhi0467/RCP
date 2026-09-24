@@ -13454,9 +13454,9 @@ details[open] > .view-disclosure-summary > svg:last-child {
   cursor: pointer;
   transition: opacity 120ms;
 }
-.roster-hit[aria-pressed="true"] > rect {
+.roster-hit[aria-pressed="true"] > .roster-block {
   stroke: var(--ink);
-  stroke-width: 2px;
+  stroke-width: 1.5px;
 }
 .roster-dim {
   opacity: 0.18;
@@ -13560,7 +13560,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .roster-popover {
   position: absolute;
   z-index: 10;
-  width: min(360px, calc(100% - 16px));
+  width: min(420px, calc(100% - 16px));
+  overflow-wrap: anywhere;
   max-height: 440px;
   overflow: auto;
   padding: 16px;
@@ -13579,10 +13580,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   overflow-wrap: anywhere;
   font-family: var(--mono);
   font-size: 12px;
-}
-.roster-below {
-  margin-top: 24px;
-  max-width: 760px;
 }
 .episode-roster .roster-item-icon {
   display: inline-flex;
@@ -13608,31 +13605,19 @@ details[open] > .view-disclosure-summary > svg:last-child {
   text-underline-offset: 2px;
   text-align: left;
 }
-.roster-below h3 {
-  font-size: 15px;
-  margin: 0 0 12px;
-}
-.roster-detail {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  padding: 16px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.roster-detail dl {
+.roster-popover dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 8px 14px;
 }
-.roster-detail dd {
+.roster-popover dd {
   margin: 0;
 }
-.roster-detail h4 {
+.roster-popover h4 {
   font-size: 12px;
   margin: 14px 0 6px;
 }
-.roster-detail blockquote {
+.roster-popover blockquote {
   margin: 16px 0;
   border-left: 2px solid var(--line-strong);
   padding-left: 12px;
@@ -13649,13 +13634,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .episode-roster :is(button, a, [role="button"], [role="dialog"]):focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 3px;
-}
-@media (max-width: 800px) {
-  .roster-detail {
-    padding: 16px 0 0;
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .roster-hit {

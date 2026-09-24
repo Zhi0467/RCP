@@ -154,13 +154,13 @@ export function EpisodeTimeline({
       return;
     }
     setSelected(id);
-    if (item(id) && anchor && host.current) {
+    if (anchor && host.current) {
       const a = (anchor.querySelector("[data-pop-anchor]") ?? anchor).getBoundingClientRect(),
         h = host.current.getBoundingClientRect();
       trigger.current = anchor;
       setCard({
         id,
-        x: Math.max(8, Math.min(a.left - h.left, h.width - 370)),
+        x: Math.max(8, Math.min(a.left - h.left, h.width - 430)),
         y: a.bottom - h.top + 8,
       });
     } else setCard(null);
@@ -203,7 +203,8 @@ export function EpisodeTimeline({
       key={id}
       onClick={(e) => {
         e.stopPropagation();
-        choose(id, e.currentTarget);
+        // Anchor the card at the item in the chart, not at this link.
+        choose(id, host.current?.querySelector(`[data-roster-id="${id}"]`) ?? e.currentTarget);
       }}
     >
       {label}
@@ -821,7 +822,7 @@ export function EpisodeTimeline({
             </g>
           </svg>
         </div>
-        {card && opened && (
+        {card && (
           <div
             ref={pop}
             role="dialog"
@@ -836,180 +837,179 @@ export function EpisodeTimeline({
                 ×
               </button>
             </header>
-            {"disposition" in opened && (
-              <p>
-                {actorLabel(opened.from_actor_id)} → {actorLabel(opened.to_actor_id)} ·{" "}
-                {disposition[opened.disposition]} · {stamp(opened.sent_at)}
-              </p>
-            )}
-            {"from_span_id" in opened && (
-              <p>
-                {title(opened.from_span_id)} → {title(opened.to_actor_id)} · {stamp(opened.at)}
-              </p>
-            )}
-            {"armed_at" in opened && opened.armed_at && (
-              <p>
-                Armed {stamp(opened.armed_at)}
-                {opened.armed_span_id && <> · {title(opened.armed_span_id)}</>}
-              </p>
-            )}
-            {"landing" in opened && (
-              <p>
-                {opened.landing ?? opened.state} · {stamp(opened.landed_at ?? opened.recorded_at)}
-              </p>
-            )}
-            {"payload" in opened ? (
-              <pre>{JSON.stringify(opened.payload, null, 2)}</pre>
-            ) : text.error ? (
-              <p role="alert">{text.error}</p>
-            ) : text.body === undefined ? (
-              <p role="status">Loading text…</p>
-            ) : (
-              <pre>{text.body}</pre>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="roster-below">
-        {selected && (
-          <aside className="roster-detail" aria-label="Timeline selection">
-            <h3>{title(selected)}</h3>
-            {selectedMark && (
-              <p>
-                {selectedMark.kind.replaceAll("_", " ")} · {stamp(selectedMark.at)}
-                {selectedMark.by_span_id && <> · {refButton(selectedMark.by_span_id)}</>}
-              </p>
-            )}
-            {selectedActor && (
+            {opened ? (
               <>
-                <dl>
-                  <dt>Kind</dt>
-                  <dd>{selectedActor.kind}</dd>
-                  {selectedActor.subtitle && (
-                    <>
-                      <dt>Node</dt>
-                      <dd>{selectedActor.subtitle}</dd>
-                    </>
-                  )}
-                  <dt>Outcome</dt>
-                  <dd>{timelineOutcome(selectedActor)}</dd>
-                  {selectedActor.started_at && (
-                    <>
-                      <dt>Started</dt>
-                      <dd>{stamp(selectedActor.started_at)}</dd>
-                    </>
-                  )}
-                  {selectedActor.ended_at && (
-                    <>
-                      <dt>Ended</dt>
-                      <dd>{stamp(selectedActor.ended_at)}</dd>
-                    </>
-                  )}
-                  {selectedActor.started_by_span_id && (
-                    <>
-                      <dt>Started by</dt>
-                      <dd>{refButton(selectedActor.started_by_span_id)}</dd>
-                    </>
-                  )}
-                </dl>
-                {child && onOpenExperimentEntry && (
-                  <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                {"disposition" in opened && (
+                  <p>
+                    {actorLabel(opened.from_actor_id)} → {actorLabel(opened.to_actor_id)} ·{" "}
+                    {disposition[opened.disposition]} · {stamp(opened.sent_at)}
+                  </p>
                 )}
-                {data.spans
-                  .filter((s) => s.actor_id === selectedActor.actor_id)
-                  .map((s) => (
-                    <div key={s.span_id}>
-                      {refButton(s.span_id)} · {stamp(s.started_at)} · {s.status} · {duration(s)}
-                      {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
-                      {s.headline && <p>{s.headline}</p>}
-                      {s.error && <p className="roster-error">{s.error}</p>}
-                    </div>
-                  ))}
+                {"from_span_id" in opened && (
+                  <p>
+                    {title(opened.from_span_id)} → {title(opened.to_actor_id)} · {stamp(opened.at)}
+                  </p>
+                )}
+                {"armed_at" in opened && opened.armed_at && (
+                  <p>
+                    Armed {stamp(opened.armed_at)}
+                    {opened.armed_span_id && <> · {title(opened.armed_span_id)}</>}
+                  </p>
+                )}
+                {"landing" in opened && (
+                  <p>
+                    {opened.landing ?? opened.state} ·{" "}
+                    {stamp(opened.landed_at ?? opened.recorded_at)}
+                  </p>
+                )}
+                {"payload" in opened ? (
+                  <pre>{JSON.stringify(opened.payload, null, 2)}</pre>
+                ) : text.error ? (
+                  <p role="alert">{text.error}</p>
+                ) : text.body === undefined ? (
+                  <p role="status">Loading text…</p>
+                ) : (
+                  <pre>{text.body}</pre>
+                )}
               </>
-            )}
-            {selectedSpan && (
+            ) : (
               <>
-                <p>
-                  {stamp(selectedSpan.started_at)} · {duration(selectedSpan)} ·{" "}
-                  {selectedSpan.status}
-                  {selectedSpan.invocation_number !== null && (
-                    <> · invocation {selectedSpan.invocation_number}</>
-                  )}
-                </p>
-                {wake ? (
+                {selectedMark && (
+                  <p>
+                    {selectedMark.kind.replaceAll("_", " ")} · {stamp(selectedMark.at)}
+                    {selectedMark.by_span_id && <> · {refButton(selectedMark.by_span_id)}</>}
+                  </p>
+                )}
+                {selectedActor && (
                   <>
-                    <p>{wake.cause}</p>
-                    {wake.landed.length > 0 && (
+                    <dl>
+                      <dt>Kind</dt>
+                      <dd>{selectedActor.kind}</dd>
+                      {selectedActor.subtitle && (
+                        <>
+                          <dt>Node</dt>
+                          <dd>{selectedActor.subtitle}</dd>
+                        </>
+                      )}
+                      <dt>Outcome</dt>
+                      <dd>{timelineOutcome(selectedActor)}</dd>
+                      {selectedActor.started_at && (
+                        <>
+                          <dt>Started</dt>
+                          <dd>{stamp(selectedActor.started_at)}</dd>
+                        </>
+                      )}
+                      {selectedActor.ended_at && (
+                        <>
+                          <dt>Ended</dt>
+                          <dd>{stamp(selectedActor.ended_at)}</dd>
+                        </>
+                      )}
+                      {selectedActor.started_by_span_id && (
+                        <>
+                          <dt>Started by</dt>
+                          <dd>{refButton(selectedActor.started_by_span_id)}</dd>
+                        </>
+                      )}
+                    </dl>
+                    {child && onOpenExperimentEntry && (
+                      <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                    )}
+                    {data.spans
+                      .filter((s) => s.actor_id === selectedActor.actor_id)
+                      .map((s) => (
+                        <div key={s.span_id}>
+                          {refButton(s.span_id)} · {stamp(s.started_at)} · {s.status} ·{" "}
+                          {duration(s)}
+                          {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
+                          {s.headline && <p>{s.headline}</p>}
+                          {s.error && <p className="roster-error">{s.error}</p>}
+                        </div>
+                      ))}
+                  </>
+                )}
+                {selectedSpan && (
+                  <>
+                    <p>
+                      {stamp(selectedSpan.started_at)} · {duration(selectedSpan)} ·{" "}
+                      {selectedSpan.status}
+                      {selectedSpan.invocation_number !== null && (
+                        <> · invocation {selectedSpan.invocation_number}</>
+                      )}
+                    </p>
+                    {wake ? (
                       <>
-                        <h4>Landed</h4>
-                        {wake.landed.map((i) => (
-                          <div key={i.item_id}>{refButton(i.item_id, i.label)}</div>
+                        <p>{wake.cause}</p>
+                        {wake.landed.length > 0 && (
+                          <>
+                            <h4>Landed</h4>
+                            {wake.landed.map((i) => (
+                              <div key={i.item_id}>{refButton(i.item_id, i.label)}</div>
+                            ))}
+                          </>
+                        )}
+                        {wake.actions.length > 0 && <h4>Did</h4>}
+                        {wake.actions.map((i) => (
+                          <div key={i.item_id}>
+                            {i.at && <time dateTime={i.at}>{clock(Date.parse(i.at))} · </time>}
+                            {i.icon ? (
+                              <>
+                                {i.label}{" "}
+                                <button
+                                  type="button"
+                                  className="roster-item-icon"
+                                  aria-label={i.label}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    choose(i.item_id, e.currentTarget);
+                                  }}
+                                >
+                                  {i.icon === "document" ? (
+                                    <svg
+                                      width="12"
+                                      height="16"
+                                      viewBox="0 0 12 16"
+                                      aria-hidden="true"
+                                    >
+                                      <rect x="1" y="1" width="10" height="14" rx="1" />
+                                      <path d="M3 5h6 M3 8h6 M3 11h4" />
+                                    </svg>
+                                  ) : (
+                                    "✉"
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              refButton(i.item_id, i.label)
+                            )}
+                          </div>
                         ))}
                       </>
+                    ) : (
+                      <p>{selectedSpan.cause}</p>
                     )}
-                    {wake.actions.length > 0 && <h4>Did</h4>}
-                    {wake.actions.map((i) => (
-                      <div key={i.item_id}>
-                        {i.at && <time dateTime={i.at}>{clock(Date.parse(i.at))} · </time>}
-                        {i.icon ? (
-                          <>
-                            {i.label}{" "}
-                            <button
-                              type="button"
-                              className="roster-item-icon"
-                              aria-label={i.label}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                choose(i.item_id, e.currentTarget);
-                              }}
-                            >
-                              {i.icon === "document" ? (
-                                <svg width="12" height="16" viewBox="0 0 12 16" aria-hidden="true">
-                                  <rect x="1" y="1" width="10" height="14" rx="1" />
-                                  <path d="M3 5h6 M3 8h6 M3 11h4" />
-                                </svg>
-                              ) : (
-                                "✉"
-                              )}
-                            </button>
-                          </>
-                        ) : (
-                          refButton(i.item_id, i.label)
-                        )}
-                      </div>
-                    ))}
+                    {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
+                    {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
+                    {child && onOpenExperimentEntry && (
+                      <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                    )}
+                    {selectedSpan.kind !== "report" && (
+                      <button onClick={() => onInspectTask(selectedSpan.task_id)}>
+                        Inspect task
+                      </button>
+                    )}
                   </>
-                ) : (
-                  <p>{selectedSpan.cause}</p>
                 )}
-                {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
-                {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
-                {child && onOpenExperimentEntry && (
-                  <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
-                )}
-                {selectedSpan.kind !== "report" && (
-                  <button onClick={() => onInspectTask(selectedSpan.task_id)}>Inspect task</button>
+                {!wake && (
+                  <div className="roster-related">
+                    {[...(related ?? [])]
+                      .filter((id) => id !== selected && (actor(id) || span(id) || item(id)))
+                      .map((id) => refButton(id))}
+                  </div>
                 )}
               </>
             )}
-            {selected && item(selected) && (
-              <>
-                <p>
-                  {"preview" in item(selected)!
-                    ? (item(selected) as { preview: string }).preview
-                    : JSON.stringify((item(selected) as { payload: object }).payload)}
-                </p>
-                <button onClick={(e) => choose(selected, e.currentTarget)}>Open full text</button>
-              </>
-            )}
-            {!wake && (
-              <div className="roster-related">
-                {[...(related ?? [])]
-                  .filter((id) => id !== selected && (actor(id) || span(id) || item(id)))
-                  .map((id) => refButton(id))}
-              </div>
-            )}
-          </aside>
+          </div>
         )}
       </div>
     </section>
