@@ -983,10 +983,16 @@ def _upgrade_projection_value(value: Any, annotation: Any, discriminator: Any = 
         if len(variants) == 1:
             _upgrade_projection_value(value, variants[0])
         elif isinstance(discriminator, str) and isinstance(value, dict):
+            discriminator_value = value.get(discriminator)
+            if discriminator == "intent" and discriminator not in value:
+                from rcp.core.operations import _legacy_proposal_intent
+
+                # Resolve as validation does, without persisting the omitted intent.
+                discriminator_value = _legacy_proposal_intent(value)
             for variant in variants:
                 if isinstance(variant, type) and issubclass(variant, BaseModel):
                     tag = variant.model_fields.get(discriminator)
-                    if tag and value.get(discriminator) in get_args(tag.annotation):
+                    if tag and discriminator_value in get_args(tag.annotation):
                         _upgrade_projection_value(value, variant)
                         break
     elif isinstance(annotation, type) and issubclass(annotation, BaseModel):

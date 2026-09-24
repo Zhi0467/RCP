@@ -211,8 +211,8 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
 def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
     """Cover every model path and independently omit every defaulted field.
 
-    These literal documents are a schema inventory, not a replay corpus. Never
-    regenerate expected documents by validating/dumping the current models.
+    Keep the literal schema inventory independent of model validation/serialization;
+    separately verify the real serialized Proposal shape.
     """
     examples = json.loads(
         """
@@ -406,6 +406,24 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         assert legacy == expected, path
         upgrade_graph_projection(legacy)
         assert legacy == expected, path
+    # Real Proposal serialization omits legacy intents, including create_nodes
+    # with nested Experiments. Compare that stored shape with a fresh serialization.
+    graph = GraphState.model_validate(current)
+    operation = next(op for op in graph.proposals["proposal"].ops if op.op == "create_nodes")
+    experiment = next(node for node in operation.nodes if node.type == "experiment")
+    experiment.invocation_ceiling = type(experiment).model_fields["invocation_ceiling"].default
+    serialized = graph.model_dump(mode="json")
+    legacy = deepcopy(serialized)
+    operation = next(
+        op for op in legacy["proposals"]["proposal"]["ops"] if op["op"] == "create_nodes"
+    )
+    assert "intent" not in operation
+    experiment = next(node for node in operation["nodes"] if node["type"] == "experiment")
+    del experiment["invocation_ceiling"]
+    upgrade_graph_projection(legacy)
+    assert legacy == serialized
+    upgrade_graph_projection(legacy)
+    assert legacy == serialized
     current["future_graph_field"] = {"kept": True}
     current["nodes"]["experiment"]["future_node_field"] = "kept"
     current["edges"]["edge"]["assessment"]["scope"] = "  unnormalized  "
