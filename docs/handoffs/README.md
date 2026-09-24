@@ -4,8 +4,8 @@ Active:
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed 2026-09-24, not implemented. The deploy key is the default push
-  credential for the terminal, Discuss, and Work; a member may add their own
-  key once. RCP supplies a default commit identity that any Git config
+  credential for the terminal, Discuss, and Work, with no per-member Git
+  setting. RCP supplies a default commit identity that any Git config
   overrides.
 
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)

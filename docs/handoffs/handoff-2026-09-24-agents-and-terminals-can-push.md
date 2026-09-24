@@ -8,10 +8,8 @@ Settled by the human on 2026-09-24:
 - The default push credential is the repository's deploy key, the one RCP
   already provisions for a team checkout.
 - Discuss and Work turns both get it, as does the member terminal.
-- A member may optionally add their own key once. When present, it replaces
-  the deploy key for that member's terminal and chat turns.
-- RCP stores no per-member Git name or email. It supplies a default identity
-  that any Git configuration overrides.
+- RCP adds no per-member Git setting: no personal key, name, or email. It
+  supplies a default identity that any Git configuration overrides.
 - RCP membership becomes write access to the repository, because pushes
   authenticate as the deploy key. GitHub records the deploy key, not the
   member, as the pusher; only the unverified commit author names the member.
@@ -42,8 +40,7 @@ member configures `user.name` and `user.email` by hand in each shell.
 right `GIT_SSH_COMMAND` for a deploy key. It becomes the single owner of "Git
 access for this member on this repository", returning:
 
-- the key to use: the member's own key if they added one, else the deploy key;
-- `GIT_SSH_COMMAND` pinned to that key and the account's `known_hosts`;
+- `GIT_SSH_COMMAND` pinned to the repository's deploy key and the account's `known_hosts`;
 - `GIT_CONFIG_SYSTEM` pointing at a generated file with the member's default
   `user.name` and `user.email`.
 
@@ -67,20 +64,9 @@ there applies to every member; an exported variable lasts one shell. RCP does
 not add storage to change that. The system layer needs Git 2.32 or newer;
 launch preflight refuses an older Git rather than dropping the default.
 
-### A member's own key
-
-Stored beside the deploy keys under `rcp-server/credentials`, one file per
-member, mode 0600, owned by the service account. It is added and removed from
-the member's own settings, never shown back. The terminal decision record
-already states the honest limit: anything the service account can read, a
-member shell or agent can read. A personal key stored here is readable by
-other members' agents and shells on the same server. The settings screen must
-say so in one sentence.
-
 ### A missing deploy key is visible
 
-If a repository has no deploy key and the member has no own key, the
-terminal and the chat composer say so, and name the operator action that
+If a repository has no deploy key, the terminal and the chat composer say so, and name the operator action that
 provisions one. No silent credential-less launch.
 
 ## Invariants and docs that change
@@ -94,12 +80,14 @@ provisions one. No silent credential-less launch.
 - A decision record: agents may push, including from Discuss, and why the
   separation of Discuss from repository writes was dropped.
 
-## Slices
+## Work and checks
 
-1. Git access owner: own key, deploy-key fallback, default identity file.
-   Terminal uses it. Tests: environment per case, missing-key refusal.
-2. Provider launches receive it, local and remote, for Discuss and Work.
-   Test: a PATH-shimmed `git` sees the variables in both modes.
-3. Member settings: add or remove own key; missing-key notice.
-4. Live team-space run: terminal, Discuss, and Work each fetch, commit, and
-   push. This also closes the deploy-key run the terminal handoff still owes.
+One pull request.
+
+- The Git access owner returns the deploy-key `GIT_SSH_COMMAND` and the
+  default identity file; the terminal and every provider launch, local and
+  remote, Discuss and Work, use it. Tests: the environment with and without a
+  deploy key, and a PATH-shimmed `git` that sees it in both modes.
+- The missing-key notice in the terminal and chat composer.
+- Live team-space run: terminal, Discuss, and Work each fetch, commit, and
+  push. This also closes the deploy-key run the terminal handoff still owes.
