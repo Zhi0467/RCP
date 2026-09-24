@@ -2,12 +2,6 @@
 
 Active:
 
-- [An episode timeline shows who ran, and what passed between them](handoff-2026-09-24-episode-timeline-as-agent-roster.md)
-  — design confirmed 2026-09-24 against a mockup built from a real
-  Auto-research run; not yet implemented. The event-list timeline is replaced by
-  an actor-shaped projection and an agent-roster chart. Hand-offs, messages, and
-  notices are drawn where they landed, with no inferred links.
-
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the
   same day. A command action names the shell it runs in, a pause is titled for
