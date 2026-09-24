@@ -168,12 +168,18 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
 
         timeline = client.get(f"/api/projects/{project_id}/episodes/{continuation_id}/timeline")
         assert timeline.status_code == 200
-        events = {event["event_id"]: event for event in timeline.json()["events"]}
-        boundary = events[f"lifecycle:continued:{continuation_id}"]
-        assert boundary["status"] == "4"
-        assert boundary["links"]["episode_id"] == continuation_id
-        assert f"{original.episode_id}:turn:{original_root.operation_id}" in events
-        assert f"wake:{continuation_root_id}" in events
+        data = timeline.json()
+        assert [member["episode_id"] for member in data["members"]] == [
+            original.episode_id,
+            continuation_id,
+        ]
+        spans = {span["span_id"]: span for span in data["spans"]}
+        assert f"span:{original_root.operation_id}" in spans
+        assert f"span:{continuation_root_id}" in spans
+        assert (
+            spans[f"span:{original_root.operation_id}"]["actor_id"]
+            == spans[f"span:{continuation_root_id}"]["actor_id"]
+        )
 
     request = AutoResearchRunRequest.model_validate(continuation_root.request)
     assert continuation_root.episode_id == continuation_id
@@ -201,8 +207,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     assert not episode_on_branch(store, original.episode_id, continuation_id)
     assert not episode_on_branch(store, None, original.episode_id)
 
-    # Once the newest member alone overflows the response, the source is not
-    # hydrated at all and the response says it is truncated.
+    # Bound after joining the chain, retaining only the newest items.
     with store.connection() as connection:
         for index in range(401):
             connection.execute(
@@ -216,8 +221,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     assert response.status_code == 200
     assert response.json()["truncated"] is True
     assert not any(
-        event["event_id"].startswith(f"{original.episode_id}:")
-        for event in response.json()["events"]
+        span["owner_episode_id"] == original.episode_id for span in response.json()["spans"]
     )
 
 
