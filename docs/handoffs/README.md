@@ -2,6 +2,12 @@
 
 Active:
 
+- [Release updates and rollbacks stay clean](handoff-2026-09-24-updates-and-rollbacks-stay-clean.md)
+  — design requested 2026-09-24; no implementation yet. Full stopped-tree
+  rollback proof, supported-source CI, server-state coverage and diagnostics
+  are planned in five slices. The legacy first-update procedure and historical
+  artifact inventory remain review items.
+
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the
   same day. A command action names the shell it runs in, a pause is titled for

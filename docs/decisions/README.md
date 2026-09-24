@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Update rollback preserves stopped trees independently of backup policy](2026-09-24-update-rollback-preserves-stopped-trees.md)
+  proposes separate application semantic proof and supervisor filesystem proof,
+  with no age-based retirement of supported release sources. Design only;
+  implementation and the legacy bootstrap procedure are not yet accepted.
+
 - [Graph rules render from the model](2026-09-23-graph-rules-render-from-the-model.md)
   records why agents learn field and relation meaning from descriptions in code
   rendered into every graph contract, why authority stays with each call site,
