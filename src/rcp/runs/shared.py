@@ -605,6 +605,9 @@ def _stage_task_contract(
     execution: AgentTaskExecution | None = None,
     role: str | None = None,
 ) -> tuple[str, str]:
+    # Stage before recording: a link lost during the upload must not leave a
+    # contract row that recovery reads as a prompt the provider could have seen.
+    contract_path = _stage_task_input(local_stage, remote_stage, label, content)
     if execution is not None:
         execution.store.record_agent_task_contract(
             execution.operation_id,
@@ -612,7 +615,6 @@ def _stage_task_contract(
             content,
             hashlib.sha256(content.encode("utf-8")).hexdigest(),
         )
-    contract_path = _stage_task_input(local_stage, remote_stage, label, content)
     return contract_path, PromptFactory.launch_prompt(contract_path)
 
 
