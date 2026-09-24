@@ -19,6 +19,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from rcp.attachments import checkpoint_attachment_sets
+from rcp.core.models import upgrade_graph_projection
+from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
 from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops._local_primitives import canonical_json_line, fsync_file_tree
 from rcp.server_ops.application_snapshot import (
@@ -151,7 +153,9 @@ def _new_output(path: Path) -> None:
     path.mkdir(mode=0o700)
 
 
-def _read(path: Path, expected_sha256: str | None = None) -> bytes:
+def _read(
+    path: Path, expected_sha256: str | None = None, *, max_bytes: int = _MAX_REQUEST_BYTES
+) -> bytes:
     _private_ancestors(path.parent)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -161,7 +165,7 @@ def _read(path: Path, expected_sha256: str | None = None) -> bytes:
             or before.st_uid != os.geteuid()
             or before.st_nlink != 1
             or before.st_mode & 0o022
-            or before.st_size > _MAX_REQUEST_BYTES
+            or before.st_size > max_bytes
         ):
             raise MaintenanceRefused("Application proof has unsafe type, ownership, mode, or size.")
         chunks = []
@@ -442,33 +446,16 @@ def _upgrade_previous_projection(
                 / capture.recovery.configuration.state_repository
                 / ".research/graph.json"
             )
-            graph = json.loads(_read(graph_path))
+            graph = json.loads(_read(graph_path, max_bytes=PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES))
             if _canonical_sha256(graph) != expected.projection_sha256:
                 raise MaintenanceRefused("The previous graph projection digest changed.")
             if isinstance(graph, dict):
-                _apply_projection_upgrades(graph)
+                upgrade_graph_projection(graph)
                 expected = expected.model_copy(
                     update={"projection_sha256": _canonical_sha256(graph)}
                 )
         projects.append(expected)
     return proof.read_model.model_copy(update={"projects": tuple(projects)})
-
-
-def _apply_projection_upgrades(graph: dict[str, object]) -> None:
-    graph.pop("coverage", None)
-    # Edge `expectation` and Experiment `proxies`/`limitations` arrived with
-    # empty defaults; an older replay omits them.
-    edges = graph.get("edges")
-    if isinstance(edges, dict):
-        for edge in edges.values():
-            if isinstance(edge, dict):
-                edge.setdefault("expectation", None)
-    nodes = graph.get("nodes")
-    if isinstance(nodes, dict):
-        for node in nodes.values():
-            if isinstance(node, dict) and node.get("type") == "experiment":
-                node.setdefault("proxies", [])
-                node.setdefault("limitations", [])
 
 
 def _read_model_digest(model: CandidateRehearsalResult) -> str:
@@ -510,6 +497,10 @@ def verify_live_application(
         else:
             status, snapshot = catalog.cached_snapshot_status(expected.project_id)
             graph = snapshot.get("graph") if status == "valid" and snapshot is not None else None
+            # A cache left behind by a failed refresh is readable but older than
+            # canonical history; rebuild it rather than refuse the release.
+            if isinstance(graph, dict) and graph.get("revision") != expected.revision:
+                graph = None
             if not isinstance(graph, dict):
                 try:
                     _service, rebuilt = catalog.open_snapshot(expected.project_id)

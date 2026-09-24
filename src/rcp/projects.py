@@ -44,7 +44,7 @@ from rcp.core.attention import (
     project_graph_mutation_availability,
 )
 from rcp.core.materialize import MaterializationResult
-from rcp.core.models import Experiment, GraphState
+from rcp.core.models import Experiment, GraphState, upgrade_graph_projection
 from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
@@ -2170,7 +2170,9 @@ class ProjectCatalog:
         graph_payload = snapshot.get("graph")
         if not isinstance(graph_payload, dict):
             return "invalid", None
-        graph_payload.pop("coverage", None)
+        # The live release's projection must equal a fresh replay; a release update
+        # verifies exactly that against this cache.
+        upgrade_graph_projection(graph_payload)
         try:
             graph = GraphState.model_validate(graph_payload)
             if schema_version < 5:

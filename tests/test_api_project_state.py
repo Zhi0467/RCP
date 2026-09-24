@@ -646,6 +646,30 @@ def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
     assert restored.json()["attention"]["decision_prior_choices"] == {"dec/shape": "4xA100"}
 
 
+def test_cached_project_serves_the_graph_a_fresh_replay_would(manifest, tmp_path) -> None:
+    # A cache written before a graph field gained a default lacks that key. The
+    # live release's projection must still equal the replayed one a release update
+    # verified, so the cache is served in the current model's shape.
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    append_fixture_patch(app.state.service, seed_patch())
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    fresh = client.get(f"/api/projects/{project_id}").json()["graph"]
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    edges = envelope["snapshot"]["graph"]["edges"]
+    assert edges
+    for edge in edges.values():
+        edge.pop("expectation")
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    restored = client.get(f"/api/projects/{project_id}/cached")
+
+    assert restored.status_code == 200
+    assert restored.json()["graph"] == fresh
+
+
 def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     manifest, tmp_path, monkeypatch
 ) -> None:

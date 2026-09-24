@@ -408,9 +408,13 @@ retained baseline graph against its recorded digest, then removes the retired
 `coverage` report and fills fields added with empty defaults (edge `expectation`,
 Experiment `proxies` and `limitations`) where the baseline omits them. All
 remaining graph content and startup recovery reads must still match; the
-candidate proof records the current graph digest used by live verification. A
-release that adds a graph field with a default must extend that list, or the
-update refuses.
+candidate proof records the current graph digest used by live verification. The
+list is `upgrade_graph_projection`; the project display cache applies it on load
+too, because live verification reads that cache and it must equal a fresh
+replay. A cache whose revision trails the proof, as a failed refresh leaves it,
+is rebuilt from canonical history instead. The retained baseline graph shares
+the display snapshot's size bound. A release that adds a graph field with a
+default must extend that list, or the update refuses.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 It uses bounded traversal, regular files, safe ownership and permissions,

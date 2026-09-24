@@ -948,6 +948,28 @@ class GraphState(BaseModel):
         return adapt_persisted_graph_state_document(value)
 
 
+def upgrade_graph_projection(graph: dict[str, object]) -> None:
+    """Bring a stored graph projection to the current shape in place.
+
+    A projection written by an older release lacks fields added later with empty
+    defaults and may carry the retired coverage report. Only those listed changes
+    apply; derived values such as edge layers stay exactly as stored. A release that
+    adds a graph field with a default must extend this list, or its update refuses.
+    """
+    graph.pop("coverage", None)
+    edges = graph.get("edges")
+    if isinstance(edges, dict):
+        for edge in edges.values():
+            if isinstance(edge, dict):
+                edge.setdefault("expectation", None)
+    nodes = graph.get("nodes")
+    if isinstance(nodes, dict):
+        for node in nodes.values():
+            if isinstance(node, dict) and node.get("type") == "experiment":
+                node.setdefault("proxies", [])
+                node.setdefault("limitations", [])
+
+
 def _canonical_uuid4(value: str) -> str:
     try:
         parsed = uuid.UUID(value)

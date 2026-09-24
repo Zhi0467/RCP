@@ -59,13 +59,10 @@ asset set cannot silently replace the build's original byte identity.
 `src/rcp/__init__.py` holds the **next intended** version. Promotion refuses a
 build whose base version differs from the tag you ask for, so:
 
-1. Open an ordinary pull request that changes `__version__` to the version you
-   intend to release.
+1. Change `__version__` to the version you intend to release. The bump may
+   ride in any pull request, including the one carrying the change.
 2. Merge it. The build that results carries that base version.
 3. Promote that build, or any later one with the same base version.
-
-Do not bump the version in the same pull request as a risky change; keep the
-bump reviewable on its own.
 
 ## Promote a build to stable
 

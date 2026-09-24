@@ -138,7 +138,10 @@ def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     return _build_checkout(base_ref, work_root, web=True), base_commit
 
 
-def latest_release_tags(count: int = 2) -> list[str]:
+RECENT_RELEASE_COUNT = 5
+
+
+def latest_release_tags(count: int = RECENT_RELEASE_COUNT) -> list[str]:
     """The newest promoted releases, the versions a team server may still run."""
     output = _capture(["git", "tag", "--list", "v*", "--sort=-v:refname"], cwd=REPOSITORY_ROOT)
     return output.split()[:count]
@@ -192,7 +195,9 @@ def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) 
     return fixture
 
 
-def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]:
+def prepare_release_update_with(
+    checkout: Path, root: Path, *, stale_cache: bool
+) -> dict[str, object]:
     """Capture representative data and prepare its update with the checkout's code."""
     script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
     output = _capture(
@@ -207,6 +212,7 @@ def prepare_release_update_with(checkout: Path, root: Path) -> dict[str, object]
             "-I",
             str(script),
             str(root),
+            *(["--stale-cache"] if stale_cache else []),
         ],
         cwd=root.parent,
     )
@@ -242,6 +248,7 @@ def _run(argv: list[str], *, cwd: Path) -> None:
 
 __all__ = [
     "EXACT_BASE_ENV",
+    "RECENT_RELEASE_COUNT",
     "EXPECTED_BOUNDARIES",
     "build_exact_base_checkout",
     "build_exact_base_fixture",

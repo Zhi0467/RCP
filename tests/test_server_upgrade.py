@@ -22,6 +22,7 @@ from rcp.history import HistoryManager
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import (
+    RECENT_RELEASE_COUNT,
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
@@ -156,24 +157,32 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
-@pytest.mark.parametrize("release_index", [0, 1], ids=["latest-release", "previous-release"])
+@pytest.mark.parametrize(
+    "release_index",
+    range(RECENT_RELEASE_COUNT),
+    ids=[f"release-{index}" for index in range(RECENT_RELEASE_COUNT)],
+)
+@pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
 def test_release_update_from_a_recent_release_validates(
-    release_index: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    release_index: int, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A release update prepared by a recent promoted release must validate here.
+    """A release update prepared by a recent promoted release must pass here.
 
-    This is the server's graph comparison across versions, from the releases a team
-    server may still run: a candidate that changes a replayed graph, or drops the
-    handling of an older one, without listing it in the update check is refused.
+    This is the server's update across versions, from the releases a team server may
+    still run: the copied-state validation, then the switched release's live check
+    against the old release's data and display cache, current or left stale by a
+    failed refresh.
     """
-    from rcp.server_ops.deployment import ValidateRequest, validate
+    from rcp.server_ops.deployment import ValidateRequest, validate, verify_live_application
 
     tags = latest_release_tags()
+    if not tags:
+        pytest.fail("the upgrade gate needs the newest release tags fetched")
     if len(tags) <= release_index:
-        pytest.fail("the upgrade gate needs the two latest release tags fetched")
+        pytest.skip(f"only {len(tags)} promoted releases exist")
     checkout = build_release_checkout(tags[release_index], tmp_path / "release")
     root = tmp_path / "update"
-    prepared = prepare_release_update_with(checkout, root)
+    prepared = prepare_release_update_with(checkout, root, stale_cache=stale_cache)
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
@@ -191,6 +200,24 @@ def test_release_update_from_a_recent_release_validates(
         )
     )
     assert checked["status"] == "verified"
+    live = create_app(data_dir=root / "data")
+    assert verify_live_application(
+        Path(checked["proof_path"]),
+        proof_sha256=checked["proof_sha256"],
+        background=live.state.background_tasks,
+        catalog=live.state.catalog,
+        store=live.state.background_tasks.store,
+    )
+    # On a real server the copied cache can be stale while the live one is current,
+    # so each check may read either; a current cache must equal a fresh replay.
+    for card in live.state.catalog.cards():
+        status, cached = live.state.catalog.cached_snapshot_status(card["id"])
+        _service, fresh = live.state.catalog.open_snapshot(card["id"])
+        assert status == "valid" and cached is not None
+        if stale_cache:
+            assert cached["graph"]["revision"] < fresh["graph"]["revision"]
+        else:
+            assert cached["graph"] == fresh["graph"]
 
 
 def _exercise_candidate_upgrade(fixture: Path) -> None:
