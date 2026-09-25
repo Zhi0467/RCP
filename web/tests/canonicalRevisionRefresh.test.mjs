@@ -29,6 +29,7 @@ const {
   inactiveProjectTabState,
   mergeProjectExperimentLoops,
   projectIdsForCacheHeartbeat,
+  projectReturnHash,
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
@@ -73,6 +74,22 @@ test("the per-project display cache is bounded and refreshed as an LRU", () => {
 
   assert.deepEqual([...cache.keys()], ["alpha", "gamma"]);
   assert.deepEqual(cache.get("alpha"), { revision: 3 });
+});
+
+test("a project reopens on the graph target it was last left on", () => {
+  const branch = { kind: "branch", branch_id: "episode-1" };
+  const state = (id, graph_target) => ({ project: { id, graph_target } });
+  const cache = new Map();
+  cacheProjectTabState(cache, "alpha", state("alpha", { kind: "main" }));
+  cacheProjectTabState(cache, "alpha:branch:episode-1", state("alpha", branch));
+  cacheProjectTabState(cache, "beta", state("beta", { kind: "main" }));
+
+  assert.equal(projectReturnHash(cache, "alpha"), "/projects/alpha?branch_id=episode-1");
+  assert.equal(projectReturnHash(cache, "beta"), "/projects/beta");
+  assert.equal(projectReturnHash(cache, "never-opened"), "/projects/never-opened");
+
+  cacheProjectTabState(cache, "alpha", state("alpha", { kind: "main" }));
+  assert.equal(projectReturnHash(cache, "alpha"), "/projects/alpha", "main left last wins");
 });
 
 test("a scoped Experiment refresh replaces only that project's entries", () => {

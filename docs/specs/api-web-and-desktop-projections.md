@@ -146,6 +146,8 @@ Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on mai
 `graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
 delta, changed and neighboring node ids, before/after values, and Patch/task
 provenance. The backend derives that read model from one coherent branch replay.
+A project tab reopened from the space page or another tab returns to the graph
+target it was last left on, main or branch.
 
 The durable project display cache remains main-only. A branch cached-snapshot
 request returns an explicit cache miss, and the authoritative snapshot endpoint

@@ -1,4 +1,4 @@
-import { graphSessionKey, MAIN_GRAPH } from "../graphTarget";
+import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, loadExperimentEpisodes, loadProjectExperimentEpisodes, loadSpaceRuns } from "../api";
@@ -54,6 +54,29 @@ export function cacheProjectTabState<T>(
     if (oldest === undefined) break;
     cache.delete(oldest);
   }
+}
+
+/** The graph target a project was last left on, from the most recent cached state. */
+export function lastCachedGraphTarget<T extends { project: ProjectSnapshot }>(
+  cache: Map<string, T>,
+  projectId: string,
+): GraphTargetRef {
+  let target = MAIN_GRAPH;
+  for (const state of cache.values()) {
+    if (state.project.id === projectId) target = state.project.graph_target;
+  }
+  return target;
+}
+
+/** The route that reopens a project where its human left it. */
+export function projectReturnHash<T extends { project: ProjectSnapshot }>(
+  cache: Map<string, T>,
+  projectId: string,
+): string {
+  return graphTargetUrl(
+    `/projects/${encodeURIComponent(projectId)}`,
+    lastCachedGraphTarget(cache, projectId),
+  );
 }
 
 export function mergeProjectExperimentLoops(
@@ -264,7 +287,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       setSetupOpen(false);
       window.location.hash = experimentRoute
         ? experimentBoardHref(id, experimentRoute).slice(1)
-        : `/projects/${encodeURIComponent(id)}`;
+        : projectReturnHash(projectTabStatesRef.current, id);
     },
     [setTabs, tabForProject],
   );
@@ -286,7 +309,10 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       if (id !== activeProjectId.current) return true;
       if (result.activeProjectId) {
         setSetupOpen(false);
-        window.location.hash = `/projects/${encodeURIComponent(result.activeProjectId)}`;
+        window.location.hash = projectReturnHash(
+          projectTabStatesRef.current,
+          result.activeProjectId,
+        );
       } else {
         setSetupOpen(false);
         setProjectId(null);
