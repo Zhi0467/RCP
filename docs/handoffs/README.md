@@ -2,6 +2,11 @@
 
 Active:
 
+- [RCP tells your phone when you are needed](handoff-2026-09-25-inbox-push.md)
+  — confirmed 2026-09-25 as the follow-up to the phone UI pull request; the
+  first design failed review and must be rewritten against the recorded
+  requirements before it starts. Nothing implemented.
+
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
   real remote-machine SSH remain. The deploy key is the default push
