@@ -67,6 +67,8 @@ def test_the_open_chat_cap_keeps_the_most_recent_open_chats(
     _chat_turn(store, "oldest-open", "chat-a", "failed", 0)
     _chat_turn(store, "middle-open", "chat-b", "failed", 1)
     _chat_turn(store, "newest-open", "chat-c", "failed", 2)
+    # A chat that just finished never takes a place from one that needs a person.
+    _chat_turn(store, "just-finished", "chat-d", "succeeded", 3, timedelta(seconds=5))
     for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
         _chat_turn(store, f"newer-{index}", f"chat-newer-{index}", "succeeded", 10 + index)
 

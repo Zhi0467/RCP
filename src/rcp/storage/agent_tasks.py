@@ -1437,16 +1437,17 @@ class AgentTaskStoreMixin:
                     LIMIT :limit
                 ),
                 candidates AS (
-                    SELECT operation_id, created_at,
+                    SELECT operation_id, created_at, 1 AS still_open,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND status IN ({statuses})
                       AND kind IN ('node_chat', 'project_chat') AND history_only = 0
-                    UNION
-                    SELECT operation_id, created_at,
+                    UNION ALL
+                    SELECT operation_id, created_at, 0 AS still_open,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND finished_at >= :finished_since
+                      AND status NOT IN ({statuses})
                       AND kind IN ('node_chat', 'project_chat') AND history_only = 0
                 ),
                 open_chats AS (
@@ -1459,7 +1460,7 @@ class AgentTaskStoreMixin:
                           AND (later.created_at, later.operation_id)
                               > (candidates.created_at, candidates.operation_id)
                     )
-                    ORDER BY created_at DESC, operation_id DESC
+                    ORDER BY still_open DESC, created_at DESC, operation_id DESC
                     LIMIT :open_limit
                 )
                 SELECT graph_runs.*,
