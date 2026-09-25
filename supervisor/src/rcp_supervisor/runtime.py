@@ -574,7 +574,12 @@ class SystemRuntime:
             raise SupervisorError("The application refused its private maintenance boundary.")
         return result["result"]
 
-    def protected_backup(self, release: dict | None = None) -> None:
+    def protected_backup(self, release: dict | None = None) -> str | None:
+        """Take the pre-update protected backup; return a warning when it is incomplete.
+
+        Rollback uses the stopped whole-root snapshot, so an incomplete backup is
+        reported to the operator instead of refusing the update.
+        """
         current = release or read_selected_receipt(
             self.paths.selected, releases_root=self.paths.releases_root
         )
@@ -603,10 +608,10 @@ class SystemRuntime:
                 for event in events
                 for field in event.get("step", {}).get("fields", [])
             }
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            if failure is not None:
-                raise failure from exc
-            raise SupervisorError("Protected backup did not return a readable receipt.") from exc
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return "Protected backup did not return a readable receipt." + (
+                f" {failure}" if failure is not None else ""
+            )
         if (
             failure is not None
             or fields.get("backup_status") != "protected"
@@ -618,11 +623,12 @@ class SystemRuntime:
                 if isinstance(problems, str) and problems.strip()
                 else " The source returned no per-project cause; inspect its retained capture receipt."
             )
-            raise SupervisorError(
-                "A complete verified protected backup is required before deployment."
+            return (
+                "The protected backup is incomplete."
                 + detail
                 + (f" {failure}" if failure is not None else "")
             )
+        return None
 
     def enter_maintenance(self, operation: dict) -> dict:
         result = self.control(

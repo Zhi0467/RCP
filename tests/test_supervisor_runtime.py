@@ -94,7 +94,7 @@ def test_stderr_output_is_bounded_too(runtime, monkeypatch):
         )
 
 
-def test_backup_requires_complete_protected_receipt(runtime, monkeypatch):
+def test_incomplete_backup_warns_instead_of_refusing(runtime, monkeypatch):
     def output(status, count, problems=""):
         return json.dumps(
             {
@@ -110,15 +110,14 @@ def test_backup_requires_complete_protected_receipt(runtime, monkeypatch):
 
     legacy = {"release_directory": "/tmp/release", "commit": "a" * 40, "version_string": "0.3.4"}
     monkeypatch.setattr(runtime, "_service_output", lambda *args, **kwargs: output("protected", 0))
-    runtime.protected_backup(legacy)
+    assert runtime.protected_backup(legacy) is None
     for status, count in [("partial", 1), ("complete", 0), ("protected", 1)]:
         monkeypatch.setattr(
             runtime,
             "_service_output",
             lambda *args, _status=status, _count=count, **kwargs: output(_status, _count),
         )
-        with pytest.raises(SupervisorError, match="complete verified"):
-            runtime.protected_backup(legacy)
+        assert runtime.protected_backup(legacy)
 
     def failed(*_args, **_kwargs):
         raise ApplicationCommandError(
@@ -131,11 +130,10 @@ def test_backup_requires_complete_protected_receipt(runtime, monkeypatch):
         )
 
     monkeypatch.setattr(runtime, "_service_output", failed)
-    with pytest.raises(SupervisorError) as failure:
-        runtime.protected_backup(legacy)
-    assert "local_state_missing: .research/branches" in str(failure.value)
-    assert "private-error.log" in str(failure.value)
-    assert "secret-value" not in str(failure.value)
+    warning = runtime.protected_backup(legacy)
+    assert "local_state_missing: .research/branches" in warning
+    assert "private-error.log" in warning
+    assert "secret-value" not in warning
 
 
 def test_probe_arms_parent_ownership_in_supervisor_code_after_service_uid_drop(

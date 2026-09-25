@@ -71,7 +71,7 @@ class Runtime(Protocol):
     """Concrete bounded service/byte operations; all release decisions stay here."""
 
     def selected_release(self) -> dict: ...
-    def protected_backup(self) -> None: ...
+    def protected_backup(self) -> str | None: ...
     def deployment_lock(self) -> AbstractContextManager: ...
     def enter_maintenance(self, operation: dict) -> dict: ...
     def abort_maintenance(self, operation: dict) -> None: ...
@@ -381,6 +381,7 @@ class Coordinator:
         self.store = store
         self.runtime = runtime
         self.boundary = boundary or (lambda _name: None)
+        self.backup_warning: str | None = None
 
     def _phase(self, operation: dict, phase: str, **changes) -> dict:
         updated = dict(operation, phase=phase, **changes)
@@ -424,7 +425,7 @@ class Coordinator:
             self.boundary("preparing")
             try:
                 if not previous_uninitialized:
-                    self.runtime.protected_backup()
+                    self.backup_warning = self.runtime.protected_backup()
                 operation = self._phase(operation, "backup_ready")
                 resources.enter_context(self.runtime.deployment_lock())
                 operation = self._phase(operation, "entering_maintenance")

@@ -570,9 +570,7 @@ def adopt(runtime, target: dict) -> dict:
         "version_string": metadata["app_version"],
     }
     legacy_backup = "protected"
-    try:
-        runtime.protected_backup(previous)
-    except SupervisorError:
+    if runtime.protected_backup(previous) is not None:
         legacy_backup = "unavailable"
         runtime.notify(
             "Legacy backup is incomplete or unavailable; adoption requires a stopped byte checkpoint and a complete current encrypted backup before activation."

@@ -558,7 +558,8 @@ sudo /usr/local/bin/rcp server update
 The supervisor resolves promoted stable, shows the exact release tag, build,
 full commit, and manifest digest, and asks for confirmation of
 `vX.Y.Z:<manifest-sha256>`. It installs a separate verified release as `rcp`,
-requires a complete protected backup, closes application admission, and verifies
+takes a protected backup (an incomplete one is reported as `backup_warning`, not a
+refusal), closes application admission, and verifies
 copied state before changing live data. A fenced candidate probe must pass before
 the durable selected-release decision allows ordinary systemd startup.
 

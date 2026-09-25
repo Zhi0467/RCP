@@ -327,7 +327,7 @@ def test_corrupt_adoption_journal_never_changes_data_or_launch(runtime):
 def test_known_legacy_partial_backup_requires_new_complete_encrypted_capture(runtime, monkeypatch):
     def partial(previous):
         runtime.calls.append("legacy_partial")
-        raise SupervisorError("legacy backup was partial")
+        return "legacy backup was partial"
 
     monkeypatch.setattr(runtime, "protected_backup", partial)
     migration.adopt(runtime, runtime.target)

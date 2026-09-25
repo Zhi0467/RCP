@@ -233,15 +233,18 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
     runtime.require_capability(previous)
     target = prepare_release(runtime, release)
     store = store_for(paths)
-    result = Coordinator(store, runtime).deploy(previous, target)
+    coordinator = Coordinator(store, runtime)
+    result = coordinator.deploy(previous, target)
     fields = [
         {"name": "build", "value": target["build"]},
         {"name": "phase", "value": result["phase"]},
     ]
+    if coordinator.backup_warning is not None:
+        fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
     fields.extend(_retention_after_commit(runtime, store))
     emitter.emit(
         "succeeded",
-        "The verified release is serving after protected backup and fenced validation.",
+        "The verified release is serving after fenced validation.",
         fields=fields,
     )
     return 0

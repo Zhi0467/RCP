@@ -386,8 +386,10 @@ pointer under the same operation lock, without rolling back application data.
 
 ### Application boundary and local checkpoint
 
-A normal deployment requires a complete, read-back protected backup before
-closing admission. Root authenticates the maintenance RPC to the actual service
+A normal deployment takes a protected backup before closing admission. An
+incomplete or unreadable backup does not refuse the update: rollback uses the
+stopped whole-root snapshot, and the result reports the backup's causes as a
+`backup_warning` field. Root authenticates the maintenance RPC to the actual service
 PID, account, instance, and data-directory identity. The application closes new
 mutations, provider launches, watchers, machine operations, and runtime recovery
 owners, drains entered work, then returns a SQLite capture bound to that
@@ -1178,8 +1180,8 @@ An uncaptured project retains its safe failure category and relative failing
 component, including local state, checkout, imported-history and SSH distinctions.
 Raw exception text and absolute locators are not capture diagnostics. The backup
 CLI result and doctor `problems` include these per-project causes; the supervisor
-retains them when a protected backup refuses deployment, including nonzero CLI
-results. Existing strict receipt formats are unchanged. An optional diagnostic
+reports them in `backup_warning` when a pre-update backup is incomplete, including
+nonzero CLI results. Existing strict receipt formats are unchanged. An optional diagnostic
 sidecar, bound to the backup operation ID, preserves causes for later inspection
 without breaking older readers. Sources without that sidecar retain their older
 diagnostic limits; the supervisor names the retained receipt instead of inventing
