@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+SHELL_PATH = "/usr/local/bin:/usr/bin:/bin"
+
 _READY_MARKER = b"\x1ercp-terminal-ready\x1f"
 _SHELL_PREFLIGHT = r"""
 rcp_expansion_probe=intact
@@ -140,7 +142,7 @@ def shell_environment(git_environment: dict[str, str]) -> list[str]:
         "HOME": str(Path.home()),
         "USER": os.environ.get("USER", "rcp"),
         "LOGNAME": os.environ.get("LOGNAME", "rcp"),
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": SHELL_PATH,
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "HISTFILE": "/dev/null",

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
+from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.launcher import (
     AgentEvent,
@@ -179,6 +180,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         supervise_remote: bool = False,
         supervisor_path: str | None = None,
         operation_id: str | None = None,
+        git_access: ProviderGitAccess | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():

@@ -8,6 +8,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from rcp.git_identity import GitIdentity
 from rcp.limits import TERMINAL_STOP_TIMEOUT_SECONDS
 from rcp.terminals import launch
 from rcp.terminals.models import TerminalUnavailable
@@ -39,6 +40,7 @@ def start_remote(
     containment: str,
     expand_environment_option: bool = True,
     git_key_relative: str | None = None,
+    git_identity: GitIdentity | None = None,
     os_account: str = "",
 ) -> tuple[subprocess.Popen[bytes], int]:
     settings = {
@@ -48,6 +50,17 @@ def start_remote(
         "containment": containment,
         "expand_environment_option": expand_environment_option,
         "git_key_relative": git_key_relative,
+        "git_identity": (
+            {"user_id": git_identity.user_id, "display_name": git_identity.display_name}
+            if git_identity
+            else None
+        ),
+        "git_identity_source": importlib.resources.files("rcp")
+        .joinpath("git_identity.py")
+        .read_text(encoding="utf-8"),
+        "checkout_git_access_source": importlib.resources.files("rcp")
+        .joinpath("git_access.py")
+        .read_text(encoding="utf-8"),
         "os_account": os_account,
         "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS,
         "profile_source": terminal_source("profile.py"),

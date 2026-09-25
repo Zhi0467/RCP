@@ -26,6 +26,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
+from rcp.agents.git_access import provider_git_access
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
@@ -744,6 +745,15 @@ def create_app(
             run_on=request.run_on,
         )
         execution.runtime_id = configured_runtime_id(profile.provider, profile.runtime)
+        execution.git_access = provider_git_access(
+            service.manifest,
+            project_id=project_id,
+            run_on=profile.run_on,
+            member=task.authorized_by,
+            team=store.space_kind == "team",
+            data_dir=app_data,
+            layout=server_layout,
+        )
         if task.graph_target.kind == "branch" and kind != "branch_merge":
             service = service.for_graph_target(
                 task.graph_target,

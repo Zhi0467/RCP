@@ -279,3 +279,89 @@ def test_remote_environment_refuses_missing_token_instead_of_inheriting_one(tmp_
     assert result.returncode != 0 and "provider-started" not in result.stdout
     assert profile_for("claude").credential_failure(result.stderr)
     assert "inherited-token" not in result.stderr
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_member_git_default_reaches_launch_and_repository_config_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remote: bool
+) -> None:
+    import os
+    import shlex
+    import shutil
+    import subprocess
+
+    from rcp.agents.provider_environment import ProviderProcessEnvironment
+    from rcp.git_identity import GitIdentity
+
+    real_git = shutil.which("git")
+    assert real_git is not None
+    binary = tmp_path / "git"
+    log = tmp_path / "git-environment"
+    binary.write_text(
+        f"#!{sys.executable}\nimport os, sys\n"
+        f"if sys.argv[1:] != ['--version']: open({str(log)!r}, 'w').write("
+        "os.environ['GIT_CONFIG_SYSTEM'])\n"
+        f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+    name = 'Member "quoted" \\ Name'
+    environment = ProviderProcessEnvironment().with_git_identity(
+        GitIdentity("member", name), data_dir=tmp_path / "data", remote=remote
+    )
+    query = "git config --get user.name"
+    if remote:
+        prefix = environment.remote_prefix
+        assert prefix is not None
+        result = subprocess.run(
+            ["sh", "-c", prefix + "; " + query], capture_output=True, text=True, check=True
+        )
+    else:
+        result = subprocess.run(
+            shlex.split(query),
+            env=environment.local_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    assert result.stdout.strip() == name
+    identity_path = Path(log.read_text())
+    repository = tmp_path / "repository"
+    git_dir = repository / ".git"
+    (git_dir / "objects").mkdir(parents=True)
+    (git_dir / "refs").mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "config").write_text('[user]\nname = "Repository owner"\n')
+    result = subprocess.run(
+        [real_git, "-C", str(repository), "config", "--get", "user.name"],
+        env={**os.environ, "GIT_CONFIG_SYSTEM": str(identity_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "Repository owner"
+    assert "member@members.rcp.invalid" in identity_path.read_text()
+    binary.write_text("#!/bin/sh\nprintf 'git version 2.31.0\\n'\n")
+    if remote:
+        result = subprocess.run(
+            ["sh", "-c", prefix + "; printf provider-started"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0 and "provider-started" not in result.stdout
+        assert "Git 2.32 or newer" in result.stderr
+    else:
+        with pytest.raises(ValueError, match="Git 2.32 or newer"):
+            ProviderProcessEnvironment().with_git_identity(
+                GitIdentity("member", name), data_dir=tmp_path / "data"
+            )
+    from rcp.git_identity import write_git_identity
+
+    with pytest.raises(ValueError, match="Git 2.32 or newer"):
+        write_git_identity(tmp_path / "data", GitIdentity("member", name), git_path=str(tmp_path))
+
+    with pytest.raises(ValueError, match="newlines"):
+        write_git_identity(tmp_path / "data", GitIdentity("member", "bad\nname"))

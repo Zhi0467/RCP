@@ -14,6 +14,7 @@ from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
+from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import ProjectWriteScope
@@ -215,6 +216,7 @@ class AgentTaskExecution:
     store: AppStore
     control: AgentProcessControl
     runtime_id: str = ""
+    git_access: ProviderGitAccess | None = None
     login_generation: int = 0
     stage_host: str | None = None
     stage_root: str | None = None

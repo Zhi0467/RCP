@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 
 from rcp.terminals.git_access import terminal_git_access
@@ -18,10 +17,7 @@ def test_existing_git_access_is_read_only_input_without_copying_secrets(tmp_path
     paths, environment = terminal_git_access(key)
 
     assert set(paths) == {str(home / ".ssh"), str(home / ".gitconfig"), str(key)}
-    command = shlex.split(environment["GIT_SSH_COMMAND"])
-    assert command[command.index("-i") + 1] == str(key)
-    assert "StrictHostKeyChecking=yes" in command
-    assert "IdentitiesOnly=yes" in command
+    assert environment == {}
     assert "test-secret" not in str((paths, environment))
     assert key.read_text() == "test-secret"
 

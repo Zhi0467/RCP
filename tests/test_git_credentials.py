@@ -749,7 +749,6 @@ def test_write_probe_pushes_reads_back_and_removes_one_request_scoped_ref(
     ssh_environment = next(value for value in outer if value.startswith("GIT_SSH_COMMAND="))
     assert "-F /dev/null" in ssh_environment
     assert "IdentitiesOnly=yes" in ssh_environment
-    assert "BatchMode=yes" in ssh_environment
     assert "StrictHostKeyChecking=yes" in ssh_environment
     assert _material(layout).private_key_path in ssh_environment
 

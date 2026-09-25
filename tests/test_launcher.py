@@ -1650,3 +1650,95 @@ async def test_process_control_terminates_only_its_process_group() -> None:
 
     assert process.returncode is not None
     assert process.returncode != 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["", "execution.example"])
+@pytest.mark.parametrize("capability", ["discuss", "work_auto"])
+async def test_member_git_identity_reaches_local_and_remote_provider_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, capability: str
+) -> None:
+    import os
+
+    from rcp.agents.git_access import ProviderGitAccess
+    from rcp.git_identity import GitIdentity
+
+    git = tmp_path / "git"
+    observed = tmp_path / "git-environment"
+    git.write_text(
+        f"#!{sys.executable}\nimport os, pathlib, sys\n"
+        "if sys.argv[1:] == ['--version']: print('git version 2.40.0')\n"
+        f"else: pathlib.Path({str(observed)!r}).write_text(os.environ['GIT_CONFIG_SYSTEM'])\n"
+    )
+    git.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    launcher = AgentLauncher()
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *args, **kwargs: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True, work_like_available=True
+        ),
+    )
+    script = (
+        "import json, subprocess; subprocess.run(['git', 'config', '--get', 'user.name'], "
+        "check=True); print(json.dumps({'type':'turn.completed'}), flush=True)"
+    )
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    # Execute the exact remote payload locally, excluding host login dotfiles.
+    monkeypatch.setattr(
+        "rcp.agents.launcher.ssh_arguments",
+        lambda host, command, **kwargs: ["sh", "-c", shlex.split(command)[2]],
+    )
+    scope = (
+        _project_write_scope(
+            capability="work_auto", stage=str(tmp_path), repository_paths=[]
+        ).model_copy(update={"execution_host": host})
+        if capability == "work_auto"
+        else None
+    )
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            host=host,
+            capability=capability,
+            write_scope=scope,
+            runtime_id=profile_for("codex").legacy_runtime_id,
+            git_access=ProviderGitAccess(GitIdentity("member", "Member Name"), tmp_path, host),
+        )
+    ]
+    assert events[-1].event == "done", [event.text for event in events]
+    config = Path(observed.read_text()).read_text()
+    assert 'name = "Member Name"' in config
+    assert 'email = "member@members.rcp.invalid"' in config
+    observed.unlink()
+    monkeypatch.setattr(
+        "rcp.agents.checkout_git_access.ssh_arguments",
+        lambda host, command, **kwargs: ["sh", "-c", command],
+    )
+    # A repository without a deploy key is a visible trace, not a refused turn.
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            host=host,
+            capability=capability,
+            write_scope=scope,
+            runtime_id=profile_for("codex").legacy_runtime_id,
+            git_access=ProviderGitAccess(
+                GitIdentity("member", "Member Name"),
+                tmp_path,
+                host,
+                ((str(tmp_path), str(tmp_path / "missing-key")),),
+            ),
+        )
+    ]
+    assert events[-1].event == "done", [event.text for event in events]
+    assert any(event.event == "message" and "no deploy key" in event.text for event in events)

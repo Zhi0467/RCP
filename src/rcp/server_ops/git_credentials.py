@@ -18,6 +18,7 @@ from functools import lru_cache, partial
 from pathlib import Path
 from typing import Literal, Protocol
 
+from rcp.git_access import deploy_key_ssh_command as _deploy_key_ssh_command
 from rcp.limits import (
     SERVER_GIT_CREDENTIAL_TIMEOUT_SECONDS,
     SERVER_GIT_PROBE_TIMEOUT_SECONDS,
@@ -744,7 +745,7 @@ class GitCredentialManager:
             "GIT_CONFIG_NOSYSTEM=1",
             "GIT_TERMINAL_PROMPT=0",
             "GIT_SSH_VARIANT=ssh",
-            f"GIT_SSH_COMMAND={_git_ssh_command(material)}",
+            f"GIT_SSH_COMMAND={deploy_key_ssh_command(material)}",
             *argv,
         )
         return self._target_result(
@@ -1209,32 +1210,9 @@ def _strict_ssh_arguments(host: str, command: str) -> list[str]:
     ]
 
 
-def _git_ssh_command(material: DeployKeyMaterial) -> str:
-    return shlex.join(
-        (
-            "ssh",
-            "-F",
-            "/dev/null",
-            "-i",
-            material.private_key_path,
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            "GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts",
-            "-o",
-            f"UserKnownHostsFile={Path(material.account_home) / '.ssh' / 'known_hosts'}",
-        )
-    )
-
-
 def deploy_key_ssh_command(material: DeployKeyMaterial) -> str:
-    """Return the exact noninteractive SSH command bound to one prepared key."""
-
-    return _git_ssh_command(material)
+    """Return the shared SSH command bound to one prepared key."""
+    return _deploy_key_ssh_command(material.private_key_path, material.account_home)
 
 
 def target_account_argv(

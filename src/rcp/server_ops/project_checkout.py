@@ -624,7 +624,7 @@ class ProjectCheckoutManager:
                     r"^(include(\..*)?|includeif\..*|"
                     r"url\..*\.(insteadof|pushinsteadof)|"
                     r"remote\..*\.(uploadpack|receivepack)|"
-                    r"core\.(sshcommand|fsmonitor)|"
+                    r"core\.fsmonitor|"
                     r"filter\..*\.(clean|smudge|process|required))$"
                 ),
             ),
@@ -639,6 +639,21 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout contains unsafe local Git execution or URL configuration; "
                 "RCP left it intact.",
+            )
+        ssh_command = deploy_key_ssh_command(material)
+        stored_ssh = self._git_at(
+            machine,
+            material,
+            repository_path,
+            ("config", "--local", "--get-all", "core.sshCommand"),
+        )
+        if stored_ssh.returncode not in {0, 1} or (
+            stored_ssh.returncode == 0 and stored_ssh.stdout.splitlines() != [ssh_command]
+        ):
+            raise self._checkout_conflict(
+                material,
+                repository_path,
+                "The central checkout contains unsafe local Git SSH configuration; RCP left it intact.",
             )
         stored_hooks = self._git_at(
             machine,
@@ -721,6 +736,19 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout changed during verification; RCP left it intact.",
             )
+        if stored_ssh.returncode == 1:
+            configured = self._git_at(
+                machine,
+                material,
+                repository_path,
+                ("config", "--local", "core.sshCommand", ssh_command),
+            )
+            if configured.returncode != 0:
+                raise self._checkout_conflict(
+                    material,
+                    repository_path,
+                    "The central checkout could not configure its repository deploy key.",
+                )
         if stored_hooks.returncode == 1:
             configured = self._git_at(
                 machine,

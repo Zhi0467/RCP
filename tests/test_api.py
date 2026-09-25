@@ -2590,6 +2590,7 @@ async def test_closing_paused_background_stream_awaits_launcher_cleanup(
             kind="project_chat",
             status="running",
             request=request.model_dump(mode="json"),
+            authorized_by=_named_test_authorizer(store),
             created_at=now,
             updated_at=now,
             status_message="running",

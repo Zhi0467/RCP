@@ -2,6 +2,13 @@
 
 Active:
 
+- [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
+  — confirmed and implemented 2026-09-24; the live team-space push run and
+  real remote-machine SSH remain. The deploy key is the default push
+  credential for the terminal, Discuss, and Work, with no per-member Git
+  setting. RCP supplies a default commit identity that any Git config
+  overrides.
+
 - [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
   — design confirmed 2026-09-19 against a rendered mockup and implemented the
   same day. A command action names the shell it runs in, a pause is titled for

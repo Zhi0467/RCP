@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 
 
@@ -20,19 +19,4 @@ def terminal_git_access(
     environment: dict[str, str] = {}
     if key is not None and key.is_file():
         paths.append(key)
-        environment["GIT_SSH_COMMAND"] = shlex.join(
-            [
-                "ssh",
-                "-F",
-                "/dev/null",
-                "-i",
-                str(key),
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                f"UserKnownHostsFile={home / '.ssh' / 'known_hosts'}",
-            ]
-        )
     return tuple(str(path) for path in paths if path.exists()), environment

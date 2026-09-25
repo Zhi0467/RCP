@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import pwd
+import shlex
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from rcp.agents.checkout_git_access import ensure_team_checkout_access
+from rcp.git_access import deploy_key_ssh_command, ensure_checkout_git_access
 from rcp.server_ops import remote_project_checkout
 from rcp.server_ops.git_credentials import DeployKeyMaterial, _run_process
 from rcp.server_ops.github import GitHubRepositoryRef
@@ -399,7 +404,9 @@ def test_retained_patch_scan_has_one_cumulative_entry_bound(
         os.close(descriptor)
 
 
-def test_manager_clones_verifies_and_recovers_without_renaming(tmp_path: Path) -> None:
+def test_manager_clones_verifies_and_recovers_without_renaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, runner = _manager(tmp_path, origin)
 
@@ -412,6 +419,10 @@ def test_manager_clones_verifies_and_recovers_without_renaming(tmp_path: Path) -
         state_repository=True,
         expected_commit=commit,
     )
+    checkout = Path(first.repository_path)
+    command = deploy_key_ssh_command(material.private_key_path, material.account_home)
+    assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
+    _git_command("config", "--local", "--unset", "core.sshCommand", cwd=checkout)
     second = manager.prepare(
         machine,
         material,
@@ -434,6 +445,41 @@ def test_manager_clones_verifies_and_recovers_without_renaming(tmp_path: Path) -
     assert _git_command("config", "--local", "--get", "core.hooksPath", cwd=expected_path) == (
         "/dev/null"
     )
+    assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
+    other = replace(
+        material, repository_alias="other", private_key_path=material.private_key_path + "-other"
+    )
+    other_checkout = manager.prepare(
+        machine,
+        other,
+        request_kind="create_team_project",
+        project_id=PROJECT_ID,
+        repository_alias="other",
+        state_repository=False,
+        expected_commit=commit,
+    )
+    other_command = _git_command(
+        "config", "--local", "--get", "core.sshCommand", cwd=Path(other_checkout.repository_path)
+    )
+    assert other_command == deploy_key_ssh_command(other.private_key_path, other.account_home)
+    assert other_command != command
+    key = Path(material.private_key_path)
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.touch()
+    _git_command("config", "--local", "--unset", "core.sshCommand", cwd=checkout)
+    ensure_checkout_git_access(str(checkout), str(key), material.account_home, timeout=10)
+    before = (checkout / ".git/config").stat().st_mtime_ns
+    ensure_checkout_git_access(str(checkout), str(key), material.account_home, timeout=10)
+    assert (checkout / ".git/config").stat().st_mtime_ns == before
+    assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
+    monkeypatch.setattr(
+        "rcp.agents.checkout_git_access.ssh_arguments",
+        lambda _host, command: shlex.split(command),
+    )
+    for host in ("", "remote-fixture"):
+        assert (
+            asyncio.run(ensure_team_checkout_access([(str(checkout), str(key))], host=host)) == []
+        )
     assert runner.calls
     assert all(call[:2] == ("env", "-i") for call in runner.calls)
     git_calls = [call for call in runner.calls if "GIT_CONFIG_GLOBAL=/dev/null" in call]
