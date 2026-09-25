@@ -71,14 +71,12 @@ Two reports from the human, 2026-09-25:
    old-to-new table in the pull request. Shorthands and fluid `clamp()` values
    are converted by hand or left with a note. Spacing moves to tokens only
    where a rule is already touched.
-3. **Named breakpoints.** Phone is `max-width: 560px`, tablet is
-   `max-width: 920px`. Queries at 680, 720, and 820px that exist only to
-   approximate phone or tablet fold into these two. Content-driven thresholds
-   stay where they are, with a comment naming the layout that needs them: 1180px
-   (the setup grid needs 1,134px without it), 700px (terminals), and 640px
-   (annotations). CSS cannot read a variable inside `@media`, so the phone width
-   is written once in CSS and once in `useNarrowViewport`, with a test that they
-   agree.
+3. **Named breakpoints.** Phone is `max-width: 560px` (`PHONE_MAX_WIDTH_PX`
+   in `useNarrowViewport`), tablet is `max-width: 920px`. Every other width
+   query (640, 680, 700, 720, 820, 1180px) sits inside one component's rules
+   and exists for that component's content, so none is folded: moving any of
+   them would change layout at the widths in between. A test fails when a
+   stylesheet adds a width outside this set.
 4. **Phone mode is token overrides.** One `@media` block at the phone width
    resets the tokens. Every `input`, `textarea`, `select`, and contenteditable
    field is at least 16px there, including those with explicit sizes; the rule
@@ -180,8 +178,9 @@ resizable list and its saved width and collapse preference.
   never wording.
 - **Existing mobile behavior.** `web/tests/mobileWorkspace.browser.test.mjs`
   keeps passing: the disclosure and the saved width.
-- **Breakpoints agree.** A test that `useNarrowViewport` and the CSS phone width
-  are the same value.
+- **Breakpoints stay named.** `web/tests/breakpoints.test.mjs` checks every
+  width query against the phone width, the tablet width, and the listed
+  content thresholds.
 - **Agents panel.** A web test that each task-state combination lands in the
   right group with the right icon, and that filters and search narrow the
   list. Assertions use state and ids, not wording.

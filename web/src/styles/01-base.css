@@ -295,3 +295,19 @@ button:disabled {
   padding: 0;
   width: 34px;
 }
+
+/* Phone: max-width 560px, the same number as PHONE_MAX_WIDTH_PX in
+   useNarrowViewport. Tablet: max-width 920px. Other width queries are
+   content-driven and name the layout that needs them.
+
+   iOS Safari zooms the page when a focused field's text is under 16px. The
+   rule must beat component selectors that set a smaller size, hence
+   !important. */
+@media (max-width: 560px) {
+  input:not([type="checkbox"], [type="radio"], [type="range"]),
+  textarea,
+  select,
+  [contenteditable="true"] {
+    font-size: max(16px, 1em) !important;
+  }
+}
