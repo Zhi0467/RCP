@@ -231,3 +231,18 @@ def test_privileged_copy_refuses_roots_below_a_symlink(tmp_path: Path) -> None:
         checkpoint.create_stopped_snapshot(
             tmp_path / "checkpoint", (tmp_path / "link" / "new",), boundary_sha256="b" * 64
         )
+
+
+def test_overlay_lets_candidate_entries_replace_a_different_type(tmp_path: Path) -> None:
+    source, destination = tmp_path / "candidate", tmp_path / "live"
+    (source / "was-file").mkdir(parents=True)
+    (source / "was-file" / "inside").write_bytes(b"candidate")
+    (source / "was-dir").write_bytes(b"candidate")
+    (destination / "was-dir").mkdir(parents=True)
+    (destination / "was-dir" / "old").write_bytes(b"old")
+    (destination / "was-file").write_bytes(b"old")
+    (destination / "kept").write_bytes(b"unrelated")
+    checkpoint.copy_contents(source, destination)
+    assert (destination / "was-file" / "inside").read_bytes() == b"candidate"
+    assert (destination / "was-dir").read_bytes() == b"candidate"
+    assert (destination / "kept").read_bytes() == b"unrelated"

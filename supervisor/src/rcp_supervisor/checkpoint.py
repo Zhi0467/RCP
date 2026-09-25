@@ -116,6 +116,19 @@ def copy_contents(source: Path, destination: Path) -> None:
 
     Replace an existing destination entry, never write through a symlink there.
     """
+    # cp cannot put a directory over a file or a file over a directory: clear
+    # those destination entries first so the candidate's entry wins.
+    for current, names, files in os.walk(source):
+        for name in [*names, *files]:
+            origin = Path(current) / name
+            target = destination / origin.relative_to(source)
+            if not os.path.lexists(target):
+                continue
+            if origin.is_dir() and not origin.is_symlink():
+                if target.is_symlink() or not target.is_dir():
+                    target.unlink()
+            elif target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
     overlay = [] if sys.platform == "darwin" else ["--remove-destination"]
     _run([*_copy_flags(), *overlay, str(source) + "/.", str(destination)])
     _sync_filesystem(destination)
