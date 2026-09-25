@@ -104,8 +104,10 @@ def event(name: str, **details) -> dict:
 
 def boundary(name: str) -> None:
     details = {}
+    if name in {"snapshot_ready", "checkpoint_ready"}:
+        checkpoint_facts(capture=True)
     if name == "rollback_roots_complete":
-        details = verify_checkpoint_bytes()
+        details = checkpoint_facts(capture=False)
     value = event(name, **details)
     if not PLAN.exists():
         return
@@ -123,37 +125,40 @@ def boundary(name: str) -> None:
         raise RuntimeError("The external controller did not interrupt the armed boundary.")
 
 
-def verify_checkpoint_bytes() -> dict:
+def checkpoint_facts(*, capture: bool) -> dict:
     from rcp_supervisor.driver import store_for
     from rcp_supervisor.runtime import Paths
 
     operation = store_for(Paths()).active()
     assert operation is not None
-    checkpoint = operation["checkpoint"]
-    directory = Path(checkpoint["directory"])
-    manifest = directory / "checkpoint.json"
-    assert hashlib.sha256(manifest.read_bytes()).hexdigest() == checkpoint["sha256"]
-    roots = read_json(manifest)["roots"]
-    account = pwd.getpwnam("rcp")
-    for root in roots:
+    oracle = STATE / f"checkpoint-{operation['operation_id']}.json"
+    if capture and oracle.exists():
+        return {}
+    catalog = read_json(Path(operation["checkpoint"]["directory"]) / "checkpoint.json")
+    facts = {}
+    for root in catalog["roots"]:
         live = Path(root["live"])
-        assert not live.is_symlink()
-        assert live.stat().st_uid == account.pw_uid
-        assert stat.S_IMODE(live.stat().st_mode) == 0o700
-        assert {str(path.relative_to(live)) for path in live.rglob("*")} == {
-            item["path"] for item in root["entries"]
-        }
-        for item in root["entries"]:
-            path = live / item["path"]
-            assert not path.is_symlink()
-            assert path.stat().st_uid == account.pw_uid
-            if item["kind"] == "file":
-                assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
-                assert stat.S_IMODE(path.stat().st_mode) == item["mode"]
-            else:
-                assert path.is_dir()
-                assert stat.S_IMODE(path.stat().st_mode) == 0o700
-    return {"checkpoint_bytes_verified": True, "replacement_roots": len(roots)}
+        entries = {}
+        paths = [live]
+        if live.exists():
+            for directory, directories, files in os.walk(live):
+                paths.extend(Path(directory) / name for name in [*directories, *files])
+        for path in paths:
+            if not os.path.lexists(path):
+                continue
+            info = path.lstat()
+            value = [info.st_mode, info.st_uid, info.st_gid]
+            if stat.S_ISREG(info.st_mode):
+                value.append(hashlib.sha256(path.read_bytes()).hexdigest())
+            elif stat.S_ISLNK(info.st_mode):
+                value.append(os.readlink(path))
+            entries[str(path.relative_to(live))] = value
+        facts[str(live)] = entries
+    if capture:
+        write_json(oracle, facts)
+    else:
+        assert facts == read_json(oracle)
+    return {"checkpoint_bytes_verified": True, "replacement_roots": len(facts)}
 
 
 def health() -> dict:

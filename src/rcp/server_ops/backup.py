@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_RECEIPT_MAX_BYTES,
+    BACKUP_RETAINED_FAILED_CAPTURES,
     SERVER_BACKUP_CONFIGURATION_TIMEOUT_SECONDS,
 )
 from rcp.server_ops._local_primitives import (
@@ -487,6 +488,11 @@ class LinuxBackupRunMachine:
                     installed=config,
                     expected_uid=os.geteuid(),
                 )
+                discard_backup_temporary_files(self.layout, Path(config.backup.destination))
+                discard_orphaned_backup_receipts(config)
+                prune_backup_capture_roots(
+                    self.layout.data_dir, keep=BACKUP_RETAINED_FAILED_CAPTURES
+                )
                 age_version = require_age_1x(self.age_executable)
                 control = self.control or ServerControlClient.from_data_dir(
                     self.layout.data_dir,
@@ -531,6 +537,7 @@ class LinuxBackupRunMachine:
                     data_dir=self.layout.data_dir,
                     capture_id=sqlite_result.capture_id,
                 )
+                prune_backup_capture_roots(self.layout.data_dir, keep=0)
                 completed_at = self.clock()
                 outcome = BackupRunOutcome(
                     operation_id=operation_id,
@@ -593,6 +600,7 @@ class LinuxBackupRunMachine:
             failure=message,
         )
         try:
+            prune_backup_capture_roots(self.layout.data_dir, keep=BACKUP_RETAINED_FAILED_CAPTURES)
             write_backup_outcome(outcome, self.layout)
         except (OSError, ValueError) as exc:
             raise BackupRunRefused(
@@ -736,7 +744,6 @@ def protect_backup_archive(
     temporary_path = destination / temporary_name
     descriptor = -1
     process: subprocess.Popen[bytes] | None = None
-    stderr_file = tempfile.TemporaryFile()  # noqa: SIM115 - closed by the shared failure fence
     try:
         descriptor = os.open(
             temporary_path,
@@ -752,7 +759,7 @@ def protect_backup_archive(
             ),
             stdin=subprocess.PIPE,
             stdout=descriptor,
-            stderr=stderr_file,
+            stderr=subprocess.DEVNULL,
         )
         if process.stdin is None:  # pragma: no cover - subprocess contract
             raise OSError("age stdin was not created")
@@ -842,7 +849,6 @@ def protect_backup_archive(
                 process.wait()
         if descriptor >= 0:
             os.close(descriptor)
-        stderr_file.close()
         temporary_path.unlink(missing_ok=True)
 
 
@@ -1571,6 +1577,88 @@ def discard_backup_capture_root(
             "The archive is protected, but RCP could not remove its private plaintext stage. "
             "Inspect the exact run-stage directory before retrying."
         ) from exc
+
+
+def prune_backup_capture_roots(data_dir: Path, *, keep: int) -> None:
+    """Prune only private backup stages while the backup run lock is held."""
+    stage_root = data_dir.resolve() / "run-stage"
+    try:
+        metadata = stage_root.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise BackupRunRefused("The backup staging boundary is unsafe.")
+    candidates: list[tuple[int, Path, str]] = []
+    for path in stage_root.iterdir():
+        if not path.name.startswith("backup-"):
+            continue
+        capture_id = path.name.removeprefix("backup-")
+        try:
+            _canonical_uuid4(capture_id, label="backup capture identity")
+        except ValueError:
+            continue
+        info = path.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            raise BackupRunRefused("A retained backup capture stage is unsafe.")
+        candidates.append((info.st_mtime_ns, path, capture_id))
+    for _, path, capture_id in sorted(candidates, reverse=True)[keep:]:
+        discard_backup_capture_root(path, data_dir=data_dir, capture_id=capture_id)
+
+
+def discard_backup_temporary_files(layout: ServerLayout, destination: Path) -> None:
+    """Remove interrupted writes only after exact publication intents reconcile."""
+    archive_temporary = re.compile(
+        rf"\.{_ARCHIVE_NAME.pattern}(?:\.receipt\.json)?\.[0-9a-f]{{32}}\.partial"
+    )
+    intent_temporary = re.compile(rf"\.{_PUBLICATION_INTENT_NAME.pattern}\.[0-9a-f]{{32}}\.partial")
+    status_temporary = re.compile(r"\.backup-(?:status|diagnostics)\.json\.[a-z0-9_]{8}")
+    for root, patterns in (
+        (destination, (archive_temporary, intent_temporary)),
+        (layout.server_root, (status_temporary,)),
+    ):
+        for path in root.iterdir():
+            if not any(pattern.fullmatch(path.name) for pattern in patterns):
+                continue
+            info = path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != _ARCHIVE_MODE
+            ):
+                raise BackupRunRefused("An interrupted backup temporary file is unsafe.")
+            path.unlink()
+        _fsync_directory(root)
+
+
+def discard_orphaned_backup_receipts(installed: InstalledServerConfig) -> None:
+    """Finish an interrupted archive/receipt retention deletion after reconciliation."""
+    assert installed.backup is not None
+    destination = Path(installed.backup.destination)
+    for path in destination.glob("*.tar.age.receipt.json"):
+        archive_name = path.name.removesuffix(".receipt.json")
+        if _ARCHIVE_NAME.fullmatch(archive_name) is None:
+            continue
+        if os.path.lexists(destination / archive_name):
+            continue
+        try:
+            receipt = BackupArchiveReceipt.model_validate_json(
+                _read_private_file(
+                    path, expected_uid=os.geteuid(), maximum=BACKUP_RECEIPT_MAX_BYTES
+                )
+            )
+        except ValueError:
+            continue
+        if (
+            receipt.archive_name == archive_name
+            and receipt.destination == str(destination)
+            and receipt.installation_id == installed.installation_id
+        ):
+            path.unlink()
+            _fsync_directory(destination)
 
 
 def _recipient_fingerprint(recipient: str) -> str:

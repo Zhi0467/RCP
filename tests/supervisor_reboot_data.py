@@ -12,7 +12,8 @@ from pathlib import Path
 from rcp.api import create_app
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import AGENT_EXECUTION_PROFILES
-from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.models import AuthorizedHuman, GraphBranchMetadata, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.projects import inspect_backup_project_registration
 from rcp.providers import configured_runtime_id
@@ -36,33 +37,52 @@ def prepare_data(
     *,
     account: str = "rcp",
     bootstrap_code: str | None = None,
+    member_token: str | None = None,
+    empty_branch: bool = False,
 ) -> dict:
     previous = os.umask(0o077)
     try:
         return _prepare_data(
-            data_dir, projects_root, account=account, bootstrap_code=bootstrap_code
+            data_dir,
+            projects_root,
+            account=account,
+            bootstrap_code=bootstrap_code,
+            member_token=member_token,
+            empty_branch=empty_branch,
         )
     finally:
         os.umask(previous)
 
 
 def _prepare_data(
-    data_dir: Path, projects_root: Path, *, account: str, bootstrap_code: str | None
+    data_dir: Path,
+    projects_root: Path,
+    *,
+    account: str,
+    bootstrap_code: str | None,
+    member_token: str | None,
+    empty_branch: bool,
 ) -> dict:
     """Use application owners to build one completed, fully capturable project."""
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     projects_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if bootstrap_code is None:
+    if member_token is not None:
+        store = AppStore(data_dir / "rcp.sqlite3")
+        member = store.authenticate_team_member_token(member_token)
+        assert member is not None
+        token = member_token
+    elif bootstrap_code is None:
         store, code = AppStore.initialize_team_space(
             data_dir / "rcp.sqlite3", "Reboot qualification"
         )
     else:
         store, code = AppStore(data_dir / "rcp.sqlite3"), bootstrap_code
-    member, token = store.enroll_team_member(code, "Qualification researcher")
+    if member_token is None:
+        member, token = store.enroll_team_member(code, "Qualification researcher")
     authority = AuthorizedHuman(
         space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
     )
-    repository_ref = parse_github_repository_ref("git@github.com:Zhi0467/RCP.git")
+    repository_ref = parse_github_repository_ref("git@github.com:qualification/fixture.git")
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authority,
@@ -269,7 +289,11 @@ def _prepare_data(
                             "target": "hyp/recovery-keeps-history",
                             "relation": "has_hypothesis",
                         },
-                        {"source": "exp/recovery", "target": "ev/recovery", "relation": "produces"},
+                        {
+                            "source": "exp/recovery",
+                            "target": "ev/recovery",
+                            "relation": "produces",
+                        },
                         {
                             "source": "ev/recovery",
                             "target": "hyp/recovery-keeps-history",
@@ -291,6 +315,25 @@ def _prepare_data(
             ],
         )
     )
+    empty_patches = None
+    if empty_branch:
+        base = history.head_ref()
+        branch_id = str(uuid.uuid4())
+        branch = history.create_auto_research_branch(
+            GraphBranchMetadata(
+                branch_id=branch_id,
+                episode_id=branch_id,
+                project_id=project.project_id,
+                base_head=base,
+                head=GraphHeadRef(
+                    target=GraphTargetRef(kind="branch", branch_id=branch_id),
+                    revision=base.revision,
+                    transition_id=base.transition_id,
+                ),
+                authorized_by=authority,
+            )
+        )
+        empty_patches = str(branch.patches_dir)
     operation_id = str(uuid.uuid4())
     chat_id = str(uuid.uuid4())
     stage = data_dir / "run-stage" / operation_id
@@ -342,6 +385,7 @@ def _prepare_data(
         "stage": str(stage),
         "attachment_id": attachment.attachment.attachment_id,
         "ledger_head": store.storage_schema_ledger_head(),
+        "empty_patches": empty_patches,
     }
 
 

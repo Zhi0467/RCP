@@ -207,3 +207,26 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
         }, "opening the database must run the migration under test"
 
     assert _database_schema_sha256(reopened) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+
+
+def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path: Path) -> None:
+    # This exact intermediate schema no longer results from today's migrations.
+    # Keep the database made by the historical binary, not a copy of its digest.
+    fixture = Path(
+        "tests/fixtures/restore_schema/provider-readiness-upgraded-v21-16248cea.sqlite3.gz"
+    )
+    database = tmp_path / "historical.sqlite3"
+    database.write_bytes(gzip.decompress(fixture.read_bytes()))
+    assert restore_code._database_schema_sha256(database) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+    historical = AppStore.open_read_only_snapshot(database)
+    with historical.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 21
+        )
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+    upgraded = AppStore(database)
+    assert _database_schema_sha256(upgraded) in SUPPORTED_RESTORE_DATABASE_SCHEMAS

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import venv
@@ -14,8 +15,9 @@ from rcp_supervisor.errors import SupervisorError
 from tests.supervisor_helpers import make_bundle, refresh_manifest
 
 
+@pytest.mark.parametrize("mask", [0o002, 0o022, 0o077])
 def test_install_real_wheel_in_isolated_environment_preserves_current_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mask: int
 ) -> None:
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
@@ -32,7 +34,19 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(previous))
     monkeypatch.setenv("PYTHONPATH", str(previous))
 
-    target = install.install_release(bundle, root)
+    previous_mask = os.umask(mask)
+    try:
+        target = install.install_release(bundle, root)
+        assert os.umask(mask) == mask
+    finally:
+        os.umask(previous_mask)
+
+    for directory, _, files in os.walk(target):
+        assert stat.S_IMODE(Path(directory).stat().st_mode) == 0o700
+        for name in files:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                assert not path.stat().st_mode & 0o077, path
 
     receipt = json.loads((target / "installed.json").read_text())
     result = subprocess.run(
@@ -45,6 +59,7 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     assert result.stdout.strip() == receipt["version"]
     assert target.name == str(receipt["build"])
     assert current.resolve() == previous
+    assert not (target / ".tmp").exists()
     assert sentinel.read_text() == "old release"
     with pytest.raises(SupervisorError, match="already exists"):
         install.install_release(bundle, root)
@@ -57,18 +72,46 @@ def test_install_preserves_partial_failure_without_publishing_success(
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
+    run = install._run
 
     def fail(*args, **kwargs):
-        kwargs["log"].write(b"diagnostic fixture\n")
+        run(*args, **kwargs)
+        kwargs["log"].write(b"\ndiagnostic fixture\n")
         raise SupervisorError("injected install failure")
 
-    monkeypatch.setattr(install, "_run", fail)
-    with pytest.raises(SupervisorError, match="retained"):
-        install.install_release(bundle, root)
+    with monkeypatch.context() as failure:
+        failure.setattr(install, "_run", fail)
+        previous_mask = os.umask(0o002)
+        try:
+            with pytest.raises(SupervisorError, match="retained"):
+                install.install_release(bundle, root)
+            assert os.umask(0o002) == 0o002
+        finally:
+            os.umask(previous_mask)
     (target,) = root.iterdir()
     assert not (target / "installed.json").exists()
-    assert (target / "install.log").read_bytes() == b"diagnostic fixture\n"
+    assert (target / ".venv/bin/python").exists()
+    diagnostic = (target / "install.log").read_bytes()
+    assert diagnostic.endswith(b"diagnostic fixture\n")
     assert (target / "assets/manifest.sha256").exists()
+    with pytest.raises(SupervisorError, match="already exists"):
+        install.install_release(bundle, root)
+    assert (target / "install.log").read_bytes() == diagnostic
+    assert not (target / "installed.json").exists()
+
+    # The documented operator path inspects diagnostics, removes only this
+    # failed build, then retries the same verified release from scratch.
+    shutil.rmtree(target)
+    assert install.install_release(bundle, root) == target
+    receipt = json.loads((target / "installed.json").read_text())
+    result = subprocess.run(
+        [str(target / ".venv/bin/python"), "-I", "-c", "import rcp; print(rcp.__version__)"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == receipt["version"]
 
 
 def test_install_refuses_bad_hash_before_creating_release(tmp_path: Path) -> None:
@@ -323,3 +366,37 @@ def test_uv_lock_protection_refuses_unsafe_entries_without_modifying_them(tmp_pa
     if unsafe == "nonempty":
         assert lock.read_bytes() == b"not a uv lock"
         assert stat.S_IMODE(lock.stat().st_mode) == 0o666
+
+
+def test_installation_uses_owned_temporary_files_and_no_shared_uv_cache(tmp_path):
+    import sys
+
+    with (tmp_path / "install.log").open("w+b") as log:
+        install._run(
+            [
+                sys.executable,
+                "-c",
+                "import os,json; print(json.dumps({k:os.environ[k] for k in ('UV_NO_CACHE','TMPDIR')}))",
+            ],
+            cwd=tmp_path,
+            log=log,
+            timeout=5,
+        )
+        log.seek(0)
+        environment = json.loads(log.read())
+    assert environment == {
+        "UV_NO_CACHE": "true",
+        "TMPDIR": str(tmp_path / ".tmp"),
+    }
+
+
+def test_installation_log_is_bounded_even_when_child_exits_before_poll(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setattr(install, "MAX_APP_OUTPUT_BYTES", 1024)
+    with (tmp_path / "install.log").open("w+b") as log:
+        with pytest.raises(SupervisorError, match="output exceeded"):
+            install._run(
+                [sys.executable, "-c", "print('x'*10000)"], cwd=tmp_path, log=log, timeout=5
+            )
+        assert os.fstat(log.fileno()).st_size == install.MAX_APP_OUTPUT_BYTES

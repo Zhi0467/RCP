@@ -28,9 +28,9 @@ from .server_upgrade_harness import (
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
+    capture_release_update_with,
     exact_base_gate_enabled,
     immutable_fixture_directories,
-    prepare_release_update_with,
     published_release_tags,
     verify_fixture_integrity,
     verify_fixture_registry,
@@ -188,9 +188,12 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 )
 @pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
 def test_release_update_from_every_published_release_validates(
-    release_tag: str, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    release_tag: str,
+    stale_cache: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An update prepared by every published non-prerelease v* release must pass.
+    """Every published release must migrate current and stale display caches.
 
     No supported source floor is declared yet; that policy decision remains open.
 
@@ -199,12 +202,18 @@ def test_release_update_from_every_published_release_validates(
     against the old release's data and display cache, current or left stale by a
     failed refresh.
     """
-    from rcp.server_ops.deployment import ValidateRequest, validate, verify_live_application
+    from rcp.server_ops.deployment import (
+        PrepareRequest,
+        ValidateRequest,
+        prepare,
+        validate,
+        verify_live_application,
+    )
 
     # git archive fails for a missing tag; an incomplete fetch cannot skip a source.
     checkout = build_release_checkout(release_tag, tmp_path / "release")
     root = tmp_path / "update"
-    prepared = prepare_release_update_with(checkout, root, stale_cache=stale_cache)
+    capture = capture_release_update_with(checkout, root, stale_cache=stale_cache)
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
@@ -212,6 +221,16 @@ def test_release_update_from_every_published_release_validates(
             service_account=pwd.getpwuid(os.geteuid()).pw_name,
             projects_root=root / "projects",
         ),
+    )
+    # Use the candidate's preparation path: installed releases cannot classify
+    # scratch produced by every tool an agent may have used after their release.
+    prepared = prepare(
+        PrepareRequest(
+            version=1,
+            data_dir=str(root / "data"),
+            output_dir=str(root / "prepared"),
+            **capture,
+        )
     )
     checked = validate(
         ValidateRequest(

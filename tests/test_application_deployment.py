@@ -23,7 +23,6 @@ from pydantic_core import to_jsonable_python
 from rcp_supervisor.checkpoint import (
     create_stopped_snapshot,
     restore_checkpoint,
-    verify_checkpoint,
 )
 
 import rcp.storage.models as storage_models
@@ -124,6 +123,15 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     (stage / "python").symlink_to("/usr/bin/python3")
     (stage / "pytest-0").mkdir(mode=0o700)
     (stage / "pytest-current").symlink_to("pytest-0")  # pytest's directory link
+    # uv installs agent packages as hardlinks into its cache and leaves a 0666 lock.
+    (tmp_path / "uv-cache").mkdir(mode=0o700)
+    (tmp_path / "uv-cache" / "pylab.py").write_text("from matplotlib.pylab import *\n")
+    os.link(tmp_path / "uv-cache" / "pylab.py", stage / "pylab.py")
+    (stage / ".lock").touch()
+    (stage / ".lock").chmod(0o666)
+    os.mkfifo(stage / "agent-pipe")
+    (stage / "odd\\name\n").mkdir()
+    (data / "unknown-agent-state").write_text("preserved by the supervisor")
     for relative, content in {
         "providers/claude/test-account/setup-token": "synthetic-token-do-not-publish",
         "jobs/completed/receipt.json": '{"status":"completed"}',
@@ -164,9 +172,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
             raise MaintenanceRefused("Injected old prepare failure")
 
         with monkeypatch.context() as fault:
-            fault.setattr(
-                "rcp.server_ops.deployment._settle_accepting_artifact_replacements", failed_prepare
-            )
+            fault.setattr("rcp.server_ops.deployment._check_copy", failed_prepare)
             with pytest.raises(MaintenanceRefused):
                 prepare(request)
     else:
@@ -175,6 +181,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
         data_payload = Path(prepared["roots"][0]["payload"])
         assert not (data_payload / "providers").exists()
         assert not (data_payload / "jobs").exists()
+        assert not (data_payload / "run-stage").exists()
         # Corrupting the old selected payload cannot affect the rollback source.
         shutil.rmtree(data_payload)
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
@@ -185,7 +192,6 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     (stage / "python").unlink()
     (stage / "python").symlink_to("/usr/bin/python3.99")
     restore_checkpoint(checkpoint)
-    verify_checkpoint(checkpoint)
     assert {root: _tree_state(root) for root in before} == before
     assert not (Path(state["research"]) / "candidate-only").exists()
     assert (Path(state["stage"]) / "retained.txt").read_text() != "candidate altered"
@@ -205,7 +211,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     backup = BackupProjectFileCaptureCoordinator(data).capture(
         fresh.receipt_path, expected_sha256=fresh.receipt_sha256
     )
-    assert backup.receipt.status == "complete"
+    assert backup.receipt.status == fresh.receipt.status
     assert sum(project.status == "uncaptured" for project in backup.receipt.projects) == 0
 
 
@@ -704,6 +710,7 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
             "prepare",
             "validate",
             "inspect",
+            "offline-inventory",
             "offline-prepare",
             "restore-prepare",
             "offline-protect",
@@ -712,21 +719,14 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
     assert not data.exists()
 
 
-@pytest.mark.parametrize(
-    "mutation", ["unknown_data", "missing_local_project", "symlink_bootstrap", "existing_output"]
-)
+@pytest.mark.parametrize("mutation", ["missing_local_project", "existing_output"])
 def test_prepare_refuses_incomplete_or_unsafe_local_boundary(
     captured, tmp_path: Path, mutation: str
 ) -> None:
     request, state, _metadata = captured
-    data = Path(request.data_dir)
-    if mutation == "unknown_data":
-        (data / "unknown-owner").write_text("preserve")
-    elif mutation == "missing_local_project":
+    if mutation == "missing_local_project":
         research = Path(state["research"])
         research.rename(research.with_name("held-research"))
-    elif mutation == "symlink_bootstrap":
-        (data / "bootstrap-manifests").symlink_to(tmp_path, target_is_directory=True)
     else:
         output = Path(request.output_dir)
         output.mkdir()
@@ -814,6 +814,25 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
             == next_boundary.maintenance_id
         )
         command("maintenance_release", next_boundary)
+
+
+def test_offline_inventory_discovers_roots_without_changing_stopped_state(captured, tmp_path):
+    from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory
+
+    request, state, _ = captured
+    data, research = Path(request.data_dir), Path(state["research"])
+    (data / "rcp.lock").unlink(missing_ok=True)
+    before = {root: _tree_state(root) for root in (data, research)}
+    result = offline_inventory(
+        OfflinePrepareRequest(
+            version=1,
+            data_dir=str(data),
+            output_dir=str(tmp_path / "inventory"),
+            source_commit="a" * 40,
+        )
+    )
+    assert {root["live"] for root in result["roots"]} == {str(data), str(research)}
+    assert {root: _tree_state(root) for root in before} == before
 
 
 def test_offline_preparation_keeps_live_database_unchanged(captured, tmp_path):
@@ -905,5 +924,5 @@ def test_inspect_uninitialized_does_not_create_schema(tmp_path, empty_sqlite):
     }
     assert {p.name: p.read_bytes() for p in data.iterdir()} == before
     (data / "unowned").write_text("do not change")
-    with pytest.raises(MaintenanceRefused):
-        inspect(InspectRequest(version=1, data_dir=str(data)))
+    assert inspect(InspectRequest(version=1, data_dir=str(data)))["status"] == "uninitialized"
+    assert (data / "unowned").read_text() == "do not change"

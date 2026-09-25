@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import uuid
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
@@ -356,6 +357,10 @@ def test_backup_run_composes_capture_protection_retention_and_stage_cleanup(
     capture_root.mkdir(parents=True, mode=0o700)
     server_root.mkdir()
     destination.mkdir()
+    previous_capture = capture_root.parent / f"backup-{uuid.uuid4()}"
+    previous_capture.mkdir(mode=0o700)
+    (previous_capture / "rcp.sqlite3").write_bytes(b"previous failed capture")
+    os.utime(previous_capture, ns=(0, 0))
     installed = _installed(destination)
     sqlite_receipt = object()
     project_publication = object()
@@ -457,6 +462,7 @@ def test_backup_run_composes_capture_protection_retention_and_stage_cleanup(
     assert outcome.retention_deleted_archives == (deleted_name,)
     assert read_backup_outcome(layout) == outcome
     assert not capture_root.exists()
+    assert not previous_capture.exists()
 
 
 def test_backup_run_publishes_a_durable_failure_outcome(
@@ -484,6 +490,14 @@ def test_backup_run_publishes_a_durable_failure_outcome(
             BackupRunRefused("The configured age executable is unavailable.")
         ),
     )
+    capture_root = layout.data_dir / "run-stage"
+    capture_root.mkdir(parents=True, mode=0o700)
+    captures = []
+    for index in range(backup_owner.BACKUP_RETAINED_FAILED_CAPTURES + 2):
+        capture = capture_root / f"backup-{uuid.uuid4()}"
+        capture.mkdir(mode=0o700)
+        os.utime(capture, ns=(index, index))
+        captures.append(capture)
 
     with pytest.raises(BackupRunRefused, match="age executable is unavailable"):
         LinuxBackupRunMachine(layout, clock=lambda: CAPTURED_AT).run()
@@ -492,6 +506,9 @@ def test_backup_run_publishes_a_durable_failure_outcome(
     assert outcome.status == "failure"
     assert outcome.failure == "The configured age executable is unavailable."
     assert outcome.archive is None
+    assert {path for path in captures if path.exists()} == set(
+        captures[-backup_owner.BACKUP_RETAINED_FAILED_CAPTURES :]
+    )
 
 
 def test_backup_run_cli_reports_the_exact_protected_outcome(tmp_path: Path) -> None:

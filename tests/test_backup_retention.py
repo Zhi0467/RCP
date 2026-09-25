@@ -4,14 +4,19 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from rcp.limits import BACKUP_RETAINED_FAILED_CAPTURES
 from rcp.server_ops.backup import (
     BackupRunRefused,
     apply_backup_retention,
+    discard_backup_temporary_files,
+    discard_orphaned_backup_receipts,
     plan_backup_retention,
     protect_backup_archive,
+    prune_backup_capture_roots,
 )
 from rcp.server_ops.config import ServerBackupConfig
 
@@ -169,3 +174,84 @@ def test_retention_ignores_unproven_files_and_rechecks_before_deletion(tmp_path:
     assert older.receipt_path.exists()
     assert unknown.read_bytes() == b"do not delete\n"
     assert forged.read_bytes() == b"not age\n"
+
+
+def test_failed_capture_retention_preserves_task_scratch_then_success_clears_backups(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "run-stage"
+    stage.mkdir(mode=0o700)
+    task = stage / str(uuid.uuid4())
+    task.mkdir()
+    (task / "patch.json").write_text("task evidence")
+    captures = []
+    for index in range(BACKUP_RETAINED_FAILED_CAPTURES + 3):
+        capture = stage / f"backup-{uuid.uuid4()}"
+        capture.mkdir(mode=0o700)
+        (capture / "rcp.sqlite3").write_bytes(b"failed capture")
+        os.utime(capture, ns=(index, index))
+        captures.append(capture)
+
+    prune_backup_capture_roots(tmp_path, keep=BACKUP_RETAINED_FAILED_CAPTURES)
+
+    assert {path for path in captures if path.exists()} == set(
+        captures[-BACKUP_RETAINED_FAILED_CAPTURES:]
+    )
+    prune_backup_capture_roots(tmp_path, keep=0)
+    assert not any(path.exists() for path in captures)
+    assert (task / "patch.json").read_text() == "task evidence"
+
+
+def test_backup_retention_refuses_symlinked_capture_boundary(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    capture = outside / f"backup-{uuid.uuid4()}"
+    capture.mkdir(mode=0o700)
+    (tmp_path / "run-stage").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(BackupRunRefused, match="staging boundary is unsafe"):
+        prune_backup_capture_roots(tmp_path, keep=0)
+    assert capture.exists()
+
+
+def test_backup_retry_removes_only_recognized_private_interrupted_writes(tmp_path: Path) -> None:
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    server_root = tmp_path / "server"
+    server_root.mkdir()
+    archive = (
+        "rcp-team-backup-v1-20260829T120000000000Z-9c59550a-9787-466a-9435-1e59f0a9803f.tar.age"
+    )
+    temporary_files = [
+        destination / f".{archive}.{'a' * 32}.partial",
+        destination / f".{archive}.receipt.json.{'b' * 32}.partial",
+        destination
+        / f"..rcp-backup-publication-9c59550a-9787-466a-9435-1e59f0a9803f.json.{'c' * 32}.partial",
+        server_root / ".backup-status.json.abcdefgh",
+        server_root / ".backup-diagnostics.json.12345678",
+    ]
+    for path in temporary_files:
+        path.write_bytes(b"interrupted")
+        path.chmod(0o600)
+    unrelated = destination / ".human-notes.partial"
+    unrelated.write_text("keep")
+
+    discard_backup_temporary_files(SimpleNamespace(server_root=server_root), destination)
+
+    assert not any(path.exists() for path in temporary_files)
+    assert unrelated.read_text() == "keep"
+
+
+def test_backup_retry_finishes_interrupted_receipt_retention(tmp_path: Path) -> None:
+    age = _fake_age(tmp_path)
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    protected = _protect(tmp_path, destination, age, captured_at=CAPTURED_AT, status="complete")
+    protected.archive_path.unlink()  # A process stop between archive and receipt deletion.
+    unrelated = destination / "human.tar.age.receipt.json"
+    unrelated.write_text("keep")
+
+    discard_orphaned_backup_receipts(_installed(destination))
+
+    assert not protected.receipt_path.exists()
+    assert unrelated.read_text() == "keep"

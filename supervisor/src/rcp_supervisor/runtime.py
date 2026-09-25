@@ -28,10 +28,10 @@ from rcp_supervisor.errors import ApplicationCommandError, SupervisorError, safe
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.limits import (
     APP_COMMAND_TIMEOUT_SECONDS,
-    CHECKPOINT_COPY_TIMEOUT_SECONDS,
     CONTROL_MAX_ERROR_CODE_CHARS,
     CONTROL_MAX_ERROR_MESSAGE_CHARS,
     CONTROL_MAX_RESPONSE_BYTES,
+    DEPLOYMENT_LOCK_TIMEOUT_SECONDS,
     INSTALL_TIMEOUT_SECONDS,
     MAINTENANCE_TIMEOUT_SECONDS,
     MAX_APP_OUTPUT_BYTES,
@@ -211,7 +211,7 @@ class SystemRuntime:
                 or stat.S_IMODE(info.st_mode) != 0o600
             ):
                 raise SupervisorError("Backup lock is not the private service-owned file.")
-            deadline = time.monotonic() + MAINTENANCE_TIMEOUT_SECONDS
+            deadline = time.monotonic() + DEPLOYMENT_LOCK_TIMEOUT_SECONDS
             while True:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -279,7 +279,12 @@ class SystemRuntime:
                 yield output, name
             finally:
                 output.flush()
+                if os.fstat(output.fileno()).st_size > MAX_APP_OUTPUT_BYTES:
+                    output.truncate(MAX_APP_OUTPUT_BYTES)
                 os.fsync(output.fileno())
+                from rcp_supervisor.retention import prune_logs
+
+                prune_logs(directory)
 
     def owned_argv(self, argv: list[str]) -> list[str]:
         """Arm Linux parent-death ownership after the subprocess drops credentials."""
@@ -296,8 +301,9 @@ class SystemRuntime:
         argv: list[str],
         request: dict | None = None,
         *,
-        timeout: float,
+        timeout: float | None,
         release: dict | None = None,
+        privileged: bool = False,
     ) -> bytes:
         payload = b"" if request is None else json.dumps(request, allow_nan=False).encode()
         if len(payload) > MAX_APP_OUTPUT_BYTES:
@@ -309,15 +315,15 @@ class SystemRuntime:
                 stdin=subprocess.PIPE if request is not None else subprocess.DEVNULL,
                 stdout=output,
                 stderr=error,
-                user=self.uid,
-                group=self.gid,
-                extra_groups=[],
+                user=None if privileged else self.uid,
+                group=None if privileged else self.gid,
+                extra_groups=None if privileged else [],
                 cwd=self.paths.service_home,
                 env=self.environment(release),
                 start_new_session=True,
             )
             try:
-                deadline = time.monotonic() + timeout
+                deadline = None if timeout is None else time.monotonic() + timeout
                 with selectors.DefaultSelector() as selector:
                     if process.stdin is not None:
                         os.set_blocking(process.stdin.fileno(), False)
@@ -331,12 +337,14 @@ class SystemRuntime:
                             raise SupervisorError(
                                 f"Application output exceeded its bound; inspect {error_path}."
                             )
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
+                        remaining = None if deadline is None else deadline - time.monotonic()
+                        if remaining is not None and remaining <= 0:
                             raise SupervisorError(
                                 f"Application subprocess exceeded its time limit; inspect {error_path}."
                             )
-                        for key, _ in selector.select(min(0.1, remaining)):
+                        for key, _ in selector.select(
+                            0.1 if remaining is None else min(0.1, remaining)
+                        ):
                             try:
                                 offset += os.write(key.fd, payload[offset : offset + 65536])
                             except BlockingIOError:
@@ -373,10 +381,13 @@ class SystemRuntime:
         argv: list[str],
         request: dict | None = None,
         *,
-        timeout: float = APP_COMMAND_TIMEOUT_SECONDS,
+        timeout: float | None = APP_COMMAND_TIMEOUT_SECONDS,
         release: dict | None = None,
+        privileged: bool = False,
     ) -> dict:
-        output = self._service_output(argv, request, timeout=timeout, release=release)
+        output = self._service_output(
+            argv, request, timeout=timeout, release=release, privileged=privileged
+        )
         try:
             result = json.loads(output)
         except (ValueError, UnicodeError) as exc:
@@ -396,18 +407,33 @@ class SystemRuntime:
             timeout=(
                 INSTALL_TIMEOUT_SECONDS
                 if action in {"install", "remove"}
-                else CHECKPOINT_COPY_TIMEOUT_SECONDS
-                if action in {"check-space", "snapshot-roots", "restore", "verify"}
+                else None
+                if action
+                in {"check-space", "checkpoint", "snapshot-roots", "restore", "preserve-candidate"}
                 else APP_COMMAND_TIMEOUT_SECONDS
             ),
+            privileged=action
+            in {
+                "check-space",
+                "checkpoint",
+                "snapshot-roots",
+                "restore",
+                "check-roots",
+                "remove",
+                "preserve-candidate",
+            },
         )
         if isinstance(result.get("error"), str):
             raise SupervisorError(result["error"][:4096])
         return result
 
     def remove_retained(self, directory: Path, root: Path) -> None:
-        """Delete one retained artifact through the account that created it."""
+        """Delete retained trees with the privilege needed for preserved modes."""
         self.filesystem("remove", {"directory": str(directory), "root": str(root)})
+
+    def prune_backup_captures(self) -> None:
+        # Includes maintenance captures when protected backups were unconfigured.
+        self.filesystem("prune-backup-captures", {"data_dir": str(self.paths.data_dir)})
 
     def current_release_directory(self) -> str:
         info = self.paths.current.lstat()
@@ -558,7 +584,12 @@ class SystemRuntime:
             raise SupervisorError("The application refused its private maintenance boundary.")
         return result["result"]
 
-    def protected_backup(self, release: dict | None = None) -> None:
+    def protected_backup(self, release: dict | None = None) -> str | None:
+        """Take the pre-update protected backup; return a warning when it is incomplete.
+
+        Rollback uses the stopped whole-root snapshot, so an incomplete backup is
+        reported to the operator instead of refusing the update.
+        """
         current = release or read_selected_receipt(
             self.paths.selected, releases_root=self.paths.releases_root
         )
@@ -580,6 +611,9 @@ class SystemRuntime:
             )
         except ApplicationCommandError as exc:
             output, failure = exc.output, exc
+        except (SupervisorError, OSError) as exc:
+            # A timeout, launch or output-bound failure is an incomplete backup too.
+            return f"The protected backup did not finish: {safe_diagnostic(str(exc))}"
         try:
             events = [json.loads(line) for line in output.splitlines() if line.strip()]
             fields = {
@@ -587,10 +621,10 @@ class SystemRuntime:
                 for event in events
                 for field in event.get("step", {}).get("fields", [])
             }
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            if failure is not None:
-                raise failure from exc
-            raise SupervisorError("Protected backup did not return a readable receipt.") from exc
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return "Protected backup did not return a readable receipt." + (
+                f" {failure}" if failure is not None else ""
+            )
         if (
             failure is not None
             or fields.get("backup_status") != "protected"
@@ -602,11 +636,12 @@ class SystemRuntime:
                 if isinstance(problems, str) and problems.strip()
                 else " The source returned no per-project cause; inspect its retained capture receipt."
             )
-            raise SupervisorError(
-                "A complete verified protected backup is required before deployment."
+            return (
+                "The protected backup is incomplete."
                 + detail
                 + (f" {failure}" if failure is not None else "")
             )
+        return None
 
     def enter_maintenance(self, operation: dict) -> dict:
         result = self.control(
@@ -732,7 +767,7 @@ class SystemRuntime:
         return roots
 
     def snapshot(self, operation: dict, roots: list[str]) -> dict:
-        """Only the supervisor copies stopped bytes, before old preparation."""
+        """Copy stopped roots before candidate preparation."""
         with self.stopped_data_lock():
             workspace = self.paths.checkpoints_root / operation["operation_id"]
             self.filesystem("workspace", {"directory": str(workspace)})
@@ -745,14 +780,10 @@ class SystemRuntime:
                 },
             )
 
-    def verify_roots(self, checkpoint: dict) -> None:
-        with self.stopped_data_lock():
-            self.filesystem("verify", checkpoint)
-
-    def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]:
+    def prepare(self, operation: dict, capture: dict) -> tuple[dict, None, dict, dict | None]:
         workspace = self.paths.checkpoints_root / operation["operation_id"]
         prepared = self.application(
-            operation["previous"],
+            operation["target"],
             "prepare",
             {
                 "version": 1,
@@ -789,16 +820,16 @@ class SystemRuntime:
         checkpoint = operation["checkpoint"]
         if operation["kind"] != "update":
             checkpoint = self.filesystem(
-                "checkpoint",
+                "snapshot-roots",
                 {
                     "directory": str(workspace / "checkpoint"),
-                    "roots": [*prepared["roots"], *extra_previous_roots],
+                    "roots": [root["live"] for root in [*prepared["roots"], *extra_previous_roots]],
                     "boundary_sha256": prepared["boundary_sha256"],
                 },
             )
         return (
             checkpoint,
-            {"path": prepared["proof_path"], "sha256": prepared["proof_sha256"]},
+            None,
             target_proof,
             candidate_checkpoint,
         )
@@ -807,7 +838,7 @@ class SystemRuntime:
         from rcp_supervisor.restore import prepare_restore
 
         inspection = self.application(
-            operation["previous"], "inspect", {"version": 1, "data_dir": str(self.paths.data_dir)}
+            operation["target"], "inspect", {"version": 1, "data_dir": str(self.paths.data_dir)}
         )
         if inspection.get("status") != "uninitialized":
             raise SupervisorError(
@@ -822,10 +853,10 @@ class SystemRuntime:
             self, self.restore_request, operation, prepared
         )
         checkpoint = self.filesystem(
-            "checkpoint",
+            "snapshot-roots",
             {
                 "directory": str(workspace / "checkpoint"),
-                "roots": [*prepared["roots"], *extra_previous_roots],
+                "roots": [root["live"] for root in [*prepared["roots"], *extra_previous_roots]],
                 "boundary_sha256": operation["nonce"],
             },
         )
