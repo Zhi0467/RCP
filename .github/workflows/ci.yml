@@ -209,6 +209,8 @@ jobs:
           # The supervisor names its error log in each refusal; keep them all and print them here.
           sudo cp -r /etc/rcp/supervisor/logs "$evidence/supervisor-logs" || true
           sudo sh -c 'for f in /etc/rcp/supervisor/logs/*; do echo "== $f"; tail -c 4000 "$f"; done' || true
+          # Name any release-tree directory a supervisor would call unsafe.
+          sudo find /home/rcp/rcp-server/releases -xdev -type d \( -perm /022 -o ! -user rcp \) -printf '%M %u:%g %p\n' 2>/dev/null | head -40 || true
           sudo chmod -R a+rX "$evidence" || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
