@@ -152,15 +152,13 @@ other end are never named as two things.
 
 6. **The operator stop keeps its own title.** `_copy_operator_contract` takes
    `title` and `purpose` from the operator step, not the pending plan step, so
-   the card is named after the human's task. Two independent event validators
-   currently refuse that — `validate_event_sequence` in `server_ops/models.py`
-   and the desktop's own check in `web/src-tauri/src/server_commands.rs` — and
-   both must relax to allow `title` and `purpose` to change on a human
-   `operator_action_needed` event, in the same change. Target, phase, expected
-   success, ordering, and the responsibility transfer stay pinned, including
-   `_copy_operator_contract`'s typed-target check. Because the pause is
-   persisted before it is emitted, landing the title change without both
-   validators would store the right stop and report a CLI failure.
+   the card is named after the human's task. `validate_event_sequence` in
+   `server_ops/models.py` allows `title` and `purpose` to change on a human
+   `operator_action_needed` event. Target, phase, expected success, ordering,
+   and the responsibility transfer stay pinned there, including
+   `_copy_operator_contract`'s typed-target check. The desktop no longer
+   repeats this sequence check: since PR #195 the server alone owns step order
+   and text, and the desktop takes success from the durable readback.
 
 ## Plan
 
