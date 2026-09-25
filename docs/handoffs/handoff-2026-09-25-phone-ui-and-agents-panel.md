@@ -124,8 +124,10 @@ they are today.
   - working: `active` or `queued`;
   - unread result: finished and in the existing unread set (title in bold);
   - idle: everything else.
-- **Reason line** on a needs-you or paused row, derived from `failure_kind`
-  and the existing task status fields. No new backend judgment.
+- **Reason line** on a needs-you or paused row: the backend's `status_label`,
+  verbatim. `failure_kind` is sealed in the web client, and chat tasks export no
+  recommendation, so a specific reason such as "Sign in to Codex" needs a new
+  backend field and is not part of this pull request.
 - **Title** wraps to two lines instead of truncating.
 - **Meta line:** provider (`runtime_label`) · Discuss or Work
   (`request.mode`) · repository. While working, the live phase and elapsed
@@ -142,9 +144,8 @@ they are today.
 ### Conversation header
 
 One line with the title, and one line with provider, model, mode, repository
-and worktree, and node or project scope. A colored banner shows the one action
-that clears a needs-you or paused state (for example Sign in or Resume), using
-the controls the conversation already has.
+and worktree, and node or project scope. A colored banner shows the backend label
+and Resume or Retry when the task's `can_resume` or `can_retry` offers it.
 
 ### Data
 

@@ -11,6 +11,7 @@ import {
   conversationTurnRequest,
   conversationHasUnread,
   groupChatConversations,
+  groupConversationAgents,
   isConversationModeShortcut,
   latestConversation,
   latestPersistedChatConfig,
@@ -385,4 +386,54 @@ test("worktree creation and integration preserve the ordinary conversation dispa
     assert.equal(request.mode, "work");
     assert.equal(request.writable_roots, undefined);
   }
+});
+
+test("the Agents panel groups each conversation by what its latest turn asks of the human", () => {
+  const conversation = (chatId, title, statuses) => ({
+    chatId,
+    kind: "project_chat",
+    nodeId: null,
+    title,
+    updatedAt: "2026-07-28T00:00:00Z",
+    tasks: statuses.map((status, index) =>
+      task({ operation_id: `${chatId}-${index}`, kind: "project_chat", status }),
+    ),
+  });
+  const conversations = [
+    conversation("failed", "Failed run", ["failed"]),
+    conversation("recovered", "Recovered run", ["failed", "succeeded"]),
+    conversation("paused", "Paused run", ["paused"]),
+    conversation("interrupted", "Interrupted run", ["interrupted"]),
+    conversation("running", "Running audit", ["succeeded", "running"]),
+    conversation("unread", "Unread result", ["succeeded"]),
+    conversation("idle", "Idle notes", ["succeeded"]),
+  ];
+  const unread = new Set(["unread-0"]);
+
+  const ids = (groups) =>
+    Object.fromEntries(
+      Object.entries(groups).map(([group, rows]) => [
+        group,
+        rows.map((row) => [row.conversation.chatId, row.status.state]),
+      ]),
+    );
+
+  assert.deepEqual(ids(groupConversationAgents(conversations, unread)), {
+    needs_you: [
+      ["failed", "needs_you"],
+      ["paused", "paused"],
+      ["interrupted", "needs_you"],
+    ],
+    working: [["running", "working"]],
+    recent: [
+      ["recovered", "idle"],
+      ["unread", "unread"],
+      ["idle", "idle"],
+    ],
+  });
+  assert.deepEqual(ids(groupConversationAgents(conversations, unread, "  AUDIT ")), {
+    needs_you: [],
+    working: [["running", "working"]],
+    recent: [],
+  });
 });

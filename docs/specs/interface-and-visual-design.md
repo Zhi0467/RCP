@@ -167,6 +167,17 @@ row when its underlying status can already be inspected, while failures and
 recovery controls stay explicit. The composer is a calm contained writing
 surface rather than a full-width control bar.
 
+The Chats list is an agent-hub panel. Conversations are grouped **Needs you**,
+**Working**, and **Recent**, each in recency order, from the backend's answers on
+the latest turn: a paused, failed, or interrupted turn needs the human; a
+queued, running, or pausing turn is working. Each row is a raised card with a
+state icon, a two-line title, the backend status label as its reason when the
+human is needed, and a provider · mode · repository line (the live phase and
+elapsed time while working). Search narrows by title and chips filter to All,
+Needs you, or Working. Above the conversation, a header names the title,
+provider, model, mode, repository, and chat scope; a needs-you turn adds a banner
+with the backend label and Resume or Retry when the task offers it.
+
 At viewport widths of 560px or less, Chats uses a single column. The conversation
 list starts closed behind a **Chats** disclosure above the conversation and
 closes after selecting a chat. Wider views retain the resizable list and its

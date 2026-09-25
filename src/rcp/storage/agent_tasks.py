@@ -1425,7 +1425,7 @@ class AgentTaskStoreMixin:
                     LIMIT ?
                 ),
                 chat_latest AS (
-                    SELECT operation_id, status,
+                    SELECT operation_id, status, history_only,
                            ROW_NUMBER() OVER (
                                PARTITION BY json_extract(request_json, '$.chat_id')
                                ORDER BY created_at DESC, operation_id DESC
@@ -1436,7 +1436,7 @@ class AgentTaskStoreMixin:
                 ),
                 open_chats AS (
                     SELECT operation_id FROM chat_latest
-                    WHERE position = 1
+                    WHERE position = 1 AND history_only = 0
                       AND status IN ({",".join("?" for _ in open_statuses)})
                     LIMIT ?
                 )

@@ -8,12 +8,13 @@ import {
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
 } from "../src/chatInput.ts";
+import { appStylesheet } from "./appStylesheet.mjs";
 
 const nodeChatSource = await readFile(
   new URL("../src/components/NodeChat.tsx", import.meta.url),
   "utf8",
 );
-const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const styles = appStylesheet();
 
 test("assistant answers expose pointer selection and a real keyboard selection command", () => {
   assert.match(nodeChatSource, /className="chat-markdown chat-annotatable-answer"/);

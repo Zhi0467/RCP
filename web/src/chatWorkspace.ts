@@ -264,6 +264,58 @@ export function groupChatConversations(
   );
 }
 
+/** What a conversation's latest turn asks of the human, for the Agents panel. */
+export type ConversationAgentState = "needs_you" | "paused" | "working" | "unread" | "idle";
+export type ConversationAgentGroup = "needs_you" | "working" | "recent";
+export interface ConversationAgentStatus {
+  state: ConversationAgentState;
+  group: ConversationAgentGroup;
+  latest: AgentTask | null;
+}
+
+export const CONVERSATION_AGENT_GROUPS: readonly ConversationAgentGroup[] = [
+  "needs_you",
+  "working",
+  "recent",
+];
+
+export function conversationAgentStatus(
+  conversation: ChatConversation,
+  unreadTaskIds: ReadonlySet<string>,
+): ConversationAgentStatus {
+  const latest = conversation.tasks.at(-1) ?? null;
+  if (latest?.active) return { state: "working", group: "working", latest };
+  if (latest?.paused) return { state: "paused", group: "needs_you", latest };
+  if (latest?.awaiting_human) return { state: "needs_you", group: "needs_you", latest };
+  const state = conversationHasUnread(conversation, unreadTaskIds) ? "unread" : "idle";
+  return { state, group: "recent", latest };
+}
+
+export interface ConversationAgentRow {
+  conversation: ChatConversation;
+  status: ConversationAgentStatus;
+}
+
+/** Rows grouped Needs you, Working, Recent; each group keeps recency order. */
+export function groupConversationAgents(
+  conversations: ChatConversation[],
+  unreadTaskIds: ReadonlySet<string>,
+  query = "",
+): Record<ConversationAgentGroup, ConversationAgentRow[]> {
+  const needle = query.trim().toLocaleLowerCase();
+  const groups: Record<ConversationAgentGroup, ConversationAgentRow[]> = {
+    needs_you: [],
+    working: [],
+    recent: [],
+  };
+  for (const conversation of conversations) {
+    if (needle && !conversation.title.toLocaleLowerCase().includes(needle)) continue;
+    const status = conversationAgentStatus(conversation, unreadTaskIds);
+    groups[status.group].push({ conversation, status });
+  }
+  return groups;
+}
+
 export function latestConversation(
   conversations: ChatConversation[],
   kind: ChatKind,

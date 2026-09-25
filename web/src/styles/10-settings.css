@@ -971,38 +971,161 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 7px;
 }
 .conversation-list [role="option"] {
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
+  align-items: start;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  box-shadow:
+    0 1px 2px rgb(var(--shadow-rgb) / 8%),
+    0 4px 10px rgb(var(--shadow-rgb) / 6%);
   display: grid;
-  gap: 2px 7px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 10px 9px;
+  gap: 0 8px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  margin-bottom: 6px;
+  padding: 10px 10px 10px 9px;
   position: relative;
   text-align: left;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
 }
-.conversation-list [role="option"]:hover,
+.conversation-list [role="option"]:hover {
+  border-color: var(--line-strong);
+  box-shadow:
+    0 1px 2px rgb(var(--shadow-rgb) / 10%),
+    0 6px 14px rgb(var(--shadow-rgb) / 9%);
+}
 .conversation-list [role="option"].active {
-  background: var(--surface);
+  background: var(--cobalt-soft);
+  border-color: var(--cobalt);
 }
-.conversation-list [role="option"].active {
-  box-shadow: inset 2px 0 var(--oxblood);
+:root[data-theme="aqua"] .conversation-list [role="option"] {
+  background: var(--aqua-surface);
+  border-color: color-mix(in srgb, var(--rule) 70%, transparent);
+  box-shadow: var(--aqua-raised);
 }
-.conversation-list [role="option"] > span {
-  font-size: var(--type-base);
-  font-weight: 650;
+.agent-row-icon {
+  color: var(--muted);
+  display: flex;
+  padding-top: 1px;
+}
+.conversation-list [role="option"][data-state="needs_you"] .agent-row-icon,
+.agent-row-reason {
+  color: var(--coral);
+}
+.conversation-list [role="option"][data-state="paused"] .agent-row-icon,
+.conversation-list [role="option"][data-state="paused"] .agent-row-reason {
+  color: var(--mustard);
+}
+.conversation-list [role="option"][data-state="working"] .agent-row-icon,
+.conversation-list [role="option"][data-state="working"] time {
+  color: var(--oxblood);
+}
+.conversation-list [role="option"][data-state="unread"] .agent-row-icon {
+  color: var(--teal);
+}
+.agent-row-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.agent-row-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  font-size: var(--type-md);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+}
+.conversation-list [role="option"].unread .agent-row-title {
+  color: var(--oxblood-dark);
+  font-weight: 750;
+}
+.agent-row-reason,
+.agent-row-meta {
+  font-size: var(--type-2xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conversation-list [role="option"] small,
+.agent-row-meta {
+  color: var(--muted);
+}
 .conversation-list [role="option"] time {
   color: var(--muted);
   font-size: var(--type-2xs);
+  white-space: nowrap;
 }
-.conversation-list [role="option"] time {
-  grid-column: 2;
-  grid-row: 2;
+.agent-list-tools {
+  display: grid;
+  gap: 8px;
+  padding: 10px 10px 4px;
+}
+.agent-list-search {
+  color: var(--muted);
+  display: block;
+  position: relative;
+}
+.agent-list-search svg {
+  left: 11px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.conversation-list .agent-list-search input {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  box-shadow: none;
+  font-size: var(--type-sm);
+  height: 30px;
+  outline: none;
+  padding: 0 12px 0 30px;
+  width: 100%;
+}
+.conversation-list .agent-list-search input:focus {
+  background: var(--sheet);
+  border-color: var(--line-strong);
+}
+.conversation-list .agent-list-search input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.agent-list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.agent-list-filters button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  padding: 3px 9px;
+}
+.agent-list-filters button[aria-pressed="true"] {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.agent-list-filters button span {
+  margin-left: 2px;
+  opacity: 0.75;
+}
+.agent-group {
+  display: grid;
+}
+.agent-group-heading {
+  color: var(--faint);
+  display: flex;
+  font-size: var(--type-3xs);
+  font-weight: 700;
+  justify-content: space-between;
+  letter-spacing: 0.08em;
+  padding: 10px 8px 4px;
+  text-transform: uppercase;
 }
 .conversation-list-more {
   display: flex;
@@ -1016,23 +1139,49 @@ details[open] > .view-disclosure-summary > svg:last-child {
   justify-content: center;
   width: 100%;
 }
-.conversation-active {
-  color: var(--oxblood);
-  grid-column: 2;
-  grid-row: 1;
-}
-.conversation-unread {
-  color: var(--mustard);
-  grid-column: 2;
-  grid-row: 1;
-}
-.conversation-list [role="option"].unread > span {
-  color: var(--oxblood-dark);
-}
 .conversation-surface {
   background: var(--sheet);
+  display: flex;
+  flex-direction: column;
   grid-column: 3;
   min-height: 0;
+}
+.conversation-surface > .chat-dock {
+  flex: 1 1 auto;
+  height: auto;
+}
+.conversation-header {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  flex: none;
+  gap: 2px;
+  padding: 10px 16px;
+}
+.conversation-header > strong {
+  font-size: var(--type-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-header-meta {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+}
+.conversation-header-banner {
+  align-items: center;
+  background: color-mix(in srgb, var(--coral) 12%, var(--sheet));
+  border-radius: 6px;
+  color: var(--coral);
+  display: flex;
+  font-size: var(--type-xs);
+  gap: 10px;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 6px 6px 6px 10px;
+}
+.conversation-header[data-state="paused"] .conversation-header-banner {
+  background: color-mix(in srgb, var(--mustard) 16%, var(--sheet));
+  color: color-mix(in srgb, var(--mustard) 55%, var(--ink));
 }
 .conversation-divider {
   background: transparent;
