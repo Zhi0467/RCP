@@ -315,6 +315,41 @@ def _prepare_data(
             ],
         )
     )
+    history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Propose sharpening the recovery claim.",
+            run_truth_scope=["paper"],
+            repositories_read=["paper"],
+            ops=[
+                {
+                    # Stored Proposal operations keep only authored fields, so an
+                    # update must not fill their defaults.
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/recovery",
+                            "title": "Sharpen the recovery claim",
+                            "card": {"consequences": "Narrows the recovery hypothesis."},
+                            "ops": [
+                                {
+                                    "op": "update_nodes",
+                                    "intent": "content_change",
+                                    "nodes": [
+                                        {
+                                            "id": "hyp/recovery-keeps-history",
+                                            "changes": {"title": "Recovery keeps all history"},
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        )
+    )
     empty_patches = None
     if empty_branch:
         base = history.head_ref()

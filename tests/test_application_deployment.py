@@ -444,23 +444,33 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
     covered = set()
     upgrades = []
 
-    def check_paths(model, document, path=()):
+    def check_paths(model, document, path=(), stored=False):
         if isinstance(model, BaseModel):
             covered.add(type(model))
             assert set(document) == set(type(model).model_fields), (
                 f"{path}: missing explicit field/upgrade example"
             )
+            serialized = {
+                name
+                for decorator in type(model).__pydantic_decorators__.field_serializers.values()
+                for name in decorator.info.fields
+            }
             for name, field in type(model).model_fields.items():
-                if not field.is_required():
+                if not stored and not field.is_required():
                     default = to_jsonable_python(field.get_default(call_default_factory=True))
                     upgrades.append(((*path, name), default))
-                check_paths(getattr(model, name), document[name], (*path, name))
+                check_paths(
+                    getattr(model, name),
+                    document[name],
+                    (*path, name),
+                    stored or name in serialized,
+                )
         elif isinstance(model, dict):
             for key, value in model.items():
-                check_paths(value, document[key], (*path, key))
+                check_paths(value, document[key], (*path, key), stored)
         elif isinstance(model, list):
             for index, value in enumerate(model):
-                check_paths(value, document[index], (*path, index))
+                check_paths(value, document[index], (*path, index), stored)
 
     check_paths(GraphState.model_validate(deepcopy(current)), current)
     assert covered == reachable, f"Missing populated examples: {reachable - covered}"
@@ -478,24 +488,16 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         assert legacy == expected, path
         upgrade_graph_projection(legacy)
         assert legacy == expected, path
-    # Real Proposal serialization omits legacy intents, including create_nodes
-    # with nested Experiments. Compare that stored shape with a fresh serialization.
+    # Stored operations keep only what their author set; a fresh serialization
+    # whose operations omit defaults is already current.
     graph = GraphState.model_validate(current)
     operation = next(op for op in graph.proposals["proposal"].ops if op.op == "create_nodes")
     experiment = next(node for node in operation.nodes if node.type == "experiment")
-    experiment.invocation_ceiling = type(experiment).model_fields["invocation_ceiling"].default
+    experiment.model_fields_set.discard("invocation_ceiling")
     serialized = graph.model_dump(mode="json")
-    legacy = deepcopy(serialized)
-    operation = next(
-        op for op in legacy["proposals"]["proposal"]["ops"] if op["op"] == "create_nodes"
-    )
-    assert "intent" not in operation
-    experiment = next(node for node in operation["nodes"] if node["type"] == "experiment")
-    del experiment["invocation_ceiling"]
-    upgrade_graph_projection(legacy)
-    assert legacy == serialized
-    upgrade_graph_projection(legacy)
-    assert legacy == serialized
+    stored = deepcopy(serialized)
+    upgrade_graph_projection(stored)
+    assert stored == serialized
     current["future_graph_field"] = {"kept": True}
     current["nodes"]["experiment"]["future_node_field"] = "kept"
     current["edges"]["edge"]["assessment"]["scope"] = "  unnormalized  "
