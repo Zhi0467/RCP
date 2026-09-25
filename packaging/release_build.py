@@ -165,6 +165,9 @@ def check_assets(directory: Path, *, require_supervisor: bool) -> None:
     unexpected = names - expected
     if unexpected:
         raise ReleaseBuildError(f"release has unexpected assets: {', '.join(sorted(unexpected))}")
+    empty = sorted(name for name in names if (directory / name).stat().st_size == 0)
+    if empty:
+        raise ReleaseBuildError(f"release has empty assets: {', '.join(empty)}")
 
 
 def check_promotion(wheel: Path, tag: str) -> None:

@@ -204,12 +204,21 @@ def test_asset_contract_refuses_incomplete_or_unrecognized_release(
     tmp_path: Path, names: list[str], message: str
 ) -> None:
     for name in names:
-        (tmp_path / name).touch()
+        (tmp_path / name).write_bytes(name.encode())
     release_build.write_manifest(tmp_path, Path("manifest.sha256"))
     release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
 
     with pytest.raises(release_build.ReleaseBuildError):
         release_build.check_assets(tmp_path, require_supervisor=False)
+
+
+def test_asset_contract_refuses_an_empty_asset(tmp_path: Path) -> None:
+    for name in (RCP_WHEEL, SUPERVISOR_WHEEL, "requirements.lock.txt"):
+        (tmp_path / name).write_bytes(name.encode())
+    (tmp_path / "supervisor-requirements.lock.txt").touch()
+
+    with pytest.raises(release_build.ReleaseBuildError):
+        release_build.check_assets(tmp_path, require_supervisor=True)
 
 
 def test_promotion_rejects_supervisor_wheel_as_rcp_version() -> None:
@@ -235,7 +244,7 @@ def test_asset_contract_refuses_noncanonical_version(tmp_path: Path, wheel: str)
         "supervisor-requirements.lock.txt",
     ]
     for name in names:
-        (tmp_path / name).touch()
+        (tmp_path / name).write_bytes(name.encode())
     release_build.write_manifest(tmp_path, Path("manifest.sha256"))
     with pytest.raises(release_build.ReleaseBuildError):
         release_build.check_assets(tmp_path, require_supervisor=True)
