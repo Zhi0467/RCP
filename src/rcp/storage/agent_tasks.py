@@ -36,6 +36,7 @@ from rcp.limits import (
     AGENT_TASK_EVENT_LIST_MAX_LIMIT,
     AGENT_TASK_EVENT_RETENTION_COUNT,
     AGENT_TASK_LIST_DEFAULT_LIMIT,
+    AGENT_TASK_LIST_FINISHED_CHAT_SECONDS,
     AGENT_TASK_LIST_MAX_LIMIT,
     AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
     AGENT_TASK_RECEIPT_LIST_LIMIT,
@@ -1407,10 +1408,16 @@ class AgentTaskStoreMixin:
         A chat turn that is running or waiting on a person stays listed after
         newer tasks push it past ``limit``, so the Chats panel can always show
         it. Only a chat's latest turn counts: a failure followed by a later turn
-        in the same chat is history, not an open item.
+        in the same chat is history, not an open item. A latest turn that
+        finished recently stays too, so a client that saw it open also sees it
+        end.
         """
         target_json = graph_target.model_dump_json() if graph_target is not None else None
         open_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES | AWAITING_HUMAN_AGENT_TASK_STATUSES)
+        finished_since = (
+            datetime.fromisoformat(self.now())
+            - timedelta(seconds=AGENT_TASK_LIST_FINISHED_CHAT_SECONDS)
+        ).isoformat()
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
@@ -1425,7 +1432,7 @@ class AgentTaskStoreMixin:
                     LIMIT ?
                 ),
                 chat_latest AS (
-                    SELECT operation_id, status, history_only, created_at,
+                    SELECT operation_id, status, history_only, created_at, finished_at,
                            ROW_NUMBER() OVER (
                                PARTITION BY json_extract(request_json, '$.chat_id')
                                ORDER BY created_at DESC, operation_id DESC
@@ -1437,7 +1444,8 @@ class AgentTaskStoreMixin:
                 open_chats AS (
                     SELECT operation_id FROM chat_latest
                     WHERE position = 1 AND history_only = 0
-                      AND status IN ({",".join("?" for _ in open_statuses)})
+                      AND (status IN ({",".join("?" for _ in open_statuses)})
+                           OR finished_at >= ?)
                     ORDER BY created_at DESC, operation_id DESC
                     LIMIT ?
                 )
@@ -1462,6 +1470,7 @@ class AgentTaskStoreMixin:
                     target_json,
                     max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
                     *open_statuses,
+                    finished_since,
                     AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
                 ),
             ).fetchall()

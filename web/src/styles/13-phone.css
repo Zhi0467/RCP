@@ -17,6 +17,7 @@
 
   /* Primary controls are at least 44px on the touch axis. */
   .button,
+  .button.compact,
   .icon-button,
   .project-back,
   .project-dock-select,
