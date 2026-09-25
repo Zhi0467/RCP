@@ -37,6 +37,7 @@ from rcp.limits import (
     AGENT_TASK_EVENT_RETENTION_COUNT,
     AGENT_TASK_LIST_DEFAULT_LIMIT,
     AGENT_TASK_LIST_MAX_LIMIT,
+    AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
     AGENT_TASK_RECEIPT_LIST_LIMIT,
     AGENT_TASK_RECEIPT_MAX_BYTES,
     AGENT_TASK_RECEIPT_RETENTION_COUNTS,
@@ -53,6 +54,7 @@ from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
     AGENT_TASK_TRANSITIONS,
+    AWAITING_HUMAN_AGENT_TASK_STATUSES,
     AgentFailureKind,
     AgentTaskAdmissionConflict,
     AgentTaskAlreadyContinued,
@@ -1400,30 +1402,66 @@ class AgentTaskStoreMixin:
         include_hidden: bool = False,
         graph_target: GraphTargetRef | None = None,
     ) -> list[AgentTaskRecord]:
+        """The newest tasks, plus every chat whose latest turn is still open.
+
+        A chat turn that is running or waiting on a person stays listed after
+        newer tasks push it past ``limit``, so the Chats panel can always show
+        it. Only a chat's latest turn counts: a failure followed by a later turn
+        in the same chat is history, not an open item.
+        """
+        target_json = graph_target.model_dump_json() if graph_target is not None else None
+        open_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES | AWAITING_HUMAN_AGENT_TASK_STATUSES)
         with self.connection() as connection:
             rows = connection.execute(
-                """
-                SELECT graph_runs.*,
+                f"""
+                WITH scoped AS (
+                    SELECT * FROM graph_runs
+                    WHERE project_id = ? AND (? OR visible = 1)
+                      AND (? IS NULL OR graph_target_json = ?)
+                ),
+                recent AS (
+                    SELECT operation_id FROM scoped
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                ),
+                chat_latest AS (
+                    SELECT operation_id, status,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY json_extract(request_json, '$.chat_id')
+                               ORDER BY created_at DESC, operation_id DESC
+                           ) AS position
+                    FROM scoped
+                    WHERE kind IN ('node_chat', 'project_chat')
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                ),
+                open_chats AS (
+                    SELECT operation_id FROM chat_latest
+                    WHERE position = 1
+                      AND status IN ({",".join("?" for _ in open_statuses)})
+                    LIMIT ?
+                )
+                SELECT scoped.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
-                           WHERE receipt.operation_id = graph_runs.operation_id
+                           WHERE receipt.operation_id = scoped.operation_id
                              AND receipt.category IN (
                                  'experiment_recovery_abandoned',
                                  'auto_research_recovery_abandoned'
                              )
                        ) AS recovery_abandoned
-                FROM graph_runs
-                WHERE project_id = ? AND (? OR visible = 1)
-                  AND (? IS NULL OR graph_target_json = ?)
+                FROM scoped
+                WHERE operation_id IN (SELECT operation_id FROM recent)
+                   OR operation_id IN (SELECT operation_id FROM open_chats)
                 ORDER BY created_at DESC
-                LIMIT ?
                 """,
                 (
                     project_id,
                     int(include_hidden),
-                    graph_target.model_dump_json() if graph_target is not None else None,
-                    graph_target.model_dump_json() if graph_target is not None else None,
+                    target_json,
+                    target_json,
                     max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
+                    *open_statuses,
+                    AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
                 ),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]

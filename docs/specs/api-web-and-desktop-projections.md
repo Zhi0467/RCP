@@ -944,6 +944,13 @@ choice; RCP supplies the integration instruction and target. Unsent drafts remai
 intact when an integration turn is dispatched. A removed binding remains visible
 and cannot silently become a shared-checkout chat.
 
+`GET /api/projects/{project_id}/tasks` returns the newest tasks up to the list
+limit, plus the latest turn of every chat whose latest turn is still running or
+waiting on a person (queued, running, pausing, paused, failed, or interrupted),
+up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
+stays visible however many newer tasks exist; a failure followed by a later turn
+in the same chat does not count.
+
 ### Paper, Settings, and History
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
