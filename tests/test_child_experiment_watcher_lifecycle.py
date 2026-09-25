@@ -196,6 +196,7 @@ def test_child_experiment_watcher_refusal_retains_completion_without_callback_er
         assert control.health == "needs_action"
         assert control.recommendation == "stop_and_restart"
         assert runtime.watcher_delivery_diagnostic in control.reasons
+        assert "Auto-research parent" in runtime.watcher_delivery_diagnostic
 
 
 def test_running_parent_child_experiment_watcher_claims_and_launches_once(tmp_path, monkeypatch):

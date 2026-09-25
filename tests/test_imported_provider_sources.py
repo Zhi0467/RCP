@@ -156,7 +156,7 @@ def test_imported_provider_source_permission_drift_fails_closed(
     }
     paths[target].chmod(0o750 if target not in {"manifest", "history"} else 0o440)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mode 0700|read-only regular file|manifest"):
         store.inventory()
 
 
@@ -181,7 +181,7 @@ def test_imported_provider_source_fifo_fails_without_blocking(
     path.unlink()
     os.mkfifo(path, 0o400)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="regular file|manifest"):
         if target == "capture":
             store.publish(capture_root, entries)
         else:

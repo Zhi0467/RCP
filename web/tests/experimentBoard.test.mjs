@@ -452,6 +452,11 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
   assert.doesNotMatch(html, /campaign-task depth-1/);
 
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
+
+  assert.match(html, /<h2>[^<]+<\/h2><span>2<\/span>/);
+  assert.match(html, /1 \/ 5/);
+  assert.match(html, /experiment-stop-loop/);
+  assert.doesNotMatch(html, /experiment-run-button/);
 });
 
 test("branch projection replaces colliding main state and filters control resources by target", () => {
@@ -788,6 +793,8 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
 
   assert.match(html, />episode-current<\/dd>/);
   assert.doesNotMatch(html, /episode-previous/);
+
+  assert.match(html, /<h2>[^<]+<\/h2><span>1<\/span>/);
 });
 
 test("a stale main index entry cannot replace a fresher project run", () => {
@@ -1071,6 +1078,10 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       episodeReportHref: () => "#",
     }),
   );
+
+  assert.match(html, /experiment-stop-loop/);
+  assert.doesNotMatch(html, /experiment-run-button/);
+  assert.doesNotMatch(terminalHtml, /experiment-run-button/);
 });
 
 test("branch-created and branch-modified Experiment transcripts are read-only", () => {
@@ -1238,4 +1249,47 @@ test("Artifacts panel has a restorable project route", () => {
   assert.equal(hash, "#/projects/project-one?view=artifacts");
   assert.equal(parseProjectHash(hash).view, "artifacts");
   assert.equal(projectHashAfterViewChange(hash, "overview"), "#/projects/project-one");
+});
+
+test("a final report error never becomes the board's episode health", () => {
+  const reportFailed = episode({
+    status: "completed",
+    ending: "completed",
+    wrapup_state: "failed",
+    wrapup_error: "The visual report could not be generated.",
+  });
+  const entryValue = entry(
+    "wrapping",
+    "active",
+    control({
+      episode: reportFailed,
+      health: "completed",
+      recommendation: "none",
+      run_section: "completed",
+    }),
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
+  );
+
+  assert.match(html, /status-pill completed/);
+});
+
+test("the board shows the shared report wrap-up as in-progress", () => {
+  const wrapping = episode();
+  const entryValue = entry(
+    "wrapping",
+    "active",
+    control({
+      episode: wrapping,
+      health: "wrapping_up",
+      recommendation: "wait",
+      run_section: "running",
+    }),
+  );
+  const html = renderToStaticMarkup(
+    React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
+  );
+
+  assert.match(html, /status-pill running/);
 });

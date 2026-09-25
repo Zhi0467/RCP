@@ -309,7 +309,7 @@ def test_watch_json_validation_is_all_or_none_across_external_and_graph(tmp_path
         checked.append(candidate.check_command)
         return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid statuses"):
         arm_watchers(
             store,
             [spec],
@@ -2024,6 +2024,7 @@ def test_condition_on_a_removed_node_is_terminally_retired(tmp_path) -> None:
     assert isinstance(stored, GraphWatcherRecord)
     assert stored.status == "stopped"
     assert stored.notified is True
+    assert stored.stop_reason == "Graph condition target was removed."
     assert store.graph_watcher_project_ids() == []
 
 
@@ -2637,7 +2638,7 @@ def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
     ]
 
     # One unknown id retires none of the list, including the pair it names.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown staged watcher: absent"):
         store.persist_experiment_watchers_idempotently(
             [],
             stops=[*stops, WatcherStopRequest(stop_watcher_id="absent", reason="Gone.")],

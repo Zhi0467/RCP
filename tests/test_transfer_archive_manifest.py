@@ -329,7 +329,7 @@ def test_manifest_binds_every_identity_head_entry_and_exact_payload_size() -> No
     assert envelope.manifest_size_bytes == len(encoded)
     assert envelope.payload_size_bytes == manifest.payload_size_bytes
     envelope.verify_manifest(manifest)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match"):
         envelope.verify_manifest(_replace_manifest(manifest, source_rcp_version="later"))
 
 
@@ -337,11 +337,11 @@ def test_manifest_nested_identity_and_head_snapshots_are_immutable() -> None:
     manifest = _manifest()
     encoded = manifest.canonical_bytes()
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="frozen"):
         manifest.main_head.revision = 7
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="frozen"):
         manifest.branch_heads[0].target.branch_id = SOURCE_REQUEST_ID
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="frozen"):
         manifest.attributions[0].source_actor.display_name = "Mallory"
 
     assert manifest.canonical_bytes() == encoded
@@ -359,7 +359,7 @@ def test_attribution_accepts_both_transfer_spaces_but_rejects_an_unrelated_space
             )
         ),
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="unrelated space"):
         _replace_manifest(manifest, attributions=[unrelated.model_dump(mode="json")])
 
 
@@ -374,7 +374,7 @@ def test_attribution_accepts_both_transfer_spaces_but_rejects_an_unrelated_space
     ],
 )
 def test_manifest_rejects_boundary_mismatches(changes: dict[str, object], match: str) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=match):
         _replace_manifest(_manifest(), **changes)
 
 
@@ -414,16 +414,16 @@ def test_entry_groups_cannot_smuggle_materializations_credentials_or_target_proo
         ("control/target-activation-proof.bin", "source_release_proof"),
         ("provider-history/codex/not-content-addressed", "provider_history"),
     ):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="path|credentials"):
             _entry(path, group)
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped"):
         TransferArchiveDiagnostic(
             code="provider_unreadable",
             message="token=github_pat_abcdefghijklmnopqrstuvwxyz",
         )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="path"):
         _entry(
             f"provider-history/codex/{'a' * 64}",
             "provider_history",

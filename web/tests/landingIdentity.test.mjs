@@ -146,6 +146,8 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
 
   assert.doesNotMatch(html, /<(form|input|textarea|select)\b/i);
   assert.doesNotMatch(html, /password|access token|private key/i);
+
+  assert.doesNotMatch(html, /landing-team-devices/);
 });
 
 test("an issued device code is shown once with its expiry and can be dismissed", () => {
@@ -246,6 +248,8 @@ test("a desktop with no saved team space still offers only the Add action", () =
   );
 
   assert.doesNotMatch(html, /landing-team-seam-list/);
+
+  assert.match(html, /landing-team-seam-actions/);
 });
 
 test("a team index names its space and carries the one way back to the local index", () => {
@@ -267,6 +271,8 @@ test("a team index names its space and carries the one way back to the local ind
   assert.match(html, /Causal Systems Lab/);
 
   assert.equal(exits, 0);
+
+  assert.match(html, /team-space-exit/);
 });
 
 function findElement(node, predicate) {
@@ -308,6 +314,13 @@ test("a pending project invitation is shelved beside the projects you have", () 
   assert.match(html, /Plasticity study/);
   assert.match(html, /Lab space/);
   assert.match(html, /Ada Researcher/);
+
+  assert.equal((html.match(/class="project-invitation-actions">[^]*?<button/g) ?? []).length, 1);
+  assert.equal(
+    (html.match(/class="project-invitation-actions">([^]*?)<\/span>/)?.[1].match(/<button/g) ?? [])
+      .length,
+    2,
+  );
 });
 
 test("a pairing card with an access address shows a scannable QR code and the address", () => {
@@ -341,4 +354,80 @@ test("a scanned pairing link prefills the code and only accepts the code shape",
   assert.equal(pairingCodeFromHash("#pair=%"), null);
   assert.equal(pairingCodeFromHash("#pair=%E0%A4"), null);
   assert.equal(pairingCodeFromHash("#pair=ABCD%2DEFGHJK"), "ABCD-EFGHJK");
+});
+
+test("the ordinary browser does not advertise the desktop Add team space action", () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));
+
+  assert.doesNotMatch(html, /class="landing-team-seam-actions">\s*<button/);
+});
+
+test("the personal index never offers an exit, because there is no space to leave", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectLanding, { ...landingProps(), onExitTeamSpace() {} }),
+  );
+
+  assert.doesNotMatch(html, /team-space-exit/);
+});
+
+test("the team identity panel exposes Devices beside invitations", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(IdentityProvenanceSlip, {
+      identity: { ...identity, space_kind: "team" },
+      identityError: null,
+      teamNoticeId: "team-status",
+      copyStatus: "idle",
+      onCopy() {},
+      onEdit() {},
+    }),
+  );
+  assert.match(html, /landing-team-devices/);
+  assert.match(html, /landing-team-connect-device/);
+  assert.match(html, /landing-team-invitations/);
+});
+
+test("the project menu renders backend deletion and personal-only move actions", () => {
+  const personal = {
+    id: "project-1",
+    home_space_id: identity.space_id,
+    name: "Personal paper",
+    locator: "/tmp/personal/.research/manifest.toml",
+    state_location: "/tmp/personal",
+    remote: false,
+    attention_count: 0,
+    can_delete: true,
+    delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. Repositories and their .research directories remain untouched.",
+  };
+  const team = {
+    ...personal,
+    id: "project-2",
+    name: "Team paper",
+    can_delete: true,
+    delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. The server-managed checkout and repository deploy key remain; credentials are not revoked.",
+  };
+  const props = {
+    cover: "wood",
+    onChooseCover() {},
+    onDelete() {},
+  };
+
+  const personalMenu = renderToStaticMarkup(
+    React.createElement(ProjectActionsMenu, {
+      ...props,
+      project: personal,
+      onMoveToTeam() {},
+    }),
+  );
+  const teamMenu = renderToStaticMarkup(
+    React.createElement(ProjectActionsMenu, { ...props, project: team }),
+  );
+
+  assert.match(personalMenu, /project-move-action/);
+  assert.match(personalMenu, /project-delete-action/);
+  assert.doesNotMatch(teamMenu, /project-move-action/);
+  assert.match(teamMenu, /project-delete-action/);
 });

@@ -44,6 +44,9 @@ test("server status formats exact backend facts without deriving lifecycle state
   assert.equal(formatServerBytes(4096), "4.0 KB");
 
   assert.notEqual(formatServerTimestamp("2026-08-30T12:00:00Z"), "Not recorded");
+
+  assert.deepEqual(formatServerProjectCounts(3, 1).match(/\d+/g), ["3", "1"]);
+  assert.deepEqual(formatServerProjectCounts(0, 0).match(/\d+/g), ["0", "0"]);
 });
 
 test("server settings reads health only, with no command catalogue or mutation handler", async () => {

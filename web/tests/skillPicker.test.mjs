@@ -132,6 +132,14 @@ test("the menu orders RCP official groups before the selected provider and machi
   );
 
   assert.deepEqual(
+    entries.slice(0, 2).map(({ kind, id }) => [kind, id]),
+    [
+      ["workflow", "research-graph-audit"],
+      ["skill", "graph-audit"],
+    ],
+  );
+  assert.deepEqual([entries[2].provider, entries[2].machine], ["codex", "local"]);
+  assert.deepEqual(
     entries.map((entry) => entry.source),
     ["rcp", "rcp", "provider"],
   );
@@ -174,6 +182,12 @@ test("switching provider or machine replaces only the provider-native group", ()
   assert.deepEqual(
     codex.filter((entry) => entry.source === "rcp"),
     claude.filter((entry) => entry.source === "rcp"),
+  );
+  assert.deepEqual(
+    claude
+      .filter((entry) => entry.source === "provider")
+      .map(({ provider, machine, name }) => [provider, machine, name]),
+    [["claude", "gpu", "review-pr"]],
   );
   assert.deepEqual(
     claude.map((entry) => entry.source),

@@ -241,7 +241,7 @@ test("the backend selects one setup intent and its primary label", () => {
 
   assert.throws(
     () => selectedProjectCreationIntent({ requires_authenticated_member: false, intents: [] }),
-    Error,
+    /did not select/,
   );
   assert.doesNotThrow(() =>
     assertSupportedProjectCreationIntent(teamCreation, "create_shared_team_project"),
@@ -259,7 +259,7 @@ test("the backend selects one setup intent and its primary label", () => {
         },
         "create_shared_team_project",
       ),
-    Error,
+    /field contract/,
   );
   assert.throws(
     () =>
@@ -274,7 +274,7 @@ test("the backend selects one setup intent and its primary label", () => {
         },
         "create_shared_team_project",
       ),
-    Error,
+    /field contract/,
   );
 });
 
@@ -340,7 +340,10 @@ test("move setup links pin the source and round-trip the linked request identiti
     sourceRequestId: null,
     targetRequestId: null,
   });
-  assert.throws(() => projectMoveSetupHash({ sourceProjectId: "../other" }), Error);
+  assert.throws(
+    () => projectMoveSetupHash({ sourceProjectId: "../other" }),
+    /Source project identity must be a canonical UUID4/,
+  );
 });
 
 test("move setup links fail closed for missing, forged, or duplicate identities", () => {
@@ -384,7 +387,7 @@ test("move setup links fail closed for missing, forged, or duplicate identities"
         sourceProjectId: "11111111-1111-4111-8111-111111111111",
         sourceRequestId: "33333333-3333-4333-8333-333333333333",
       }),
-    Error,
+    /created as one pair/,
   );
 });
 
@@ -437,6 +440,8 @@ test("invalid setup routes fail visibly without mounting a setup form", () => {
     }),
   );
   assert.match(html, /role="alert"/);
+
+  assert.doesNotMatch(html, /<form|<input/);
 });
 
 test("move active-work counts use backend active and live booleans", () => {
@@ -590,6 +595,8 @@ test("a deep-linked request blocks the blank create form before its durable read
         onCreated() {},
       }),
     );
+
+    assert.doesNotMatch(html, /<form/);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
@@ -841,6 +848,9 @@ test("the provisioning view renders backend answers and hides native actions in 
   );
   assert.doesNotMatch(source, /request\.status\b/);
   assert.match(source, /role="log"[\s\S]*aria-live="polite"[\s\S]*aria-relevant="additions"/);
+
+  assert.doesNotMatch(operatorHtml, /provisioning-final-review/);
+  assert.match(readyHtml, /class="provisioning-final-review"/);
 });
 
 test("route proof describes one connection and one route, not whichever is on screen", () => {
@@ -864,4 +874,58 @@ test("route proof describes one connection and one route, not whichever is on sc
   assert.equal(routeProvedBy({ ...proved, available: false }, "c1", route), false);
   assert.equal(routeProvedBy(null, "c1", route), false);
   assert.equal(routeProvedBy(proved, "c1", null), false);
+});
+
+test("an invalid deep link fails visibly without exposing the create form", () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = {
+    location: {
+      hash: "#/projects/new?request=../other",
+      origin: "http://127.0.0.1:8422",
+    },
+  };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(TeamProjectSetup, {
+        intentChooser: React.createElement("div", null, "intent chooser"),
+        onCancel() {},
+        onCreated() {},
+      }),
+    );
+    assert.match(html, /invalid provisioning request identity/);
+    assert.doesNotMatch(html, /<form/);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("Project Settings opens the move route only for a personal project", () => {
+  const project = settingsProject();
+  const renderSettings = (spaceKind, onMove) =>
+    renderToStaticMarkup(
+      React.createElement(ProjectSettings, {
+        apiBase: "/api/projects/project",
+        project,
+        identity: null,
+        onLeftProject() {},
+        usage: null,
+        onRefreshUsage: async () => {},
+        cacheClearDisabled: false,
+        onSaved() {},
+        onCacheMetricsChange() {},
+        onRefreshReadiness: async () => {},
+        showDisplaySettings: false,
+        spaceKind,
+        onMovePersonalProjectToTeam: onMove,
+        textScale: 100,
+        onTextScaleChange() {},
+      }),
+    );
+
+  const personal = renderSettings("personal", () => {});
+  const team = renderSettings("team", () => {});
+
+  assert.match(personal, /project-home-settings/);
+  assert.doesNotMatch(team, /project-home-settings/);
 });

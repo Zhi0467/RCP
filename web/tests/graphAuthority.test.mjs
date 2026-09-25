@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { projectGraphMutationsDisabled, taskMayMutateGraph } from "../src/graphAuthority.ts";
+import {
+  projectGraphMutationFailureLabel,
+  projectGraphMutationsDisabled,
+  taskMayMutateGraph,
+} from "../src/graphAuthority.ts";
 
 test("degraded replay blocks graph authority and names the last coherent state", () => {
   const project = {
@@ -12,6 +16,7 @@ test("degraded replay blocks graph authority and names the last coherent state",
     },
   };
   assert.equal(projectGraphMutationsDisabled(project), true);
+  assert.equal(projectGraphMutationFailureLabel(project), project.graph_mutation.reason);
 
   assert.equal(
     projectGraphMutationsDisabled({ graph_mutation: { available: true, reason: null } }),

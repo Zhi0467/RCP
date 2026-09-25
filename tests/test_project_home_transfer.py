@@ -309,11 +309,11 @@ def test_replay_refuses_a_home_transfer_before_project_identity(manifest) -> Non
 
 
 def test_home_transfer_shape_binds_each_actor_to_its_own_space() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="source-release actor"):
         _transfer(source_released_by=_actor(TARGET_SPACE_ID, "Wrong source"))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="target-admission actor"):
         _transfer(target_admitted_by=_actor(SOURCE_SPACE_ID, "Wrong target"))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="must change spaces"):
         _transfer(
             new_home_space_id=SOURCE_SPACE_ID,
             target_admitted_by=_actor(SOURCE_SPACE_ID, "Same-space reviewer"),

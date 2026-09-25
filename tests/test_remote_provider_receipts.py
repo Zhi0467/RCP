@@ -47,10 +47,10 @@ def test_settlement_requires_exact_start_and_cannot_clear_new_pass(tmp_path):
     store = _store(tmp_path)
     store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid")
     for operation_id, pid in (("second", "/stage/one.pid"), ("first", "/stage/wrong.pid")):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="matching start"):
             store.finish_remote_provider_pass(operation_id, pid)
     store.finish_remote_provider_pass("first", "/stage/one.pid")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="new pidfile"):
         store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid")
     store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/two.pid")
     store.finish_remote_provider_pass("first", "/stage/one.pid")
@@ -62,7 +62,7 @@ def test_settlement_requires_exact_start_and_cannot_clear_new_pass(tmp_path):
 @pytest.mark.parametrize("category", ["remote_provider_started", "remote_provider_stopped"])
 def test_remote_pass_receipts_cannot_be_forged_through_public_writer(tmp_path, category):
     store = _store(tmp_path)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="reserved"):
         store.record_agent_task_receipt("first", category, {})
 
 

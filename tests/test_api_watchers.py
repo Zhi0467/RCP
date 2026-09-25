@@ -123,10 +123,15 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     assert missing_project.status_code == 404
     assert missing_watcher.status_code == 404
     assert active_response.status_code == 409
+    assert active_response.json()["detail"] == (
+        "Only a degraded watcher awaiting delivery can be checked now."
+    )
     assert graph_response.status_code == 409
+    assert graph_response.json()["detail"] == "Only an external watcher can be checked now."
     for watcher in (active, graph):
         no_action = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel")
         assert no_action.status_code == 409
+        assert no_action.json()["detail"] == "This watcher has no cancel command."
 
 
 def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path: Path) -> None:

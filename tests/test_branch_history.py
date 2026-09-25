@@ -198,7 +198,7 @@ def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -
     assert appended.episode_id == metadata.episode_id
     branch_revision = branch.state().revision
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="authorized to Apply to main, not branch"):
         branch.append(
             _branch_patch("ev/main-authority-on-branch").model_copy(
                 update={"source_operation_id": main_only.operation_id}
@@ -207,7 +207,7 @@ def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -
     assert branch.state().revision == branch_revision
 
     main_revision = history.state().revision
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="authorized to Apply to branch:.*not main"):
         history.append(
             _branch_patch("ev/branch-authority-on-main").model_copy(
                 update={"source_operation_id": branch_only.operation_id}
@@ -318,17 +318,17 @@ def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(man
         GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4())),
     ):
         authority = authority.model_copy(update={"apply_target": wrong_target})
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="authorized to Apply to"):
             branch.append(patch)
         assert branch.head_ref() == branch_head
     authority = authority.model_copy(update={"apply_target": branch.graph_target})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical task attribution"):
         branch.append(patch.model_copy(update={"episode_id": metadata.episode_id}))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="authorized to Apply to"):
         history.append(patch)
     assert branch.head_ref() == branch_head
     authority = authority.model_copy(update={"episode_id": None})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="require canonical episode attribution"):
         branch.append(patch)
     assert branch.head_ref() == branch_head
     authority = authority.model_copy(update={"episode_id": child_id})
@@ -380,18 +380,18 @@ def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_pa
     metadata = _branch_metadata(history)
     history.create_auto_research_branch(metadata)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="different episode"):
         history.branch(metadata.branch_id, expected_episode_id=str(uuid.uuid4()))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="different project"):
         history.branch(metadata.branch_id, expected_project_id="other")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical episode UUIDv4"):
         history.branch("../patches")
 
     symlink_id = str(uuid.uuid4())
     outside = tmp_path / "outside"
     outside.mkdir()
     (manifest.research_dir / "branches" / symlink_id).symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a regular directory"):
         history.branch(symlink_id)
 
 
@@ -554,7 +554,7 @@ def test_local_branch_output_failure_fences_the_committed_patch_until_repair(
         raise OSError("simulated derived-output failure")
 
     monkeypatch.setattr(branch, "_write_materialized_outputs", fail_outputs)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="derived-output"):
         branch.append(_branch_patch("ev/local-committed-before-repair"))
     assert history._branch_materialization_repair_required(metadata.branch_id)
 
@@ -670,14 +670,14 @@ def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) ->
             "provenance": provenance.model_copy(update={"branch_head": metadata.head}),
         }
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="receipt id does not match"):
         branch.write_merge_receipt(inconsistent)
 
     invalid_provenance = provenance.model_copy(update={"merge_id": "a" * 64})
     invalid_receipt = receipt.model_copy(update={"provenance": invalid_provenance})
     invalid_path = branch.merges_dir / f"{invalid_provenance.merge_id}.json"
     invalid_path.write_text(invalid_receipt.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="receipt id does not match"):
         history.branch_read_snapshots(
             [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
         )
@@ -917,7 +917,7 @@ def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> Non
     path = branch.merges_dir / f"{receipt.provenance.merge_id}.json"
     path.write_text(corrupted.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exact main head"):
         branch.reconcile_merge_receipt(receipt.provenance.merge_id)
 
 
@@ -954,7 +954,7 @@ def test_reconcile_rejects_corrupted_existing_committed_receipt(manifest) -> Non
     corrupted = receipt.model_copy(update={"created_at": receipt.created_at + timedelta(seconds=1)})
     path.write_text(corrupted.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="disagrees with main provenance"):
         branch.reconcile_merge_receipt(provenance.merge_id)
 
 
@@ -990,7 +990,7 @@ def test_branch_child_enumeration_refuses_symlinked_directories(
     outside.mkdir()
     path.symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a regular directory"):
         history.branch(
             metadata.branch_id,
             expected_episode_id=metadata.episode_id,
@@ -1009,7 +1009,7 @@ def test_open_branch_refuses_symlinked_metadata(manifest, tmp_path: Path) -> Non
     metadata_path.unlink()
     metadata_path.symlink_to(outside)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a regular file"):
         history.branch(metadata.branch_id)
 
 

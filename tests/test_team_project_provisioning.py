@@ -465,6 +465,7 @@ def test_cli_refuses_zero_exit_when_final_ready_readback_is_missing(tmp_path: Pa
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert events[-1]["step"]["phase"] == "provisioning_review"
     assert events[-1]["step"]["state"] == "failed"
+    assert "ready-for-review readback" in events[-1]["step"]["message"]
 
 
 def test_multiple_repositories_commit_each_checkout_as_its_own_resume_boundary(
@@ -527,6 +528,7 @@ def test_legacy_request_without_project_configuration_pauses_before_machine_work
     )
 
     assert result.step.state == "operator_action_needed"
+    assert "legacy request" in result.step.message
     assert result.step.resume_argv[-1] == request.request_id
     # A stop that stays silent about its shell renders without one, so every
     # pause the coordinator builds has to state it.
@@ -1163,7 +1165,9 @@ def test_final_review_refuses_stale_digest_and_new_retained_history(
         retained = _complete_ready_request(client, ready)
 
     assert stale.status_code == 409
+    assert "review changed" in stale.json()["detail"]
     assert retained.status_code == 409
+    assert "Patch history appeared" in retained.json()["detail"]
     assert app.state.services.store.project(ready.proposed_project_id) is None
     assert not (repository_path / ".research" / "manifest.toml").exists()
 
@@ -1183,6 +1187,7 @@ def test_final_review_refuses_a_checkout_path_replaced_by_a_symlink(
         response = _complete_ready_request(client, ready)
 
     assert response.status_code == 409
+    assert "resolves to another path" in response.json()["detail"]
     assert app.state.services.store.project(ready.proposed_project_id) is None
     assert not (replacement / ".research").exists()
 
@@ -1213,6 +1218,7 @@ def test_final_review_rechecks_every_reviewed_checkout_path(
         response = _complete_ready_request(client, ready)
 
     assert response.status_code == 409
+    assert "prepared checkout appendix now resolves to another path" in response.json()["detail"]
     assert app.state.services.store.project(ready.proposed_project_id) is None
     assert not (canonical_path / ".research").exists()
     assert not (replacement / ".research").exists()

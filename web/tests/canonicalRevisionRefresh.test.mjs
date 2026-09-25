@@ -210,7 +210,7 @@ test("a failing authoritative reload still settles the open", async () => {
       stillOpening: () => true,
       settle: () => calls.push("settle"),
     }),
-    Error,
+    /state unavailable/,
   );
   assert.deepEqual(calls, ["settle"]);
 });

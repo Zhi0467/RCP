@@ -417,7 +417,7 @@ def test_helper_handoff_required_only_while_this_turns_job_is_running(commands):
     response = commands.launch()
     job = commands.job_for(response)
     check = response.result["watcher"]["check_command"]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="shell watchers"):
         commands.handler.validate_handoff(set())
     commands.handler.validate_handoff({check})
     commands.store.create_compute_job(
@@ -441,7 +441,7 @@ def test_retry_cannot_abandon_a_running_helper_from_its_failed_parent(commands):
         commands.handler,
         execution=replace(commands.handler.execution, operation_id="retry", continuation="retry"),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="shell watchers"):
         handler.validate_handoff(set())
     handler.validate_handoff({response.result["watcher"]["check_command"]})
 

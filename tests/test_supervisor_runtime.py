@@ -71,7 +71,7 @@ def test_application_stderr_does_not_corrupt_json_and_diagnostics_survive(runtim
 
 def test_subprocess_not_reading_stdin_cannot_defeat_deadline(runtime):
     start = time.monotonic()
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="time limit"):
         runtime.service_json(
             [sys.executable, "-I", "-c", "import time; time.sleep(60)"],
             {"payload": "x" * 1_000_000},
@@ -82,7 +82,7 @@ def test_subprocess_not_reading_stdin_cannot_defeat_deadline(runtime):
 
 def test_stderr_output_is_bounded_too(runtime, monkeypatch):
     monkeypatch.setattr("rcp_supervisor.runtime.MAX_APP_OUTPUT_BYTES", 8192)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="output|Output"):
         runtime.service_json(
             [
                 sys.executable,
@@ -159,7 +159,7 @@ def test_probe_arms_parent_ownership_in_supervisor_code_after_service_uid_drop(
         return SimpleNamespace(pid=123, poll=lambda: 1)
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="exited before verification"):
         runtime.probe(release, operation, None)
     ((argv, kwargs),) = launched
     assert argv[:5] == [
@@ -221,7 +221,7 @@ def test_probe_recreates_runtime_directory_removed_by_systemd(control_runtime, m
         return SimpleNamespace(pid=123, poll=lambda: 1)
 
     monkeypatch.setattr(subprocess, "Popen", launch)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="exited before verification"):
         runtime.probe(
             {"release_directory": "/prepared"},
             {"operation_id": "operation", "nonce": "boundary"},
@@ -301,7 +301,7 @@ def test_deployment_and_existing_backup_share_one_kernel_lock(runtime, monkeypat
     monkeypatch.setattr("rcp_supervisor.runtime.MAINTENANCE_TIMEOUT_SECONDS", 0.01)
     with (
         backup_run_lock(layout),
-        pytest.raises(SupervisorError),
+        pytest.raises(SupervisorError, match="running protected backup"),
         runtime.deployment_lock(),
     ):
         pytest.fail("deployment raced the backup")
@@ -331,7 +331,7 @@ def test_selected_release_requires_receipt_and_current_pointer_agreement(monkeyp
         if matches:
             assert read() == selected
         else:
-            with pytest.raises(SupervisorError):
+            with pytest.raises(SupervisorError, match="current pointer.*disagree"):
                 read()
 
 
@@ -347,7 +347,7 @@ def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_p
     with lock.open("rb") as holder:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with (
-            pytest.raises(SupervisorError),
+            pytest.raises(SupervisorError, match="writer still owns"),
             runtime.stopped_data_lock(),
         ):
             pytest.fail("admitted locked data")
@@ -359,7 +359,7 @@ def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_p
     with lock.open("rb") as holder:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with (
-            pytest.raises(SupervisorError),
+            pytest.raises(SupervisorError, match="writer still owns"),
             runtime.stopped_data_lock(),
         ):
             pytest.fail("checked stale inode")
@@ -407,7 +407,7 @@ def test_filesystem_mismatch_reaches_operation_record(runtime, tmp_path):
     fake.verify_roots = verify
     with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
         coordinator.deploy(previous, target)
-    assert "value" in str(error.value)
+    assert "value" in str(error.value) and "changed" in str(error.value)
     assert "secret changed bytes" not in str(error.value)
     journal = coordinator.store.active()["error"]
     assert "rollback_tree_mismatch" in journal and "value" in journal

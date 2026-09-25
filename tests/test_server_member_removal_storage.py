@@ -126,7 +126,7 @@ def test_member_removal_preview_is_an_exact_confirmation_boundary(tmp_path) -> N
     store.seat_project_member(project.project_id, alice.user_id)
     store.seat_project_member(project.project_id, bob.user_id)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="changed after preview"):
         store.begin_member_removal(
             bob.user_id,
             expected_boundary_sha256=preview.boundary_sha256,
@@ -164,13 +164,13 @@ def test_member_removal_refuses_the_last_authenticating_member(tmp_path) -> None
     preview = store.member_removal_preview(alice.user_id)
     assert preview.last_authenticating_member
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no other enrolled member"):
         store.begin_member_removal(
             alice.user_id,
             expected_boundary_sha256=preview.boundary_sha256,
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="last enrolled member"):
         store.revoke_team_token(alice.user_id)
     assert store.rotate_team_token(alice.user_id).startswith("rcp_")
 
@@ -181,12 +181,12 @@ def test_member_removal_and_self_revoke_refuse_to_orphan_a_project(tmp_path) -> 
     store.seat_project_member(project.project_id, alice.user_id)
     preview = store.member_removal_preview(alice.user_id)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Only Alice has access"):
         store.begin_member_removal(
             alice.user_id,
             expected_boundary_sha256=preview.boundary_sha256,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Only Alice has access"):
         store.revoke_team_token(alice.user_id)
 
     store.seat_project_member(project.project_id, bob.user_id)
@@ -236,7 +236,7 @@ def test_member_tombstone_waits_for_authorized_tasks_and_episodes(tmp_path) -> N
         bob.user_id,
         expected_boundary_sha256=preview.boundary_sha256,
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="live authorized work"):
         store.complete_member_removal(bob.user_id)
 
     store.request_agent_task_pause(operation_id)

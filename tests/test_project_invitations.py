@@ -140,6 +140,7 @@ def test_an_invitation_cannot_be_addressed_to_a_non_member_of_the_space(manifest
     refused = _invite(client, project_id, stranger)
 
     assert refused.status_code == 404
+    assert "space" in refused.json()["detail"]
 
 
 def test_declining_leaves_no_membership_and_no_residual_access(manifest, tmp_path) -> None:
@@ -215,6 +216,9 @@ def test_the_only_member_cannot_leave_the_project(manifest, tmp_path) -> None:
     refused = client.post(f"/api/projects/{project_id}/leave")
 
     assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "You are the only member of this project. Add another member before leaving."
+    )
     assert store.is_project_member(project_id, creator.user_id)
 
 

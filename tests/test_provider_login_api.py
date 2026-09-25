@@ -76,6 +76,8 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     assert state.generation == (1 if success else 0)
     assert state.changed_by == ("acting-member" if success else None)
     assert len(resumed) == int(success)
+    if not success:
+        assert "verification request" in response.json()["detail"]
 
 
 def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):

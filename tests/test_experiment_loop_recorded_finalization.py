@@ -210,7 +210,7 @@ async def test_a_loop_turn_without_its_episode_context_refuses_to_finalize(
         manifest, tmp_path, episode_context="{}"
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="retained Experiment-loop episode context is invalid"):
         await _finalize(
             service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
         )
@@ -223,7 +223,7 @@ async def test_a_moved_loop_stage_refuses_to_finalize(manifest, tmp_path: Path) 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
     execution.checkpoint_stage("", str(tmp_path / "somewhere-else"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="belongs to another stage"):
         await _finalize(service, request, execution, _recorded_pass("", _ANSWER))
 
 
@@ -348,7 +348,7 @@ async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
     )
 
     errors = [item["text"] for item in events if item["event"] == "error"]
-    assert errors
+    assert errors and "watcher handoff failed" in errors[-1]
     rejected = [
         receipt
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
@@ -705,6 +705,7 @@ async def test_a_recorded_loop_continuation_refuses_another_native_session(
     )
 
     assert [item["event"] for item in events] == ["error"]
+    assert "exact saved native session" in str(events[0]["text"])
     episode = execution.store.experiment_episode(_EPISODE_ID)
     assert episode is None or episode.native_session_id != "recorded-thread"
     assert any(
@@ -776,5 +777,6 @@ async def test_a_supervised_loop_correction_pins_the_session_it_must_continue(
         service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
     )
     assert [item["event"] for item in events] == ["error"]
+    assert "exact saved native session" in str(events[0]["text"])
     episode = execution.store.experiment_episode(_EPISODE_ID)
     assert episode is None or episode.native_session_id != "recorded-thread"

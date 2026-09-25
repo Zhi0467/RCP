@@ -306,7 +306,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "laptop",
         chat_session_id,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no repairable graph update"):
         store.claim_agent_task_graph_repair(chat_operation_id)
     transcript = client.get(f"/api/projects/{project_id}/chats/{chat_id}").json()
     assert [message["native_session_id"] for message in transcript["messages"]] == [None, None]
@@ -321,6 +321,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     for path in control_paths:
         response = client.post(path)
         assert response.status_code == 409
+        assert "retained as history" in response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
 
     artifacts = {
@@ -381,6 +382,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         },
     )
     assert context_response.status_code == 422
+    assert "native session is unavailable" in context_response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
 
 
@@ -398,7 +400,7 @@ def test_history_only_transaction_refuses_nonterminal_or_partially_shared_sessio
     )
     store.create_agent_task(queued)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Only terminal tasks"):
         store.mark_agent_tasks_history_only([queued.operation_id])
     assert store.agent_task(queued.operation_id).history_only is False
 
@@ -416,7 +418,7 @@ def test_history_only_transaction_refuses_nonterminal_or_partially_shared_sessio
     store.create_agent_task(first)
     store.create_agent_task(second)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="shares its native session"):
         store.mark_agent_tasks_history_only([first.operation_id])
     assert store.agent_task(first.operation_id).history_only is False
     assert store.mark_agent_tasks_history_only([first.operation_id, second.operation_id]) == 2

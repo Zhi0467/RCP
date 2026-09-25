@@ -95,12 +95,30 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
     for path in ("/api/project-setup/preflight", "/api/project-setup/create"):
         response = client.post(path, json=payload)
         assert response.status_code == 409
+        assert response.json() == {
+            "detail": (
+                "Existing-checkout setup belongs to a personal space. "
+                "Create a team-project provisioning request instead."
+            )
+        }
 
     browse = client.post("/api/project-setup/ssh-paths", json={"host": "gpu.example"})
     assert browse.status_code == 409
+    assert browse.json() == {
+        "detail": (
+            "Existing-checkout setup belongs to a personal space. "
+            "Create a team-project provisioning request instead."
+        )
+    }
 
     registered = client.post("/api/projects", json={"locator": "/"})
     assert registered.status_code == 409
+    assert registered.json() == {
+        "detail": (
+            "Existing-checkout setup belongs to a personal space. "
+            "Create a team-project provisioning request instead."
+        )
+    }
 
     assert not submitted_path.exists()
     assert app.state.catalog.cards() == []
@@ -227,7 +245,7 @@ def test_setup_rejects_option_shaped_ssh_hosts_before_any_connection(host: str) 
     )
 
     for validate in validators:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
             validate()
 
 
@@ -250,7 +268,7 @@ def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries(tmp_p
     def runner(command, **_kwargs):
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid listing"):
         app.state.setup.browse_ssh_repository_paths(
             SshRepositoryBrowseRequest(host="alice@gpu.example"),
             runner=runner,
@@ -541,6 +559,7 @@ def test_archive_refuses_a_canonical_location_still_registered(tmp_path) -> None
     refused = client.post("/api/project-setup/create", json=payload)
 
     assert refused.status_code == 422
+    assert "registered in this RCP catalog" in refused.json()["detail"]
     assert original_manifest.is_file()
     assert list(repository.glob(".research.archive-*")) == []
 
@@ -596,6 +615,7 @@ def test_archive_refuses_when_retained_history_changed_after_preflight(tmp_path)
     refused = client.post("/api/project-setup/create", json=payload)
 
     assert refused.status_code == 503
+    assert "changed since you reviewed it" in refused.json()["detail"]
     assert (repository / ".research" / "manifest.toml").is_file()
     assert list(repository.glob(".research.archive-*")) == []
 
@@ -646,6 +666,7 @@ def test_project_delete_refuses_symlinked_cache_root_without_touching_target(tmp
     refused = client.delete(f"/api/projects/{project_id}")
 
     assert refused.status_code == 422
+    assert "unsafe remote-source cache root" in refused.json()["detail"]
     assert marker.read_text(encoding="utf-8") == "must survive"
     assert stage_marker.read_text(encoding="utf-8") == "saved stage"
     assert display.read_text(encoding="utf-8") == "saved display"
@@ -702,6 +723,7 @@ def test_wizard_rejects_blank_name_and_invalid_state_path(tmp_path) -> None:
 
     assert preview.status_code == 200
     assert preview.json()["can_create"] is False
+    assert "not a directory" in preview.json()["checks"][1]["detail"]
 
 
 def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> None:

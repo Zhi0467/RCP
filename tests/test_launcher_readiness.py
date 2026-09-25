@@ -211,7 +211,7 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
         launcher=SimpleNamespace(readiness=lambda *_args, **_kwargs: blocked),
     )
     request = SimpleNamespace(provider="claude", run_on="remote-1")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown permission mode"):
         _require_auto_research_retry_target_ready(service, request)
 
     service.launcher = SimpleNamespace(

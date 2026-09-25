@@ -41,17 +41,17 @@ def test_root_tool_refuses_unsafe_executable_or_ancestor(monkeypatch, unsafe) ->
         return SimpleNamespace(st_mode=mode, st_uid=uid)
 
     monkeypatch.setattr(Path, "lstat", metadata)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe owner or path"):
         root_tools.root_executable("tool")
 
 
 @pytest.mark.parametrize("name", ["", "..", "/tmp/tool", "../tool", "bad\x00tool"])
 def test_root_tool_name_cannot_bypass_fixed_path(name) -> None:
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="fixed executable path"):
         root_tools.root_executable(name)
 
 
 def test_missing_root_tool_is_an_explicit_failure(monkeypatch) -> None:
     monkeypatch.setattr(root_tools.shutil, "which", lambda name, *, path: None)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unavailable"):
         root_tools.root_executable("missing")

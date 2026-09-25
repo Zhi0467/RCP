@@ -670,7 +670,7 @@ def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path
         assert client.get("/api/health").status_code == 503
         assert command("maintenance_status").quiescent
         assert not app.state.startup_effect_runtime_started
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="verification"):
             command("maintenance_release")
         verified = command(
             "maintenance_verify",
@@ -790,7 +790,7 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
 
         with monkeypatch.context() as patch:
             patch.setattr(gate, "close_and_wait", close_then_timeout)
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError, match="Timed out"):
                 command("maintenance_enter")
         partial = command("maintenance_status")
         assert partial.closed and not partial.quiescent
@@ -804,7 +804,7 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
         assert Path(entered.capture.receipt_path).is_file()
         assert command("maintenance_enter").capture == entered.capture
         assert client.get("/api/health").status_code == 503
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="another maintenance boundary"):
             command("maintenance_release", MaintenanceIdentity(str(uuid.uuid4()), "c" * 64))
         assert not command("maintenance_release").closed
         assert client.get("/api/health").status_code == 200

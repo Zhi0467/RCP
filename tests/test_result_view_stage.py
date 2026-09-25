@@ -77,7 +77,7 @@ def test_local_view_discovery_rejects_non_regular_entries(tmp_path, unsafe_kind:
         target.mkdir()
         target.joinpath("nested.html").write_text("<h1>nested</h1>", encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsafe entry"):
         list_local_result_view_files(stage, VIEW_A)
 
 
@@ -88,11 +88,11 @@ def test_local_view_discovery_rejects_oversized_and_non_html_output(tmp_path) ->
     output = slot / "view.html"
     output.write_bytes(b"<h1>too large</h1>")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="byte limit"):
         discover_result_view(stage, None, VIEW_A, max_bytes=4)
 
     output.rename(slot / "view.txt")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="descriptively named"):
         discover_result_view(stage, None, VIEW_A)
 
 
@@ -105,7 +105,7 @@ def test_local_discovery_stops_after_the_second_entry_in_a_wide_slot(tmp_path, m
 
     observed = _count_fd_scandir_entries(monkeypatch)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exactly one"):
         discover_result_view(stage, None, VIEW_A)
     assert observed == [2]
 
@@ -117,7 +117,7 @@ def test_local_view_slot_rejects_symlinked_components(tmp_path) -> None:
     outside.mkdir()
     (stage / "views").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="parent is unsafe"):
         prepare_local_result_view_slot(stage, VIEW_A, reuse=False)
 
     linked_stage = tmp_path / "linked-stage"
@@ -167,15 +167,15 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
     outside = root / "outside.html"
     outside.write_text("<h1>outside</h1>", encoding="utf-8")
     slot.joinpath("linked.html").symlink_to(outside)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsafe entry"):
         stage.list_result_view_files(VIEW_A)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="file is unsafe"):
         stage.read_result_view_bytes(VIEW_A, "linked.html", max_bytes=1024)
     assert outside.read_text(encoding="utf-8") == "<h1>outside</h1>"
 
     slot.joinpath("linked.html").unlink()
     slot.joinpath("large.html").write_bytes(b"too large")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exceeds its byte limit"):
         stage.read_result_view_bytes(VIEW_A, "large.html", max_bytes=4)
 
     monkeypatch.setattr(
@@ -240,7 +240,7 @@ def test_remote_view_traversal_rejects_replaced_workspace_or_views(tmp_path, mon
     (root / "workspace").unlink()
     (root / "workspace").mkdir()
     (root / "workspace" / "views").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="slot is unsafe"):
         stage.prepare_result_view_slot(VIEW_A, reuse=False)
 
 
@@ -249,7 +249,7 @@ def test_view_id_is_exactly_lowercase_24_hex(tmp_path) -> None:
     stage.mkdir()
 
     for value in ("a" * 23, "A" * 24, "g" * 24, "../" + "a" * 24):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="24 lowercase hexadecimal"):
             prepare_local_result_view_slot(stage, value, reuse=False)
 
 

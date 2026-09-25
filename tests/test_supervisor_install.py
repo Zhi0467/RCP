@@ -46,7 +46,7 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     assert target.name == str(receipt["build"])
     assert current.resolve() == previous
     assert sentinel.read_text() == "old release"
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="already exists"):
         install.install_release(bundle, root)
     assert sentinel.read_text() == "old release"
 
@@ -63,7 +63,7 @@ def test_install_preserves_partial_failure_without_publishing_success(
         raise SupervisorError("injected install failure")
 
     monkeypatch.setattr(install, "_run", fail)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="retained"):
         install.install_release(bundle, root)
     (target,) = root.iterdir()
     assert not (target / "installed.json").exists()
@@ -76,7 +76,7 @@ def test_install_refuses_bad_hash_before_creating_release(tmp_path: Path) -> Non
     (bundle / "requirements.lock.txt").write_text("changed")
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="SHA-256 mismatch"):
         install.install_release(bundle, root)
     assert not list(root.iterdir())
 
@@ -100,7 +100,7 @@ def test_install_binds_copied_assets_to_the_initial_verified_manifest(
         return verified
 
     monkeypatch.setattr(install, "verify_release", replace_after_verification)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="changed while copying"):
         install.install_release(bundle, root)
     (target,) = root.iterdir()
     assert not (target / ".venv").exists()
@@ -109,7 +109,7 @@ def test_install_binds_copied_assets_to_the_initial_verified_manifest(
 
 def test_install_refuses_root_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="not root"):
         install.install_release(tmp_path / "bundle", tmp_path / "releases")
     assert not list(tmp_path.iterdir())
 
@@ -124,7 +124,7 @@ def test_install_refuses_unsafe_destination(tmp_path: Path, unsafe: str) -> None
         destination.symlink_to(root, target_is_directory=True)
     else:
         root.chmod(0o777)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="symbolic link|writable"):
         install.install_release(tmp_path / "missing-bundle", destination)
 
 
@@ -141,6 +141,7 @@ def test_cli_verify_emits_terminal_success_or_failure(tmp_path: Path, capsys) ->
     assert cli.main(["--machine-readable", "verify", str(bundle)]) == 1
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert events[-1]["step"]["state"] == "failed"
+    assert "SHA-256 mismatch" in events[-1]["step"]["message"]
 
 
 @pytest.mark.parametrize("mode", [0o777, 0o1777])
@@ -151,7 +152,7 @@ def test_require_directory_checks_shared_ancestor_permissions(tmp_path: Path, mo
     root = parent / "releases"
     root.mkdir(mode=0o700)
     if mode == 0o777:
-        with pytest.raises(SupervisorError):
+        with pytest.raises(SupervisorError, match="ancestors must not be writable"):
             install._require_directory(root)
     else:
         install._require_directory(root)
@@ -187,7 +188,7 @@ def test_install_removes_receipt_after_publish_fsync_failure(
     monkeypatch.setattr(install, "_protect_uv_lock", lambda *args: None)
     monkeypatch.setattr(install, "_fsync_owned_tree", lambda *args: None)
     monkeypatch.setattr(install, "_fsync_directory", fail_fsync)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="retained.*EIO"):
         install.install_release(bundle, root)
     (target,) = root.iterdir()
     assert synced == ([target, root] if failed_directory == "root" else [target])
@@ -207,7 +208,7 @@ def test_verify_installed_identity_retains_import_stderr(tmp_path: Path) -> None
     log_path = tmp_path / "identity.log"
     with log_path.open("wb") as log:
         log.write(b"prior install diagnostic\n")
-        with pytest.raises(SupervisorError):
+        with pytest.raises(SupervisorError, match="version does not match"):
             install._verify_installed_identity(
                 release, environment / "bin/python", cwd=tmp_path, log=log
             )
@@ -258,7 +259,7 @@ def test_root_install_removes_receipt_after_publish_fsync_failure(
     assert not (target / "installed.json").exists()
     assert not (target / ".installed.json.tmp").exists()
     assert (target / "install.log").exists()
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="incomplete"):
         install.install_supervisor(bundle, root)
 
 
@@ -272,14 +273,14 @@ def test_managed_python_lock_is_protected_before_runtime_durability_check(tmp_pa
     runtime.parent.mkdir(parents=True)
     runtime.write_bytes(b"managed runtime")
     runtime.chmod(0o755)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe file metadata"):
         install._fsync_owned_tree(root)
     install._protect_uv_lock(root)
     assert stat.S_IMODE(lock.stat().st_mode) == 0o600
     install._fsync_owned_tree(root)
     assert runtime.read_bytes() == b"managed runtime"
     runtime.chmod(0o777)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe file metadata"):
         install._fsync_owned_tree(root)
 
 
@@ -291,7 +292,7 @@ def test_owner_written_bytecode_caches_are_normalized_before_durability_check(tm
     compiled = cache / "expat.cpython-312.pyc"
     compiled.write_bytes(b"bytecode")
     compiled.chmod(0o664)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe"):
         install._fsync_owned_tree(root)
     install._normalize_owned_modes(root)
     assert stat.S_IMODE(cache.stat().st_mode) == 0o755

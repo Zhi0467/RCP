@@ -244,7 +244,7 @@ def test_project_file_capture_transforms_human_history_and_binds_kept_bytes(
 
     invalid = capture.model_dump(mode="python")
     invalid["kept_result_views"][0]["content_sha256"] = "0" * 64
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match"):
         TransferProjectFileCapture.model_validate(invalid)
 
 
@@ -352,7 +352,7 @@ def test_project_file_capture_rejects_a_missing_remote_kept_file(
     service.history.workspace = remote
     capture_root = tmp_path / "remote-missing-capture"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="did not stabilize"):
         capture_project_transfer_files(service, records, capture_root)
 
     assert not capture_root.exists()
@@ -423,7 +423,7 @@ def test_project_fact_capture_rejects_a_parent_directory_symlink_swap(
     monkeypatch.setattr(project_files_module, "canonical_fact_sources", inventory_then_swap)
     capture_root = tmp_path / "fact-race-capture"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fact"):
         capture_project_transfer_files(service, records, capture_root)
 
     assert not capture_root.exists()
@@ -439,7 +439,7 @@ def test_canonical_fact_reader_rejects_a_replaced_root(tmp_path: Path) -> None:
     facts.mkdir()
     (facts / "inside.bin").write_bytes(b"outside")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="facts directory changed"):
         b"".join(iter_canonical_fact_bytes(research, source, chunk_size=16))
 
 

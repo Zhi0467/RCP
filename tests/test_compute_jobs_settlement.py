@@ -316,7 +316,7 @@ async def test_missing_helper_watcher_fails_and_retains_recovery(
         work.stream_work_run(service, launcher, request, data_dir, execution=execution)
     )
     errors = [event.text for event in events if event.event == "error"]
-    assert len(errors) == 1
+    assert len(errors) == 1 and "Compute watcher handoff failed" in errors[0]
     assert not any(event.event == "done" for event in events)
     assert execution.store.watchers(app.state.default_project_id) == []
     job = _job_for_watcher(execution.store, app.state.default_project_id, launcher.watcher)

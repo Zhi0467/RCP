@@ -118,7 +118,7 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
     else:
         # Any other answer is the host speaking: a live process is not a lost
         # link, and reattempting would not change it.
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="still running"):
             require_remote_provider_quiescence(store, HOST, "/stage")
     assert store.unresolved_remote_provider_passes(HOST, "/stage") == [("first", "/stage/one.pid")]
 

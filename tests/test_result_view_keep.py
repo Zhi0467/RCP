@@ -61,7 +61,7 @@ def test_local_keep_rejects_unsafe_views_and_bounded_read_rejects_links(tmp_path
     unrelated.mkdir()
     (repository / "views").symlink_to(unrelated, target_is_directory=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="views path"):
         workspace.keep_result_view(
             source_name="report.html",
             project_name="project",
@@ -77,16 +77,16 @@ def test_local_keep_rejects_unsafe_views_and_bounded_read_rejects_links(tmp_path
         data=b"<html>bounded</html>",
         today=date(2026, 8, 12),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="read limit"):
         workspace.read_kept_result_view(name, max_bytes=4)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="safe HTML base name"):
         workspace.read_kept_result_view(f"../{name}")
     with pytest.raises(FileNotFoundError):
         workspace.read_kept_result_view("missing-project-26-08-12.html")
 
     linked_name = "linked-project-26-08-12.html"
     (repository / "views" / linked_name).symlink_to(repository / "views" / name)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="readable regular file"):
         workspace.read_kept_result_view(linked_name)
 
 
@@ -190,6 +190,7 @@ def test_lock_holder_rejects_symlink_views_without_touching_target(tmp_path) -> 
         )
 
     assert response["ok"] is False
+    assert "views path" in str(response["error"])
     assert list(unrelated.iterdir()) == []
 
 

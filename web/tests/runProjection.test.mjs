@@ -7,6 +7,7 @@ import {
   authorizedInvocationCount,
   experimentRecommendation,
   experimentWatcherDisplayItems,
+  graphConditionLabel,
   isGraphWatcherRecord,
   visibleChatWatchers,
   watcherLastObservedAt,
@@ -299,6 +300,13 @@ test("graph watchers stay ungrouped and expose condition labels and evaluation t
   );
 
   assert.equal(isGraphWatcherRecord(status), true);
+  const statusLabel = graphConditionLabel(status.condition);
+  assert.match(statusLabel, /blk\/upstream/);
+  assert.match(statusLabel, /resolved/);
+  assert.match(statusLabel, /superseded/);
+  const proposalLabel = graphConditionLabel(proposal.condition);
+  assert.match(proposalLabel, /hyp\/result/);
+  assert.match(proposalLabel, /resolved/);
 
   assert.equal(watcherLastObservedAt(status), "2026-08-06T03:00:00Z");
   assert.deepEqual(

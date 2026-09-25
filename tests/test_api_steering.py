@@ -213,6 +213,7 @@ def test_completed_attempt_refuses_without_starting_a_turn(running_chat):
     response = run.client.post(run.url + "/steer", json=_body())
     assert response.status_code == 200
     assert response.json()["steering"]["status"] == "refused"
+    assert "not running" in response.json()["steering"]["reason"]
     assert run.receipts == []
     assert len(run.background.store.agent_tasks(run.project_id)) == 1
 
@@ -228,6 +229,7 @@ def test_message_uuid_reuse_with_changed_payload_is_rejected(running_chat):
     ):
         response = run.client.post(run.url + "/steer", json={**body, **changes})
         assert response.status_code == 409
+        assert "already used" in response.json()["detail"]
     assert len(run.receipts) == 1
 
 
@@ -288,6 +290,7 @@ def test_unacknowledged_steer_times_out_without_resending_or_stopping_turn(
     response = run.client.post(run.url + "/steer", json=body)
     assert response.status_code == 200
     assert response.json()["steering"]["status"] == "unknown"
+    assert "timed out" in response.json()["steering"]["reason"]
     assert pending.cancelled()
     assert not run.client.get(run.url).json()["settled"]
     duplicate = run.client.post(run.url + "/steer", json=body)
@@ -429,6 +432,9 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
             assert task["steer_visible"]
             assert not task["can_steer"]
             assert task["steer_turn_id"] is None
+            assert (
+                task["steer_unavailable_reason"] == "The recorded provider runtime is unavailable."
+            )
     finally:
         with run.background.store.connection() as connection:
             connection.execute(

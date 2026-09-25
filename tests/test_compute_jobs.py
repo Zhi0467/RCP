@@ -164,6 +164,7 @@ def test_gone_job_with_malformed_exit_stays_lost(launch_environment, tmp_path, m
     assert result.status == "lost"
     assert result.exit_status is None
     assert result.ended_at
+    assert "malformed exit receipt" in result.diagnostic
     assert record.exit_path in result.diagnostic
     backend.is_alive = True
     assert (
@@ -179,6 +180,7 @@ def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_pa
     reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == "running"
+    assert "could not determine" in result.diagnostic
 
 
 def test_cancel_receipt_waits_for_owner_to_disappear(launch_environment, tmp_path, manifest):
@@ -213,7 +215,7 @@ def test_launch_without_backend_names_machine_and_setup_action(
     store, backend, launch = launch_environment
     context = BackendContext("", "laptop", None, os_name="Linux")
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, None))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="laptop.*Linux.*systemd.*Slurm"):
         launch()
     assert not (tmp_path / "data" / "jobs").exists()
     assert store.running_compute_jobs() == []
@@ -222,7 +224,7 @@ def test_launch_without_backend_names_machine_and_setup_action(
 def test_failed_start_removes_root(launch_environment, tmp_path):
     store, backend, launch = launch_environment
     backend.failure = True
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="launch refused"):
         launch()
     assert list((tmp_path / "data" / "jobs").iterdir()) == []
     assert store.running_compute_jobs() == []
@@ -235,7 +237,7 @@ def test_insert_failure_retains_backend_receipt(launch_environment, tmp_path, mo
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(store, "create_compute_job", fail)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="database unavailable"):
         launch()
     roots = list((tmp_path / "data" / "jobs").iterdir())
     assert len(roots) == 1
@@ -351,6 +353,7 @@ def test_launch_receipt_write_failure_still_records_the_accepted_job(
     assert stored is not None
     assert stored.status == "running"
     assert stored.backend_handle == record.backend_handle
+    assert "Launch receipt not written" in stored.diagnostic
 
 
 def test_gone_job_with_malformed_started_receipt_still_exits(
@@ -506,7 +509,7 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     assert read_job_file(context, str(root / "missing")) is None
     write_job_file(context, str(root / "log"), "abcdef")
     assert read_job_file(context, str(root / "log"), 3) == "def"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="limit"):
         read_job_file(context, str(root / "log"), 0)
     remove_job_root(context, str(root))
     assert not root.exists()
@@ -537,6 +540,7 @@ def test_reconcile_row_failure_does_not_skip_other_jobs(
     reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
     bad = store.compute_job(bad.job_id)
     assert bad.status == "running"
+    assert ("could not determine" if failure == "unknown" else failure) in bad.diagnostic
     assert len(calls) == (3 if failure == "unregistered" else 4)
     for record in valid:
         refreshed = store.compute_job(record.job_id)

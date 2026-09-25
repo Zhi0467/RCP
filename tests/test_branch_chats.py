@@ -139,6 +139,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     )
     rejected = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=payload)
     assert rejected.status_code == 422
+    assert "another graph target" in rejected.json()["detail"]
 
     # Old canonical records had no graphTarget. The task ledger still identifies
     # this branch chat after restart; no transcript content becomes task input.

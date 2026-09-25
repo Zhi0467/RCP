@@ -202,7 +202,7 @@ def test_history_json_is_canonical_immutable_and_rejects_live_bindings() -> None
     assert document.value() is not first
 
     for field in sorted(transfer_records.TRANSFER_EXECUTABLE_JSON_FIELDS):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="executable field"):
             _json({"safe": [{field: "source binding"}]})
 
     sanitized = sanitize_transfer_history_json(
@@ -389,7 +389,7 @@ def test_artifact_history_supports_unkept_metadata_and_rejects_paths() -> None:
     assert unkept.kept_filename is None
 
     for name in ("../outside.png", "/tmp/outside.png", r"..\outside.png"):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="direct filename"):
             TransferArtifactReference(
                 artifact_id="a" * 24,
                 source_name=name,
@@ -510,7 +510,7 @@ def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() 
     assert bundle.paper_draft is not None
     assert bundle.paper_draft.ancestor_content == "Ancestor draft"
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="unknown archive attribution"):
         TransferRecordBundle.model_validate(
             {
                 **bundle.model_dump(),
@@ -522,11 +522,11 @@ def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() 
                 ),
             }
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="repeats one task identity"):
         TransferRecordBundle.model_validate(
             {**bundle.model_dump(), "tasks": (bundle.tasks[0], bundle.tasks[0])}
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="unknown parent task"):
         TransferRecordBundle.model_validate(
             {
                 **bundle.model_dump(),
@@ -544,7 +544,7 @@ def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() 
         level="info",
         message="same source-local mapping",
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="archive-local record identity"):
         TransferRecordBundle(
             project_id=PROJECT_ID,
             attributions=(_attribution(),),

@@ -216,7 +216,7 @@ def test_restore_refuses_wrong_recorded_transition(restore_request, tmp_path):
         Path(value["plaintext_path"]).read_bytes()
     ).hexdigest()
     review = prepare_restore(RestorePrepareRequest(**value))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="captured head"):
         prepare_restore(_confirm(value, review, tmp_path / "wrong-head"))
 
 

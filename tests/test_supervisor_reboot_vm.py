@@ -129,7 +129,7 @@ def test_guest_network_keeps_only_loopback_ssh_when_offline(tmp_path: Path) -> N
 
 @pytest.mark.parametrize("port", [22, 0, -1, 65536])
 def test_guest_rejects_privileged_or_invalid_ssh_ports(tmp_path: Path, port: int) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unprivileged"):
         qemu_command(tmp_path, port, offline=False)
 
 
@@ -138,7 +138,7 @@ def test_reboot_evidence_requires_changed_valid_boot_ids() -> None:
     after = "5d974c98-d926-48f5-872c-4bdc3d9203b6"
     require_changed_boot_id(before, after)
     for pair in ((before, before), (before, ""), ("restarted", after), (before, after + "\n")):
-        with pytest.raises(AssertionError):
+        with pytest.raises(AssertionError, match="different Linux boot IDs"):
             require_changed_boot_id(*pair)
 
 
@@ -154,7 +154,7 @@ def test_ubuntu_image_checksum_is_unambiguous_and_exact() -> None:
         checksum.replace(digest, "bad"),
         checksum.replace(filename, filename + ".other"),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="exactly one"):
             image_checksum(value, filename)
 
 
@@ -287,7 +287,7 @@ def test_guest_upload_cannot_address_another_machine(tmp_path: Path) -> None:
         "/home/qualifier/file;reboot",
         "/home/qualifier/../etc",
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="plain path"):
             guest.copy(tmp_path / "unused", destination)
 
 

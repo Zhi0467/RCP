@@ -59,6 +59,9 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     await cancel.click();
     await cancel.waitFor({ state: "hidden" });
     assert.equal(cancellations, 2);
+    assert.match(await job.locator(":scope > span").first().innerText(), /\bstopped\b/);
+    assert.match(await job.innerText(), /human-1/);
+    assert.doesNotMatch(await job.locator(":scope > span").first().innerText(), /\bcompleted\b/);
 
     assert.equal(
       requests.some((url) => url.includes("compute-jobs")),

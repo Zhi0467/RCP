@@ -265,6 +265,9 @@ def test_unsafe_database_entry_is_not_accepted_as_snapshot_input(tmp_path: Path)
     plan = inspect_app_data_capture_plan(data_dir)
 
     assert plan.database_path is None
+    assert plan.database_unavailable_reason == (
+        "The application database is not a safe regular file."
+    )
     assert plan.complete is False
 
 
@@ -311,7 +314,7 @@ def test_canonical_inventory_reuses_retained_inputs_and_excludes_materialization
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="malformed canonical name"):
         history.workspace.retained_history_fingerprint()
 
     plan = history.workspace.backup_canonical_source_plan()
@@ -372,7 +375,7 @@ def test_branch_metadata_must_match_the_observed_patch_head(manifest: Manifest) 
     (branch_root / "branch.json").write_text(metadata.model_dump_json(), encoding="utf-8")
     (branch_root / "patches" / "000001.json").write_text("{}", encoding="utf-8")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="metadata and retained Patch head disagree"):
         history.workspace.backup_canonical_source_plan()
 
 
@@ -554,7 +557,7 @@ def test_archive_manifest_round_trips_and_calculates_complete_or_partial(
     )
     assert BackupArchiveManifest.model_validate(partial.model_dump(mode="python")) == partial
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="status does not match"):
         BackupArchiveManifest.model_validate(
             {**partial.model_dump(mode="python"), "status": "complete"}
         )
@@ -590,7 +593,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
         BackupArchiveManifest.model_validate({**values, "schema_version": 2})
     with pytest.raises(ValidationError, match="extra_forbidden"):
         BackupArchiveManifest.model_validate({**values, "private_identity": "secret"})
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="retained research inputs"):
         BackupFileEntry(
             archive_path="projects/bad/canonical/graph.json",
             source_relative_path=".research/graph.json",
@@ -598,7 +601,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
             sha256="0" * 64,
             size_bytes=1,
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="kind does not match"):
         BackupCanonicalSourceFile(
             relative_path="graph.json",
             kind="manifest",
@@ -609,7 +612,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
         kind="manifest",
         observed_size_bytes=1,
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="main head does not match"):
         BackupCanonicalSourcePlan(
             main_observed_revision=1,
             main_files=(canonical_manifest,),
@@ -620,7 +623,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
             unclassified_roots=(),
             observed_canonical_bytes=1,
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="project main head does not match"):
         BackupProjectCapture.model_validate(
             {
                 **project.model_dump(mode="python"),
@@ -635,7 +638,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
         sha256="1" * 64,
         size_bytes=1,
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="merge receipts require"):
         BackupProjectCapture.model_validate(
             {
                 **project.model_dump(mode="python"),
@@ -701,5 +704,7 @@ def test_unused_machine_does_not_weaken_checkout_recovery_proof(
     else:
         unused = next(item for item in payload["machines"] if item["alias"] == "unused")
         unused["host" if change == "host" else "os_account"] = "changed"
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="machines differ|no resolved central root|route differs"
+    ):
         type(recovery).model_validate(payload)

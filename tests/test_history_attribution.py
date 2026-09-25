@@ -105,7 +105,7 @@ def test_orchestrator_dispatch_requires_an_exact_episode_id() -> None:
         ),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="orchestrate requires an exact episode"):
         require_dispatch(authority)
 
 
@@ -150,7 +150,7 @@ def test_persisted_patch_with_both_lineage_keys_is_rejected(manifest) -> None:
     document["campaign_id"] = "episode-legacy"
     _write_persisted_patch(manifest, document)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="both campaign_id and episode_id"):
         history.load_patches()
     replayed = history.materialize(write_outputs=False)
 
@@ -237,9 +237,9 @@ def test_opt_in_human_rejects_missing_explicit_snapshot_without_revision(manifes
     history = HistoryManager(manifest, require_attribution=True)
     preattributed = _approval().model_copy(update={"authorized_by": authorizer})
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="explicit authorized_by"):
         history.append(preattributed)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="explicit authorized_by"):
         history.append_batch([_approval(), _approval()])
 
     assert history.load_patches() == []
@@ -445,7 +445,7 @@ def test_supplied_episode_id_must_match_canonical_task(manifest) -> None:
         episode_id="episode-other",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match the canonical"):
         history.append(raw)
 
     assert history.load_patches() == []
@@ -471,7 +471,7 @@ def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> N
         }
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match the canonical"):
         history.append(patch)
 
     assert history.load_patches() == []
@@ -479,18 +479,19 @@ def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> N
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("case", "message"),
     [
-        "missing-source",
-        "missing-resolver",
-        "unknown-task",
-        "legacy-task",
-        "unnamed-authorizer",
+        ("missing-source", "source_operation_id"),
+        ("missing-resolver", "agent_authority_resolver"),
+        ("unknown-task", "unknown agent task"),
+        ("legacy-task", "has no authorizer snapshot"),
+        ("unnamed-authorizer", "valid authorizer snapshot"),
     ],
 )
 def test_agent_attribution_failures_do_not_write_or_spend_revision(
     manifest,
     case: str,
+    message: str,
 ) -> None:
     operation_id = None if case == "missing-source" else "operation-1"
     if case == "missing-resolver":
@@ -530,7 +531,7 @@ def test_agent_attribution_failures_do_not_write_or_spend_revision(
         agent_authority_resolver=resolver,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         history.append(_agent_patch(operation_id))
 
     assert history.load_patches() == []

@@ -145,6 +145,8 @@ test("paper preview renders unsaved Markdown in the editor pane and keeps status
         onPaperChange() {},
       }),
     );
+
+    assert.match(html, /class="paper-status"><span>4[^<]*<\/span>/);
   } finally {
     if (previousStorage === undefined) delete globalThis.localStorage;
     else globalThis.localStorage = previousStorage;
@@ -190,6 +192,8 @@ test("behind paper exposes one reversible Incoming swap without destructive cont
         onPaperChange() {},
       }),
     );
+
+    assert.match(html, /class="button compact secondary paper-apply-incoming"/);
   } finally {
     if (previousStorage === undefined) delete globalThis.localStorage;
     else globalThis.localStorage = previousStorage;

@@ -539,6 +539,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
         json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
     )
     assert refused.status_code == 409
+    assert "graceful stop" in refused.json()["detail"]
 
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
     assert loop.store.settle_ready_experiment_loop_stops() == 1
@@ -587,7 +588,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
         "_mark_episode_stop_skipped_in_connection",
         fail_terminalization,
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="injected episode terminalization failure"):
         loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
 
     watcher = loop.store.watcher("atomic-stop-watcher")
@@ -933,6 +934,7 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(manifest, tmp_pat
     assert record.notified is False
     diagnostic = loop.control()["operational"]["session"]["diagnostic"]
     assert diagnostic is not None
+    assert "saved provider workspace is gone" in diagnostic
     assert loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID).invocations_used == 1
 
 
@@ -1063,6 +1065,7 @@ def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(manifest, tm
     )
 
     assert response.status_code == 409, response.text
+    assert "Use Stop loop" in response.json()["detail"]
     assert loop.store.watcher("still-running").status == "active"
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
@@ -1078,6 +1081,7 @@ def test_individual_stop_rejects_experiment_watcher(manifest, tmp_path) -> None:
     response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/loop-watcher/stop")
 
     assert response.status_code == 409
+    assert "Use Stop loop" in response.json()["detail"]
     assert loop.store.watcher("loop-watcher").status == "active"
 
 
@@ -1086,7 +1090,7 @@ def test_episode_binding_is_immutable_after_first_success(manifest, tmp_path) ->
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot change its native-session binding"):
         loop.store.commit_experiment_episode_turn(
             episode_id=loop.episode_id,
             project_id=loop.project_id,
@@ -1207,7 +1211,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
     assert replacement.payload["previous"]["provider"] == "codex"
     assert replacement.payload["replacement"]["provider"] == "claude"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="pinned identity"):
         loop.store.commit_experiment_episode_turn(
             episode_id=loop.episode_id,
             project_id=loop.project_id,
@@ -1245,7 +1249,7 @@ def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_p
     )
     now = loop.store.now()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="episode binding: model"):
         loop.store.create_experiment_watcher_invocation(
             AgentTaskRecord(
                 operation_id="changed-config",
@@ -1295,12 +1299,12 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
         dispatch_authority=_task_authority(request),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="episode binding"):
         loop.store.create_experiment_watcher_invocation(record, ["ready"])
     assert loop.store.watcher("ready").notified is False
 
     no_session = request.model_copy(update={"session_id": None})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="session and exact stage"):
         start_watcher_notification(
             app.state.background_tasks,
             loop.project_id,
@@ -1471,14 +1475,14 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
         ["second-invocation-watcher"],
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="newest Experiment invocation"):
         loop.store.claim_agent_task_graph_repair("loop-root")
 
     loop.stop()
     loop.episode_id = str(uuid.uuid4())
     loop.chat_id = str(uuid.uuid4())
     loop.start_episode(operation_id="fresh-loop-root")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="newest Experiment episode"):
         loop.store.claim_agent_task_graph_repair("loop-root")
 
 
@@ -1509,7 +1513,7 @@ def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(manifest, t
     stopped = loop.stop()
 
     assert stopped["operational"]["stop_settled"] is True
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="stopped Experiment episode"):
         loop.store.claim_agent_task_graph_repair("loop-root")
 
 
@@ -1571,7 +1575,7 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
         raise RuntimeError("simulated Experiment graph repair insert failure")
 
     monkeypatch.setattr(loop.store, "_insert_agent_task", fail_after_child_insert)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated Experiment graph repair insert failure"):
         loop.store.create_experiment_graph_repair_task(
             "loop-root", child("experiment-repair-failed")
         )
@@ -1742,7 +1746,7 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
 
     stopping = loop.stop()
     assert stopping["operational"]["stop_settled"] is False
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot start a fresh provider session"):
         app.state.background_tasks.retry("failed-wake")
 
     assert not [
@@ -2057,7 +2061,7 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
         for receipt in loop.store.agent_task_receipts(retried.operation_id)
         if receipt.category == "native_resume_unavailable"
     ]
-    assert len(reasons) == 1
+    assert reasons == ["the provider no longer has the saved session"]
 
 
 def test_a_revoked_login_is_recommended_a_sign_in_without_losing_its_controls(
@@ -2353,7 +2357,7 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
 
     app.state.background_tasks.stream = stream
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="did not retain its episode context"):
         getattr(app.state.background_tasks, action)("loop-root")
 
     assert not launched.is_set()
@@ -2431,6 +2435,7 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     assert episode is not None
     assert episode.stop_settled_at is not None
     assert episode.session_diagnostic is not None
+    assert "older RCP" in episode.session_diagnostic
     assert loop.loop_task_ids() == before
     root = loop.store.agent_task("loop-root")
     retry = loop.store.agent_task("doomed-retry")
@@ -2711,6 +2716,7 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
     assert pinned.status_code == 409
     # The machine exists and is reachable; the loop still stays where its
     # canonical state and episode live.
+    assert "must run on canonical state machine 'laptop'" in pinned.json()["detail"]
 
 
 def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
@@ -2939,6 +2945,7 @@ def test_live_episode_still_routes_watcher_stop_through_stop_loop(manifest, tmp_
     response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/live-watcher/stop")
 
     assert response.status_code == 409
+    assert "Use Stop loop" in response.json()["detail"]
     assert loop.store.watcher("live-watcher").status == "active"
 
 
@@ -2977,6 +2984,7 @@ def test_run_rejects_a_nonpositive_authorized_ceiling(manifest, tmp_path) -> Non
     )
 
     assert response.status_code == 422
+    assert "positive integer" in response.json()["detail"]
 
 
 def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> None:
@@ -3096,6 +3104,7 @@ def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> N
     )
 
     assert response.status_code == 422
+    assert "positive integer" in response.json()["detail"]
 
     accepted = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
@@ -3170,6 +3179,7 @@ def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> Non
     response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/array-member-1/stop")
 
     assert response.status_code == 422, response.text
+    assert "retired with its group" in response.json()["detail"]
     assert loop.store.watcher("array-member-1").status == "active"
     assert loop.store.watcher("array-member-2").status == "active"
 
@@ -3302,6 +3312,7 @@ def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
     response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/graph-condition/stop")
 
     assert response.status_code == 422, response.text
+    assert "not an observed job to retire" in response.json()["detail"]
     assert loop.store.watcher("graph-condition").status == "active"
 
 

@@ -580,7 +580,7 @@ def test_stopped_snapshot_independently_proves_every_restored_entry(
     for verify in (checkpoint.verify_checkpoint, checkpoint.restore_checkpoint):
         with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
             verify(saved)
-        assert detail.split(":", 1)[0] in str(error.value)
+        assert detail in str(error.value)
         assert "secret changed token" not in str(error.value)
         assert "synthetic-provider-token" not in str(error.value)
 

@@ -160,7 +160,7 @@ def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
     experiment_watcher = watcher.model_copy(
         update={"continuation": continuation.model_copy(update={"patch_kind": "experiment_loop"})}
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot carry Experiment-loop authority"):
         _generic_watcher_delivery_request([experiment_watcher])
 
 
@@ -1677,9 +1677,9 @@ async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
             tmp_path / "data",
         )
     ]
-    assert _error_texts(events)
 
     assert launcher.calls == 0
+    assert "only be resumed from an RCP background task checkpoint" in events[0]
 
 
 @pytest.mark.asyncio
@@ -1788,6 +1788,7 @@ def test_legacy_run_with_caller_session_cannot_resume(manifest, tmp_path) -> Non
     )
 
     assert response.status_code == 409
+    assert "not checkpointed or validated by RCP" in response.json()["detail"]
 
 
 def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
@@ -2035,6 +2036,7 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
         PATCH_CORRECTION_MAX_ROUNDS
     )
     assert _applied_revision(frames) is None
+    assert any("without writing any JSON file" in text for text in _error_texts(frames))
     assert service.history.state().revision == 2
 
 
@@ -3245,6 +3247,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> No
     assert completed["status"] == "failed"
     assert completed["applied_revision"] is None
     assert "provider connection dropped" in completed["error"]
+    assert "did not write a new patch" in completed["error"]
     assert service.history.state().revision == 1
     assert not service.history.state().nodes
     assert any(
@@ -3409,6 +3412,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_pa
     )
     moved = _wait_for_run(client, project_id, correction.json()["operation_id"])
     assert moved["status"] == "failed"
+    assert "graph revision moved from 1 to 2" in moved["error"]
     assert launcher.calls == 1
     assert any(
         item["category"] == "continuation_context_unavailable" for item in moved["debug_receipts"]
@@ -3597,6 +3601,9 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "This conversation has a paused turn. Resume or retry it before starting a new turn."
+    )
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
@@ -3835,7 +3842,7 @@ def test_resumed_artifact_directory_rejects_a_symlinked_scope(tmp_path) -> None:
     outside.joinpath("artifacts").mkdir(parents=True)
     turns.joinpath("original-turn").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="saved artifact directory"):
         _prepare_local_artifact_directory(
             stage,
             "original-turn",
@@ -4216,7 +4223,7 @@ async def test_chat_launch_exception_keeps_workspace_without_transcript_projecti
         provider="claude",
     )
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="provider launch failed"):
         async for _frame in stream_discuss_run(service, launcher, request, tmp_path / "data"):
             pass
 
@@ -4324,6 +4331,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     record = _wait_for_run(client, app.state.default_project_id, started.json()["operation_id"])
     assert record["status"] == "failed"
     assert record["result"] == {"messages": [answer]}
+    assert "could not be staged" in record["error"]
 
 
 def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path) -> None:
@@ -5056,9 +5064,9 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
             execution=execution,
         )
     ]
-    assert _error_texts(frames)
 
     assert launcher.calls == 0
+    assert any("Cannot safely resume this chat" in text for text in _error_texts(frames))
 
 
 @pytest.mark.asyncio
@@ -5236,8 +5244,8 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
             tmp_path / "data",
         )
     ]
-    assert _error_texts(events)
 
+    assert any("cannot change model" in item for item in events)
     assert launcher.calls == 0
 
 
@@ -5578,7 +5586,7 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
         }
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="registered project root"):
         _project_write_scope(
             unsafe_context,
             service,
@@ -5619,7 +5627,7 @@ def test_work_write_scope_rejects_pointer_with_parent_segments(manifest, tmp_pat
     workspace = tmp_path / "stage"
     workspace.mkdir()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="registered project root"):
         _project_write_scope(
             context,
             service,
@@ -5664,7 +5672,7 @@ def test_local_work_write_scope_rejects_symlinked_pointer(manifest, tmp_path, ta
     workspace = tmp_path / "stage"
     workspace.mkdir()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="registered project root"):
         _project_write_scope(
             context,
             service,
@@ -6830,6 +6838,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
             json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
         )
         assert duplicate.status_code == 409
+        assert "already active" in duplicate.json()["detail"]
     finally:
         release.set()
 
@@ -6994,6 +7003,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         json={"chat_id": str(uuid.uuid4())},
     )
     assert still_running.status_code == 409
+    assert still_running.json()["detail"] == "Detached Experiment work is still running."
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
         "exp/bounded-loop"
     ]
@@ -7209,6 +7219,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
         admission, removal = asyncio.run(drive_race())
         assert admission.status_code == 202
         assert removal.status_code == 409
+        assert "bounded experiment loop is active" in removal.json()["detail"]
         assert "exp/bounded-loop" in service.history.state().nodes
     finally:
         release_stream.set()
@@ -7311,6 +7322,9 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     for endpoint, operation_id in operation_ids.items():
         response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")
         assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Experiment exp/bounded-loop no longer exists; it cannot be continued."
+        )
 
     continuation = WatcherContinuation(
         provider="codex",
@@ -7656,8 +7670,8 @@ async def test_experiment_loop_missing_handoff_fails_without_done_after_one_corr
         )
     ]
 
-    assert _error_texts(frames)
     assert launcher.calls == 2
+    assert any("watcher handoff failed" in text for text in _error_texts(frames))
     assert all(event.event != "done" for event in _events(frames))
     assert service.history.state().revision == 3
 
@@ -7731,7 +7745,7 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         )
     ]
 
-    assert _error_texts(frames)
+    assert any("Patch could not be validated" in text for text in _error_texts(frames))
     assert all(event.event != "done" for event in _events(frames))
     assert service.history.state().revision == 3
     assert not any(
@@ -7820,8 +7834,8 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
             execution=execution,
         )
     ]
-    assert _error_texts(frames)
 
+    assert any("could not be read" in text for text in _error_texts(frames))
     assert service.history.state().revision == 3
 
 
@@ -8308,6 +8322,7 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp
         },
     )
     assert again.status_code == 422
+    assert "no open attempt" in again.json()["detail"]
 
 
 def test_seed_stages_its_selected_skills_and_records_what_it_ran(

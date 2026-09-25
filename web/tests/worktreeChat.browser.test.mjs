@@ -142,6 +142,11 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     await page.getByRole("button", { name: "Remove worktree", exact: true }).click();
     const confirmation = page.getByRole("group", { name: "Confirm worktree removal" });
     await confirmation.waitFor();
+    const preview = await confirmation.innerText();
+    assert.match(preview, /develop: 2\b/);
+    assert.match(preview, /\babsent\b/);
+    assert.match(preview, /rcp\/chat-one/);
+    assert.match(preview, /git ls-remote/);
 
     assert.equal(removalPreviews, 1);
 

@@ -133,7 +133,7 @@ def test_control_probe_can_report_a_known_incomplete_operation_set() -> None:
     )
 
     assert result.operations == ("probe",)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="registry order"):
         ServerControlProbeResult(
             instance_id=str(uuid.uuid4()),
             pid=os.getpid(),
@@ -256,7 +256,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
     assert sent[2].selector_id == request_id
     assert sent[2].boundary_sha256 == identity["lease_boundary_sha256"]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="request selector"):
         ServerControlRequest(
             request_id=str(uuid.uuid4()),
             instance_id=instance_id,
@@ -264,7 +264,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
             selector_kind="project",
             selector_id=project_id,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="confirmed upload boundary"):
         ServerControlRequest(
             request_id=str(uuid.uuid4()),
             instance_id=instance_id,
@@ -272,7 +272,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
             selector_kind="request",
             selector_id=request_id,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="another request or lease boundary"):
         control._validated_control_result(
             complete_request,
             complete.model_copy(update={"lease_boundary_sha256": "c" * 64}),
@@ -494,7 +494,7 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
         owner_kind="cli",
         control_socket=control_root / "control.sock",
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="only to an installed CLI-owned team service"):
         create_app(data_dir=personal_data, instance_metadata=metadata)
 
     team_data = tmp_path / "team"
@@ -506,7 +506,7 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
             team_data, host="127.0.0.1", port=8421, owner_kind="desktop"
         ).data_dir_id,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="only to an installed CLI-owned team service"):
         create_app(data_dir=team_data, instance_metadata=desktop)
 
 
@@ -585,7 +585,7 @@ def test_maintenance_result_rejects_mismatched_boundary(
         closed=closed,
         quiescent=False,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="another boundary"):
         control._validated_control_result(request, result)
 
 
@@ -610,7 +610,7 @@ def test_maintenance_enter_and_verify_reject_identity_free_open_result(operation
         closed=False,
         quiescent=False,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="another boundary"):
         control._validated_control_result(request, result)
 
 
@@ -1180,7 +1180,7 @@ def test_previous_console_protocol_probe_does_not_advertise_unknown_maintenance_
         assert "backup_sqlite_capture" in result.operations
         assert "project_provision_step" in result.operations
         assert not any(operation.startswith("maintenance_") for operation in result.operations)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="requires protocol 10"):
             ServerControlRequest(
                 protocol_version=protocol,
                 request_id=str(uuid.uuid4()),

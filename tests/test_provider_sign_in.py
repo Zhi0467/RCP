@@ -773,6 +773,7 @@ def test_a_rejected_token_says_why_instead_of_awaiting_verification(
 
     state = runner.store.provider_login_state("claude", "")
     assert state.state == "signed_out"
+    assert "awaiting verification" not in (state.detail or "")
     assert state.detail
 
 
@@ -846,8 +847,9 @@ def test_cancelling_after_the_provider_accepted_the_login_is_refused(
     runner._sign_ins[started.login_id] = runner._sign_ins[started.login_id].model_copy(
         update={"state": "pending"}
     )
-    with pytest.raises(ProviderLoginRefused):
+    with pytest.raises(ProviderLoginRefused) as refusal:
         runner.cancel_sign_in(started.login_id, member_id="member")
+    assert "already accepted" in refusal.value.detail
 
 
 def test_an_acknowledged_cancellation_never_becomes_a_successful_sign_in(

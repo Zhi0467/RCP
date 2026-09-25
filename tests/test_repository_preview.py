@@ -42,24 +42,24 @@ def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(
     assert not bounded.complete
     assert bounded.total_bytes == 14
     (nested / "binary.dat").write_bytes(b"\xff")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="UTF-8"):
         load_repository_source(manifest, "repo-a", "src/binary.dat")
     for name, content in (("nul.txt", b"safe\x00unsafe"), ("escape.txt", b"safe\x1bunsafe")):
         (nested / name).write_bytes(content)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="control"):
             load_repository_source(manifest, "repo-a", f"src/{name}")
     (nested / "ordinary-controls.txt").write_bytes(b"tab\tok\r\n")
     assert (
         load_repository_source(manifest, "repo-a", "src/ordinary-controls.txt").text
         == "tab\tok\r\n"
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="bounded"):
         load_repository_source(manifest, "repo-a", "src")
     (nested / "linked.py").symlink_to(nested / "safe.py")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="safely"):
         load_repository_source(manifest, "repo-a", "src/linked.py")
     (root / "linked-src").symlink_to(nested, target_is_directory=True)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="regular file|safely"):
         load_repository_source(manifest, "repo-a", "linked-src/safe.py")
 
 
@@ -68,7 +68,7 @@ def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(
     ["", ".", "..", "/etc/passwd", "src/../secret", "src/./safe.py", "src//safe.py"],
 )
 def test_repository_source_rejects_unsafe_paths(manifest, path: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="relative|unsafe"):
         load_repository_source(manifest, "repo-a", path)
 
 
@@ -83,9 +83,9 @@ def test_absolute_repository_path_resolves_one_segment_boundary_match(manifest) 
     assert source.repository_alias == "repo-a"
     assert source.relative_path == "src/safe.py"
     assert source.text == "safe"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside every"):
         load_repository_source_for_path(manifest, "/outside/configured/repositories.py")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside every"):
         load_repository_source_for_path(manifest, f"{root}-sibling/file.py")
 
 
@@ -105,7 +105,7 @@ def test_absolute_repository_path_refuses_ambiguous_roots_before_reading(
     monkeypatch.setattr(preview_module, "_read_local_file", unexpected_reader)
     monkeypatch.setattr(preview_module, "_read_remote_file", unexpected_reader)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repo-a, repo-b"):
         load_repository_source_for_path(manifest, target.as_posix())
 
 
@@ -122,7 +122,7 @@ def test_repository_source_document_escapes_content_and_highlights_requested_lin
     assert "&lt;script&gt;alert(&quot;source&quot;)&lt;/script&gt;" in document
     assert 'id="L1" class="line"' in document
     assert 'id="L2" class="line selected"' in document
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside"):
         repository_source_document(source, line=3)
 
 
@@ -175,7 +175,7 @@ def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> Non
 
     # A byte that is invalid rather than merely cut short still fails.
     (root / "binary.log").write_bytes(b"text\xff" * 200)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="UTF-8"):
         load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100)
 
 
@@ -213,7 +213,7 @@ def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
     assert 'id="L150" class="line"' in document
     assert 'id="L151" class="line selected"' in document
     for outside in (149, 152):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="outside"):
             repository_source_document(source, line=outside)
 
 

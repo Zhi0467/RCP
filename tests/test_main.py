@@ -109,6 +109,7 @@ def test_no_arguments_retains_argparse_required_command_exit(monkeypatch, capsys
         main()
 
     assert raised.value.code == 2
+    assert "a command is required" in capsys.readouterr().err
 
 
 def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsys) -> None:

@@ -214,7 +214,7 @@ def test_registration_retry_finishes_database_migration_without_second_identity(
 
     monkeypatch.setattr(store, "migrate_project_identity", fail_once)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated catalog migration failure"):
         catalog.register(str(manifest.path))
 
     patches_after_failure = HistoryManager(load_manifest(manifest.path)).load_patches()
@@ -284,7 +284,7 @@ def test_registration_retry_finishes_display_cleanup_after_publish_crash(
         original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", interrupt_legacy_cleanup)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated interruption"):
         catalog.register(str(manifest.path))
 
     identity = HistoryManager(load_manifest(manifest.path)).project_identity()
@@ -366,7 +366,7 @@ def test_cache_destination_conflict_prevents_database_migration_and_overwrite(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("canonical-cache-must-remain", encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="destination already exists"):
         catalog.register(str(manifest.path))
 
     assert source.exists()
@@ -421,7 +421,7 @@ def test_open_refuses_manifest_name_owned_by_another_project(
                 (legacy_name, foreign_project_id),
             )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=diagnostic):
         catalog.open(target.project_id)
 
     assert catalog.loaded_service(target.project_id) is None

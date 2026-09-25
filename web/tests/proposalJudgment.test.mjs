@@ -380,3 +380,28 @@ test("an overlapping second approval is visibly blocked while its rejection rema
     /class="button judgment proposal-decision-toggle reject"[^>]*aria-pressed="false"/,
   );
 });
+
+test("legacy or stale proposals use the existing card fallback instead of inferred intent", () => {
+  const missingNodeGraph = { ...graph, nodes: { ...nodes, "rq/plasticity": undefined } };
+  const html = renderProposal(
+    {
+      op: "update_nodes",
+      intent: "content_change",
+      nodes: [{ id: "rq/plasticity", changes: { question: "A stale proposal" } }],
+    },
+    missingNodeGraph,
+    "Compare this proposal from its stored card.",
+  );
+
+  assert.match(html, /Compare this proposal from its stored card\./);
+
+  const undeclared = renderProposal(
+    {
+      op: "update_nodes",
+      nodes: [{ id: "hyp/replanning", changes: { status: "supported" } }],
+    },
+    graph,
+    "Review this legacy proposal.",
+  );
+  assert.match(undeclared, /Review this legacy proposal\./);
+});

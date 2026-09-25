@@ -173,7 +173,7 @@ def test_source_settlement_never_interrupts_live_work(
     _data, app, source, _target, request, _target_request, head = _released_source(
         tmp_path, task_statuses=("paused", active_status)
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="agent task to be settled"):
         advance_source_project_transfer(source, app.state.catalog, request.request_id)
     with source.connection() as connection:
         statuses = {
@@ -196,9 +196,9 @@ def test_source_task_settlement_requires_human_release(tmp_path: Path):
     _data, _app, source, target, request, target_request, _head = _released_source(
         tmp_path, release_source=False
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="confirmed source release"):
         target.settle_source_transfer_tasks(target_request.request_id)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="confirmed source release"):
         source.settle_source_transfer_tasks(request.request_id)
 
 
@@ -216,7 +216,7 @@ def test_source_settlement_preserves_paused_tasks_while_an_episode_is_live(tmp_p
         revalidated_configuration=configuration,
         source_head=head,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="episode to be settled"):
         advance_source_project_transfer(source, app.state.catalog, request.request_id)
     assert source.episode(episode.episode_id) == episode
     with source.connection() as connection:
@@ -242,7 +242,7 @@ def test_desktop_decisions_resume_an_interrupted_source_release(
                 raise ValueError("simulated archive receipt interruption")
 
             patch.setattr(source, "bind_project_transfer_archive", fail_binding)
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="simulated archive receipt"):
                 advance_source_project_transfer(source, app.state.catalog, request.request_id)
     with TestClient(app, base_url="https://personal.test") as client:
         projected = client.get(f"/api/project-transfers/requests/{request.request_id}").json()
@@ -301,7 +301,7 @@ def test_source_transfer_reuses_exact_archive_after_publication_before_receipt(
         raise RuntimeError("simulated stop before archive receipt")
 
     monkeypatch.setattr(source, "bind_project_transfer_archive", interrupt_before_receipt)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated stop"):
         advance_source_project_transfer(source, source_app.state.catalog, request.request_id)
 
     archive_path = source_transfer_export_path(source_data, request.request_id)
@@ -404,7 +404,7 @@ def test_source_transfer_refuses_configuration_drift_before_home_patch(tmp_path:
         "https://github.com/openai/another.git",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="configuration changed after"):
         advance_source_project_transfer(source, source_app.state.catalog, request.request_id)
     retained = source.project_transfer_request(request.request_id)
     assert retained is not None
@@ -425,12 +425,12 @@ def test_bound_source_archive_missing_or_corrupt_fails_without_regeneration(tmp_
 
     archive_path.write_bytes(b"corrupt")
     archive_path.chmod(0o600)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="missing, malformed, or unreadable"):
         advance_source_project_transfer(source, source_app.state.catalog, request.request_id)
     assert archive_path.read_bytes() == b"corrupt"
 
     archive_path.unlink()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sealed transfer archive is missing"):
         advance_source_project_transfer(source, source_app.state.catalog, request.request_id)
     assert not archive_path.exists()
 
@@ -496,7 +496,7 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
         "discard_retired_transfer_source",
         interrupt_after_retirement,
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after source retirement"):
         complete_source_project_transfer(
             source,
             source_app.state.catalog,
@@ -517,7 +517,7 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
         raise RuntimeError("simulated stop after archive unlink")
 
     monkeypatch.setattr(source, "complete_project_transfer_request", interrupt_after_unlink)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after archive unlink"):
         complete_source_project_transfer(
             source,
             source_app.state.catalog,

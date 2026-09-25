@@ -112,14 +112,17 @@ test("attention decoding validates shape and referenced graph member types", () 
   };
 
   assert.deepEqual(decodeGraphAttentionProjection(attention, state), attention);
-  assert.throws(() => decodeGraphAttentionProjection({ ...attention, extra: [] }, state), Error);
+  assert.throws(
+    () => decodeGraphAttentionProjection({ ...attention, extra: [] }, state),
+    /missing or malformed/,
+  );
   assert.throws(
     () =>
       decodeGraphAttentionProjection(
         { ...attention, open_blocker_ids: ["blocker", "blocker"] },
         state,
       ),
-    Error,
+    /duplicate open_blocker_ids/,
   );
   assert.throws(
     () =>
@@ -132,11 +135,11 @@ test("attention decoding validates shape and referenced graph member types", () 
         },
         state,
       ),
-    Error,
+    /missing Proposal missing/,
   );
   assert.throws(
     () => decodeGraphAttentionProjection({ ...attention, open_blocker_ids: ["decision"] }, state),
-    Error,
+    /is not a Blocker/,
   );
   assert.deepEqual(
     decodeGraphAttentionProjection(
@@ -151,7 +154,7 @@ test("attention decoding validates shape and referenced graph member types", () 
         { ...attention, decision_prior_choices: { decision: "" } },
         state,
       ),
-    Error,
+    /invalid decision_prior_choices/,
   );
   assert.throws(
     () =>
@@ -159,7 +162,7 @@ test("attention decoding validates shape and referenced graph member types", () 
         { ...attention, decision_prior_choices: { blocker: "not a Decision" } },
         state,
       ),
-    Error,
+    /is not a Decision/,
   );
 });
 
@@ -390,6 +393,9 @@ test("Decision attention rows show only title and state and open the existing no
   assert.ok(readyRow);
   readyRow.props.onClick();
   assert.deepEqual(selected, ["READY ROW"]);
+
+  assert.match(html, /decision-attention-status ready/);
+  assert.match(html, /decision-attention-status revisit/);
 });
 
 test("Blocker rows render exactly the supplied backend preview membership", () => {
@@ -528,6 +534,13 @@ test("Runs is episode-first while Experiment placement and status stay control-a
     html,
     /REFRESH RUNNING|REFRESH FAILURE|SEED COMPLETE|NODE CHAT TRACEBACK|PROJECT CHAT RUNNING|PAPER COACH FAILURE/,
   );
+
+  assert.deepEqual(
+    [...html.matchAll(/<h2>[^<]+<\/h2><span>(\d+)<\/span>/g)].map((match) => Number(match[1])),
+    [0, 1, 3],
+  );
+  assert.match(html, /<details class="episode-type-group"><summary>/);
+  assert.match(html, /<details class="episode-type-group" open=""><summary>/);
 });
 
 test("Runs fails loudly when a cached Experiment control lacks backend lifecycle answers", () => {
@@ -594,7 +607,7 @@ test("Runs fails loudly when a cached Experiment control lacks backend lifecycle
           onStopExperiment() {},
         }),
       ),
-    Error,
+    /incomplete backend control projection/,
   );
 });
 

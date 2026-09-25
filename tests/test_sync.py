@@ -1040,6 +1040,7 @@ def test_graph_sync_removal_preserves_base_revision_conflict(manifest, tmp_path)
     )
 
     assert response.status_code == 409
+    assert "graph changed after this draft began" in response.json()["detail"]
     assert "rq/learning-after-shift" in service.history.state().nodes
     assert service.history.state().revision == 3
 
@@ -1215,6 +1216,10 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Accepted node rq/learning-after-shift cannot be removed; withdraw its acceptance "
+        "and Sync before removing it."
+    )
     accepted = service.history.state().nodes["rq/learning-after-shift"]
     combined = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
@@ -1231,17 +1236,18 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
         },
     )
     assert combined.status_code == 422
+    assert "cannot both change and remove the same node" in combined.text
     assert service.history.state().revision == 3
 
 
 def test_graph_sync_request_rejects_duplicate_and_conflicting_removals() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="duplicate removed node targets"):
         GraphSyncRequest(
             base_revision=1,
             removed_node_ids=["hyp/one", "hyp/one"],
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="both change and remove the same node: hyp/one"):
         GraphSyncRequest(
             base_revision=1,
             nodes=[
@@ -1315,6 +1321,9 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Experiment exp/active-loop cannot be removed while its bounded experiment loop is active."
+    )
     assert service.history.state().revision == 2
 
 
@@ -1382,6 +1391,7 @@ def test_graph_sync_refuses_stale_ontology_draft(manifest, tmp_path) -> None:
     )
 
     assert response.status_code == 409
+    assert "graph changed" in response.json()["detail"].lower()
 
 
 def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp_path) -> None:
@@ -1400,6 +1410,7 @@ def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp
     )
 
     assert response.status_code == 422
+    assert "defines and uses a new ontology type" in response.json()["detail"]
     assert service.history.state().revision == 2
 
 
@@ -1729,6 +1740,7 @@ def test_graph_sync_refuses_stale_project_draft(manifest, tmp_path) -> None:
     )
 
     assert response.status_code == 409
+    assert "graph changed" in response.json()["detail"].lower()
 
 
 def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, monkeypatch) -> None:
@@ -1771,7 +1783,7 @@ def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, m
 
     monkeypatch.setattr(history, "_atomic_text", fail_atomic_transition_commit)
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated disk failure"):
         history.append_batch(patches, expected_revision=1)
 
     assert [patch.revision for patch in history.load_patches()] == [1]

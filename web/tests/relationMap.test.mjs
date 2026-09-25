@@ -118,6 +118,9 @@ test("renders incoming peers above the focus, outgoing peers below, and edge war
   const outgoingAt = html.indexOf('aria-label="Outgoing relations"');
   assert.ok(incomingAt >= 0 && incomingAt < focusAt);
   assert.ok(focusAt < outgoingAt);
+  assert.match(html, /class="relation-map-edge has-flag"/);
+  assert.match(html, /class="relation-map-edge-warning" role="status"/);
+  assert.match(html, /<button[^>]*class="icon-button relation-map-expand"/);
   assert.equal((html.match(/Alpha peer/g) ?? []).length, 2); // label and aria-label, one card
 });
 
@@ -167,6 +170,8 @@ test("renders claim-relative Evidence assessment separately and labels legacy un
     }),
   );
 
+  assert.match(html, /aria-label="[^"]*direct[^"]*strong[^"]*"/);
+  assert.equal((html.match(/class="relation-map-edge-warning"/g) ?? []).length, 2);
   assert.match(html, /Shifted small-model regime/);
   assert.match(html, /The large model was not evaluated\./);
 
@@ -186,6 +191,7 @@ test("renders claim-relative Evidence assessment separately and labels legacy un
       onOpenNodeWindow() {},
     }),
   );
+  assert.doesNotMatch(actionHtml, /relation-map-edge-warning|aria-label="[^"]*direct[^"]*strong/);
 });
 
 test("server rendering does not access the document for the closed overlay", () => {

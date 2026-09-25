@@ -68,6 +68,7 @@ def test_an_unreachable_host_is_waited_on(waiting) -> None:
     result = _reconcile(waiting, stopped=None)
 
     assert result.action == "wait"
+    assert "could not be reached" in result.reason
 
 
 def test_a_running_provider_is_waited_on(waiting) -> None:
@@ -89,6 +90,7 @@ def test_a_provider_that_stopped_mid_turn_fails_that_same_task(waiting) -> None:
     result = _reconcile(waiting, stopped=True, journal=_journal(terminal=False))
 
     assert result.action == "fail"
+    assert "before its turn reached an end" in result.reason
 
 
 def test_a_pass_that_never_took_the_prompt_says_so(waiting) -> None:
@@ -97,12 +99,14 @@ def test_a_pass_that_never_took_the_prompt_says_so(waiting) -> None:
     result = _reconcile(waiting, stopped=True, journal=_journal(accepted=False))
 
     assert result.action == "fail"
+    assert "never took this turn's prompt" in result.reason
 
 
 def test_a_stopped_provider_that_wrote_nothing_fails(waiting) -> None:
     result = _reconcile(waiting, stopped=True, journal=None)
 
     assert result.action == "fail"
+    assert "without writing a journal" in result.reason
 
 
 def test_a_journal_that_cannot_be_trusted_fails_rather_than_applies(waiting) -> None:
@@ -112,6 +116,7 @@ def test_a_journal_that_cannot_be_trusted_fails_rather_than_applies(waiting) -> 
     result = _reconcile(waiting, stopped=True, journal=journal)
 
     assert result.action == "fail"
+    assert "could not be trusted" in result.reason
 
 
 def test_a_journal_that_could_not_be_read_is_waited_on_not_failed(waiting) -> None:
@@ -190,6 +195,7 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
     # The receipts fixture builds a `seed` task, which has no recorded owner yet.
     assert store.agent_task("first").kind == "seed"
     assert planned[0].reconciliation.action == "wait"
+    assert "No recorded-result owner" in planned[0].reconciliation.reason
     assert planned[0].actionable is False
 
 
@@ -242,6 +248,7 @@ def test_a_host_that_answered_with_bad_evidence_fails_rather_than_waits(waiting)
     result = _reconcile(waiting, stopped=True, raises=JournalCorrupt("unsafe entry"))
 
     assert result.action == "fail"
+    assert "cannot be trusted" in result.reason
 
 
 def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_path) -> None:

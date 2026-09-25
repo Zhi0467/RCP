@@ -1272,6 +1272,7 @@ def test_terminal_exact_experiment_stop_is_a_conflict_instead_of_a_server_error(
         )
 
     assert response.status_code == 409
+    assert "can no longer be stopped" in response.json()["detail"]
 
 
 def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
@@ -1446,6 +1447,7 @@ def test_inconsistent_experiment_runtime_is_degraded_without_hiding_healthy_sibl
     assert set(entries) == {"exp/launched", "exp/never-run"}
     degraded = entries["exp/launched"]["control"]
     assert degraded["health"] == "degraded"
+    assert "missing its paid root task" in degraded["operational"]["session"]["diagnostic"]
     assert entries["exp/never-run"]["control"]["episode_id"] is not None
 
 

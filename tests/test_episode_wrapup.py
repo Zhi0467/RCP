@@ -187,12 +187,13 @@ def test_a_broken_binding_that_is_not_an_absence_still_reports_its_error(
     assert admission.launchable is False
     assert admission.episode.wrapup_state == "failed"
     assert admission.episode.wrapup_error is not None
+    assert "frozen provider profile" in admission.episode.wrapup_error
 
 
 def test_stop_never_enters_report_wrapup(tmp_path: Path) -> None:
     store, _stage = _store_with_episode(tmp_path)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Stop skips report generation"):
         begin_episode_report_wrapup(
             store,
             EpisodeWrapupSpec(

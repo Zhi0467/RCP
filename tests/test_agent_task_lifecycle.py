@@ -279,7 +279,7 @@ def test_agent_task_lifecycle_matrix(
 
     expected = _expected(source_status, operation)
     if operation == "request_pause" and source_status not in {"queued", "running"}:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Only a queued or running operation can be paused"):
             _run_operation(store, operation, operation_id)
     else:
         _run_operation(store, operation, operation_id)

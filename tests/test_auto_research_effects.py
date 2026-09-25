@@ -1015,7 +1015,7 @@ def test_same_key_worker_resume_recovers_a_committed_task_without_creating_anoth
 
     before = store.episode_budget_meter(auto_research.episode_id)
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated crash"):
         AutoResearchCommandDispatcher(store, effects).dispatch(root.operation_id, request)
 
     committed = store.agent_task(expected_operation_id)
@@ -1096,7 +1096,7 @@ def test_same_key_spawn_dispatches_a_worker_committed_before_process_launch(
         raise RuntimeError("simulated crash after fresh Work commit")
 
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after fresh Work commit"):
         dispatcher.dispatch(root.operation_id, request)
 
     committed = store.agent_task(expected_worker_id)
@@ -2261,7 +2261,7 @@ def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
         recipient_task_id=root.operation_id,
         body="Must remain unread if receipt persistence fails.",
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="consuming turn operation id"):
         store.process_auto_research_lifecycle_inbox(
             episode.episode_id,
             effect_id="missing-delivery-operation",
@@ -2275,7 +2275,7 @@ def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
             CREATE TRIGGER refuse_inbox_receipt BEFORE INSERT ON auto_research_inbox_receipts
             BEGIN SELECT RAISE(ABORT, 'receipt persistence failed'); END
         """)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match="receipt persistence failed"):
         store.process_auto_research_lifecycle_inbox(
             episode.episode_id,
             effect_id="atomic-harvest",

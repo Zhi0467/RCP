@@ -58,11 +58,11 @@ def test_paths_are_request_and_digest_derived(tmp_path: Path) -> None:
         f".{REQUEST_ID}.{digest}.partial"
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical UUID4"):
         target.target_transfer_archive_path(root, "A1111111-1111-4111-8111-111111111111")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
         target.target_transfer_partial_path(root, REQUEST_ID, "A" * 64)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="positive integer"):
         target.acquire_target_transfer_upload_lease(
             root,
             REQUEST_ID,
@@ -184,7 +184,7 @@ def test_crash_before_publication_leaves_only_exact_partial(tmp_path: Path, monk
         raise RuntimeError("simulated crash before final publication")
 
     monkeypatch.setattr(target, "_publish_no_overwrite", crash)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="before final publication"):
         target.upload_target_transfer_archive(
             root,
             REQUEST_ID,
@@ -212,7 +212,7 @@ def test_crash_after_link_is_recovered_without_replacing_final(tmp_path: Path, m
         raise RuntimeError("simulated crash after final publication")
 
     monkeypatch.setattr(target, "_publish_no_overwrite", crash_after_link)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after final publication"):
         target.upload_target_transfer_archive(
             root,
             REQUEST_ID,

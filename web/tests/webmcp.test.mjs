@@ -468,7 +468,7 @@ test("live tool updates do not abort an in-flight WebMCP call", async () => {
   registry.update([definition("two")]);
   assert.equal(signals.get("one").aborted, false);
   assert.ok(registered.has("two"));
-  assert.throws(() => registeredProxy.execute({}), Error);
+  assert.throws(() => registeredProxy.execute({}), /is not currently available/);
   finish(webMcpTextResult({ accepted: true }));
   assert.deepEqual(
     await call.then((result) => {
@@ -552,7 +552,10 @@ test("a partial registration is aborted when the host rejects a later tool", () 
     },
   };
 
-  assert.throws(() => registerWebMcpTools([definition("one"), definition("two")], context), Error);
+  assert.throws(
+    () => registerWebMcpTools([definition("one"), definition("two")], context),
+    /duplicate tool/,
+  );
   assert.equal(firstSignal.aborted, true);
 });
 
@@ -560,8 +563,11 @@ test("tool results are compact JSON and fail loudly beyond the bound", () => {
   assert.deepEqual(webMcpTextResult({ ok: true }), {
     content: [{ type: "text", text: '{"ok":true}' }],
   });
-  assert.throws(() => webMcpTextResult({ text: "x".repeat(WEBMCP_RESULT_MAX_CHARS) }), Error);
-  assert.throws(() => webMcpTextResult(undefined), Error);
+  assert.throws(
+    () => webMcpTextResult({ text: "x".repeat(WEBMCP_RESULT_MAX_CHARS) }),
+    /exceeds 1500 characters/,
+  );
+  assert.throws(() => webMcpTextResult(undefined), /not JSON serializable/);
 });
 
 test("project listing is bounded, searchable, and never exposes storage locators", () => {
@@ -591,7 +597,10 @@ test("project listing is bounded, searchable, and never exposes storage locators
   }));
   assert.equal(listProjectsForWebMcp(crowded, {}).projects.length, 8);
   assert.equal(listProjectsForWebMcp(crowded, {}).truncated, true);
-  assert.throws(() => listProjectsForWebMcp(cards, { query: " " }), Error);
+  assert.throws(
+    () => listProjectsForWebMcp(cards, { query: " " }),
+    /query must be a non-blank string/,
+  );
 });
 
 test("project opening revalidates the exact current id and uses the shared navigation owner", async () => {
@@ -607,11 +616,11 @@ test("project opening revalidates the exact current id and uses the shared navig
   assert.equal(result.project.id, "project-1");
   await assert.rejects(
     openProjectFromIndex(cards, { project_id: "missing" }, () => assert.fail()),
-    Error,
+    /not present in the current project index/,
   );
   await assert.rejects(
     openProjectFromIndex(cards, { project_id: "project-2" }, () => false),
-    Error,
+    /requires the existing desktop access review/,
   );
 });
 
@@ -709,8 +718,11 @@ test("node inspection bounds high-degree relation indices without losing the exa
 
 test("node inspection refuses stale ids and includes backend Experiment control", () => {
   const project = projectFixture();
-  assert.throws(() => inspectProjectNode(project, { node_id: "missing" }), Error);
-  assert.throws(() => inspectProjectNode(project, {}), Error);
+  assert.throws(
+    () => inspectProjectNode(project, { node_id: "missing" }),
+    /not present in the current project graph/,
+  );
+  assert.throws(() => inspectProjectNode(project, {}), /node_id must be a non-blank string/);
   project.experiment_control["exp-1"] = {
     can_start: true,
     can_stop: false,
@@ -886,11 +898,11 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
         loadTask: async () => null,
       },
     ),
-    Error,
+    /Task missing is not present/,
   );
   await assert.rejects(
     listProjectArtifacts(project, tasks, episodes, { chat_id: "missing" }, noArtifactFetch),
-    Error,
+    /Conversation missing is not present/,
   );
   await assert.rejects(
     listProjectArtifacts(
@@ -900,7 +912,7 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
       { node_id: "hyp-1", chat_id: "chat-1" },
       noArtifactFetch,
     ),
-    Error,
+    /at most one artifact filter/,
   );
 });
 
@@ -939,7 +951,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       { episode_id: "episode-none" },
       { loadEpisode, loadTask: noTaskFetch },
     ),
-    Error,
+    /Episode episode-none is not present/,
   );
 
   const opened = [];
@@ -965,7 +977,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       () => true,
       { loadEpisode, loadTask: noTaskFetch },
     ),
-    Error,
+    /Artifact viewer report:episode-none is not present/,
   );
   assert.deepEqual(fetched, ["episode-old", "episode-none", "episode-old", "episode-none"]);
 });
@@ -1003,7 +1015,7 @@ test("an exact task outside the recent window is fetched once for listing and op
   assert.equal(listed.recent_task_count, 2);
   await assert.rejects(
     listProjectArtifacts(project, tasks, episodes, { task_id: "task-none" }, source),
-    Error,
+    /Task task-none is not present/,
   );
 
   const opened = [];
@@ -1029,14 +1041,14 @@ test("an exact task outside the recent window is fetched once for listing and op
       () => true,
       source,
     ),
-    Error,
+    /Artifact viewer task:task-none:artifact-1 is not present/,
   );
   await assert.rejects(
     openProjectArtifact(project, tasks, episodes, { viewer_id: "task::artifact-1" }, () => true, {
       loadEpisode: noEpisodeFetch,
       loadTask: noTaskFetch,
     }),
-    Error,
+    /is not present/,
   );
   assert.deepEqual(fetched, ["task-old", "task-none", "task-old", "task-none"]);
 });
@@ -1079,7 +1091,7 @@ test("artifact opening revalidates availability and opens only the existing view
       () => true,
       noArtifactFetch,
     ),
-    Error,
+    /Artifact bytes expired/,
   );
   await assert.rejects(
     openProjectArtifact(
@@ -1090,7 +1102,7 @@ test("artifact opening revalidates availability and opens only the existing view
       () => false,
       noArtifactFetch,
     ),
-    Error,
+    /could not be shown/,
   );
 });
 
@@ -1289,8 +1301,10 @@ test("conversation inspection names branch, active, and stale-transcript refusal
         loadTask: async () => null,
       },
     ),
-    Error,
+    /mismatched transcript/,
   );
+
+  assert.match(branch.send_options.refusal_reason, /branch conversation is read-only/);
 });
 
 test("a branch conversation stays read-only when its tasks have aged out of the page window", async () => {
@@ -1325,7 +1339,7 @@ test("a branch conversation stays read-only when its tasks have aged out of the 
         return { operation_id: "task-next" };
       },
     ),
-    Error,
+    /branch conversation is read-only/,
   );
   assert.deepEqual(started, []);
   assert.deepEqual(fetched, ["task-chat-1", "task-chat-1"]);
@@ -1343,6 +1357,8 @@ test("a branch conversation stays read-only when its tasks have aged out of the 
   });
   const cached = await inspectProjectConversation(project, [task], { chat_id: "chat-1" }, inWindow);
   assert.equal(cached.send_options.can_send, true);
+
+  assert.match(inspected.send_options.refusal_reason, /branch conversation is read-only/);
 });
 
 function conversationSummaryFixtures() {
@@ -1406,7 +1422,7 @@ test("conversation listing exposes exact saved chat ids, newest first, with boun
   );
   assert.throws(
     () => listProjectConversations(project, summaries, 3, { node_id: "missing" }),
-    Error,
+    /Node missing is not present/,
   );
   const many = Array.from({ length: 30 }, (_, index) => ({
     ...summaries[0],
@@ -1578,7 +1594,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       unreachable,
       unreachable,
     ),
-    Error,
+    /cannot be supplied together/,
   );
   await assert.rejects(
     sendProjectConversationMessage(
@@ -1590,7 +1606,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       unreachable,
       unreachable,
     ),
-    Error,
+    /Still running/,
   );
   await assert.rejects(
     sendProjectConversationMessage(
@@ -1602,7 +1618,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       unreachable,
       unreachable,
     ),
-    Error,
+    /Unknown or disabled RCP skill ids/,
   );
 });
 
@@ -1690,6 +1706,12 @@ test("Experiment inspection compacts backend decisions and scopes work and watch
     },
   ]);
   assert.ok(JSON.stringify(inspected).length <= 12_000);
+
+  assert.equal(
+    inspectProjectExperiment(project, [experimentTask], [], { experiment_id: "exp-1" }, true)
+      .page_start_refusal,
+    "Another task start is already being submitted.",
+  );
 });
 
 test("Experiment inspection stays available with several bounded tasks and watchers", async () => {
@@ -1781,7 +1803,7 @@ test("Experiment Start revalidates the exact node and returns durable task ident
     startProjectExperiment(project, { experiment_id: "hyp-1" }, async () => {
       throw new Error("must not dispatch");
     }),
-    Error,
+    /Experiment hyp-1 is not present/,
   );
 });
 
@@ -1869,7 +1891,7 @@ test("Experiment Stop validates the exact live episode and requests only the gra
         throw new Error("must not dispatch");
       },
     ),
-    Error,
+    /is not the live episode/,
   );
 });
 
@@ -1888,7 +1910,7 @@ test("Experiment Stop refuses backend can_stop false and hides until available",
         throw new Error("must not dispatch");
       },
     ),
-    Error,
+    /already stopping/,
   );
   assert.deepEqual(
     projectExperimentStopToolDefinitions(project, async () => undefined),

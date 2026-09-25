@@ -66,6 +66,8 @@ test("team login uses a focused secret field without a URL or storage seam", () 
   assert.match(html, /<form[^>]*autoComplete="off"/);
 
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+
+  assert.match(html, /class="team-login-switch"/);
 });
 
 test("an unauthenticated browser is offered device pairing first, with a required name", () => {
@@ -84,6 +86,8 @@ test("an unauthenticated browser is offered device pairing first, with a require
 
   assert.doesNotMatch(html, /type="password"/);
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+
+  assert.match(html, /class="team-login-switch"/);
 });
 
 test("pairing errors name the next step without echoing the code", () => {
@@ -127,6 +131,8 @@ test("an authenticated team member gets the active invitation seam", () => {
 
   assert.doesNotMatch(html, /data-team-space-seam="unimplemented"/);
   assert.doesNotMatch(html, /type="password"/);
+
+  assert.match(html, /landing-team-invite-action/);
 });
 
 test("invitation metadata is visible without retaining raw codes in the ledger", () => {
@@ -194,6 +200,8 @@ test("only a live invitation offers revocation, and a revoked one says so", () =
     React.createElement(TeamInvitationLedger, { invitations: [invitation] }),
   );
   assert.doesNotMatch(readOnly, /<button/);
+
+  assert.match(live, /<button/);
 });
 
 test("the team roster stays quiet while naming every enrolled member and the current user", () => {

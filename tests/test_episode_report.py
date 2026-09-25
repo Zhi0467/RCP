@@ -626,6 +626,7 @@ async def test_changed_provider_session_fails_the_wrapup_without_another_call(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
+    assert "changed the frozen native provider session" in events[0].text
     assert launcher.calls == 1
     episode = store.episode("episode")
     assert episode is not None
@@ -643,6 +644,7 @@ async def test_durable_binding_mismatch_is_unlaunchable_and_terminal(manifest, t
     events = await _events(stream_episode_report_run(service, launcher, changed, execution))
 
     assert [event.event for event in events] == ["error"]
+    assert "differs from its durable hidden task" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -663,6 +665,7 @@ async def test_lost_exact_stage_fails_without_fabricating_provider_attempt(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
+    assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -684,6 +687,7 @@ async def test_restart_with_queued_attempt_and_lost_stage_terminalizes(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
+    assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -706,6 +710,7 @@ async def test_setup_loss_between_calls_fails_without_allocating_the_next_attemp
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
+    assert "unsafe directory" in events[0].text
     assert launcher.calls == 1
     attempts = store.episode_report_attempts("episode")
     assert [attempt.status for attempt in attempts] == ["failed"]

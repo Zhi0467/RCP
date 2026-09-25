@@ -293,7 +293,9 @@ def test_new_team_request_requires_all_profiles_on_their_valid_machines(tmp_path
         )
 
     assert incomplete_response.status_code == 422
+    assert "every agent execution profile" in incomplete_response.text
     assert misplaced_response.status_code == 422
+    assert "canonical state machine" in misplaced_response.text
     assert app.state.background_tasks.store.project_provisioning_requests() == []
 
 
@@ -368,6 +370,7 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert running_projection["can_review"] is False
     assert running_projection["can_cancel"] is False
     assert response.status_code == 409
+    assert "cleanup or reuse disposition" in response.json()["detail"]
     assert action_response.status_code == 200
     action_projection = action_response.json()
     assert action_projection["status"] == "operator_action_needed"

@@ -989,6 +989,7 @@ def test_process_heartbeats_keep_contended_and_acquired_holder_alive(tmp_path, m
             # A distinct second response exposes any heartbeat response left queued.
             response = lease._run_owned_command({"op": "nonsense"})
             assert response["ok"] is False
+            assert "unsupported lock-holder command" in response["error"]
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         try:
@@ -2303,7 +2304,7 @@ def test_remote_directory_input_reuses_only_matching_immutable_content(
         assert sorted(path.name for path in (root / "inputs").iterdir()) == [target.name]
 
         (target / "SKILL.md").chmod(0o600)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="writable"):
             stage.put_directory(source_directory, "rcp-skills-v1-address", reuse=True)
     finally:
         stage.close()
@@ -2452,11 +2453,11 @@ def test_remote_stage_workspace_mailbox_round_trip_is_atomic(monkeypatch) -> Non
         assert calls[0][1] == response.encode("utf-8")
 
         call_count = len(calls)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="plain base name"):
             stage.write_workspace_text("../inputs/validator-request.json", "not allowed")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="unsupported characters"):
             stage.write_workspace_text("validator response.json", "not allowed")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="direct child"):
             stage.read_text(PurePosixPath(str(immutable_input)))
         assert len(calls) == call_count
     finally:
@@ -2485,9 +2486,9 @@ def test_remote_stage_workspace_mailbox_rejects_symlinks(monkeypatch) -> None:
 
     monkeypatch.setattr(stage, "_ssh_bytes", fake_ssh_bytes)
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="readable regular file"):
             stage.read_workspace_text("validator-request.json")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="target is not a regular file"):
             stage.write_workspace_text("validator-request.json", "replacement")
 
         assert linked.is_symlink()
@@ -2613,7 +2614,7 @@ def test_remote_stage_sweeper_uses_read_only_tree_cleanup(monkeypatch) -> None:
 def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
     stage = RemoteRunStage("research.example")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside the staging boundary"):
         stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
 
 
@@ -2642,11 +2643,11 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> N
 
         assert stage.list_artifact_files("logical-turn") == [("plot.png", len(payload))]
         assert stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024) == payload
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="bounded regular file"):
             stage.read_artifact_bytes("logical-turn", "linked.png", max_bytes=1024)
         with pytest.raises(FileNotFoundError):
             stage.read_artifact_bytes("logical-turn", "missing.png", max_bytes=1024)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="plain base name"):
             stage.read_artifact_bytes("logical-turn", "../plot.png", max_bytes=1024)
 
         monkeypatch.setattr(

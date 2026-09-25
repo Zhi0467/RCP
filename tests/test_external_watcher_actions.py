@@ -231,7 +231,7 @@ def test_cancel_process_is_bounded(tmp_path):
         cancel_command=f"sleep 5; touch {shlex.quote(str(marker))}",
     )
     diagnostic = run_watcher_cancel(spec, timeout=0.01)
-    assert diagnostic is not None
+    assert "timed out" in diagnostic
     assert not marker.exists()
 
 

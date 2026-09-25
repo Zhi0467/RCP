@@ -277,6 +277,7 @@ def test_migrate_check_and_apply_reject_an_unowned_column_after_a_ledger_prefix(
 
         assert code == EXIT_MIGRATION_UNKNOWN
         assert output == ""
+        assert "unowned column: team_sessions.review_data" in errors
         _assert_database_bytes_unchanged(database, before)
 
 
@@ -313,6 +314,7 @@ def test_migrate_check_and_apply_reject_an_unowned_pre_ledger_column(
 
         assert code == EXIT_MIGRATION_UNKNOWN
         assert output == ""
+        assert "unowned column: projects.review_data" in errors
         _assert_database_bytes_unchanged(database, before)
 
 
@@ -341,6 +343,7 @@ def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
 
         assert code == EXIT_MIGRATION_UNKNOWN
         assert output == ""
+        assert "unowned column: graph_run_events.bogus" in errors
         _assert_database_bytes_unchanged(database, before)
 
 
@@ -489,4 +492,5 @@ def test_migrate_refuses_another_process_instance_lock_without_touching_database
 
     assert code != 0
     assert output == ""
+    assert "Another RCP process" in errors
     _assert_database_bytes_unchanged(database, before)

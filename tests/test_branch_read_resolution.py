@@ -142,16 +142,16 @@ def test_read_resolution_refuses_foreign_and_malformed_targets(branch_service, f
 
 def test_read_resolution_refuses_wrong_episode_and_unsafe_paths(branch_service, tmp_path):
     service, metadata = branch_service
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="different episode"):
         service.history.branch(
             metadata.branch_id, expected_episode_id=str(uuid.uuid4()), initialize=False
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical episode UUIDv4"):
         service.history.branch("../patches", initialize=False)
 
     symlink_id = str(uuid.uuid4())
     outside = tmp_path / "outside"
     outside.mkdir()
     (service.history.root / "branches" / symlink_id).symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a regular directory"):
         service.history.branch(symlink_id, initialize=False)

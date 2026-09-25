@@ -539,6 +539,12 @@ def test_stopping_episode_remote_outage_preserves_recovery(
         unavailable = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
 
     assert unavailable.status_code == 503, unavailable.text
+    assert unavailable.json() == {
+        "detail": (
+            "The saved provider workspace could not be checked because its remote "
+            "infrastructure is unavailable."
+        )
+    }
     current = store.episode(episode.episode_id)
     assert current is not None and current.status == "stopping"
     assert current.stop_settled_at is None
@@ -602,6 +608,7 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
         refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
 
     assert refused.status_code == 409, refused.text
+    assert "cannot start a fresh provider session" in refused.json()["detail"]
     settled = store.episode(episode.episode_id)
     assert settled is not None
     assert settled.status == "stopped"
@@ -671,6 +678,7 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
         refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
 
     assert refused.status_code == 409, refused.text
+    assert "native provider session reached its limit" in refused.json()["detail"]
     assert stage_probes == []
     assert readiness_probes == []
     settled = store.episode(episode.episode_id)
@@ -840,6 +848,7 @@ def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
             paused = client.post(pause_url)
             assert stopped.status_code == 200, stopped.text
             assert paused.status_code == 409, paused.text
+            assert "parent episode is stopping or ended" in paused.json()["detail"]
             task = store.agent_task(root.operation_id)
             assert task is not None and task.status == "queued"
         else:
@@ -1092,6 +1101,7 @@ def test_save_episode_report_failure_is_visible_and_retryable(manifest, tmp_path
     with TestClient(app) as client:
         failed = client.post(url)
         assert failed.status_code == 503
+        assert failed.json()["detail"] == "Episode report save unavailable"
         assert artifact_dir.read_text() == "Existing file"
         assert store.episode_report(episode.episode_id) == report
         artifact_dir.unlink()

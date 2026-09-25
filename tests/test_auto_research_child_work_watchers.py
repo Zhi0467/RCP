@@ -196,7 +196,7 @@ def test_child_watcher_wake_reconciles_paid_dispatch_after_crash(tmp_path, monke
         raise RuntimeError("crash after child watcher claim")
 
     monkeypatch.setattr(tasks, "_spawn_record", crash)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="crash after child watcher claim"):
         _deliver(tasks, episode, watchers)
     monkeypatch.setattr(tasks, "_spawn_record", original)
     wake_id = tasks.store.watcher(watchers[0].watcher_id).notification_operation_id

@@ -77,12 +77,22 @@ test("staged annotations can be counted, edited, and removed before the ordinary
   assert.doesNotMatch(send, /annotation_context|message_id|source_id|offset/);
   assert.ok(send.indexOf("await onStartTask") < send.indexOf("setAnnotations([])"));
   assert.match(send, /setMessage\(\(current\) => \(current \? current : draftMessage\)\)/);
+
+  assert.match(nodeChatSource, /annotations\.length}/);
+  assert.match(nodeChatSource, /removeAnnotation\(annotation\.id\)/);
 });
 
 test("annotation creation and editing are fenced while a turn is submitting", () => {
   assert.match(
     nodeChatSource,
     /if \(submitting\) return;[\s\S]*?const selection = window\.getSelection/,
+  );
+
+  assert.match(nodeChatSource, /className="chat-annotation-source"[^]*?disabled=\{submitting\}/);
+  assert.match(nodeChatSource, /value=\{annotation\.comment\}[^]*?disabled=\{submitting\}/);
+  assert.match(
+    nodeChatSource,
+    /disabled=\{submitting\}[^]*?onClick=\{\(\) => removeAnnotation\(annotation\.id\)\}/,
   );
 });
 

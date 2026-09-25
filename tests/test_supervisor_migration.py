@@ -241,7 +241,7 @@ def test_adoption_crash_reentry_selects_only_the_safe_data_and_launch_pair(runti
 
 def test_failed_candidate_restores_bytes_before_old_source_can_start(runtime):
     runtime.fail_probe = True
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="candidate verification"):
         migration.adopt(runtime, runtime.target)
     assert (
         runtime.calls.index("restore")
@@ -426,7 +426,7 @@ def test_install_retries_terminal_rolled_back_adoption(runtime, monkeypatch):
 
     original_config = dict(runtime.config)
     runtime.fail_probe = True
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="candidate verification"):
         migration.adopt(runtime, runtime.target)
     journal = runtime.paths.supervisor / "adoption.json"
     previous = json.loads(journal.read_text())

@@ -81,7 +81,7 @@ def test_attachment_set_scope_claim_and_release_are_enforced(tmp_path: Path) -> 
         media_type="application/json",
         source=io.BytesIO(json.dumps({"ok": True}).encode()),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not belong"):
         store.claim(
             project_id=project_id,
             chat_id=chat_id,
@@ -96,7 +96,7 @@ def test_attachment_set_scope_claim_and_release_are_enforced(tmp_path: Path) -> 
         attachment_set_id=uploaded.attachment_set_id,
         operation_id=operation_id,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="already been sent"):
         store.claim(
             project_id=project_id,
             chat_id=chat_id,
@@ -137,7 +137,7 @@ def test_attachment_project_identity_migration_preserves_chat_and_client_scope(
     store.apply_project_identity_migration(migration)
     store.apply_project_identity_migration(migration)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not belong"):
         store.claim(
             project_id=canonical_project_id,
             chat_id=str(uuid.uuid4()),
@@ -165,7 +165,7 @@ def test_attachment_project_identity_migration_rejects_invalid_metadata(
     (set_path / "metadata.json").write_text("not-json", encoding="utf-8")
     store = ChatAttachmentStore(tmp_path / "attachments")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="metadata is invalid"):
         store.prepare_project_identity_migration("legacy-project", str(uuid.uuid4()))
 
 
@@ -194,7 +194,7 @@ def test_attachment_access_sweeps_expired_bytes(tmp_path: Path) -> None:
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not found or expired"):
         store.stage(
             claimed.attachment_batch_id,
             claimed.attachments,
@@ -230,7 +230,7 @@ def test_attachment_count_file_and_total_limits_are_independent(
         media_type="text/plain",
         source=io.BytesIO(b"5678"),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at most 2 files"):
         store.add(
             project_id=project_id,
             chat_id=chat_id,
@@ -241,7 +241,7 @@ def test_attachment_count_file_and_total_limits_are_independent(
             source=io.BytesIO(b"x"),
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Each attachment must be at most"):
         store.add(
             project_id=project_id,
             chat_id=str(uuid.uuid4()),
@@ -260,7 +260,7 @@ def test_attachment_count_file_and_total_limits_are_independent(
         media_type="text/plain",
         source=io.BytesIO(b"12345"),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="total at most"):
         store.add(
             project_id=project_id,
             chat_id=total_chat_id,
@@ -317,23 +317,24 @@ def test_remote_attachment_stage_queues_one_reusable_immutable_directory(tmp_pat
 
 
 @pytest.mark.parametrize(
-    ("filename", "content"),
+    ("filename", "content", "message"),
     [
-        ("archive.zip", b"PK\x03\x04"),
-        ("bad.txt", b"\xff"),
-        ("bad.json", b"{"),
-        ("bad.svg", b"<html/>"),
-        ("not-really.pdf", b"hello"),
+        ("archive.zip", b"PK\x03\x04", "not supported"),
+        ("bad.txt", b"\xff", "valid UTF-8"),
+        ("bad.json", b"{", "valid JSON"),
+        ("bad.svg", b"<html/>", "svg root"),
+        ("not-really.pdf", b"hello", "do not match"),
     ],
 )
 def test_attachment_ingress_rejects_unknown_or_mismatched_bytes(
     tmp_path: Path,
     filename: str,
     content: bytes,
+    message: str,
 ) -> None:
     project_id, chat_id, client_id, _operation_id = _ids()
     store = ChatAttachmentStore(tmp_path / "attachments")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         store.add(
             project_id=project_id,
             chat_id=chat_id,

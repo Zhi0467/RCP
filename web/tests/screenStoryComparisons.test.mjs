@@ -53,3 +53,20 @@ test("comparison selection is bounded and injectable", () => {
 test("zero usage omits the story comparison", () => {
   assert.equal(screenStoryComparisonCopy(0, SCREEN_STORY_COMPARISONS[0]), null);
 });
+
+test("comparison copy uses percent, decimal, and whole-number ratios", () => {
+  const story = {
+    id: "test",
+    label: "Test Story",
+    kind: "series",
+    estimatedScriptWords: 750,
+    confidence: "measured",
+    basis: "test",
+    sources: ["https://example.com"],
+  };
+
+  assert.match(screenStoryComparisonCopy(630, story), /63%/);
+  assert.match(screenStoryComparisonCopy(7_400, story), /7\.4×/);
+  assert.match(screenStoryComparisonCopy(10_000, story), /10\.0×/);
+  assert.match(screenStoryComparisonCopy(12_600, story), /13×/);
+});

@@ -317,7 +317,7 @@ def test_same_logical_work_continuations_preserve_handoffs(continuation: str) ->
 
 
 def test_non_work_checkpoint_continuation_fails_closed() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unsupported Work continuation"):
         work_module._clears_stale_turn_handoffs("auto_research_continuation")
 
 
@@ -1254,7 +1254,7 @@ async def test_finalization_cannot_enable_corrections_without_launch_context(tmp
     )
     (turn.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
     launcher = ScriptedLauncher([{}], message="must not launch")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="complete live launch context"):
         async for _frame in work_module.finalize_work_result(
             work_module._work_finalization_context(turn, staged),
             launcher,

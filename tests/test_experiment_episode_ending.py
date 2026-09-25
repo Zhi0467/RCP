@@ -485,7 +485,7 @@ def test_failed_binding_commit_cannot_publish_an_exit_receipt() -> None:
         operation_id="continuation-operation", store=store, continuation="fresh"
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="handoff commit failed"):
         commit_experiment_episode_binding(
             execution,
             _binding_request(),

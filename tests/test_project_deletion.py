@@ -152,7 +152,7 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside the RCP staging boundary"):
         catalog.delete(record.project_id)
 
     assert marker.read_text(encoding="utf-8") == "source"
@@ -197,7 +197,7 @@ def test_catalog_delete_validates_snapshot_before_removing_stage_or_cache(
     display.parent.mkdir(parents=True)
     display.symlink_to(external)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="non-file project display snapshot"):
         catalog.delete(record.project_id)
 
     assert stage_marker.read_text(encoding="utf-8") == "saved stage"
@@ -246,7 +246,7 @@ def test_catalog_delete_validates_imported_sources_before_removing_files(
     unrelated = imported.project_root / "unrelated"
     unrelated.write_text("must remain", encoding="utf-8")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="contains unrelated state"):
         catalog.delete(record.project_id)
 
     assert stage_marker.read_text(encoding="utf-8") == "saved stage"
@@ -305,7 +305,7 @@ def test_catalog_delete_refuses_live_episode(manifest, tmp_path) -> None:
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Use Stop"):
         catalog.delete(record.project_id)
 
     assert store.project(record.project_id) is not None
@@ -350,7 +350,7 @@ def test_catalog_delete_refuses_active_watcher(manifest, tmp_path) -> None:
         ]
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="stop watching"):
         catalog.delete(record.project_id)
 
     assert store.project(record.project_id) is not None
@@ -406,7 +406,7 @@ def test_catalog_delete_handles_degraded_watcher_delivery(
     )
 
     if blocks_deletion:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="stop watching"):
             catalog.delete(record.project_id)
 
         assert store.project(record.project_id) is not None
@@ -527,6 +527,10 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
             store.delete_project_records(project_id)
         response = client.delete(f"/api/projects/{project_id}")
         assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "This project has 2 running compute job(s). "
+            "Cancel or wait for those jobs first before deleting this project."
+        )
         assert store.project(project_id) is not None
         assert len(store.compute_jobs(project_id)) == 2
         assert store.compute_backend_probe(project_id, "laptop") == probe

@@ -243,7 +243,7 @@ def test_export_refuses_unfinished_task_without_changing_it(manifest, tmp_path: 
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="agent task to be settled"):
         store.export_project_transfer_records(project_id, attributions=attributions)
     assert store.agent_task(task.operation_id).status == "queued"  # type: ignore[union-attr]
 
@@ -269,7 +269,7 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
             (watcher_id, project_id, task.operation_id, now, now),
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="watcher to be settled"):
         store.export_project_transfer_records(project_id, attributions=attributions)
 
     with store.connection() as connection:
@@ -638,7 +638,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
                 f"UPDATE {table} SET project_id = ? WHERE {identity_column} = ?",
                 (other_project_id, identity),
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="conflicting projects"):
             store.export_project_transfer_records(project_id, attributions=attributions)
         with store.connection() as connection:
             connection.execute(
@@ -652,7 +652,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             "admitted_operation_id = NULL WHERE episode_id = ?",
             (episode_id,),
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Auto-research recovery to be settled"):
         store.export_project_transfer_records(project_id, attributions=attributions)
 
 
@@ -886,7 +886,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
     for corrupt, restore in corruptions:
         with store.connection() as connection:
             connection.execute(corrupt, (episode_id,))
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="report|wrap-up"):
             store.export_project_transfer_records(project_id, attributions=attributions)
         with store.connection() as connection:
             connection.execute(restore, (episode_id,))
@@ -896,5 +896,5 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             "DELETE FROM experiment_episode_state WHERE episode_id = ?",
             (episode_id,),
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Experiment episode state is missing"):
         store.export_project_transfer_records(project_id, attributions=attributions)

@@ -331,6 +331,7 @@ def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_pat
     )
 
     assert refused.status_code == 409
+    assert refused.json()["detail"] == ("Pause the active agent task before deleting this project.")
     assert store.project(project_id) is not None
     assert _tree_digest(repository) == before
 

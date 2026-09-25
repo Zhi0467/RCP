@@ -371,6 +371,7 @@ def test_new_special_result_view_intents_are_rejected(
     )
 
     assert admitted.status_code == 422
+    assert "ordinary task artifacts" in admitted.text
     assert not started
 
 

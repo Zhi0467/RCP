@@ -126,7 +126,7 @@ def test_provisioning_restore_detachment_rolls_back_a_stale_transition(
         "_transition_project_provisioning_to_restore_reentry",
         make_transition_stale,
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="changed during restore detachment"):
         store.detach_restored_lifecycle(
             diagnostic="Replacement restore invalidated old machine authority.",
             confirmed_by="root@lab uid=0",

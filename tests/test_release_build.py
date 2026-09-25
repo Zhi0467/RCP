@@ -74,8 +74,9 @@ def test_verify_manifest_reports_missing_listed_asset(tmp_path: Path) -> None:
     release_build.write_manifest(tmp_path, Path("manifest.sha256"))
     asset.unlink()
 
-    with pytest.raises(release_build.ReleaseBuildError):
+    with pytest.raises(release_build.ReleaseBuildError) as error:
         release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+    assert str(error.value) == "asset a.whl is missing"
 
 
 def test_verify_manifest_reports_extra_unlisted_asset(tmp_path: Path) -> None:
@@ -83,8 +84,9 @@ def test_verify_manifest_reports_extra_unlisted_asset(tmp_path: Path) -> None:
     release_build.write_manifest(tmp_path, Path("manifest.sha256"))
     (tmp_path / "extra.whl").write_bytes(b"extra")
 
-    with pytest.raises(release_build.ReleaseBuildError):
+    with pytest.raises(release_build.ReleaseBuildError) as error:
         release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+    assert str(error.value) == "asset extra.whl is not listed in manifest"
 
 
 def test_promotion_accepts_matching_base_version() -> None:

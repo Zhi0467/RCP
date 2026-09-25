@@ -255,7 +255,7 @@ def test_lineage_json_migration_rejects_both_parent_keys(tmp_path, request_paylo
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="both campaign_id and episode_id"):
         AppStore(path)
 
 

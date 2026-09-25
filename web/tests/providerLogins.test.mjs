@@ -61,7 +61,11 @@ test("a registered third provider renders only its declared interactions and bac
 
     // A device-code account can always be rechecked; its credential is native.
 
+    assert.equal((device.match(/<button/g) ?? []).length, 2);
+    assert.equal((token.match(/<button/g) ?? []).length, 1);
+    assert.equal((saved.match(/<button/g) ?? []).length, 3);
     const unsupported = render({ sign_in_methods: ["future_method"] });
+    assert.equal((unsupported.match(/<button/g) ?? []).length, 1);
     assert.doesNotMatch(unsupported, /type="password"/);
   } finally {
     await server.close();

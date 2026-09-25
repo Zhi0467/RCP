@@ -199,6 +199,7 @@ def test_archive_and_unarchive_preserve_project_write_admission(
         json={"archived": archived},
     )
     assert response.status_code == 409, response.text
+    assert "moving to its admitted team space" in response.json()["detail"]
     assert store.episode_archive_states(project_id)[episode.episode_id].archived is not archived
     assert store.episode(episode.episode_id) == episode
 

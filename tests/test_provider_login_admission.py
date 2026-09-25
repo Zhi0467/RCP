@@ -68,7 +68,7 @@ def test_signed_out_root_start_creates_no_task_or_budget(tmp_path):
     tasks = BackgroundAgentTasks(store, stream)
     _signed_out(store)
     before = _counts(store)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sign"):
         _start_auto_research(tasks)
     assert _counts(store) == before
     assert store.episode("auto_research") is None
@@ -79,7 +79,7 @@ def test_signed_out_child_work_creates_no_task_or_budget(tmp_path):
     _signed_out(tasks.store)
     before = _counts(tasks.store)
     instruction = "Inspect the pending result."
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sign"):
         start_auto_research_child_work(
             tasks,
             episode.episode_id,
@@ -196,7 +196,7 @@ def test_signed_out_child_experiment_creates_no_task_or_budget(manifest, tmp_pat
     _service, store, tasks, _coordinator, parent_id, root_id = _setup(manifest, tmp_path)
     _signed_out(store)
     before = _counts(store)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sign"):
         _spend_child_experiment_allowance(
             store,
             tasks,
@@ -234,7 +234,7 @@ def test_signed_out_experiment_start_creates_no_task_or_budget(manifest, tmp_pat
     )
     _signed_out(store)
     before = _counts(store)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="sign"):
         tasks.start(PROJECT_ID, "node_chat", request, authorized_by=fabricated_authorizer())
     assert _counts(store) == before
 

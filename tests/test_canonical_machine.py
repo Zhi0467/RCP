@@ -21,7 +21,7 @@ def test_manifest_rejects_graph_agent_off_canonical_machine(manifest) -> None:
         run_on="remote",
     ).model_dump(mode="python")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical state machine"):
         Manifest.model_validate(data)
 
 
@@ -29,7 +29,7 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
     local = tmp_path / "local"
     local.mkdir()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="refresh must run beside canonical state"):
         ProjectSetupRequest.model_validate(
             {
                 "name": "mixed",
@@ -65,7 +65,7 @@ def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical state machine"):
         service.resolve_agent_profile("refresh", run_on="remote")
 
     coach = service.resolve_agent_profile("paper_coach", run_on="remote")

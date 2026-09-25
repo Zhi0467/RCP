@@ -66,7 +66,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
         assert not validate_patch(state, patch, ["repo"]).rejected
         state = apply_valid_patch(state, patch)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="graph operation schema"):
         parse_agent_patch_json(choice)
 
     patch = prepare_agent_patch(

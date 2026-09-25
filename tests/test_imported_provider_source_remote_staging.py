@@ -157,7 +157,7 @@ def test_remote_stage_reads_back_exact_immutable_imported_inventory(
             Path(str(stage.root)) / "inputs" / "imported-provider-history" / "codex" / digest
         )
         staged_file.chmod(0o600)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="immutable regular file"):
             stage.verify_imported_provider_sources(
                 inventory,
                 "imported-provider-history",
@@ -458,7 +458,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             staged_file.unlink()
             staged_file.parent.chmod(0o500)
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Retry this task"):
             _continuation_graph_context(
                 service,
                 resume_execution,
@@ -478,7 +478,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
         )
         assert retry is not None
         assert retry.prepared is None
-        assert retry.context_reason
+        assert "inventory" in (retry.context_reason or "")
     finally:
         if retry_stage is not None:
             retry_stage.close()

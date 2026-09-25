@@ -290,7 +290,7 @@ async def test_experiment_loop_context_fails_closed_without_episode_binding() ->
         control_revision=1,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="episode invocation binding"):
         await stage_experiment_loop_context(
             object(),  # type: ignore[arg-type]
             request,
@@ -628,7 +628,7 @@ def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> N
         diagnostics_path="/current/inputs/retry-diagnostics.json",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exact diagnostics_path"):
         PromptFactory.continuation_task_contract(
             original_contract_path="/prior/inputs/task-initial.md",
             current_contract_path="/current/inputs/task-initial.md",
@@ -670,9 +670,9 @@ def test_work_patch_legality_reuses_the_non_ingest_boundary() -> None:
         }
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="A Work patch must not claim processed_cursors"):
         validate_work_patch(cursor_patch)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="A Work patch must not set coverage"):
         validate_work_patch(coverage_patch)
 
 
@@ -724,7 +724,7 @@ def test_work_launch_contract_preserves_resolved_scope_paths() -> None:
 
 
 def test_discuss_turn_rejects_a_work_write_scope() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="only to a Work turn"):
         PromptFactory._chat_turn_prompt(
             marker="Discuss",
             artifact_path="/stage/turns/t1/artifacts",

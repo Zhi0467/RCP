@@ -122,6 +122,7 @@ def test_probe_retains_root_when_cancellation_cannot_be_confirmed(manifest, tmp_
     runner.reject_cancel = True
     result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
     assert result.state == "failed"
+    assert "Cancellation transport failed" in result.diagnostic
     assert runner.root.is_dir()
 
 
@@ -292,7 +293,7 @@ def test_cgroup_comparison_ignores_hierarchies_where_both_sit_at_the_root():
         "3:devices:/\n0::/system.slice/rcp.service\n",
         own.replace("session-8.scope", "x") and "3:devices:/\n0::/system.slice/rcp.service\n",
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="could not compare"):
         _cgroup_isolated("3:devices:/\n", "3:devices:/\n")
 
 

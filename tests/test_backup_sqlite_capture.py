@@ -349,7 +349,7 @@ def test_online_sqlite_snapshot_stays_consistent_while_writers_continue(
         snapshot_count = connection.execute("SELECT COUNT(*) FROM backup_writer_probe").fetchone()[
             0
         ]
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
             connection.execute("INSERT INTO backup_writer_probe(payload) VALUES ('forbidden')")
     with store.connection() as connection:
         live_count = connection.execute("SELECT COUNT(*) FROM backup_writer_probe").fetchone()[0]

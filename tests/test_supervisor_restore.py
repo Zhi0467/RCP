@@ -77,7 +77,7 @@ def test_existing_unsafe_restore_storage_is_refused_without_normalizing_it(
 
     monkeypatch.setattr(Path, "lstat", metadata)
     monkeypatch.setattr(os, "chown", lambda *_: pytest.fail("existing storage ownership changed"))
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe ownership or mode"):
         restore._directory(path, 123)
     after = original_lstat(path)
     assert (after.st_ino, after.st_mode, after.st_uid, after.st_gid) == (
@@ -179,20 +179,20 @@ def test_protected_restore_pauses_in_sealed_wizard_envelope_and_reuses_preparati
 def test_archive_fifo_and_oversized_regular_file_fail_promptly(tmp_path, monkeypatch):
     fifo = tmp_path / "archive.fifo"
     os.mkfifo(fifo, 0o600)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="metadata"):
         restore._hash(fifo)
     archive = tmp_path / "oversized.age"
     archive.write_bytes(b"12345")
     archive.chmod(0o600)
     monkeypatch.setattr(restore, "MAX_RESTORE_ARCHIVE_BYTES", 4)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="byte bound"):
         restore._hash(archive)
 
 
 def test_unchanged_application_progress_cannot_loop(runtime):
     runtime, request, _, _ = runtime
     runtime.application = lambda *args: {"status": "continue", "progress": []}
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="did not advance"):
         restore.prepare_restore(
             runtime,
             request,
@@ -211,7 +211,7 @@ def test_unsealed_decryption_is_quarantined_then_rebuilt_after_interruption(runt
         "write_root_json",
         lambda *a: (_ for _ in ()).throw(OSError("interrupted before receipt")),
     )
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="interrupted"):
         restore.prepare_restore(runtime, request, operation, {"roots": []})
     monkeypatch.setattr(restore, "write_root_json", original_write)
     real_lstat = Path.lstat
@@ -281,7 +281,7 @@ def test_decryption_kills_child_when_output_exceeds_bound(tmp_path, monkeypatch,
     monkeypatch.setattr(restore.subprocess, "Popen", launch)
     monkeypatch.setattr(restore, "MAX_RESTORE_ARCHIVE_BYTES", 128)
     monkeypatch.setattr(restore, "MAX_APP_OUTPUT_BYTES", 128)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="output bound"):
         restore._decrypt(
             archive,
             identity,

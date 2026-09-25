@@ -211,7 +211,7 @@ def test_bootstrap_is_not_issued_before_late_schema_work_succeeds(tmp_path, monk
         raise sqlite3.OperationalError("injected late schema failure")
 
     monkeypatch.setattr(AppStore, "_ensure_column", fail_late_schema_work)
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.OperationalError, match="injected late schema failure"):
         AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
 
     assert not (tmp_path / "rcp.sqlite3").exists()
@@ -384,7 +384,7 @@ def test_only_the_creator_may_revoke_and_a_used_invitation_is_not_revocable(tmp_
 
     consumed, consumed_code = store.create_team_invitation(alice.user_id)
     store.enroll_team_member(consumed_code, "Carol")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="already been used"):
         store.revoke_team_invitation(consumed.invitation_id, alice.user_id)
 
 
@@ -600,6 +600,7 @@ def test_self_service_revoke_refuses_to_strand_the_last_enrolled_member(tmp_path
     refused = client.post("/api/team/credential/revoke", json={})
 
     assert refused.status_code == 409
+    assert "last enrolled member" in refused.json()["detail"]
     assert client.get("/api/identity").json()["user"]["user_id"] == member.user_id
     rotated = client.post("/api/team/credential/rotate", json={})
     assert rotated.status_code == 200

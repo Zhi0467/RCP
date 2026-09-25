@@ -25,6 +25,7 @@ from rcp.server_ops.cli import (
 )
 from rcp.server_ops.models import (
     OPERATOR_SHELL,
+    SERVER_CLI_MAX_EXECUTION_BYTES,
     SERVER_CLI_MAX_STEPS,
     CommandAction,
     ExecutionContext,
@@ -425,7 +426,7 @@ def test_restore_ignores_raw_identity_environment_and_keeps_it_out_of_request(
 def test_request_model_rejects_fields_that_do_not_belong_to_the_command() -> None:
     with pytest.raises(ValidationError, match="request_id"):
         ServerCommandRequest(command="server doctor", request_id=REQUEST_ID)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exactly one"):
         ServerCommandRequest(command="server provider check")
 
 
@@ -442,7 +443,7 @@ def test_event_contract_is_bounded_strict_and_plan_stable() -> None:
     changed_target = _machine_step("server doctor", state="succeeded").model_copy(
         update={"target": MachineTarget(host="other.example", os_account="rcp")}
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="cannot change planned target"):
         ServerCommandExecution(
             events=(
                 ServerPlanEvent(command="server doctor", timestamp=NOW, steps=(pending,)),
@@ -468,7 +469,7 @@ def test_execution_rejects_out_of_order_success_and_oversized_total_output() -> 
             "message": "The second source passed before the first ran.",
         }
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="earlier step succeeds"):
         ServerCommandExecution(
             events=(
                 ServerPlanEvent(command="server doctor", timestamp=NOW, steps=(first, second)),
@@ -496,7 +497,7 @@ def test_execution_rejects_out_of_order_success_and_oversized_total_output() -> 
             "message": "The bounded output check failed.",
         }
     )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=str(SERVER_CLI_MAX_EXECUTION_BYTES)):
         ServerCommandExecution(
             events=(
                 ServerPlanEvent(command="server doctor", timestamp=NOW, steps=large_steps),
@@ -544,9 +545,9 @@ def test_live_emitter_reserves_enough_space_for_a_maximal_safe_failure() -> None
 
 def test_event_text_is_single_line_and_terminal_safe() -> None:
     pending = _machine_step("server doctor", state="pending")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="control characters"):
         ServerStep(**{**pending.model_dump(), "message": "unsafe\x1b[31mtext"})
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="control characters"):
         MachineTarget(host="lab\nother", os_account="rcp")
 
 
@@ -567,14 +568,14 @@ def test_operator_action_requires_human_responsibility_actions_and_resume() -> N
         "expected_success": "The write probe succeeds.",
         "message": "The grant is missing.",
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="performed by a human"):
         ServerStep(
             **common,
             performed_by="system",
             actions=(ExternalAction(instruction="Enable write access."),),
             resume_argv=("rcp", "server", "project", "provision", REQUEST_ID),
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="require actions and resume"):
         ServerStep(**common, performed_by="human")
 
 
@@ -619,7 +620,7 @@ def test_an_execution_context_names_the_shell_not_the_operations_target() -> Non
 
 
 def test_a_resume_execution_context_requires_a_resume_command() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="requires a resume command"):
         ServerStep(
             number=1,
             title="Enter server preparation",
@@ -662,7 +663,7 @@ def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause()
     )
 
     assert execution.events[-1].step.performed_by == "human"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="transfer responsibility"):
         ServerCommandExecution(
             events=(
                 execution.events[0],
@@ -702,7 +703,7 @@ def test_only_a_human_pause_may_rename_its_planned_step() -> None:
     )
 
     # Nothing else renames a step, and a pause still may not become another one.
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="cannot change planned title"):
         ServerCommandExecution(
             events=(
                 plan,
@@ -714,7 +715,7 @@ def test_only_a_human_pause_may_rename_its_planned_step() -> None:
             ),
             exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="cannot change planned phase"):
         ServerCommandExecution(
             events=(
                 plan,
@@ -729,7 +730,7 @@ def test_only_a_human_pause_may_rename_its_planned_step() -> None:
 
 
 def test_external_target_names_a_role_without_accepting_an_invented_user() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ExternalServiceTarget.model_validate(
             {
                 "service": "github.com",
@@ -739,14 +740,14 @@ def test_external_target_names_a_role_without_accepting_an_invented_user() -> No
                 "user_account": "alice",
             }
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-free HTTPS"):
         ExternalServiceTarget(
             service="github.com",
             resource="openai/rcp",
             destination_url="https://alice:secret@github.com/openai/rcp/settings/keys",
             required_authority_role="repository administrator",
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-free HTTPS"):
         ExternalServiceTarget(
             service="github.com",
             resource="openai/rcp",
@@ -771,20 +772,20 @@ def test_cli_events_redact_secret_shaped_text_and_reject_it_in_argv_or_fields() 
     assert "abcdefghijk" not in serialized
     assert "abcdefghijklmnop" not in serialized
     assert "REDACTED" in serialized
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped"):
         CommandAction(argv=("provider", "--token", "ghp_abcdefghijklmnop"))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped fields"):
         NonsecretField(name="access_token", value="anything")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped fields"):
         NonsecretField(name="recovery_identity", value="anything")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped fields"):
         NonsecretField(name="api_key", value="anything")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="credential-shaped"):
         CommandAction(argv=("age", "--identity", "AGE-SECRET-KEY-1SUPERSECRET"))
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="raw credential flags"):
         CommandAction(argv=("provider", "--token", "plain-value"))
     paused = _operator_execution().events[-1].step
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="raw credential flags"):
         ServerStep(
             **{
                 **paused.model_dump(),
@@ -1359,6 +1360,7 @@ def test_outer_wizard_refuses_to_run_mutually_exclusive_restore_actions():
         runner=lambda argv: pytest.fail("mutually exclusive restore commands were executed"),
     )
     assert code == SERVER_CLI_EXIT_OPERATOR_ACTION
+    assert "exactly one" in output.getvalue()
 
 
 @pytest.mark.parametrize("trailing, child_exit", [("invalid\n", 0), ("", 1), ("", 42)])

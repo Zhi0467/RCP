@@ -349,11 +349,11 @@ def test_only_the_orchestrator_recovery_can_be_rebound(tmp_path: Path) -> None:
 
     # A worker's continuation requires the exact session its dispatch bound it
     # to, so a rebinding is refused rather than admitted and left unable to run.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="only the orchestrator's recovery can change"):
         tasks.retry_auto_research(worker.operation_id, service=None, reasoning="high")
     # The machine is the one setting no episode recovery may move, and the
     # Auto-research path is pinned by the same rule as every other one.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="pinned execution machine"):
         tasks.retry_auto_research(worker.operation_id, service=None, run_on="cluster")
 
 
@@ -749,7 +749,7 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="signed out"):
         tasks.retry(root.operation_id)
     assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 0
     assert store.auto_research_recovery(recovery.recovery_id) == recovery
@@ -833,7 +833,7 @@ def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Pat
 
     # The account is gone, so this Retry never becomes a turn.
     store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="signed out"):
         tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
 
     after = store.auto_research_recovery("task:root")
@@ -887,7 +887,7 @@ def test_a_committed_child_keeps_the_release_that_a_later_write_failure_follows(
 
     store.record_agent_task_receipt = failing_receipt
     try:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="after the turn was admitted"):
             tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
     finally:
         store.record_agent_task_receipt = original_receipt

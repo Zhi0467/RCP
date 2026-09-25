@@ -309,7 +309,7 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     assert migrated.backup is None
 
     legacy_with_backup = legacy_document(rendered)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="legacy.*cannot contain backup"):
         parse_installed_server_config(legacy_with_backup)
 
 
@@ -923,7 +923,7 @@ def test_team_address_file_is_its_own_document_beside_server_toml(
     assert parse_team_access_config(render_team_access_config(bracketed)) == bracketed
 
     team_path.chmod(0o644)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mode 0640"):
         load_team_access_config(team_path)
     team_path.chmod(0o640)
     for broken in ("access_url = 'ftp://nope'\n", "access_url = 1\n", "other = 1\n", "= not toml"):

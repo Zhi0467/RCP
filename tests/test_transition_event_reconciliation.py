@@ -286,13 +286,13 @@ def test_boundary_construction_rejects_noncanonical_inputs() -> None:
     pre_state = _state(1)
     post_state = _state(2, blocker_status=None)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="rejected Patch"):
         AcceptedGraphBoundary.from_replay(
             pre_state,
             _accepted_patch(admission="rejected"),
             post_state,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="state does not match"):
         AcceptedGraphBoundary.from_replay(pre_state, _accepted_patch(), _state(3))
 
 
@@ -304,7 +304,7 @@ def test_reconciliation_rejects_target_local_reordering(tmp_path) -> None:
         _state(2, blocker_status="resolved"),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="canonical order"):
         reconcile_accepted_graph_boundaries(store, "project", [first, first])
 
 
@@ -428,7 +428,7 @@ def test_restart_reconciliation_evaluates_only_boundaries_after_durable_head(
     head = reopened.graph_watcher_reconciliation_head("project", GraphTargetRef())
     assert head is not None and head.revision == 3
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="changed identity"):
         reconcile_accepted_graph_boundaries(
             reopened,
             "project",
@@ -436,7 +436,7 @@ def test_restart_reconciliation_evaluates_only_boundaries_after_durable_head(
             current_head=GraphHeadRef(target=GraphTargetRef(), revision=3),
         )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot arm behind"):
         reopened.create_watchers([_watcher("stale-arm", armed_revision=2)])
 
 
@@ -471,7 +471,7 @@ def test_failed_boundary_evaluation_rolls_back_watcher_and_head_for_retry(
         return original(record, state, lifecycle_events)
 
     monkeypatch.setattr(reconciliation, "graph_watcher_boundary_result", fail_second)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="transient"):
         reconcile_accepted_graph_boundaries(
             store,
             "project",

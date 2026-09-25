@@ -57,6 +57,8 @@ test("node detail selects its belief history and resolves navigable causes", () 
   );
   assert.deepEqual(beliefCausePresentation(transitions[1], edges, nodes).nodeId, "ev/result");
   assert.deepEqual(beliefCausePresentation(transitions[2], edges, nodes).nodeId, "dec/metric");
+
+  assert.equal(beliefCausePresentation(transitions[0], edges, nodes).nodeId, undefined);
 });
 
 test("relation flags stay attached to the implicated edge", () => {

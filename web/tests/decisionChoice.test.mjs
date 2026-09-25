@@ -116,6 +116,7 @@ test("a behind node opens its staged editor with reversible incoming field contr
   assert.match(html, /class="node-draft-behind"/);
   assert.match(html, /value="My staged title"/);
   assert.match(html, /class="node-edit-incoming-value">Incoming canonical title<\/span>/);
+  assert.match(html, /class="node-edit-incoming-heading">[^]*?<button/);
 });
 
 test("Decision editor exposes queue status only, including the ready to open path", () => {

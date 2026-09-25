@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -165,6 +166,13 @@ def test_merge_provenance_uses_current_project_membership(
         assert launcher.calls == 0
         assert harness.service.history.head_ref() == main_before
         assert task.stage_root is not None
+        diagnostics = [task.error] + [
+            json.loads(path.read_text())["problem"]
+            for path in Path(task.stage_root).rglob("*-branch-merge-correction-*.json")
+        ]
+        assert any(
+            "Source reference uses 'repo-b' outside this run scope" in d for d in diagnostics
+        )
         assert harness.branch.merge_receipts() == []
     else:
         merged = harness.service.history.load_patches()[-1]
@@ -228,7 +236,8 @@ def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
         for task in harness.store.agent_tasks(harness.project_id)
         if task.kind == "branch_merge"
     ]
-    wait_for_task(harness.store, admitted.operation_id, expect="failed")
+    task = wait_for_task(harness.store, admitted.operation_id, expect="failed")
+    assert "Project truth membership changed" in task.error
     assert launcher.calls == (0 if before_launch else 1)
     main = harness.service.history.state()
     assert main.revision == main_before.revision + 1

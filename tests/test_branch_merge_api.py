@@ -776,6 +776,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert concurrent.status_code == 409
+    assert "already running" in concurrent.json()["detail"]
 
     harness.store.fail_agent_task(first.operation_id, "The merge provider exited early.")
     for action in ("resume", "retry"):
@@ -783,6 +784,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
             f"/api/projects/{harness.project_id}/tasks/{first.operation_id}/{action}"
         )
         assert recovery.status_code == 409
+        assert "new Merge" in recovery.json()["detail"]
 
     redispatched = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
@@ -814,7 +816,9 @@ def test_merge_refuses_an_active_or_unchanged_branch(
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == summary["merge_blocked_reason"]
-    if not ended:
+    if ended:
+        assert "no changes" in refused.json()["detail"]
+    else:
         assert harness.root.operation_id in refused.json()["detail"]
     assert not any(
         task.kind == "branch_merge" for task in harness.store.agent_tasks(harness.project_id)
@@ -1344,7 +1348,7 @@ def test_receipt_reconciliation_rejects_a_filename_content_mismatch(
     )
     (merges_dir / f"{merge_id}.json").replace(merges_dir / f"{wrong_id}.json")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="name disagrees with its content"):
         harness.branch.reconcile_merge_receipt(wrong_id)
 
 
@@ -1357,7 +1361,7 @@ def test_no_change_receipt_rechecks_live_project_membership(
     task = _admit_held_merge_task(harness, monkeypatch)
     harness.service.history.project_membership_check = lambda _project_id, _user_id: False
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a member"):
         harness.branch.write_merge_receipt(_current_receipt(harness, task_id=task.operation_id))
 
     assert harness.branch.merge_receipts() == []

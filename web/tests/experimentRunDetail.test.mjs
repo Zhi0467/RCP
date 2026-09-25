@@ -411,6 +411,8 @@ test("a completed watcher waits for continuation delivery, not completion", () =
   );
 
   assertDetailProjection(html, "Completion pending delivery", "Wait for continuation to start");
+
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("blocked watcher delivery exposes its backend reason and available next step", () => {
@@ -438,6 +440,9 @@ test("blocked watcher delivery exposes its backend reason and available next ste
   assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
 
   assert.ok(html.includes(reason));
+
+  assert.match(html, /class="experiment-gate-reasons"/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("an Experiment the human closed stays completed whatever its last episode did", () => {
@@ -471,6 +476,8 @@ test("an Experiment the human closed stays completed whatever its last episode d
 
   assertDetailProjection(html, "Completed", "Experiment is completed");
   assert.match(html, /href="\/reports\/previous-completed-episode"/);
+
+  assert.doesNotMatch(html, /experiment-run-button/);
 });
 
 test("an open Experiment whose episode paused for a human still needs action", () => {
@@ -516,6 +523,8 @@ test("a final Experiment report error is a note beside the episode's own outcome
   assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
 
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+
+  assert.match(html, /The visual report could not be generated\./);
 });
 
 test("the reason an Experiment episode ended outranks its report error", () => {
@@ -545,6 +554,8 @@ test("the reason an Experiment episode ended outranks its report error", () => {
   assertDetailProjection(html, "Failed", "Episode ended");
 
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+
+  assert.match(html, /This Experiment turn failed before it started its agent session\./);
 });
 
 test("a closed Experiment offers no episode start until its status is edited", () => {
@@ -575,6 +586,8 @@ test("a closed Experiment offers no episode start until its status is edited", (
   });
 
   assertDetailProjection(html, "Completed", "Experiment is completed");
+
+  assert.doesNotMatch(html, /experiment-run-button/);
 });
 
 test("provider-limited Experiment recovery stays on the loop detail", () => {
@@ -604,6 +617,9 @@ test("provider-limited Experiment recovery stays on the loop detail", () => {
   });
 
   assert.match(html, /You&#x27;ve hit your session limit/);
+
+  assert.match(html, /experiment-recovery-button/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("detail follows the exact backend operation even when a newer retry row exists", () => {
@@ -644,6 +660,8 @@ test("detail follows the exact backend operation even when a newer retry row exi
 
   assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
   assert.match(html, /<dd class="mono experiment-run-breakable">failed-attempt<\/dd>/);
+
+  assert.doesNotMatch(html, /experiment-recovery-button/);
 });
 
 test("an Auto-research child explains its active turn, stale guidance, and watcher ownership", () => {
@@ -756,6 +774,8 @@ test("a paused Experiment offers native-session resume and disables recovery whi
   );
 
   assert.match(html, /<button[^>]*disabled=""/);
+
+  assert.match(html, /experiment-recovery-button"[^>]*disabled=""/);
 });
 
 test("an unsettled stop enables exact paused recovery and hides the requested Stop action", () => {
@@ -882,6 +902,10 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
   assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
 
   // The reason is the server's sentence, not one this card composed.
+
+  assert.match(html, /experiment-run-button"[^>]*disabled=""/);
+  assert.match(html, /experiment-stop-loop/);
+  assert.match(html, /A previous episode is still open on this Experiment\./);
 });
 
 test("a Run at the ceiling offers the node's limit as the count the human can override", () => {
@@ -900,6 +924,8 @@ test("a Run at the ceiling offers the node's limit as the count the human can ov
   });
 
   assert.match(html, /value="3"/);
+
+  assert.match(html, /experiment-run-button/);
 });
 
 test("the authorized count renders whatever the node's current limit is", () => {
@@ -949,6 +975,10 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
 
   assert.match(html, /class="experiment-fold-count">1<\/span>/);
+
+  assert.match(html, /experiment-run-button/);
+  assert.doesNotMatch(html, /experiment-run-button"[^>]*disabled=""/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("a gated human-stopped loop recommends its available requirement action", () => {
@@ -975,6 +1005,8 @@ test("a gated human-stopped loop recommends its available requirement action", (
 
   assertDetailProjection(html, "Human-stopped", "Resolve the run requirements");
   assert.match(html, new RegExp(reason.replaceAll(".", "\\.")));
+
+  assert.match(html, /experiment-run-button"[^>]*disabled=""/);
 });
 
 test("detail keeps Experiment meaning under a neutral Research summary", () => {
@@ -1033,6 +1065,8 @@ test("degraded external watcher exposes backoff and Check now without recommendi
   assert.match(html, />3<\/dd>/);
 
   assertDetailProjection(html, "Watcher degraded", "Keep loop running; check now if needed");
+
+  assert.match(html, /class="experiment-run-watcher-actions"[^]*?<button/);
 });
 
 test("watcher Check now renders busy and disables concurrent mutations", () => {
@@ -1115,6 +1149,8 @@ test("an unavailable Stop is neither shown nor recommended", () => {
   assertDetailProjection(html, "Needs action", "Start an episode");
 
   assert.doesNotMatch(html, /experiment-stop-loop/);
+
+  assert.match(html, /experiment-run-button/);
 });
 
 test("a succeeded legacy-attribution episode offers a fresh start without an unusable Stop", () => {
@@ -1195,6 +1231,8 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
 
   assert.doesNotMatch(row, /campaign-run-summary/);
   assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
+
+  assert.match(detail, /experiment-run-button/);
 });
 
 test("graph watcher detail shows its condition and independent parent ownership", () => {
@@ -1218,6 +1256,8 @@ test("graph watcher detail shows its condition and independent parent ownership"
 
   assert.match(html, /graph-watcher/);
   assert.doesNotMatch(html, /evaluation\.log/);
+
+  assert.match(html, /blk\/upstream[^<]*resolved/);
 });
 
 test("detail separates watcher provenance from semantic meaning and execution binding", () => {
@@ -1268,6 +1308,8 @@ test("detail separates watcher provenance from semantic meaning and execution bi
   assert.match(html, /decision\/resources/);
 
   assert.match(html, /decision\/data moved to v2/);
+
+  assert.match(html, /episode-1[^<]*3 \/ 3/);
 });
 
 test("stopped watcher history is collapsed separately from current watchers", () => {
@@ -1364,6 +1406,13 @@ test("grouped watchers show truthful operational counts and preserve member prov
   assert.match(html, /ungrouped\.log/);
 
   assert.match(html, /Cancelled superseded external job/);
+
+  assert.equal((html.match(/class="experiment-run-watcher-group"/g) ?? []).length, 1);
+  assert.deepEqual(
+    html.match(/class="experiment-run-watcher-group-counts">([^<]+)/)?.[1].match(/\d+/g),
+    ["1", "1", "1", "1"],
+  );
+  assert.equal((html.match(/class="button compact watcher-action"/g) ?? []).length, 2);
 });
 
 test("external job rows use watcher facts and keep Cancel independent of observation status", async () => {
@@ -1393,6 +1442,10 @@ test("external job rows use watcher facts and keep Cancel independent of observa
       watcher: { ...record, status: "completed", can_cancel: false },
     }),
   );
+
+  assert.match(html, /human-1/);
+  assert.match(html, /class="button compact watcher-action"/);
+  assert.doesNotMatch(completed, /<button/);
 });
 
 test("an ended episode with a bound session offers Add N turns beside Start new episode", () => {
@@ -1418,4 +1471,107 @@ test("an ended episode with a bound session offers Add N turns beside Start new 
   // The count belongs to the continuation; the fresh start keeps the node's own limit.
 
   assert.doesNotMatch(html, /experiment-continue-button" disabled=""/);
+
+  assert.match(html, /experiment-continue-button/);
+  assert.match(html, /experiment-run-button/);
+});
+
+test("without a continuation callback an ended episode only starts fresh", () => {
+  const html = render({
+    node: node(),
+    control: control({
+      episode: episode({ status: "needs_action", can_continue: true }),
+      health: "paused_at_limit",
+      recommendation: "start_episode",
+      can_start: true,
+    }),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "paused_at_limit",
+  });
+  assert.doesNotMatch(html, /experiment-continue-button/);
+  assert.match(html, /class="experiment-reauthorize-count"/);
+});
+
+test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
+  // Cancel kills the observed job. Once the episode has ended, Stop loop is gone,
+  // so retiring the observer is the only non-destructive way out of the wait.
+  const live = watcher({
+    status: "active",
+    completed_at: null,
+    last_exit_code: 1,
+    delivery_label: "Not delivered",
+    can_cancel: true,
+    can_stop_watching: true,
+  });
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        ready: false,
+        reasons: ["Detached Experiment work is still running."],
+        health: "paused_at_limit",
+        recommendation: "open_report",
+        can_start: false,
+      },
+      { detached_work_active: true, episode_exited: true },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [live],
+    currentWatchers: [live],
+    health: "paused_at_limit",
+  });
+
+  assert.equal((html.match(/class="button compact watcher-action"/g) ?? []).length, 2);
+});
+
+test("recovery controls stay hidden when their exact backend task is absent", () => {
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        can_start: false,
+        can_stop: true,
+        task_control: "retry",
+        can_switch_provider: true,
+        recommendation: "retry",
+      },
+      { current_operation_id: "missing-task", current_status: "failed" },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.doesNotMatch(html, /experiment-recovery-button/);
+  assert.match(html, /experiment-stop-loop/);
+});
+
+test("prior invocation totals stay pinned beside the edited next episode limit", () => {
+  const html = render({
+    node: node({ status: "planned", invocation_ceiling: 7 }),
+    control: control(
+      {
+        invocations_used: 4,
+        invocation_ceiling: 5,
+        invocations_remaining: 1,
+        paused: false,
+      },
+      { current_invocation: null },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "completed",
+  });
+
+  assert.match(html, /<\/span>4\s*\/ 5/);
+  assert.match(html, /<\/span>7/);
+  assert.match(html, /experiment-run-button/);
 });

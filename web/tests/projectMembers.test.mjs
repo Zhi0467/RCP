@@ -28,6 +28,9 @@ test("Invite says which of the two reasons leaves it with nobody to offer", () =
   assert.notEqual(inviteUnavailableReason([ada], []), null);
   // Everyone enrolled is already seated: no candidate remains.
   assert.notEqual(inviteUnavailableReason([ada, grace], []), null);
+
+  assert.match(inviteUnavailableReason([ada], []), /only person in this space/i);
+  assert.match(inviteUnavailableReason([ada, grace], []), /already on this project/i);
 });
 
 test("a failed space read never claims you are alone in the space", () => {

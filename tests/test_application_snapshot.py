@@ -118,7 +118,7 @@ def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: 
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="recovery-critical local run stage"):
         checkpoint_local_recovery_stages(store, data_dir)
 
 

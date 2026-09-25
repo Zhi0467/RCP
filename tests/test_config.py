@@ -42,7 +42,7 @@ def test_orchestrate_is_a_distinct_capability_with_work_permissions() -> None:
 
 
 def test_unknown_agent_capability_is_rejected() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unknown agent surface or capability"):
         permissions_for("unfamiliar")  # type: ignore[arg-type]
 
 
@@ -110,7 +110,7 @@ def test_manifest_rejects_conflicting_auto_research_ceiling_keys(manifest) -> No
     payload = manifest.model_dump(mode="python")
     payload["agent"]["default_campaign_invocation_ceiling"] = 8
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="conflicts"):
         Manifest.model_validate(payload)
 
 
@@ -133,13 +133,13 @@ def test_orchestrator_profile_is_fixed_and_must_run_beside_canonical_state(manif
     wrong_permissions["agent"]["orchestrator"]["permissions"] = permissions_for(
         "scratch_patch"
     ).model_dump(mode="python")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="orchestrator safety contract"):
         Manifest.model_validate(wrong_permissions)
 
     wrong_machine = manifest.model_dump(mode="python")
     wrong_machine["machines"].append({"alias": "other", "host": "", "provider_paths": {}})
     wrong_machine["agent"]["orchestrator"]["run_on"] = "other"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="agent.orchestrator.run_on must be the canonical"):
         Manifest.model_validate(wrong_machine)
 
 
@@ -237,40 +237,40 @@ def test_compute_connection_is_not_a_machine_or_execution_selector(manifest) -> 
         }
     ]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0].pop("run_on")
     payload["compute_connections"][0]["access_hint"] = "password=hunter2"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot contain credential-shaped text"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0]["access_hint"] = ""
     payload["compute_connections"][0]["name"] = "password=hunter2"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="name cannot contain credential-shaped text"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0]["name"] = "GPU"
     payload["compute_connections"][0]["ssh_target"] = "sk-ant-secret123@gpu.example"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="SSH target cannot contain credential-shaped text"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0]["access_hint"] = ""
     payload["compute_connections"][0]["ssh_target"] = "-ProxyCommand"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0]["ssh_target"] = "alice@gpu.example"
     payload["compute_connections"][0]["access_hint"] = "Use ~/.ssh/id_ed25519"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot contain SSH credential paths"):
         Manifest.model_validate(payload)
 
 
 @pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
 def test_machine_and_compute_connections_reject_option_shaped_ssh_hosts(host: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         MachineConfig(alias="remote", host=host)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         ComputeConnectionConfig(id="gpu", name="GPU", kind="ssh", ssh_target=host)
 
 
@@ -281,7 +281,7 @@ def test_manifest_bounds_compute_connections_before_they_can_be_used(manifest) -
         for index in range(COMPUTE_CONNECTION_MAX_COUNT + 1)
     ]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at most 32 items"):
         Manifest.model_validate(payload)
 
 
@@ -297,12 +297,12 @@ def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> N
 
 
 @pytest.mark.parametrize(
-    "field",
-    ["machines", "repositories"],
+    ("field", "message"),
+    [("machines", "machine aliases"), ("repositories", "repository aliases")],
 )
-def test_manifest_rejects_duplicate_authority_aliases(manifest, field: str) -> None:
+def test_manifest_rejects_duplicate_authority_aliases(manifest, field: str, message: str) -> None:
     payload = manifest.model_dump(mode="python")
     payload[field].append(dict(payload[field][0]))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=rf"{message} must be unique"):
         Manifest.model_validate(payload)

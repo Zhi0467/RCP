@@ -183,7 +183,7 @@ def test_case_does_not_arm_faults_before_baseline_application_is_healthy(
         raise RuntimeError("The guest application never returned healthy HTTP.")
 
     monkeypatch.setattr(guest, "wait_health", unavailable)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="never returned healthy"):
         guest.prepare_case(plan)
     assert not armed.exists()
     assert not (state / "state.json").exists()

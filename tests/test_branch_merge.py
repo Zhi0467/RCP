@@ -512,7 +512,7 @@ def test_graph_only_scope_has_no_repository_roots(tmp_path: Path) -> None:
         repositories=[WritableRepositoryRoot(alias="repo", machine="laptop", path=str(repo))],
         protected_write_paths=[str(tmp_path / "state" / ".research")],
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no repository write roots"):
         require_graph_only_merge_scope(broadened, context=context, stage=stage)
 
 

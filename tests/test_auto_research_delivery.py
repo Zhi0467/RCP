@@ -562,7 +562,7 @@ def test_committed_watcher_wake_reconciles_after_thread_start_failure(
         real_start(thread)
 
     monkeypatch.setattr(threading.Thread, "start", fail_once)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="Thread.start failure"):
         deliver_auto_research_watcher_group(tasks, [watcher])
     monkeypatch.setattr(threading.Thread, "start", real_start)
 
@@ -756,7 +756,7 @@ def test_committed_root_mail_wake_reconciles_without_reclaim_or_respend(
         raise RuntimeError("simulated crash after root mail commit")
 
     monkeypatch.setattr(tasks, "_spawn_record", crash_after_commit)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after root mail commit"):
         deliver_pending_auto_research_mail(
             tasks,
             episode_id=auto_research.episode_id,
@@ -980,7 +980,7 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
         raise RuntimeError("simulated crash after child mail commit")
 
     monkeypatch.setattr(tasks, "_spawn_record", crash_after_commit)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after child mail commit"):
         deliver_pending_auto_research_mail(
             tasks,
             episode_id=auto_research.episode_id,
@@ -1286,7 +1286,7 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
         )
 
     monkeypatch.setattr(tasks, "_record_spawn_dispatch", fail_once)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="dispatch preparation failure"):
         deliver_pending_auto_research_lifecycle(
             tasks,
             episode_id=auto_research.episode_id,

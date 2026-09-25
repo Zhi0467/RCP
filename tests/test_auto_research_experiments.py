@@ -760,7 +760,7 @@ def test_experiment_resume_recovers_a_row_committed_before_process_spawn(
         raise RuntimeError("simulated crash after Experiment recovery commit")
 
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after Experiment recovery commit"):
         coordinator.resume(
             parent_id,
             child_id,
@@ -838,7 +838,7 @@ def test_experiment_kickoff_replay_dispatches_invocation_one_committed_before_la
         raise RuntimeError("simulated crash after fresh Experiment commit")
 
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after fresh Experiment commit"):
         coordinator.kick_off(**parameters)
 
     child = store.episode(child_id)
@@ -905,7 +905,7 @@ def test_transient_experiment_kickoff_failure_keeps_admission_for_exact_recovery
     monkeypatch.setattr(
         "rcp.runs.auto_research_experiments.start_auto_research_child_experiment", unavailable
     )
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="temporarily unavailable"):
         coordinator.kick_off(**parameters)
 
     admission = store.auto_research_child_admission(admission_id)
@@ -1468,6 +1468,7 @@ def test_pending_replacement_with_corrupt_durable_intent_fails_terminally(
     route = store.auto_research_child_experiment(child_id)
     assert route is not None and route.state == "cancelled"
     assert route.terminal_diagnostic is not None
+    assert "invalid goal" in route.terminal_diagnostic
     notices = store.pending_auto_research_lifecycle_notices(parent_id)
     assert len(notices) == 1
     assert notices[0].source_event == "failed"

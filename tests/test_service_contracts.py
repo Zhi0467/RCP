@@ -248,7 +248,7 @@ def test_graph_attention_projection_rejects_mapping_identity_mismatches(collecti
     )
     getattr(state, collection)["wrong/key"] = member
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mapping key"):
         project_graph_attention(state)
 
 

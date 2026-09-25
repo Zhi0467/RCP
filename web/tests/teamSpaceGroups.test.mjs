@@ -52,6 +52,9 @@ test("an available team group exposes its verified cached project", () => {
   assert.match(html, /Plasticity study/);
 
   assert.doesNotMatch(html, /disabled=""/);
+
+  assert.match(html, /<span>2[^<]*<\/span>/);
+  assert.match(html, /<header>[^]*?<button/);
 });
 
 test("an unavailable team group keeps cached cards visible but inert", () => {
@@ -68,6 +71,8 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
 
   assert.match(html, /class="team-project-card"[^>]*disabled=""/);
   assert.match(html, /role="alert"[^>]*>server unavailable/);
+
+  assert.match(html, /<header>[^]*?<button/);
 });
 
 test("connection updates preserve saved registry order", () => {
@@ -117,4 +122,22 @@ test("Add team space keeps the one credential in a password field and out of URL
 
   assert.match(html, /<input[^>]*type="password"/);
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+});
+
+test("an empty available team group can open its project index", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamConnectionGroup, {
+      view: {
+        connection: { ...connection, last_known_cards: [] },
+        state: "available",
+        error: null,
+      },
+      onReconnect() {},
+      onOpenSpace() {},
+      onOpenProject() {},
+    }),
+  );
+
+  assert.match(html, /<header>[^]*?<button/);
+  assert.match(html, /class="team-space-no-projects"/);
 });

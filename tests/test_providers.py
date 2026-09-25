@@ -343,7 +343,7 @@ def test_the_registry_is_the_only_list_of_providers() -> None:
         assert profile_for(provider).id == provider
         assert profile_for(provider).label
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unknown agent provider"):
         profile_for("gemini")
 
 
@@ -351,9 +351,9 @@ def test_an_unknown_provider_is_rejected_by_the_schema_layer() -> None:
     from rcp.config import AgentSurfaceConfig, MachineConfig
 
     AgentSurfaceConfig(provider="claude", run_on="local")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unknown agent provider"):
         AgentSurfaceConfig(provider="gemini", run_on="local")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Unknown agent provider"):
         MachineConfig(alias="local", provider_paths={"gemini": "/opt/gemini"})
 
 
@@ -370,7 +370,7 @@ def test_agent_profile_runtime_is_provider_owned_and_backward_compatible() -> No
         == "app-server"
     )
     assert AgentSurfaceConfig(provider="claude", run_on="local").runtime == "stream-json"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not support runtime"):
         AgentSurfaceConfig(provider="claude", runtime="app-server", run_on="local")
 
 
@@ -403,9 +403,9 @@ def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -
     )
     assert configured.os_account == "alice"
     assert configured.provider_paths == {"codex": "/opt/codex/bin/codex"}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be absolute"):
         MachineConfig(alias="local", provider_paths={"codex": "bin/codex"})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="operating-system account"):
         MachineConfig(alias="remote", host="gpu.example", os_account="alice@example")
 
 
@@ -545,6 +545,7 @@ def test_local_recorded_path_without_execute_permission_is_denied(tmp_path: Path
     assert readiness.path_state == "denied"
     assert readiness.binary_path == str(binary)
     assert readiness.installed is False
+    assert "not executable" in (readiness.reason or "")
 
 
 def test_local_recorded_path_that_is_not_a_file_is_denied(tmp_path: Path) -> None:
@@ -554,6 +555,7 @@ def test_local_recorded_path_that_is_not_a_file_is_denied(tmp_path: Path) -> Non
 
     assert readiness.path_state == "denied"
     assert readiness.binary_path == str(tmp_path)
+    assert "not a regular file" in (readiness.reason or "")
 
 
 def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
@@ -584,19 +586,20 @@ def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
 
 
 @pytest.mark.parametrize(
-    ("returncode", "path_state"),
+    ("returncode", "path_state", "reason"),
     [
-        (40, "missing"),
-        (41, "denied"),
-        (42, "denied"),
-        (43, "denied"),
-        (44, "denied"),
+        (40, "missing", "does not exist"),
+        (41, "denied", "access"),
+        (42, "denied", "not a regular file"),
+        (43, "denied", "not executable"),
+        (44, "denied", "could not be inspected"),
     ],
 )
 def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
     monkeypatch: pytest.MonkeyPatch,
     returncode: int,
     path_state: str,
+    reason: str,
 ) -> None:
     from rcp.agents.launcher import AgentLauncher
 
@@ -615,6 +618,7 @@ def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
 
     assert readiness.path_state == path_state
     assert readiness.binary_path == "/opt/Agent Tools/codex"
+    assert reason.lower() in (readiness.reason or "").lower()
     assert calls[0][0:2] == ["python3", "-c"]
     assert calls[0][-1] == "/opt/Agent Tools/codex"
 
@@ -670,7 +674,7 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
 
 
 def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
-    from rcp.agents.launcher import _meaningful_stderr
+    from rcp.agents.launcher import _exit_reason, _meaningful_stderr
 
     # `bash -lic` emits these on every remote run, successful ones included.
     noise = (
@@ -681,6 +685,21 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
     assert _meaningful_stderr(noise + "\nerror: real provider failure") == (
         "error: real provider failure"
     )
+
+    # With the noise gone, a severed connection must say so rather than fall
+    # back to shell chatter — ssh exits 255 when the connection drops.
+    assert _exit_reason("codex", 255, "gpu0") == (
+        "The connection to gpu0 was lost before codex finished."
+    )
+    assert _exit_reason("codex", 1, "gpu0") == "codex exited 1 on gpu0."
+    assert _exit_reason("codex", 1, "") == "codex exited 1."
+
+    # asyncio negates the signal number; a severed remote link surfaces as the
+    # killed ssh client, which is what S14's interrupt actually produced.
+    assert _exit_reason("codex", -9, "gpu0") == (
+        "The connection to gpu0 ended (SIGKILL) before codex finished."
+    )
+    assert _exit_reason("codex", -9, "") == "codex was stopped by SIGKILL."
 
 
 @pytest.mark.parametrize(

@@ -325,7 +325,7 @@ def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> Non
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "auto-1", mode="auto_research"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="live parent"):
         store.create_episode(_episode(store, "auto-2", mode="auto_research"))
 
     first_experiment = _episode(
@@ -335,7 +335,7 @@ def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> Non
         control_node_id="experiment-node-a",
     )
     store.create_episode(first_experiment)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="live parent"):
         store.create_episode(
             _episode(
                 store,
@@ -388,11 +388,11 @@ def test_auto_research_cannot_bypass_its_atomic_mode_adapter(tmp_path) -> None:
         update={"kind": "auto_research"}
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mode adapter"):
         store.create_episode_with_invocation(episode, task)
 
     store.create_episode(episode)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="mode adapter"):
         store.allocate_episode_invocation("episode", task)
 
 
@@ -462,7 +462,7 @@ def test_operational_ceiling_is_independent_of_hidden_report_attempts(tmp_path) 
     assert hidden_task.operation_id in {
         task.operation_id for task in store.agent_tasks("project", include_hidden=True)
     }
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="episode wrap-up allocation"):
         store.create_agent_task(hidden_task.model_copy(update={"operation_id": "generic-retry"}))
     stored_wrapup = store.episode_wrapup("episode")
     assert stored_wrapup.state == "running"
@@ -970,7 +970,7 @@ def test_ending_without_a_report_is_idempotent_and_immutable(tmp_path) -> None:
     )
     with pytest.raises(EpisodeReportConflict):
         store.end_episode_without_report("episode", ending="failed", diagnostic="Something else.")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Stop settles through its own skip path"):
         store.end_episode_without_report("episode", ending="stopped")
 
 

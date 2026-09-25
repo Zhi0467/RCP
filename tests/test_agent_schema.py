@@ -27,7 +27,7 @@ def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
 
 
 def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="state|asserted|Extra inputs"):
         Patch(
             kind="seed",
             author="agent",
@@ -111,7 +111,7 @@ def test_agent_remove_nodes_operation_is_strict(operation: dict[str, object]) ->
     }
     if operation == {"op": "remove_nodes", "node_ids": []}:
         patch = Patch.model_validate(values)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="graph operation schema"):
             validate_agent_patch_shape(patch)
     else:
         with pytest.raises(ValidationError):
@@ -437,7 +437,7 @@ def test_agent_schema_rejects_a_decision_proposal() -> None:
         ],
     }
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Hypothesis status"):
         AgentPatch.model_validate(raw)
 
 
@@ -721,7 +721,7 @@ def test_agent_belief_causes_reject_missing_extra_or_unknown_fields(
     )
     if cause in core_valid_causes:
         patch = Patch.model_validate(values)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="graph operation schema"):
             validate_agent_patch_shape(patch)
     else:
         with pytest.raises(ValidationError):
@@ -782,7 +782,7 @@ def test_agent_schema_accepts_the_generic_extension_namespace() -> None:
 
 
 def test_agent_extension_fields_cannot_escape_the_namespace() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="mechanism_family|Extra inputs"):
         Patch(
             kind="refresh",
             author="agent",
@@ -894,7 +894,7 @@ def test_agent_cannot_apply_ontology_directly() -> None:
         ops=graph_operations_from_proposal(proposal.ops),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="set_ontology|graph operation schema"):
         validate_agent_patch_shape(patch)
 
 
@@ -909,7 +909,7 @@ def test_agent_cannot_propose_an_ontology_change() -> None:
         ops=[{"op": "create_proposals", "proposals": [_ontology_proposal()]}],
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="set_ontology|graph operation schema"):
         validate_agent_patch_shape(patch)
 
     rendered = json.dumps(agent_output_schema())
@@ -931,7 +931,7 @@ def test_agent_cannot_resolve_or_reject_a_proposal() -> None:
         ],
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="resolve_proposals|graph operation schema"):
         validate_agent_patch_shape(patch)
 
     assert '"resolve_proposals"' not in json.dumps(agent_output_schema())
@@ -989,7 +989,7 @@ def test_agent_created_decisions_and_hypotheses_start_unresolved(node: dict[str,
         ops=[{"op": "create_nodes", "nodes": [node]}],
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="graph operation schema"):
         validate_agent_patch_shape(patch)
 
 

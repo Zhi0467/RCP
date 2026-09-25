@@ -370,6 +370,7 @@ def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> 
     refused = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
 
     assert refused.status_code == 404
+    assert refused.json() == {"detail": "Project not found"}
     assert store.agent_tasks(project_id) == []
 
 

@@ -82,6 +82,11 @@ test("space Runs mixes active modes and folds completed groups", () => {
   // An active run is in flight, not work owed to a human.
 
   assert.doesNotMatch(html, /current_summary/);
+
+  assert.deepEqual(
+    [...html.matchAll(/<h3>[^<]+<\/h3><span>(\d+)<\/span>/g)].map((match) => Number(match[1])),
+    [1, 1, 2],
+  );
 });
 
 test("space Runs always names every section and its empty count", () => {
@@ -94,6 +99,11 @@ test("space Runs always names every section and its empty count", () => {
   assert.match(html, /<span>0<\/span>/);
 
   assert.match(html, /<span>0<\/span>/);
+
+  assert.deepEqual(
+    [...html.matchAll(/<h3>[^<]+<\/h3><span>(\d+)<\/span>/g)].map((match) => Number(match[1])),
+    [0, 0, 0],
+  );
 });
 
 test("every space lifecycle badge color pair meets WCAG AA contrast in every theme", () => {
@@ -180,6 +190,15 @@ test("archived space runs stay out of default cards and attention counts", () =>
     }),
   );
   assert.doesNotMatch(html, /Obsolete failure/);
+
+  assert.deepEqual(
+    html
+      .match(/class="space-runs-header">[^]*?<\/header>/)[0]
+      .replace(/<[^>]*>/g, "")
+      .match(/\d+/g),
+    ["0", "0"],
+  );
+  assert.match(html, /class="show-archived-runs">[^]*?<input type="checkbox"/);
 });
 
 test("space run profiles name the recorded starter and leave unattributed history unnamed", () => {

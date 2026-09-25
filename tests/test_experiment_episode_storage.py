@@ -222,7 +222,7 @@ def test_one_live_parent_per_experiment_survives_a_turn_that_wakes_nothing(
     assert not runtime.active and not runtime.paused and not runtime.task_active
     assert runtime.episode_live
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="already has a live episode"):
         store.create_experiment_episode_with_invocation(
             _task(store, "loop-root-2", str(uuid.uuid4()), ceiling=10)
         )
@@ -260,7 +260,7 @@ def test_failed_root_insert_rolls_back_parent_and_child(tmp_path: Path) -> None:
     request = dict(task.request)
     request.pop("control_completion_criteria")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="completion criteria"):
         store.create_experiment_episode_with_invocation(
             task.model_copy(update={"request": request})
         )
@@ -373,7 +373,7 @@ def test_binding_and_ending_receipt_commit_or_roll_back_together(tmp_path: Path)
         "receipt": {"summary": "x" * AGENT_TASK_RECEIPT_MAX_BYTES},
     }
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="storage limit"):
         _bind(store, episode_id, "loop-root", invocation=1, ending_signal=oversized)
 
     state = store.experiment_episode(episode_id)
@@ -445,7 +445,7 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
         raise RuntimeError("simulated episode binding failure")
 
     monkeypatch.setattr(store, "_commit_experiment_episode_turn", fail_after_watcher_insert)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="simulated episode binding failure"):
         store.commit_experiment_episode_handoff(
             [watcher],
             binding=binding,
@@ -656,7 +656,7 @@ def test_non_stop_wrapup_preserves_unnotified_observers_for_fresh_human_episode(
         ceiling=1,
         watcher_ids=["pending-completion", "unfinished-observer"],
     ).model_copy(update={"authorized_by": None})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="human authorization"):
         store.create_experiment_episode_with_invocation(
             unauthorized,
             ["pending-completion", "unfinished-observer"],

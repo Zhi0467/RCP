@@ -527,12 +527,12 @@ def test_auto_research_mail_batch_validation_is_all_or_none(tmp_path) -> None:
     delivery = _claimed_delivery(tmp_path)
     payload = delivery.model_dump(mode="json")
     payload["messages"][1]["delivery_operation_id"] = "another-wake"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="crosses claimed wake operations"):
         parse_auto_research_mail_delivery(json.dumps(payload))
 
     payload = delivery.model_dump(mode="json")
     payload["messages"].append(payload["messages"][0])
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="duplicate message"):
         AutoResearchMailDelivery.model_validate(payload)
 
     unclaimed = delivery.messages[0].model_dump(mode="json")
@@ -594,9 +594,9 @@ def test_claim_prefix_stops_at_the_shared_count_and_exact_wire_boundary(
     assert [message.message_id for message in selected] == ["message-0", "message-1"]
     rendered = two_message_delivery.model_dump_json() + "\n"
     assert parse_auto_research_mail_delivery(rendered) == two_message_delivery
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exceeds .* bytes"):
         parse_auto_research_mail_delivery(rendered + " ")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="exceeds 2 messages"):
         auto_research_mail_delivery(
             episode_id="auto_research",
             recipient_task_id="root",
@@ -1077,7 +1077,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
     rejection = next(
         item for item in receipts if item.category == "experiment_watcher_maintenance_rejected"
     )
-    assert rejection.payload
+    assert "not staged" in str(rejection.payload["problem"])
     assert not [item for item in receipts if item.category == "experiment_watchers_maintained"]
     assert child.result is not None
     assert child.result["messages"][-1] == "The delegated Experiment check completed."

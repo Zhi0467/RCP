@@ -78,9 +78,9 @@ def test_workflow_resolution_is_ordered_and_deduplicates_shared_dependencies() -
 
 
 def test_an_unknown_id_is_a_visible_preflight_failure() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is not available"):
         official_registry().resolve(workflow_ids=["no-such-workflow"])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is not available"):
         official_registry().resolve(skill_ids=["no-such-skill"])
 
 
@@ -96,7 +96,7 @@ def test_project_defaults_apply_when_a_request_selects_nothing(manifest, tmp_pat
             invoked_skill_ids=["evidence-triage"],
         )
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not enabled in project skill defaults"):
         service.resolve_skill_request(
             RunRequest(provider="codex", run_on="laptop", invoked_skill_ids=["graph-audit"])
         )
@@ -196,7 +196,7 @@ def test_each_attempt_stages_its_own_bundle_in_a_reused_stage(tmp_path: Path) ->
     assert first[0]["path"] != second[0]["path"]
     assert (stage / "inputs" / "rcp-skills-turn-1" / "skill" / "graph-audit" / "SKILL.md").is_file()
     assert (stage / "inputs" / "rcp-skills-turn-2" / "skill" / "graph-audit" / "SKILL.md").is_file()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="already exists"):
         stage_skill_selection(
             selection, local_stage=stage, remote_stage=None, label="rcp-skills-turn-2"
         )
@@ -321,7 +321,7 @@ def test_local_content_addressed_skill_stage_rejects_unsafe_or_wrong_existing_en
     skill_file.write_text(original + "\nchanged", encoding="utf-8")
     skill_file.chmod(0o400)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match"):
         stage_skill_selection(
             selection,
             local_stage=stage,

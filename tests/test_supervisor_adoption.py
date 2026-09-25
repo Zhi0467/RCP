@@ -85,7 +85,7 @@ def test_node_package_contains_only_required_runtime_and_npm(tmp_path, monkeypat
     outside = tmp_path / "outside"
     outside.write_text("private")
     (npm / "unsafe").symlink_to(outside)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside"):
         build.node_runtime(node, tmp_path / "unsafe.tar.gz")
 
 
@@ -111,12 +111,12 @@ def test_payload_requires_exact_historical_identity_and_bytes(tmp_path, monkeypa
     receipt = payload(tmp_path, monkeypatch)
     assert adoption.verify_payload() == receipt
     (tmp_path / "historical-source.bundle").write_text("changed")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="SHA-256"):
         adoption.verify_payload()
     receipt = payload(tmp_path, monkeypatch)
     receipt["source_commit"] = "b" * 40
     (tmp_path / "package-receipt.json").write_text(json.dumps(receipt))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="historical baseline"):
         adoption.verify_payload()
 
 
@@ -139,7 +139,7 @@ def test_runtime_archive_refuses_escape_or_unrelated_files_before_extraction(
     monkeypatch.setattr(
         adoption.guest, "run", lambda *_args, **_kwargs: pytest.fail("unsafe extraction")
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="archive member|escapes"):
         adoption.install_node()
 
 
@@ -151,7 +151,7 @@ def test_bootstrap_checks_disposable_marker_before_any_host_mutation(monkeypatch
     monkeypatch.setattr(
         adoption.guest, "run", lambda *_args, **_kwargs: pytest.fail("host mutation")
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="disposable"):
         adoption.bootstrap()
 
 

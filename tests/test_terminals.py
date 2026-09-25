@@ -446,6 +446,7 @@ def test_preflight_refuses_a_service_manager_that_expanded_its_own_variables(tmp
         text=True,
     )
     assert result.returncode == 1
+    assert "rewrote the containment preflight" in result.stderr
 
 
 def test_launcher_waits_for_preflight_and_leaves_prompt_in_pty(monkeypatch):

@@ -123,11 +123,11 @@ def _episode(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
 
 def test_auto_research_request_contract_has_only_operational_roles_and_budget() -> None:
     assert AutoResearchStartRequest(invocation_ceiling=1).invocation_ceiling == 1
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
         AutoResearchStartRequest(invocation_ceiling=0)
     with pytest.raises(ValidationError, match="orchestrator|worker"):
         AutoResearchRunRequest.model_validate({"episode_id": "episode", "role": "report"})
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         AutoResearchRunRequest.model_validate(
             {"episode_id": "episode", "role": "orchestrator", "ending": "completed"}
         )

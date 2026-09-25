@@ -227,7 +227,7 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
 
 
 def test_dispatch_binding_is_strict_and_normalized() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         AgentDispatchAuthority.model_validate(
             {
                 "profile": "ordinary",
@@ -236,7 +236,7 @@ def test_dispatch_binding_is_strict_and_normalized() -> None:
                 "permission": "forged",
             }
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="sorted and unique"):
         AgentDispatchScope(run_truth_scope=["repo-b", "repo-a"], patch_kind="work")
     with pytest.raises(ValidationError, match="apply_target"):
         AgentTaskAuthority.model_validate(
@@ -369,39 +369,63 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
 
 
 @pytest.mark.parametrize(
-    "authority",
+    ("authority", "message"),
     [
-        AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="discuss",
-            scope=AgentDispatchScope(chat_scope="project"),
+        (
+            AgentDispatchAuthority(
+                profile="ordinary",
+                task_contract="discuss",
+                scope=AgentDispatchScope(chat_scope="project"),
+            ),
+            "requires an exact chat scope and chat id",
         ),
-        AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="work_auto",
-            scope=AgentDispatchScope(patch_kind="work"),
+        (
+            AgentDispatchAuthority(
+                profile="ordinary",
+                task_contract="work_auto",
+                scope=AgentDispatchScope(patch_kind="work"),
+            ),
+            "requires an exact chat scope and chat id",
         ),
-        AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="work_auto",
-            scope=AgentDispatchScope(chat_scope="node", chat_id="chat-one", patch_kind="work"),
+        (
+            AgentDispatchAuthority(
+                profile="ordinary",
+                task_contract="work_auto",
+                scope=AgentDispatchScope(
+                    chat_scope="node",
+                    chat_id="chat-one",
+                    patch_kind="work",
+                ),
+            ),
+            "node chat scope requires an exact node id",
         ),
-        AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="scratch_patch",
-            scope=AgentDispatchScope(chat_scope="project", chat_id="chat-one", patch_kind="seed"),
+        (
+            AgentDispatchAuthority(
+                profile="ordinary",
+                task_contract="scratch_patch",
+                scope=AgentDispatchScope(
+                    chat_scope="project",
+                    chat_id="chat-one",
+                    patch_kind="seed",
+                ),
+            ),
+            "scratch_patch cannot carry chat identity",
         ),
-        AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="paper_readonly",
-            scope=AgentDispatchScope(chat_scope="project", chat_id="chat-one"),
+        (
+            AgentDispatchAuthority(
+                profile="ordinary",
+                task_contract="paper_readonly",
+                scope=AgentDispatchScope(chat_scope="project", chat_id="chat-one"),
+            ),
+            "paper_readonly cannot carry chat, Patch, or control scope",
         ),
     ],
 )
 def test_incomplete_contract_scope_refuses_dispatch_and_apply(
     authority: AgentDispatchAuthority,
+    message: str,
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         require_dispatch(authority)
 
     task = AgentTaskAuthority(
@@ -415,7 +439,7 @@ def test_incomplete_contract_scope_refuses_dispatch_and_apply(
         ),
         dispatch_authority=authority,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         require_apply(task, seed_patch(), is_project_member=seated_on_every_project)
 
 
@@ -444,26 +468,26 @@ def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path
     )
     ordinary_tasks = BackgroundAgentTasks(store, stream)
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="action 'dispatch'.*orchestrate"):
             tasks.start(
                 "project-one",
                 "project_chat",
                 _work_request(),
                 authorized_by=_authorizer(store),
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="human authorizer"):
             ordinary_tasks.start(
                 "project-one",
                 "project_chat",
                 _work_request(),
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="ordinary agent task.*human authorizer"):
             ordinary_tasks.start(
                 "project-one",
                 "project_chat",
                 _work_request().model_copy(update={"mode": "discuss"}),
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="ordinary agent task.*human authorizer"):
             ordinary_tasks.start(
                 "project-one",
                 "paper_coach",
@@ -606,7 +630,7 @@ def test_continuation_refuses_a_missing_parent_before_insert_or_spawn(tmp_path: 
     )
     tasks = BackgroundAgentTasks(store, _unused_stream)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="continuation parent is missing"):
         tasks._create_and_spawn(
             "project-one",
             "project_chat",
@@ -658,7 +682,7 @@ def test_storage_refuses_non_episode_child_without_an_existing_parent(tmp_path: 
         parent_id="storage-parent",
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="existing parent task"):
         store.create_agent_task(child)
 
     assert store.agent_task(child.operation_id) is None
@@ -782,7 +806,7 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
         _unused_stream,
         dispatch_authority_resolver=lambda _kind, _request: orchestrate,
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="action 'dispatch'"):
         start_watcher_notification(
             refused,
             "project-one",
@@ -795,21 +819,22 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("case", "message"),
     [
-        "cross-project",
-        "missing-binding",
-        "discuss",
-        "paper",
-        "scope",
-        "patch-kind",
-        "control-node",
+        ("cross-project", "unknown agent task"),
+        ("missing-binding", "no dispatch authority binding"),
+        ("discuss", "exposes no graph Patch channel"),
+        ("paper", "exposes no graph Patch channel"),
+        ("scope", "run_truth_scope does not match"),
+        ("patch-kind", "Patch kind does not match"),
+        ("control-node", "Experiment control node does not match"),
     ],
 )
 def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
     manifest,
     tmp_path: Path,
     case: str,
+    message: str,
 ) -> None:
     store = AppStore(tmp_path / f"{case}.sqlite3")
     authorizer = _authorizer(store)
@@ -891,7 +916,7 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
         }
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         history.append(patch)
 
     assert history.load_patches() == []

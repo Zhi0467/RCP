@@ -608,7 +608,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
         return
 
     errors = [event.text for event in resume_events if event.event == "error"]
-    assert errors
+    assert any("exact saved native session" in text for text in errors)
     assert service.history.state().revision == revision_before
     assert len(service.history.load_patches()) == patch_count_before
     assert [item.watcher_id for item in store.watchers(project_id)] == watcher_ids_before
@@ -697,7 +697,7 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
     # exists to save, with the graph Patch already applied.
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
-    assert launcher.diagnostics
+    assert any("arms one check twice" in item for item in launcher.diagnostics)
     armed = app.state.background_tasks.store.watchers(project_id)
     assert [item.check_command for item in armed] == ["false"]
 
@@ -905,7 +905,7 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
         parent_operation_id=original.operation_id,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no recorded original task contract"):
         _parent_task_contract_path(retried, new_stage, None)
 
 
@@ -2249,7 +2249,7 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
         for item in store.agent_task_receipts(execution.operation_id)
         if item.category == "experiment_watcher_maintenance_rejected"
     )
-    assert rejection.payload["problem"]
+    assert "not staged" in str(rejection.payload["problem"])
 
 
 @pytest.mark.asyncio

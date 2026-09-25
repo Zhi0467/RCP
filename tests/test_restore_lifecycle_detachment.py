@@ -483,7 +483,7 @@ def test_restore_detachment_rolls_back_all_owners_on_failure(
         raise RuntimeError("injected owner failure")
 
     monkeypatch.setattr(store, "detach_auto_research_for_restore", fail_after_earlier_owners)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="injected owner failure"):
         store.detach_restored_lifecycle(
             diagnostic=RESTORE_DIAGNOSTIC,
             confirmed_by=RESTORE_CONFIRMER,
@@ -498,20 +498,20 @@ def test_restore_owner_helpers_require_the_composing_transaction(tmp_path: Path)
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     with store.connection() as connection:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="active transaction"):
             store.detach_auto_research_for_restore(
                 connection,
                 diagnostic=RESTORE_DIAGNOSTIC,
                 now=now,
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="requires a transaction"):
             store.detach_auto_research_children_for_restore(
                 connection,
                 diagnostic=RESTORE_DIAGNOSTIC,
                 confirmed_by=RESTORE_CONFIRMER,
                 now=now,
             )
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="active transaction"):
             store.detach_watchers_for_restore(
                 connection,
                 diagnostic=RESTORE_DIAGNOSTIC,

@@ -331,7 +331,7 @@ def test_project_identity_requires_canonical_uuid4(field: str, value: str) -> No
     }
     identity[field] = value
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="canonical UUIDv4"):
         ProjectIdentity.model_validate(identity)
 
     with pytest.raises(ValidationError):

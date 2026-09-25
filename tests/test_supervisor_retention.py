@@ -136,7 +136,7 @@ def test_plan_refuses_as_a_whole_when_the_machine_state_disagrees(tmp_path, defe
         phase="committed" if defect == "pointer" else "pointer_switched",
     )
     current = "102" if defect == "pointer" else "101"
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="nothing is pruned"):
         plan_retention(
             records=[(record, 1.0)],
             checkpoints_root=checkpoints,

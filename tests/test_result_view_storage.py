@@ -86,7 +86,7 @@ def test_result_view_request_is_a_strict_create_or_revise_union() -> None:
 
     assert create.result_view is not None and create.result_view.action == "create"
     assert revise.result_view is not None and revise.result_view.action == "revise"
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         RunRequest.model_validate(
             {
                 "mode": "work",
@@ -94,7 +94,7 @@ def test_result_view_request_is_a_strict_create_or_revise_union() -> None:
                 "result_view": {"action": "create", "view_id": _VIEW_ID},
             }
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Field required"):
         RunRequest.model_validate(
             {
                 "mode": "work",
@@ -121,7 +121,7 @@ def test_result_view_request_is_a_strict_create_or_revise_union() -> None:
     ],
 )
 def test_result_view_request_requires_node_scoped_work(values: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="node-scoped Work"):
         RunRequest.model_validate({**values, "result_view": {"action": "create"}})
 
 
@@ -205,7 +205,7 @@ def test_actual_legacy_result_view_schema_migrates_before_indexes_are_created(tm
     }
     assert stored == ("",)
     assert migrated.result_view_for_diagnostics(legacy.view_id) == legacy
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="size does not match"):
         migrated.result_view_bytes(
             legacy.view_id,
             expected_content_sha256=legacy.content_sha256,
@@ -392,7 +392,7 @@ def test_result_view_bytes_are_bounded_digest_validated_and_updated_atomically(t
     with pytest.raises(ResultViewConflict):
         store.result_view_bytes(record.view_id, expected_content_sha256="f" * 64)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="digest does not match"):
         store.revise_result_view(
             record.view_id,
             expected_content_sha256=record.content_sha256,
@@ -418,7 +418,7 @@ def test_invalid_create_does_not_leave_metadata_without_bytes(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     record = _view()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="size does not match"):
         store.create_result_view(record, html=b"<html>short</html>")
 
     assert store.result_view_for_diagnostics(record.view_id) is None

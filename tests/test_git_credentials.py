@@ -288,6 +288,7 @@ def test_shipped_helper_refuses_unsafe_root_mode_and_incomplete_pair(tmp_path: P
 
     unsafe = _helper_prepare(root)
     assert unsafe.returncode == 2
+    assert "unsafe type, ownership, or mode" in unsafe.stderr
     assert list(root.iterdir()) == []
 
     root.chmod(0o700)
@@ -299,6 +300,7 @@ def test_shipped_helper_refuses_unsafe_root_mode_and_incomplete_pair(tmp_path: P
 
     incomplete = _helper_prepare(root)
     assert incomplete.returncode == 2
+    assert "pair is incomplete" in incomplete.stderr
     assert private.exists()
 
 
@@ -321,6 +323,7 @@ def test_shipped_helper_refuses_a_checkout_inside_the_credential_root(
     )
 
     assert refused.returncode == 2
+    assert "checkout and credential paths overlap" in refused.stderr
     assert list(root.iterdir()) == []
 
 
@@ -385,6 +388,7 @@ def test_default_runner_stops_output_before_it_can_exceed_the_bound() -> None:
 
     assert result.returncode == 126
     assert result.stdout == ""
+    assert result.stderr == "output exceeded the bound"
 
 
 def test_default_runner_returns_bounded_stdout_stderr_and_exit_status() -> None:
@@ -445,6 +449,7 @@ def test_default_runner_keeps_the_timeout_after_output_pipes_close() -> None:
 
     assert result.returncode == 126
     assert result.stdout == ""
+    assert result.stderr == "command timed out"
 
 
 def test_manager_ships_one_helper_through_strict_local_and_ssh_account_boundaries(
@@ -787,6 +792,7 @@ def test_invalid_post_push_readback_still_removes_the_exact_owned_ref(
 
     assert probe.status == "failed"
     assert probe.temporary_ref is None
+    assert "invalid write-probe ref record" in probe.diagnostic
     assert not script.results
     assert any(f":{temporary_ref}" in call for call in script.git_calls)
 
@@ -981,6 +987,7 @@ def test_write_probe_names_the_exact_unrecognized_failure_stage(tmp_path: Path) 
     )
 
     assert probe.status == "failed"
+    assert "during advertised HEAD lookup" in probe.diagnostic
 
 
 def test_write_probe_never_deletes_a_preexisting_request_ref(tmp_path: Path) -> None:
@@ -1156,7 +1163,7 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     assert cleanup.fields[0].value == temporary_ref
     assert temporary_ref in cleanup.actions[0].instruction
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="exact provisioning request"):
         deploy_key_operator_step(
             manager,
             machine,
@@ -1178,5 +1185,5 @@ def test_layout_uses_one_canonical_key_path_for_local_and_remote_accounts(
         Path("/srv/alice/.local/share/rcp/credentials") / relative
     )
     for invalid_alias in ("Paper", "paper_repo", "paper/repo", "a" * 49):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="canonical provisioning alias"):
             layout.project_deploy_key_path(PROJECT_ID, invalid_alias)

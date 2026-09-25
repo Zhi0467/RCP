@@ -286,6 +286,8 @@ def test_wrong_remote_account_stops_before_provider_probe(tmp_path: Path) -> Non
     )
 
     assert checked.step.state == "operator_action_needed"
+    assert "reached bob" in checked.step.message
+    assert "requires OS account alice" in checked.step.message
     assert launcher.readiness_calls == []
     assert checked.step.actions[-1] == CommandAction(
         argv=("sudo", "-u", "rcp", "-H", "ssh", "gpu.example", "id -un"),
@@ -315,6 +317,7 @@ def test_unsupported_saved_model_requires_configuration_not_login(tmp_path: Path
     )
 
     assert checked.step.state == "operator_action_needed"
+    assert "saved model 'gpt-test'" in checked.step.message
     assert all(isinstance(action, ExternalAction) for action in checked.step.actions)
 
 
@@ -336,6 +339,7 @@ def test_missing_catalog_cannot_approve_an_explicit_saved_model(tmp_path: Path) 
     )
 
     assert checked.step.state == "operator_action_needed"
+    assert "did not return a model catalog" in checked.step.message
 
 
 def test_orchestrator_uses_the_real_provider_version_floor(tmp_path: Path) -> None:
@@ -356,6 +360,7 @@ def test_orchestrator_uses_the_real_provider_version_floor(tmp_path: Path) -> No
     )
 
     assert checked.step.state == "operator_action_needed"
+    assert "requires 0.138.0 or newer" in checked.step.message
 
 
 def test_work_like_profile_check_refuses_a_host_that_cannot_sandbox(tmp_path: Path) -> None:
@@ -756,6 +761,7 @@ def test_cli_shows_a_safe_durable_boundary_refusal(tmp_path: Path) -> None:
     )
 
     assert exit_code == 1
+    assert "provider configuration changed after the plan" in output.getvalue()
 
 
 def test_local_execution_account_probe_reports_the_process_account() -> None:

@@ -92,7 +92,7 @@ def test_adoption_failure_preserves_completed_evidence_and_stops_only_owned_gues
     monkeypatch.setattr(live, "preflight", lambda *_: {"accelerator": "kvm"})
     monkeypatch.setattr(live, "download_image", lambda *_: (tmp_path / "image", "digest"))
     monkeypatch.setattr(live, "payload", lambda *_args, **_kwargs: None)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="incomplete protected backup"):
         live.drive("24.04", bundles, adoption, tmp_path)
     receipt = json.loads((tmp_path / "qualification.json").read_text())
     assert receipt["status"] == "failed" and receipt["actual_reboot_proven"] is False
@@ -155,7 +155,7 @@ def test_failed_adoption_collects_safe_historical_evidence_before_guest_shutdown
     monkeypatch.setattr(live, "preflight", lambda *_: {"accelerator": "kvm"})
     monkeypatch.setattr(live, "download_image", lambda *_: (tmp_path / "image", "digest"))
     monkeypatch.setattr(live, "payload", lambda *_args, **_kwargs: None)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="original adoption failure"):
         live.drive("24.04", bundles, adoption, tmp_path)
     text = (tmp_path / "qualification.json").read_text()
     receipt = json.loads(text)

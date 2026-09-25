@@ -433,7 +433,7 @@ def test_local_artifact_read_preserves_transient_operational_errors(
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(os, "open", fail_target_open)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated read failure"):
         read_local_regular_file(artifacts, target.name, max_bytes=1024)
 
 
@@ -617,7 +617,7 @@ def test_temporary_artifact_revision_recovers_rollback_after_remount(
         save_exchange_then_crash,
     )
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated interruption after racing rollback"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -679,7 +679,7 @@ def test_conditional_artifact_revision_refuses_agent_writable_recovery_state(
     original = b"<p>original</p>"
     target.write_bytes(original)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside agent-writable output"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -717,7 +717,7 @@ def test_conditional_artifact_revision_discards_a_partial_prepublication_write(
     monkeypatch.setattr(os, "write", interrupt_candidate_write)
     monkeypatch.setattr(os, "unlink", lambda *_args, **_kwargs: None)
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="process death during candidate write"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -759,7 +759,7 @@ def test_conditional_artifact_revision_refuses_a_nonregular_staged_marker(
     marker = recovery / _artifact_staged_marker_name(target.name, original, candidate)
     marker.mkdir()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="staging marker is not a regular file"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -807,7 +807,7 @@ def test_temporary_artifact_revision_recovers_a_pending_exchange_after_remount(
         save_exchange_then_crash,
     )
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated interruption"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -851,7 +851,7 @@ def test_temporary_artifact_recovery_does_not_resurrect_a_deleted_live_source(
         raise OSError("simulated interruption after publication")
 
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated interruption"):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -1074,7 +1074,7 @@ def test_remote_kept_revision_does_not_turn_operational_error_into_conflict(
         raise OSError(errno.EIO, "simulated storage failure")
 
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", unavailable_exchange)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="simulated storage failure"):
         replace_staged_artifact(
             {
                 "root": str(root),
@@ -1145,7 +1145,7 @@ def test_keep_refuses_unsafe_artifacts_entry(tmp_path: Path) -> None:
     target.mkdir()
     (workspace.root.parent / "artifacts").symlink_to(target, target_is_directory=True)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="artifacts path is not a regular directory"):
         workspace.keep_artifact(
             source_name="curves.html",
             project_name="Pilot",
@@ -1255,7 +1255,7 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
 
 
 def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must stay inside its viewport"):
         RunRequest.model_validate(
             {
                 "artifact_context": {
@@ -1413,6 +1413,7 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         store.connection() as connection,
         pytest.raises(
             ValueError,
+            match="every artifact revision candidate to be settled",
         ),
     ):
         store._require_finished_transfer_state(connection, project_id)
@@ -1484,6 +1485,7 @@ def test_revision_conflict_preserves_external_edit_until_human_rejects(
     response = client.post(f"{base}/accept")
 
     assert response.status_code == 409, response.text
+    assert "changed after this candidate" in response.json()["detail"]
     assert workspace.read_kept_artifact(kept_filename) == external
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
@@ -1533,6 +1535,7 @@ def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
     )
 
     assert response.status_code == 409, response.text
+    assert "changed after this candidate" in response.json()["detail"]
     assert workspace.read_kept_artifact(kept_filename) == invalid_html
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
@@ -1561,6 +1564,7 @@ def test_revision_accept_conflicts_when_current_artifact_was_deleted(
     response = client.post(f"{base}/accept")
 
     assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "The current artifact is no longer available."
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
     )
@@ -1680,6 +1684,7 @@ def test_revision_accept_detects_an_edit_during_publication(
     )
 
     assert response.status_code == 409, response.text
+    assert "changed while this candidate was being accepted" in response.json()["detail"]
     assert workspace.read_kept_artifact(kept_filename) == external
 
 
@@ -1701,6 +1706,9 @@ def test_retry_rechecks_unresolved_artifact_revision_admission(
     )
 
     assert response.status_code == 409, response.text
+    assert response.json()["detail"] == (
+        "Accept or reject the pending artifact revision before requesting another one."
+    )
 
 
 def test_keep_during_pending_revision_moves_accept_to_the_kept_artifact(
@@ -1758,7 +1766,7 @@ def test_pending_revision_protects_temporary_source_and_blocks_history_detachmen
     assert source_lifecycle.must_exist is True
     assert source_lifecycle.protect_from_cleanup is True
     assert f"artifact_revision_sources:{candidate.candidate_id}" in source_lifecycle.owner_refs
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unresolved artifact revision"):
         store.mark_agent_tasks_history_only(
             [candidate.source_operation_id, candidate.revision_operation_id]
         )
@@ -1845,7 +1853,7 @@ def test_update_checkpoint_settles_accepting_artifact_journal_before_copy(
         decided_by=authorized_human(app),
     )
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError, match="crash after exchange"):
         if kept:
             assert kept_filename is not None
             app.state.service.history.workspace.replace_kept_artifact(

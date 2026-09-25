@@ -162,6 +162,7 @@ def test_acceptance_agent_reuse_refuses_a_provider_mode_owner(
             tmp_path,
         )
     assert stopped.value.code == main_module.EXIT_REFUSED_UNAVAILABLE
+    assert "requested 'acceptance'" in capsys.readouterr().err
 
 
 def test_acceptance_agent_reuse_refuses_an_owner_without_an_explicit_mode(
@@ -190,6 +191,7 @@ def test_acceptance_agent_reuse_refuses_an_owner_without_an_explicit_mode(
             tmp_path,
         )
     assert stopped.value.code == main_module.EXIT_REFUSED_UNAVAILABLE
+    assert "does not report a recognized agent mode" in capsys.readouterr().err
 
 
 def test_acceptance_launcher_refuses_remote_execution(tmp_path) -> None:
@@ -277,7 +279,7 @@ def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
     assert not (stage / "watch.json").exists()
     assert not (stage / "messages.json").exists()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="changed its native session"):
         asyncio.run(
             _events(
                 continuation_launcher,
@@ -671,7 +673,7 @@ def test_acceptance_result_view_create_and_revise_keep_one_stage_session_and_pat
     }
 
     revise_contract = _result_view_contract(stage, action="revise", path=target)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="changed the native session"):
         asyncio.run(
             _events(
                 launcher,
@@ -724,7 +726,7 @@ def test_acceptance_result_view_revision_requires_an_existing_path_in_the_same_s
     outside.write_text("<html>outside</html>", encoding="utf-8")
     launcher = AcceptanceAgentLauncher()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="left the conversation cwd"):
         asyncio.run(
             _events(
                 launcher,
@@ -737,7 +739,7 @@ def test_acceptance_result_view_revision_requires_an_existing_path_in_the_same_s
         )
 
     missing = stage / "views" / ("b" * 24) / "loss-curves-by-seed.html"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="revision target is unavailable"):
         asyncio.run(
             _events(
                 launcher,

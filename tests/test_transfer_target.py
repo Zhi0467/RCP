@@ -177,7 +177,7 @@ def test_activation_failure_keeps_exact_inbox_and_never_registers_project(
         raise RuntimeError("injected failure before activation")
 
     monkeypatch.setattr(target, "activate_target_project_transfer", fail_before_activation)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="injected failure"):
         _activate(coordinator, fixture)
 
     assert target.project(archive.project_id) is None
@@ -216,7 +216,7 @@ def test_activation_retry_reuses_prepublication_configuration_after_partial_publ
         raise RuntimeError(f"injected {boundary} publication crash")
 
     monkeypatch.setattr(transfer_importer, attribute, fail_after_publication)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=f"injected {boundary}"):
         _activate(coordinator, fixture)
 
     pending = target.project_transfer_import(archive.target_request_id)

@@ -565,6 +565,7 @@ def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypa
         assert projected["eligible"] is False
         assert projected["reason"] == response.json()["detail"]
         assert "systemd-run" in response.json()["detail"]
+        assert "not installed" in response.json()["detail"]
         assert client.get(path).json() == []
         assert app.state.services.terminals.list(project_id) == []
 
@@ -918,4 +919,5 @@ def test_terminal_missing_deploy_key_names_provisioning_action(tmp_path, termina
             f"/api/projects/{project_id}/terminals", json={"repository_id": "paper-repo"}
         )
     assert response.status_code == 503
+    assert "no deploy key" in response.json()["detail"]
     assert not terminal_pty

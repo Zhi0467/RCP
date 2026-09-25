@@ -61,7 +61,7 @@ def test_existing_unsafe_root_storage_is_refused_without_normalizing_it(
         return info
 
     monkeypatch.setattr(Path, "lstat", metadata)
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="unsafe ownership or permissions"):
         driver._root_directory(path, mode=0o755)
     after = original_lstat(path)
     assert (after.st_ino, after.st_mode, after.st_uid) == (
@@ -153,7 +153,7 @@ def test_systemd_reentrant_guard_allows_only_durable_selected_choice(
     if allowed:
         assert driver.recover(startup=True) == record
     else:
-        with pytest.raises(SupervisorError):
+        with pytest.raises(SupervisorError, match="chosen|selected"):
             driver.recover(startup=True)
     with pytest.raises(OperationBusy):
         driver.recover(startup=False)
@@ -175,7 +175,7 @@ def test_invalid_journal_never_takes_live_lock_bypass(monkeypatch):
         "selected_pointer",
         lambda paths: pytest.fail("invalid journal cannot admit startup"),
     )
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="invalid journal"):
         driver.recover(startup=True)
 
 
@@ -272,7 +272,7 @@ def test_self_update_cannot_downgrade_recovery_below_running_or_selected_app(
     )
     monkeypatch.setattr(driver, "selected_pointer", lambda _: {"supervisor_version": required})
     monkeypatch.setattr(driver, "install_supervisor", lambda *_: pytest.fail("downgrade installed"))
-    with pytest.raises(SupervisorError):
+    with pytest.raises(SupervisorError, match="downgrade"):
         driver.supervisor_update(None, EventEmitter("server supervisor update", stream=StringIO()))
 
 
@@ -370,10 +370,10 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
         assert driver.restore(arguments, emitter, paths=paths) == 0
         assert calls == ["enable", "committed"]
     else:
-        with pytest.raises(SupervisorError):
+        with pytest.raises(SupervisorError, match="activation failed"):
             driver.restore(arguments, emitter, paths=paths)
         assert calls == ["enable"]
-        with pytest.raises(SupervisorError):
+        with pytest.raises(SupervisorError, match="completed team initialization or restore"):
             startup_recover(paths=paths, startup=True)
 
 

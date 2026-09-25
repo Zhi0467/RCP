@@ -240,6 +240,7 @@ test("experiment detail hides attempt history, shows the exact gate, and keeps A
   assert.match(html, /<strong>7<\/strong>/);
 
   assert.match(html, /decision\/resource moved to 8xA100 after this episode was pinned to 4xA100/);
+  assert.match(html, /Decision decision\/data is still open\./);
   assert.match(html, /<button[^>]*disabled=""/);
   // Semantic attempt history belongs in Runs detail, not the node drawer.
   assert.doesNotMatch(html, /Train the ablation/);
@@ -542,9 +543,20 @@ test("node removal is separate, guarded by canonical truth and active loops, and
     assert.match(removable, /class="node-removal-confirmation" role="alert" hidden=""/);
     assert.match(removable, /<strong>“Remove this hypothesis”<\/strong>/);
 
+    assert.match(removable, /class="node-removal-action"><button/);
+    assert.equal(
+      (
+        removable
+          .match(/class="node-removal-confirmation"[^]*?<\/div><\/div>/)?.[0]
+          .match(/<button/g) ?? []
+      ).length,
+      2,
+    );
     const accepted = renderNode({ canonicalStanding: "accepted" });
 
+    assert.match(accepted, /class="node-removal-action"><button[^>]*disabled=""/);
     const active = renderNode({ experimentControl: { active: true } });
+    assert.match(active, /class="node-removal-action"><button[^>]*disabled=""/);
 
     const staged = renderNode({ stagedForRemoval: true });
 

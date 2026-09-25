@@ -115,7 +115,7 @@ def test_transfer_refuses_dirty_target_without_overwriting(
         _git(target, "update-index", "--assume-unchanged", "code.py")
     elif change == "ignored":
         (target / ".git/info/exclude").write_text("notes.txt\n")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="uncommitted|untracked|hidden"):
         install_repository_bundle("", str(target), bundle, head)
     assert changed.read_text() == "target work\n"
     assert _git(target, "rev-parse", "HEAD") == initial
@@ -197,7 +197,7 @@ def test_same_head_retry_still_validates_the_incoming_bundle(
     bundle, head = _capture(source, tmp_path)
     install_repository_bundle("", str(target), bundle, head)
     bundle.write_bytes(b"invalid Git bundle")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="could not bundle"):
         install_repository_bundle("", str(target), bundle, head)
 
 
@@ -213,7 +213,7 @@ def test_same_head_retry_still_refuses_tracked_or_index_changes(
         _git(target, "add", "code.py")
     elif change == "hidden":
         _git(target, "update-index", "--assume-unchanged", "code.py")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="uncommitted|hidden"):
         install_repository_bundle("", str(target), bundle, head)
     assert (target / "code.py").read_text() == "target work after first import\n"
     assert _git(target, "rev-parse", "HEAD") == head
@@ -229,7 +229,7 @@ def test_capture_refuses_git_tracked_rcp_state(
     _git(source, "add", directory)
     _git(source, "commit", "-m", "Tracked RCP state")
     head = _git(source, "rev-parse", "HEAD")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="tracked .research or .recovery"):
         capture_repository_bundle("", str(source), head, tmp_path / "refused.bundle")
     assert not (tmp_path / "refused.bundle").exists()
 
@@ -240,7 +240,7 @@ def test_capture_rejects_source_head_drift_and_existing_destination(
     source, _target, origin = repositories
     old_head = _git(origin, "rev-parse", "HEAD")
     destination = tmp_path / "refused.bundle"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="HEAD changed"):
         capture_repository_bundle("", str(source), old_head, destination)
     assert not destination.exists()
     destination.write_bytes(b"existing bundle")
@@ -261,7 +261,7 @@ def test_install_refuses_git_tracked_target_rcp_state(
     _git(target, "add", directory)
     _git(target, "commit", "-m", "Existing canonical history")
     initial = _git(target, "rev-parse", "HEAD")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="tracked .research or .recovery"):
         install_repository_bundle("", str(target), bundle, head)
     assert retained.read_text() == "existing target history\n"
     assert _git(target, "rev-parse", "HEAD") == initial
@@ -279,7 +279,7 @@ def test_capture_refuses_external_repository_contents(
         (source / ".gitattributes").write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
         _git(source, "add", ".gitattributes")
     _git(source, "commit", "-m", "External repository contents")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="cannot carry"):
         capture_repository_bundle(
             "", str(source), _git(source, "rev-parse", "HEAD"), tmp_path / "refused.bundle"
         )
@@ -303,7 +303,7 @@ def test_invalid_bundle_never_changes_target(
     else:
         bundle.unlink()
         _git(source, "bundle", "create", str(bundle), "HEAD", "main")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repository Git transfer|repository transfer bundle"):
         install_repository_bundle("", str(target), bundle, head)
     assert _git(target, "rev-parse", "HEAD") == initial
     assert (target / "code.py").read_text() == "print('published')\n"
@@ -327,7 +327,7 @@ def test_unsafe_checkout_refused(
         (source / ".git/MERGE_HEAD").write_text(_git(source, "rev-parse", "HEAD"))
     else:
         _git(source, "config", "filter.custom.smudge", "false")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repository transfer"):
         probe_repository_revision("", str(source))
 
 

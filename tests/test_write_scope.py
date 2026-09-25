@@ -248,7 +248,7 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
         )
 
     if other_project_owns_root:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="another project"):
             resolve()
     else:
         scope = resolve()
@@ -302,7 +302,7 @@ def test_remote_inventory_resolves_relative_local_roots_from_registered_project(
         for root in inventory
         if root.project_id == "remote-project" and root.alias == expected_alias
     ) == str(expected_root)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="another project"):
         _resolve_local(
             manifest,
             tmp_path,
@@ -331,7 +331,7 @@ def test_unopened_remote_inventory_requires_readable_canonical_mirror(
         raise AssertionError("Repository inventory must not refresh remote projects")
 
     monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
         ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
 
 
@@ -441,7 +441,7 @@ def test_remote_inventory_rejects_valid_manifest_for_different_canonical_home(
         raise AssertionError("Repository inventory must not refresh remote projects")
 
     monkeypatch.setattr(SSHStateWorkspace, "refresh", no_network)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
         catalog.repository_ownership_inventory()
 
 
@@ -458,7 +458,7 @@ def test_catalog_repository_inventory_fails_closed_for_unavailable_open_manifest
     store.upsert_project(record.model_copy(update={"locator": str(bootstrap)}))
     service.manifest.path.unlink()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repository ownership inventory"):
         catalog.repository_ownership_inventory()
 
 
@@ -476,7 +476,7 @@ def test_catalog_repository_inventory_fails_closed_for_unavailable_registration(
     )
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Cannot establish the repository ownership inventory"):
         catalog.repository_ownership_inventory()
 
 
@@ -498,14 +498,14 @@ def test_scope_rejects_missing_or_wrong_pointer_alias(
     pointers: list[RepositoryPointer],
     message: str,
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         _resolve_local(manifest, tmp_path, pointers=pointers)
 
 
 def test_scope_rejects_duplicate_pointer_alias(manifest: Manifest, tmp_path: Path) -> None:
     pointer = _local_pointers(manifest, ["repo-a"])[0]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="duplicate repository pointer"):
         _resolve_local(manifest, tmp_path, pointers=[pointer, pointer])
 
 
@@ -518,7 +518,7 @@ def test_scope_rejects_pointer_symlink_escape(manifest: Manifest, tmp_path: Path
         path=str(escaped),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no longer matches its registered project root"):
         _resolve_local(manifest, tmp_path, pointers=[pointer])
 
 
@@ -540,14 +540,14 @@ def test_scope_rejects_broad_local_repository_roots(
     changed.repository_map["repo-a"].path = str(repository_root)
     pointer = RepositoryPointer(alias="repo-a", machine="laptop", path=str(repository_root))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         _resolve_local(changed, tmp_path, pointers=[pointer])
 
 
 def test_scope_rejects_repository_overlapping_app_data(manifest: Manifest, tmp_path: Path) -> None:
     repository_root = Path(manifest.repository_map["repo-a"].path)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="application data directory"):
         _resolve_local(manifest, tmp_path, app_data_dir=repository_root / "cache")
 
 
@@ -568,7 +568,7 @@ def test_scope_rejects_overlap_with_same_project_unadmitted_repository(
         unadmitted.mkdir()
     changed.repository_map["repo-b"].path = str(unadmitted)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="overlaps an unadmitted repository"):
         _resolve_local(changed, tmp_path, aliases=["repo-a"])
 
 
@@ -597,7 +597,7 @@ def test_scope_rejects_overlap_with_repository_owned_by_another_project(
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="overlaps another project"):
         _resolve_local(
             manifest,
             tmp_path,
@@ -626,7 +626,7 @@ def test_scope_rejects_canonical_symlink_overlap_hidden_by_distinct_lexical_root
         )
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="overlaps another project"):
         _resolve_local(
             manifest,
             tmp_path,
@@ -639,7 +639,7 @@ def test_scope_rejects_workspace_outside_exact_stage(manifest: Manifest, tmp_pat
     stage = tmp_path / "stage"
     workspace = tmp_path / "other-workspace"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="workspace must be inside its exact task stage"):
         _resolve_local(
             manifest,
             tmp_path,
@@ -661,7 +661,7 @@ def test_scope_rejects_project_mismatch(
     kwargs: dict[str, Any],
     message: str,
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         _resolve_local(manifest, tmp_path, **kwargs)
 
 
@@ -675,7 +675,7 @@ def test_scope_rejects_repository_pointer_machine_mismatch(
         path=manifest.repository_map["repo-a"].path,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match its project execution machine"):
         _resolve_local(manifest, tmp_path, pointers=[pointer])
 
 
@@ -873,7 +873,7 @@ def test_remote_scope_fails_closed_when_canonical_resolution_fails(
     remote = _remote_manifest(manifest)
     stage = _RemoteScopeStage(failure=failure)
 
-    with pytest.raises(expected):
+    with pytest.raises(expected, match=str(failure)):
         _resolve_remote(remote, stage)
 
 
@@ -884,7 +884,7 @@ def test_remote_scope_rejects_stage_or_repository_canonical_mismatch(
     wrong_stage = _RemoteScopeStage(
         overrides={str(PurePosixPath("/tmp/rcp-run.scope")): "/tmp/rcp-run.other"}
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not match its exact RCP task stage"):
         _resolve_remote(remote, wrong_stage)
 
     escaped_repository = _RemoteScopeStage(
@@ -893,7 +893,7 @@ def test_remote_scope_rejects_stage_or_repository_canonical_mismatch(
             "/pointer/repo-a": "/srv/escaped",
         }
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no longer matches its registered project root"):
         _resolve_remote(remote, escaped_repository)
 
 
@@ -901,7 +901,7 @@ def test_remote_scope_rejects_task_stage_host_mismatch(manifest: Manifest) -> No
     remote = _remote_manifest(manifest)
     stage = _RemoteScopeStage(host="other.example")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="different execution host"):
         _resolve_remote(remote, stage)
 
 
@@ -949,7 +949,7 @@ def test_remote_scope_rejects_overlap_on_same_execution_host_identity(
         }
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="overlaps another project"):
         _resolve_remote(remote, stage, repository_inventory=[*current, foreign])
 
 
@@ -1000,7 +1000,7 @@ def test_remote_stage_canonical_directory_probe_distinguishes_transport_and_poli
         lambda _arguments: subprocess.CompletedProcess([], returncode, stdout="", stderr=message),
     )
 
-    with pytest.raises(expected):
+    with pytest.raises(expected, match=message):
         stage.canonical_directories(["/declared"], require_writable=True)
 
 
@@ -1049,7 +1049,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
         == fingerprint
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="different project"):
         store.bind_agent_task_write_scope(
             "operation",
             project_id="other-project",
@@ -1058,7 +1058,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             fingerprint=fingerprint,
             continuation_binding=False,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="saved execution stage"):
         store.bind_agent_task_write_scope(
             "operation",
             project_id="project",
@@ -1067,7 +1067,7 @@ def test_durable_task_scope_binding_is_idempotent_and_rejects_identity_mismatch(
             fingerprint=fingerprint,
             continuation_binding=False,
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="changed after it was durably bound"):
         store.bind_agent_task_write_scope(
             "operation",
             project_id="project",
@@ -1128,7 +1128,7 @@ def test_continuation_scope_binding_rejects_mismatch_on_same_stage(tmp_path: Pat
         continuation_binding=False,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="continuation keeps the repository scope"):
         store.bind_agent_task_write_scope(
             "continuation",
             project_id="project",
@@ -1181,7 +1181,7 @@ def test_fresh_launch_cannot_rebind_under_a_running_turn(tmp_path: Path) -> None
         continuation_binding=False,
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="in use by a running turn"):
         store.bind_agent_task_write_scope(
             "fresh",
             project_id="project",

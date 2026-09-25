@@ -313,7 +313,10 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
         staged.cleanup()
 
     assert not launched.exists()
-    assert any(event.event == "error" for event in events)
+    assert any(
+        event.event == "error" and "socket path is already occupied" in event.text
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -366,7 +369,10 @@ async def test_campaign_broker_peer_inspection_failure_prevents_provider_prompt_
         staged.cleanup()
 
     assert not launched.exists()
-    assert any(event.event == "error" for event in events)
+    assert any(
+        event.event == "error" and "cannot authenticate Unix-socket peers" in event.text
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -1167,6 +1173,7 @@ def test_work_like_provider_commands_require_a_resolved_project_scope(
 ) -> None:
     with pytest.raises(
         ValueError,
+        match=rf"^{capability} launch requires a resolved project write scope$",
     ):
         AgentLauncher._command(
             provider,
@@ -1183,17 +1190,18 @@ def test_work_like_provider_commands_require_a_resolved_project_scope(
 
 
 @pytest.mark.parametrize(
-    ("provider", "provider_version"),
+    ("provider", "provider_version", "required_version"),
     [
-        ("codex", "0.137.9"),
-        ("codex", None),
-        ("claude", "2.1.232"),
-        ("claude", None),
+        ("codex", "0.137.9", "0.138.0"),
+        ("codex", None, "0.138.0"),
+        ("claude", "2.1.232", "2.1.233"),
+        ("claude", None, "2.1.233"),
     ],
 )
 def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
     provider: str,
     provider_version: str | None,
+    required_version: str,
 ) -> None:
     scope = _project_write_scope(
         capability="work_auto",
@@ -1203,6 +1211,10 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
 
     with pytest.raises(
         ValueError,
+        match=(
+            rf"cannot enforce the declared project write roots; RCP requires "
+            rf"{required_version} or newer$"
+        ),
     ):
         AgentLauncher._command(
             provider,
@@ -1547,6 +1559,7 @@ async def test_stream_refuses_a_stale_recorded_path_before_subprocess_launch(
     ]
 
     assert [event.event for event in events] == ["error"]
+    assert "does not exist" in events[0].text
 
 
 @pytest.mark.asyncio
@@ -1575,6 +1588,7 @@ async def test_stream_refuses_a_denied_recorded_path_before_subprocess_launch(
     ]
 
     assert [event.event for event in events] == ["error"]
+    assert "not executable" in events[0].text
 
 
 def test_remote_provider_command_records_a_killable_process_group() -> None:
