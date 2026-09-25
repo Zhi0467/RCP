@@ -54,6 +54,12 @@ def _case(tmp_path: Path, *, stopped: bool = False):
     if stopped:
         live_research.chmod(0o750)
         (live_research / "paper").chmod(0o500)
+        # uv installs agent packages as hardlinks into its cache and leaves a 0666 lock.
+        deps = live_data / "run-stage" / "retained" / "deps"
+        _write(tmp_path / "uv-cache" / "pylab.py", b"from matplotlib.pylab import *\n")
+        _directory(deps)
+        os.link(tmp_path / "uv-cache" / "pylab.py", deps / "pylab.py")
+        _write(deps / ".lock", b"", 0o666)
     payload_data = tmp_path / "prepared" / "data"
     payload_research = tmp_path / "prepared" / "research"
     _directory(payload_data.parent)
@@ -597,7 +603,7 @@ def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_p
 
 @pytest.mark.parametrize(
     "unsafe",
-    ["link", "hardlink", "directory-mode", "uid", "gid", "directory-gid", "xattr", "root-xattr"],
+    ["link", "directory-mode", "uid", "gid", "directory-gid", "xattr", "root-xattr"],
 )
 def test_stopped_snapshot_refuses_uncopyable_metadata(
     tmp_path: Path, unsafe: str, monkeypatch: pytest.MonkeyPatch
@@ -615,8 +621,6 @@ def test_stopped_snapshot_refuses_uncopyable_metadata(
     assert (entry["uid"], entry["gid"]) == (target.stat().st_uid, target.stat().st_gid)
     if unsafe == "link":
         (live / "link").symlink_to("file")
-    elif unsafe == "hardlink":
-        os.link(target, live / "alias")
     elif unsafe == "directory-mode":
         live.chmod(0o1700)
     elif unsafe in {"uid", "gid", "directory-gid"}:

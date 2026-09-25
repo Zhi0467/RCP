@@ -104,7 +104,15 @@ def _disjoint(paths: list[Path]) -> None:
                 _fail("Checkpoint storage, payloads, and live roots must not overlap.")
 
 
-def _file_hash(path: Path, *, max_bytes: int | None = None) -> tuple[str, int, int]:
+def _file_hash(
+    path: Path, *, max_bytes: int | None = None, exact: bool = False
+) -> tuple[str, int, int]:
+    """Hash one owned file; ``exact`` snapshots also admit hardlinks and group/other write bits.
+
+    Agent tools such as uv hardlink installed packages from their cache and create
+    world-writable lock files inside retained scratch; a stopped exact snapshot copies
+    their bytes and mode, and restore yields ordinary single-link files.
+    """
     max_bytes = MAX_CHECKPOINT_BYTES if max_bytes is None else max_bytes
     before = path.lstat()
     if before.st_size > max_bytes:
@@ -112,8 +120,8 @@ def _file_hash(path: Path, *, max_bytes: int | None = None) -> tuple[str, int, i
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_uid != os.geteuid()
-        or before.st_nlink != 1
-        or before.st_mode & 0o7022
+        or (before.st_nlink != 1 and not exact)
+        or before.st_mode & (0o7000 if exact else 0o7022)
         or not before.st_mode & 0o400
     ):
         _fail("Checkpoint files must be owned regular files without links or unsafe permissions.")
@@ -204,7 +212,9 @@ def _inventory(
                             {"path": relative, "kind": "symlink", "target": target, **metadata}
                         )
                     else:
-                        digest, length, mode = _file_hash(child, max_bytes=max_bytes - size)
+                        digest, length, mode = _file_hash(
+                            child, max_bytes=max_bytes - size, exact=exact
+                        )
                         size += length
                         result.append(
                             {
@@ -247,17 +257,17 @@ def _access_metadata(path: Path, *, root: Path | None = None, owner: dict | None
             f"{_entry_name(relative)}."
         )
     metadata = {"mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "gid": info.st_gid}
-    _validate_metadata(metadata, symlink=path.is_symlink())
+    _validate_metadata(metadata, symlink=path.is_symlink(), writable=stat.S_ISREG(info.st_mode))
     return metadata
 
 
-def _validate_metadata(value: object, *, symlink: bool = False) -> None:
+def _validate_metadata(value: object, *, symlink: bool = False, writable: bool = False) -> None:
     if (
         not _keys(value, {"mode", "uid", "gid"})
         or any(type(value[key]) is not int or value[key] < 0 for key in ("uid", "gid"))
         or type(value["mode"]) is not int
         or not 0 <= value["mode"] <= 0o777
-        or (not symlink and value["mode"] & 0o022)
+        or (not symlink and not writable and value["mode"] & 0o022)
     ):
         _fail("Checkpoint access metadata is unsupported.")
 
@@ -365,6 +375,7 @@ def _validate_entries(entries: object, *, exact: bool = False) -> None:
             _validate_metadata(
                 {key: entry.get(key) for key in ("mode", "uid", "gid")},
                 symlink=entry["kind"] == "symlink",
+                writable=entry["kind"] == "file",
             )
         if not _keys(entry, names):
             _fail("Checkpoint entry fields are unsupported.")
@@ -400,7 +411,7 @@ def _validate_entries(entries: object, *, exact: bool = False) -> None:
                 or not 0 <= entry["size"] <= MAX_CHECKPOINT_BYTES
                 or type(entry["mode"]) is not int
                 or not 0 <= entry["mode"] <= 0o777
-                or entry["mode"] & 0o022
+                or (not exact and entry["mode"] & 0o022)
                 or not entry["mode"] & 0o400
             ):
                 _fail("Checkpoint file identity or permissions are invalid.")
@@ -478,7 +489,7 @@ def _copy_tree(
             if (
                 not stat.S_ISREG(info.st_mode)
                 or info.st_uid != os.geteuid()
-                or info.st_nlink != 1
+                or (info.st_nlink != 1 and metadata is None)
                 or info.st_size != entry["size"]
             ):
                 _fail("A checkpoint copy source differs from its verified inventory.")

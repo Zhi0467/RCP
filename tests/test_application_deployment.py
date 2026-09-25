@@ -124,6 +124,12 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     (stage / "python").symlink_to("/usr/bin/python3")
     (stage / "pytest-0").mkdir(mode=0o700)
     (stage / "pytest-current").symlink_to("pytest-0")  # pytest's directory link
+    # uv installs agent packages as hardlinks into its cache and leaves a 0666 lock.
+    (tmp_path / "uv-cache").mkdir(mode=0o700)
+    (tmp_path / "uv-cache" / "pylab.py").write_text("from matplotlib.pylab import *\n")
+    os.link(tmp_path / "uv-cache" / "pylab.py", stage / "pylab.py")
+    (stage / ".lock").touch()
+    (stage / ".lock").chmod(0o666)
     for relative, content in {
         "providers/claude/test-account/setup-token": "synthetic-token-do-not-publish",
         "jobs/completed/receipt.json": '{"status":"completed"}',

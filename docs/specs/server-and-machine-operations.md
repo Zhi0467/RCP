@@ -456,7 +456,10 @@ installed promoted artifacts, systemd transactions or real SSH recovery.
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 It uses bounded traversal, regular files, safe ownership and permissions,
 content hashes, and a sealed manifest. Exact snapshots preserve and verify modes,
-UIDs and GIDs; `checkpoint_unsafe_entry` refuses any xattrs (including POSIX ACLs)
+UIDs and GIDs. They accept what agent tools leave in retained scratch: a
+hardlinked file is copied by content and restored as a single-link file, and a
+file's group or other write bits are restored as recorded. Directories must still
+exclude other writers. `checkpoint_unsafe_entry` refuses any xattrs (including POSIX ACLs)
 or entries whose UID/GID differs from their root, naming offending relative paths
 before service stop and rechecking at sealing. Publication journals are root-owned;
 checkpoint payloads and filesystem replacement run as `rcp`. Before replacing a
@@ -470,7 +473,7 @@ the service stopped and names the first few differing relative entries as
 missing, extra or changed in both the error and operation record. Diagnostics
 are bounded and contain no file contents or secrets. No automatic repair or new
 recovery command is introduced. A completed restoration never reapplies over
-later changes. Supervisor 0.1.7 owns this checkpoint contract; protected restore
+later changes. Supervisor 0.1.8 owns this checkpoint contract; protected restore
 and source adoption retain their distinct snapshot authority.
 
 Retained artifacts are bounded. Once an update commits, the supervisor prunes
