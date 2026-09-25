@@ -183,12 +183,14 @@ impl TeamConnectionState {
 
         registry.validate()?;
         // Cards are disposable display data; they must not exhaust the registry budget.
-        while serde_json::to_vec_pretty(&registry)
+        // A card's compact JSON is no longer than its pretty-printed share, so dropping
+        // cards until their compact sizes cover the excess always fits in one pass.
+        let size = serde_json::to_vec_pretty(&registry)
             .map_err(|error| format!("cannot serialize saved team connections: {error}"))?
             .len() as u64
-            + 1
-            > MAX_REGISTRY_BYTES
-        {
+            + 1;
+        let mut excess = size.saturating_sub(MAX_REGISTRY_BYTES);
+        while excess > 0 {
             let Some(cached) = registry
                 .connections
                 .iter_mut()
@@ -197,7 +199,14 @@ impl TeamConnectionState {
             else {
                 break;
             };
-            cached.last_known_cards.pop();
+            let card = cached
+                .last_known_cards
+                .pop()
+                .expect("a nonempty card cache");
+            let freed = serde_json::to_vec(&card)
+                .map_err(|error| format!("cannot serialize a cached team project: {error}"))?
+                .len() as u64;
+            excess = excess.saturating_sub(freed);
         }
         self.write_registry(&registry)?;
         Ok(registry
