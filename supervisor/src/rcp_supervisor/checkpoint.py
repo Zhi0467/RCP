@@ -213,8 +213,14 @@ def create_checkpoint(
     for root in roots:
         parent = _existing_parent(root.live.parent)
         groups.setdefault(parent.stat().st_dev, []).append(root)
-    for group in groups.values():
-        parent = _existing_parent(group[0].live.parent)
+    for device, group in groups.items():
+        # Prefer the supervisor's own checkpoint area so copies never land inside
+        # a project repository; otherwise stage beside the roots on their filesystem.
+        parent = (
+            destination
+            if destination.stat().st_dev == device
+            else _existing_parent(group[0].live.parent)
+        )
         # Climb out of *all* live/source roots, retaining this filesystem.
         while any(
             parent.is_relative_to(path) for root in roots for path in (root.live, root.payload)
