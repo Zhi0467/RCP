@@ -41,4 +41,13 @@
   .project-header-actions .icon-button {
     min-width: 32px;
   }
+
+  /* The open Chats panel is a disclosure that closes on selection, so it can
+     take most of the screen; the search and filters alone fill 35vh. */
+  .conversation-list {
+    max-height: 70dvh;
+  }
+  .agent-list-filters button {
+    padding: 0 14px;
+  }
 }
