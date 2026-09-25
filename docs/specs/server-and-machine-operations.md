@@ -454,15 +454,44 @@ tag. CI and test collection share `gh release list` discovery, increasing its
 request limit until the catalog is exhausted. Missing tags or failed discovery
 fail the gate rather than skip sources. Frozen schema-era fixtures and the exact
 candidate-base check remain. No supported source floor has been declared; that
-decision remains open. The gate creates agent scratch with real offline tools:
-a uv virtualenv and locally built package installed with hardlinks, a committed Git repository,
-FIFOs, a bound socket node, unreadable entries, a dangling link, empty directories
-and sparse content. It runs the privileged supervisor copy and rename rollback
-around candidate migration. The test user checks the complete restored path and
-metadata set, hardlink groups, package import, Git status and SQLite usability.
-The package wheel is built once per test session. This gate builds historical
-source; installed promoted artifacts, systemd and reboot qualification remain
-separate checks.
+decision remains open.
+
+The installed upgrade gate uses the same release catalog in a job
+matrix on pristine GitHub-hosted Ubuntu runners. It downloads each source's
+promoted application and supervisor wheels, verifies the bundle and commit,
+and installs them with the production machine/bootstrap owners. It initializes
+a team through the installed CLI, enrolls a member and records work over HTTP,
+and uses the historical application's project owners to seed populated main
+and empty branch canonical histories, retained tasks and attachments. Provider/Git provisioning
+receipts are synthetic; no paid agent or external repository is needed.
+Real offline tools create agent scratch: a uv environment and locally built
+package installed with hardlinks, a committed Git repository, FIFOs, a socket
+node, unreadable entries, dangling links, empty directories and sparse content.
+The installed service account also leaves group-writable bytecode in its managed
+Python, terminal scratch, provider credentials, jobs and cursors.
+
+The gate invokes the installed `rcp server supervisor update` and `rcp server
+update` wrappers. A test-only, root-owned supervisor startup hook substitutes the
+unpublished candidate's verified local bundle for network release selection and
+moves probation to port 18421; a systemd drop-in uses the same port. All ownership,
+installation, maintenance RPC, stopping, snapshotting, validation, live checking,
+selection and service startup paths remain production code. After candidate
+verification the hook injects a failure and compares the restored stopped roots
+before old code starts: paths, types, bytes, modes, ownership, modification times,
+xattrs, link targets and hardlink groups. It then requires old-code HTTP service,
+usable scratch and a complete encrypted backup, including an empty `patches/`
+directory. Retrying the same candidate must commit and preserve the team data.
+Only observation and the deliberate fault are injected into coordination.
+
+Candidate wheels are built once with the production stamp, lock export and
+manifest helpers; successful main builds publish those same tested bytes.
+The existing `old-data upgrade` required-check name aggregates both migration
+and installed checks; catalog or asset failures fail that aggregate gate. This check does not exercise
+GitHub download inside the privileged process, external provider authentication,
+remote canonical roots, arbitrary historical data, or actual machine reboots;
+the separate reboot qualification remains. Local macOS checks cannot qualify
+this root/systemd journey. The old source/cache tests retain current and stale
+projection cases; their duplicate standalone snapshot round-trip is removed.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
 The root-privileged worker invokes GNU `cp -a --preserve=xattr --reflink=auto

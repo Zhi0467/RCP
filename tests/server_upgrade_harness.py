@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import tarfile
+import tempfile
 from pathlib import Path, PurePosixPath
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -173,6 +177,123 @@ def published_release_tags() -> list[str]:
     return tags
 
 
+def _release_helper(workspace: Path, *arguments: str) -> None:
+    _run(
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "python",
+            str(workspace / "packaging/release_build.py"),
+            *arguments,
+        ],
+        cwd=workspace,
+    )
+
+
+def _bundle_receipt(output: Path, *, tag: str, full_commit: str, **extra: object) -> dict:
+    if not re.fullmatch(r"[0-9a-f]{40}", full_commit):
+        raise ValueError("Installed upgrade artifacts require a complete commit SHA.")
+    (wheel,) = output.glob("rcp-*.whl")
+    if f".g{full_commit[:7]}-" not in wheel.name:
+        raise ValueError("Installed upgrade wheel does not match its source commit.")
+    receipt = {
+        "tag": tag,
+        "full_commit": full_commit,
+        "manifest_sha256": hashlib.sha256((output / "manifest.sha256").read_bytes()).hexdigest(),
+        **extra,
+    }
+    output.with_name(output.name + ".receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    return receipt
+
+
+def build_installed_candidate(
+    output: Path, *, run_number: str, sha: str, workspace: Path = REPOSITORY_ROOT
+) -> dict:
+    """Build production assets from the actual working tree without stamping it."""
+    if output.exists():
+        raise ValueError("Installed candidate output must be a new directory.")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("Installed candidate requires the complete checkout SHA.")
+    if _capture(["git", "rev-parse", "HEAD"], cwd=workspace).strip() != sha:
+        raise ValueError("Installed candidate SHA differs from the checkout.")
+    if not (workspace / "web/dist/index.html").is_file():
+        raise ValueError("Build the real web/dist before packaging the installed candidate.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="installed-candidate-", dir=output.parent) as temporary:
+        source = Path(temporary)
+        for filename in ("pyproject.toml", "uv.lock", "README.md"):
+            shutil.copyfile(workspace / filename, source / filename)
+        for relative in ("src", "web/dist", "packaging", "supervisor"):
+            shutil.copytree(
+                workspace / relative,
+                source / relative,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".venv", "dist")
+                if relative != "web/dist"
+                else None,
+            )
+        output.mkdir()
+        for project, name in (
+            (source, "requirements.lock.txt"),
+            (source / "supervisor", "supervisor-requirements.lock.txt"),
+        ):
+            _run(
+                [
+                    "uv",
+                    "export",
+                    "--no-header",  # Temporary build paths cannot change a supervisor identity.
+                    "--project",
+                    str(project),
+                    "--frozen",
+                    "--no-dev",
+                    "--no-emit-project",
+                    "--format",
+                    "requirements-txt",
+                    "--output-file",
+                    str(output / name),
+                ],
+                cwd=source,
+            )
+        _release_helper(source, "stamp-version", "--run-number", run_number, "--sha", sha)
+        for project in (source, source / "supervisor"):
+            _run(
+                ["uv", "build", "--wheel", "--project", str(project), "--out-dir", str(output)],
+                cwd=source,
+            )
+        (output / ".gitignore").unlink(missing_ok=True)
+        _release_helper(source, "check-assets", str(output), "--require-supervisor")
+        _release_helper(source, "write-manifest", str(output), "--output", "manifest.sha256")
+    return _bundle_receipt(
+        output,
+        tag="v" + next(output.glob("rcp-*.whl")).name.split("-")[1].split("+")[0],
+        full_commit=sha,
+        build_tag=f"build/{run_number}",
+        synthetic_release_selection=True,
+        source_tree_dirty=bool(_capture(["git", "status", "--porcelain"], cwd=workspace)),
+    )
+
+
+def download_installed_release(tag: str, output: Path) -> dict:
+    """Use promoted wheel bytes and fail closed on absent or incomplete assets."""
+    if tag not in published_release_tags():
+        raise ValueError("Installed upgrade base must be a published stable release.")
+    if output.exists():
+        raise ValueError("Installed release output must be a new directory.")
+    full_commit = _capture(
+        ["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{tag}", "--jq", ".sha"],
+        cwd=REPOSITORY_ROOT,
+    ).strip()
+    output.mkdir(parents=True)
+    _run(["gh", "release", "download", tag, "--dir", str(output)], cwd=REPOSITORY_ROOT)
+    _release_helper(REPOSITORY_ROOT, "check-assets", str(output), "--require-supervisor")
+    _release_helper(
+        REPOSITORY_ROOT, "verify-manifest", str(output), "--manifest", "manifest.sha256"
+    )
+    (wheel,) = output.glob("rcp-*.whl")
+    _release_helper(REPOSITORY_ROOT, "check-promotion", "--wheel", str(wheel), "--tag", tag)
+    return _bundle_receipt(output, tag=tag, full_commit=full_commit)
+
+
 def build_release_checkout(tag: str, work_root: Path) -> Path:
     # A release update never serves the web bundle, so a placeholder satisfies the wheel.
     return _build_checkout(tag, work_root, web=False)
@@ -287,3 +408,27 @@ __all__ = [
     "verify_fixture_integrity",
     "verify_fixture_registry",
 ]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    candidate = commands.add_parser("build-candidate")
+    candidate.add_argument("--output", type=Path, required=True)
+    candidate.add_argument("--run-number", required=True)
+    candidate.add_argument("--sha", required=True)
+    release = commands.add_parser("download-release")
+    release.add_argument("--output", type=Path, required=True)
+    release.add_argument("--tag", required=True)
+    args = parser.parse_args()
+    if args.command == "build-candidate":
+        receipt = build_installed_candidate(
+            args.output.resolve(), run_number=args.run_number, sha=args.sha
+        )
+    else:
+        receipt = download_installed_release(args.tag, args.output.resolve())
+    print(json.dumps(receipt))
+
+
+if __name__ == "__main__":
+    main()

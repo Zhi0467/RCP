@@ -72,8 +72,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: uv run pytest
 
-  old-data-upgrade:
-    name: old-data upgrade
+  old-data-upgrade-tests:
+    name: old-data migration tests
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -108,6 +108,112 @@ jobs:
         env:
           RCP_RUN_EXACT_BASE_UPGRADE: "1"
 
+  installed-upgrade-candidate:
+    name: package installed upgrade candidate
+    runs-on: ubuntu-latest
+    outputs:
+      releases: ${{ steps.catalog.outputs.releases }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: catalog
+        name: Discover every published stable release
+        run: |
+          python -c 'import json; from tests.server_upgrade_harness import published_release_tags; print("releases=" + json.dumps({"tag": published_release_tags()}))' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - name: Build production wheels in a disposable source copy
+        run: |
+          uv run --no-project python -m tests.server_upgrade_harness build-candidate \
+            --output "$RUNNER_TEMP/installed-upgrade/candidate" \
+            --run-number "$GITHUB_RUN_NUMBER" --sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installed-upgrade-candidate
+          path: ${{ runner.temp }}/installed-upgrade
+          if-no-files-found: error
+
+  installed-upgrade-release:
+    name: installed upgrade (${{ matrix.tag }})
+    needs: installed-upgrade-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.installed-upgrade-candidate.outputs.releases) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RCP_RUN_INSTALLED_UPGRADE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: installed-upgrade-candidate
+          path: ${{ runner.temp }}/installed-upgrade
+      - name: Download and verify promoted historical wheels
+        env:
+          RELEASE_TAG: ${{ matrix.tag }}
+        run: |
+          uv run --no-project python -m tests.server_upgrade_harness download-release \
+            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/base"
+      - name: Install runner dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age
+          uv sync --frozen --no-install-project
+          uv pip install --no-deps "$RUNNER_TEMP"/installed-upgrade/candidate/rcp-*.whl
+      - name: Exercise installed systemd update, rollback, backup, and retry
+        env:
+          RELEASE_TAG: ${{ matrix.tag }}
+        run: |
+          sudo --preserve-env=RCP_RUN_INSTALLED_UPGRADE,GITHUB_ACTIONS \
+            "$PWD/.venv/bin/python" -m tests.server_installed_upgrade \
+            --base "$RUNNER_TEMP/installed-upgrade/base" \
+            --candidate "$RUNNER_TEMP/installed-upgrade/candidate" \
+            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/evidence" \
+            --uv "$(command -v uv)"
+      - name: Collect service logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/installed-upgrade/evidence"
+          sudo journalctl -u rcp.service --no-pager > "$RUNNER_TEMP/installed-upgrade/evidence/service.log"
+          sudo chmod -R a+rX "$RUNNER_TEMP/installed-upgrade/evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: installed-upgrade-${{ matrix.tag }}
+          path: ${{ runner.temp }}/installed-upgrade/evidence
+          if-no-files-found: error
+
+  old-data-upgrade:
+    # Preserve the existing required check name: installed failures cannot be
+    # bypassed merely because branch protection has not learned a new job name.
+    name: old-data upgrade
+    needs: [old-data-upgrade-tests, installed-upgrade-candidate, installed-upgrade-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every installed release journey
+        env:
+          MIGRATION_RESULT: ${{ needs.old-data-upgrade-tests.result }}
+          CANDIDATE_RESULT: ${{ needs.installed-upgrade-candidate.result }}
+          RELEASE_RESULT: ${{ needs.installed-upgrade-release.result }}
+        run: test "$MIGRATION_RESULT" = success && test "$CANDIDATE_RESULT" = success && test "$RELEASE_RESULT" = success
+
   web:
     name: web typecheck and tests
     runs-on: ubuntu-latest
@@ -138,42 +244,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Publish the exact wheel bytes exercised by every installed upgrade job.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: true
-          python-version: "3.12"
-      - name: Install and build the web application
-        run: |
-          npm --prefix web ci
-          npm --prefix web run build
-      - name: Export locked dependencies
-        run: |
-          mkdir -p dist
-          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file dist/requirements.lock.txt
-          uv export --project supervisor --frozen --no-dev --no-emit-project --format requirements-txt --output-file "$PWD/dist/supervisor-requirements.lock.txt"
-      - name: Stamp the build version
-        run: uv run --no-project python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
-      - name: Build the independently versioned wheels
-        run: |
-          uv build --wheel --out-dir dist
-          uv build supervisor --wheel --out-dir dist
-      - name: Remove the uv output marker
-        run: rm -f dist/.gitignore
-      - name: Require complete supervisor release assets
-        run: uv run --no-project python packaging/release_build.py check-assets dist --require-supervisor
-      - name: Write the asset manifest
-        run: uv run --no-project python packaging/release_build.py write-manifest dist --output manifest.sha256
+          name: installed-upgrade-candidate
+          path: qualified-build
       - name: Publish the build prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          gh release create "build/${GITHUB_RUN_NUMBER}" dist/* \
+          gh release create "build/${GITHUB_RUN_NUMBER}" qualified-build/candidate/* \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "build ${GITHUB_RUN_NUMBER} (${SHORT_SHA})" \

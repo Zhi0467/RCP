@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import socket
 import stat
@@ -100,6 +99,7 @@ def populate_agent_scratch(data: Path, projects: Path, wheel: Path) -> Path:
     (scratch / "unreadable-directory").mkdir(mode=0)
     (scratch / "dangling").symlink_to("missing-target")
     (scratch / "empty").mkdir()
+    (scratch / "odd\\name\n").mkdir()  # Agent filenames are not manifest keys.
     with (scratch / "sparse").open("wb") as stream:
         stream.seek(16 * 1024 * 1024)
         stream.write(b"end")
@@ -128,30 +128,26 @@ def tree_state(roots: tuple[Path, ...]) -> tuple[dict, list]:
                     links.setdefault((info.st_dev, info.st_ino), []).append(str(path))
             finally:
                 path.chmod(mode)
-        entries[str(path)] = (kind, mode, info.st_uid, info.st_gid, content)
+        entries[str(path)] = (
+            kind,
+            mode,
+            info.st_uid,
+            info.st_gid,
+            info.st_mtime_ns,
+            content,
+            # Production GNU preservation is qualified on Linux; the managed
+            # macOS Python does not expose these syscalls.
+            {
+                name: os.getxattr(path, name, follow_symlinks=False).hex()
+                for name in os.listxattr(path, follow_symlinks=False)
+            }
+            if sys.platform == "linux"
+            else None,
+        )
 
     for root in roots:
         visit(root)
     return entries, sorted(sorted(group) for group in links.values() if len(group) > 1)
-
-
-def supervisor_filesystem(command: str, request: dict) -> dict:
-    """Use production root copying; assertions and application work remain unprivileged."""
-    supervisor = Path(__file__).resolve().parents[1] / "supervisor" / "src"
-    argv = [
-        "env",
-        f"PYTHONPATH={supervisor}",
-        sys.executable,
-        "-m",
-        "rcp_supervisor.fs_worker",
-        command,
-    ]
-    if os.geteuid() != 0:
-        argv = ["sudo", "-n", *argv]
-    result = subprocess.run(
-        argv, input=json.dumps(request), text=True, stdout=subprocess.PIPE, check=True
-    )
-    return json.loads(result.stdout)
 
 
 def assert_scratch_usable(scratch: Path) -> None:

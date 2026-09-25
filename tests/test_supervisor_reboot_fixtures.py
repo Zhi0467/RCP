@@ -41,7 +41,11 @@ def test_disposable_data_has_canonical_project_retained_stage_and_attachment(
         )
         original_space = original.space_id
     receipt = prepare_data(
-        tmp_path / "data", tmp_path / "projects", account=account, bootstrap_code=code
+        tmp_path / "data",
+        tmp_path / "projects",
+        account=account,
+        bootstrap_code=code,
+        empty_branch=True,
     )
     if initialized:
         assert receipt["space_id"] == original_space
@@ -58,6 +62,8 @@ def test_disposable_data_has_canonical_project_retained_stage_and_attachment(
     assert inventory["app_data_complete"] is True
     assert inventory["projects"] == [{"status": "capturable", "reason": None}]
     assert receipt["token"] not in json.dumps(inventory)
+    empty_patches = Path(receipt["empty_patches"])
+    assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     (tmp_path / "data" / "unknown-owner").write_text("private diagnostic sentinel")
     inventory = backup_inventory(tmp_path / "data")
     assert inventory["app_data_complete"] is False

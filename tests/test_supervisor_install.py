@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import venv
@@ -57,18 +58,41 @@ def test_install_preserves_partial_failure_without_publishing_success(
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
+    run = install._run
 
     def fail(*args, **kwargs):
-        kwargs["log"].write(b"diagnostic fixture\n")
+        run(*args, **kwargs)
+        kwargs["log"].write(b"\ndiagnostic fixture\n")
         raise SupervisorError("injected install failure")
 
-    monkeypatch.setattr(install, "_run", fail)
-    with pytest.raises(SupervisorError, match="retained"):
-        install.install_release(bundle, root)
+    with monkeypatch.context() as failure:
+        failure.setattr(install, "_run", fail)
+        with pytest.raises(SupervisorError, match="retained"):
+            install.install_release(bundle, root)
     (target,) = root.iterdir()
     assert not (target / "installed.json").exists()
-    assert (target / "install.log").read_bytes() == b"diagnostic fixture\n"
+    assert (target / ".venv/bin/python").exists()
+    diagnostic = (target / "install.log").read_bytes()
+    assert diagnostic.endswith(b"diagnostic fixture\n")
     assert (target / "assets/manifest.sha256").exists()
+    with pytest.raises(SupervisorError, match="already exists"):
+        install.install_release(bundle, root)
+    assert (target / "install.log").read_bytes() == diagnostic
+    assert not (target / "installed.json").exists()
+
+    # The documented operator path inspects diagnostics, removes only this
+    # failed build, then retries the same verified release from scratch.
+    shutil.rmtree(target)
+    assert install.install_release(bundle, root) == target
+    receipt = json.loads((target / "installed.json").read_text())
+    result = subprocess.run(
+        [str(target / ".venv/bin/python"), "-I", "-c", "import rcp; print(rcp.__version__)"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.stdout.strip() == receipt["version"]
 
 
 def test_install_refuses_bad_hash_before_creating_release(tmp_path: Path) -> None:

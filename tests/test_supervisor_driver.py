@@ -203,6 +203,34 @@ def test_update_displays_bound_target_before_any_install_or_admission(monkeypatc
     assert json.loads(events[0])["event"] == "plan"
 
 
+@pytest.mark.parametrize("installed", ["0.1.0", "0.2.0", "0.3.0"])
+def test_update_requires_bundled_supervisor_before_application_preparation(
+    monkeypatch, capsys, installed
+):
+    target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
+    monkeypatch.setattr(driver, "__version__", installed)
+    monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: object())
+    monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
+    monkeypatch.setattr(
+        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.2.0")
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
+    monkeypatch.setattr(
+        driver, "prepare_release", lambda *args: pytest.fail("application preparation started")
+    )
+    code = cli.main(["--machine-readable", "server", "update"])
+    step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    if installed == "0.1.0":
+        assert code == 1
+        assert step.state == "failed"
+        assert "Update the independent supervisor" in step.message
+    else:
+        assert code == 3
+        assert step.state == "operator_action_needed"
+        assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
+
+
 @pytest.mark.parametrize("position", [0, 1, 2, 3])
 def test_server_flags_preserve_public_wrapper_positions(position, monkeypatch, capsys):
     argv = ["server", "supervisor", "update"]
