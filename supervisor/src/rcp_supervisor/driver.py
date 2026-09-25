@@ -162,9 +162,8 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         if existing != receipt:
             raise SupervisorError("This installed build already names another verified release.")
     elif os.path.lexists(target):
-        raise SupervisorError(
-            "An unsealed build directory already exists; inspect retained installation diagnostics before retrying."
-        )
+        # A failed earlier preparation left this build unsealed; install it afresh.
+        runtime.remove_retained(target, runtime.paths.releases_root)
     if not os.path.lexists(target):
         # A sealed receipt outlives a pruned release tree; the verified bundle
         # installs again under the same identity.

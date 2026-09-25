@@ -213,3 +213,12 @@ def test_overlay_replaces_destination_symlinks_instead_of_writing_through(tmp_pa
     assert outside.read_bytes() == b"untouched"
     assert not (destination / "view").is_symlink()
     assert (destination / "view").read_bytes() == b"candidate"
+
+
+def test_privileged_copy_refuses_root_owned_paths(tmp_path: Path) -> None:
+    system = Path("/usr/share")
+    assert system.stat().st_uid == 0
+    with pytest.raises(SupervisorError, match="owned by root"):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (system,), boundary_sha256="b" * 64
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -441,3 +442,33 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
     # Installed and sealed: nothing to do but verify.
     assert driver.prepare_release(runtime, release) == receipt
     assert calls == ["install", "capability", "capability", "capability"]
+
+
+def test_prepare_release_replaces_a_build_left_unsealed_by_a_failed_attempt(monkeypatch, tmp_path):
+    releases = tmp_path / "releases"
+    target = releases / "7"
+    (target / "partial").mkdir(parents=True)
+    supervisor = tmp_path / "supervisor"
+    (supervisor / "release-receipts").mkdir(parents=True)
+    receipt = {"build": 7, "release_directory": str(target)}
+    calls: list[str] = []
+
+    def filesystem(action, request):
+        calls.append(action)
+        target.mkdir()
+        return {"release_directory": str(target)}
+
+    runtime = SimpleNamespace(
+        paths=SimpleNamespace(supervisor=supervisor, releases_root=releases),
+        filesystem=filesystem,
+        remove_retained=lambda directory, root: (calls.append("remove"), shutil.rmtree(directory)),
+        require_capability=lambda _receipt, **kwargs: calls.append("capability"),
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *_args: receipt)
+    monkeypatch.setattr(driver, "install_operator_console", lambda *_args: None)
+    monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(driver, "write_root_json", lambda path, value: path.write_text("{}"))
+
+    assert driver.prepare_release(runtime, SimpleNamespace(build=7, directory=tmp_path)) == receipt
+    assert calls == ["remove", "install", "capability", "capability"]
+    assert not (target / "partial").exists()

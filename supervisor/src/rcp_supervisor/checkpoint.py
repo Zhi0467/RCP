@@ -127,11 +127,19 @@ def _existing_parent(path: Path) -> Path:
     return path
 
 
+def _service_owned(path: Path) -> None:
+    """Privileged copies and renames touch only trees the service account owns."""
+    if _existing_parent(path).lstat().st_uid == 0:
+        raise SupervisorError(f"Checkpoint root is owned by root, not the service: {path}")
+
+
 def _roots(roots: tuple[SnapshotRoot, ...]) -> list[SnapshotRoot]:
     result: list[SnapshotRoot] = []
     for root in sorted(roots, key=lambda root: len(root.live.parts)):
         if not root.live.is_absolute() or not root.payload.is_absolute() or root.live == Path("/"):
             raise SupervisorError("Checkpoint roots must be absolute non-filesystem roots.")
+        _service_owned(root.live)
+        _service_owned(root.payload)
         covering = next((item for item in result if root.live.is_relative_to(item.live)), None)
         if covering is not None:
             if root.payload != covering.payload / root.live.relative_to(covering.live):
@@ -300,6 +308,7 @@ def restore_checkpoint(checkpoint: Checkpoint) -> None:
         if progress["states"][index] == "complete":
             continue
         live, quarantine = Path(root["live"]), Path(root["quarantine"])
+        _service_owned(live)
         payload = Path(root["payload"]) if root["present"] else None
         if progress["states"][index] == "pending":
             if payload is not None and not os.path.lexists(payload):
