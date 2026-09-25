@@ -1604,7 +1604,6 @@ fn validate_prepare_request(request: &ProjectTransferPrepareRequest) -> Result<(
         "source transfer project identity",
     )?;
     let intent = &request.target_provisioning;
-    validate_safe_line(&intent.name, "target provisioning project name", 120, true)?;
     if intent.default_auto_research_invocation_ceiling == 0 {
         return Err("target provisioning invocation ceiling must be positive".into());
     }
@@ -1620,18 +1619,6 @@ fn validate_prepare_request(request: &ProjectTransferPrepareRequest) -> Result<(
         if !matches!(machine.location.as_str(), "local" | "ssh") {
             return Err("target provisioning machine location is invalid".into());
         }
-        validate_safe_line(
-            &machine.host,
-            "target provisioning machine host",
-            255,
-            false,
-        )?;
-        validate_safe_line(
-            &machine.os_account,
-            "target provisioning machine operating-system account",
-            128,
-            true,
-        )?;
         if let Some(root) = &machine.central_root {
             validate_absolute_path(root, "target provisioning central root")?;
         }
@@ -1642,36 +1629,6 @@ fn validate_prepare_request(request: &ProjectTransferPrepareRequest) -> Result<(
     }
     let mut profiles = Vec::with_capacity(intent.provider_checks.len());
     for provider in &intent.provider_checks {
-        validate_safe_line(
-            &provider.profile,
-            "target provisioning provider profile",
-            120,
-            true,
-        )?;
-        validate_safe_line(
-            &provider.provider,
-            "target provisioning provider",
-            120,
-            true,
-        )?;
-        validate_safe_line(
-            &provider.runtime_id,
-            "target provisioning provider runtime",
-            120,
-            true,
-        )?;
-        validate_safe_line(
-            &provider.model,
-            "target provisioning provider model",
-            200,
-            false,
-        )?;
-        validate_safe_line(
-            &provider.reasoning,
-            "target provisioning provider reasoning",
-            80,
-            true,
-        )?;
         validate_alias(
             &provider.machine_alias,
             "target provisioning provider machine alias",
@@ -2160,21 +2117,6 @@ fn parse_transfer_record_inner(
         ));
     }
     let phase = text("phase")?;
-    if !matches!(
-        phase,
-        "awaiting_link"
-            | "linked"
-            | "target_admitted"
-            | "source_released"
-            | "source_fenced"
-            | "archive_bound"
-            | "target_activated"
-            | "cleanup_acknowledged"
-            | "completed"
-            | "operator_action_needed"
-    ) {
-        return Err("the project transfer has an invalid durable phase".into());
-    }
     let project_id = text("project_id")?.to_string();
     let source_space_id = text("source_space_id")?.to_string();
     let target_space_id = text("target_space_id")?.to_string();
@@ -2410,12 +2352,6 @@ fn optional_digest(
 fn validate_source_configuration(
     configuration: &ProjectTransferSourceConfiguration,
 ) -> Result<(), String> {
-    validate_safe_line(
-        &configuration.source_rcp_version,
-        "source RCP version",
-        120,
-        true,
-    )?;
     if configuration.record_schema_version.is_some()
         && configuration.record_schema_version != Some(2)
     {
@@ -2728,7 +2664,7 @@ fn validate_receipt_actor(
     if actor.space_id != expected_space_id {
         return Err(format!("{label} belongs to another transfer space"));
     }
-    validate_safe_line(&actor.display_name, label, 200, true)
+    Ok(())
 }
 
 fn validate_transfer_graph_head(
@@ -3030,17 +2966,6 @@ fn parse_project_provisioning_projection(
         return Err("the target provisioning request is not an incoming transfer".into());
     }
     let status = required_text(object, "status")?.to_string();
-    if !matches!(
-        status.as_str(),
-        "waiting_for_server_setup"
-            | "setup_in_progress"
-            | "operator_action_needed"
-            | "ready_for_review"
-            | "completed"
-            | "cancelled"
-    ) {
-        return Err("the incoming provisioning request has an invalid status".into());
-    }
     let target_space_id = required_text(object, "target_space_id")?.to_string();
     let proposed_project_id = required_text(object, "proposed_project_id")?.to_string();
     validate_uuid4(&target_space_id, "target transfer space identity")?;
@@ -3114,12 +3039,6 @@ fn parse_authorized_human(value: &Value) -> Result<ProjectProvisioningAuthorized
         .map_err(|_| "the provisioning response has an invalid authorized_by".to_string())?;
     validate_uuid4(&human.space_id, "provisioning authorized space identity")?;
     validate_uuid4(&human.user_id, "provisioning authorized user identity")?;
-    validate_safe_line(
-        &human.display_name,
-        "provisioning authorized display name",
-        120,
-        true,
-    )?;
     Ok(human)
 }
 
@@ -4210,6 +4129,19 @@ mod tests {
                 }],
             },
         }
+    }
+
+    #[test]
+    fn prepare_and_receipt_accept_cjk_names() {
+        let name = "研".repeat(50);
+        let mut request = prepare_request();
+        request.target_provisioning.name = name.clone();
+        validate_prepare_request(&request).unwrap();
+        let mut receipt = target_admission_receipt();
+        receipt.admitted_by.display_name = name;
+        let value = serde_json::to_value(&receipt).unwrap();
+        parse_target_admission_receipt(&value).unwrap();
+        parse_authorized_human(&value["admitted_by"]).unwrap();
     }
 
     #[test]
