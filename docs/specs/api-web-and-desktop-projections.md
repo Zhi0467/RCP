@@ -405,7 +405,11 @@ Registry version 3 removes the shipped `minimum_shell_version` field through an
 automatic version-2 migration while preserving connection identity, SSH target,
 local origin, expected space, cached cards, operator route, and the independent
 Keychain credential reference. Unknown registry versions or fields still fail
-closed.
+closed, except inside cached project cards. Cards are display data: the desktop
+keeps each card's id, name, and attention count as the server sent them, ignores
+other card fields, and drops cards to fit the registry size limit. Server text
+never fails a connection. Sign-in responses likewise accept added fields; only
+identities and protocol are checked.
 
 Each space serves its own project index, so leaving a project returns to the
 index of the space that project is in, by the same control and shortcut in
@@ -564,9 +568,10 @@ named operator target using `sudo -n -u rcp -H`. **Run setup now** appears only
 after a native read-only probe proves that exact route can invoke the fixed `rcp
 server project provision <request-id> --machine-readable` command. The shell
 passes a validated request id as an argument and never executes arbitrary
-command text returned by a server. It bounds and validates the structured event
-sequence for presentation, then requires an authenticated durable request
-readback from the expected team space. If SSH or `sudo` needs interaction, the
+command text returned by a server. It bounds the structured events, checks that
+they come from the expected fixed command, and screens them for credentials. The
+server owns their step order and text. Success comes only from an authenticated
+durable request readback from the expected team space. If SSH or `sudo` needs interaction, the
 app shows or opens the same fixed command in Terminal; it never collects a
 private key or privilege password. The browser shows a copyable operator command
 instead.
