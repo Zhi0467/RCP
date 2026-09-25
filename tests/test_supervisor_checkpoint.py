@@ -198,3 +198,18 @@ def test_gnu_copy_preserves_special_entries_metadata_and_cross_root_hardlinks(tm
     assert os.getxattr(file, "user.checkpoint") == b"kept"
     assert stat.S_ISFIFO((roots[0] / "fifo").stat().st_mode)
     assert stat.S_ISSOCK((roots[0] / "socket").stat().st_mode)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="GNU cp overlay semantics")
+def test_overlay_replaces_destination_symlinks_instead_of_writing_through(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"untouched")
+    source, destination = tmp_path / "candidate", tmp_path / "live"
+    source.mkdir()
+    destination.mkdir()
+    (source / "view").write_bytes(b"candidate")
+    (destination / "view").symlink_to(outside)
+    checkpoint.copy_contents(source, destination)
+    assert outside.read_bytes() == b"untouched"
+    assert not (destination / "view").is_symlink()
+    assert (destination / "view").read_bytes() == b"candidate"

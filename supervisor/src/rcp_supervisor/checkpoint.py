@@ -112,8 +112,12 @@ def copy_trees(destination: Path, sources: tuple[Path, ...]) -> dict[Path, Path]
 
 
 def copy_contents(source: Path, destination: Path) -> None:
-    """Overlay validated candidate contents using the same plain copier."""
-    _run([*_copy_flags(), str(source) + "/.", str(destination)])
+    """Overlay validated candidate contents using the same plain copier.
+
+    Replace an existing destination entry, never write through a symlink there.
+    """
+    overlay = [] if sys.platform == "darwin" else ["--remove-destination"]
+    _run([*_copy_flags(), *overlay, str(source) + "/.", str(destination)])
     _sync_filesystem(destination)
 
 
