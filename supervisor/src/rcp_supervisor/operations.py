@@ -171,10 +171,17 @@ class OperationStore:
         self.releases_root = releases_root
         self.status_path = status_path
 
+    def locked(self):
+        return self._locked("lock")
+
+    def preparing(self):
+        """Serialize preparation and pruning without blocking systemd recovery."""
+        return self._locked("preparation.lock")
+
     @contextmanager
-    def locked(self) -> Iterator[None]:
+    def _locked(self, name: str) -> Iterator[None]:
         _private_directory(self.directory)
-        descriptor = os.open(self.directory / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        descriptor = os.open(self.directory / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             info = os.fstat(descriptor)
             if (
@@ -333,7 +340,7 @@ class OperationStore:
                 if count > 10000:
                     raise SupervisorError("Supervisor journal inventory exceeds its limit.")
                 path = Path(entry.path)
-                if path.name == "lock":
+                if path.name in {"lock", "preparation.lock"}:
                     continue
                 if path.suffix == ".tmp":
                     # An interrupted atomic write cannot supersede its fsynced

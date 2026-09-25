@@ -1,7 +1,6 @@
 """Reclaim retained update artifacts that no recovery path can reach any more.
 
-Every update leaves a rollback checkpoint under the checkpoints root and an
-installed tree under the releases root, and until now nothing removed either.
+Updates stage rollback checkpoints and installed release trees.
 A committed update never restores old data, so no finished checkpoint serves a
 rollback; only the live release and the newest trees are kept. The
 decision is made here from the journal, the release pointer, and the selected
@@ -13,8 +12,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
-import time
+import stat
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,13 +26,19 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     MAX_OPERATION_BYTES,
     RETAINED_CHECKPOINTS,
+    RETAINED_OPERATION_JOURNALS,
     RETAINED_RELEASES,
-    RETENTION_ORPHAN_MIN_AGE_SECONDS,
+    RETAINED_ROOT_ENVIRONMENTS,
+    RETAINED_SUPERVISOR_LOGS,
 )
 from rcp_supervisor.operations import TERMINAL, OperationStore
 
 if TYPE_CHECKING:
     from rcp_supervisor.runtime import Paths, SystemRuntime
+
+# Resolve while importing: a self-update later repoints `current`, and resolving
+# __file__ then could name the new environment rather than this running one.
+_RUNNING_MODULE = Path(__file__).resolve()
 
 
 @dataclass(frozen=True)
@@ -95,7 +102,6 @@ def plan_retention(
     current_release_directory: str,
     selected: dict,
     protected_operation_ids: frozenset[str],
-    now: float,
 ) -> RetentionPlan:
     """Decide what to remove; never touch the filesystem beyond listing it.
 
@@ -119,17 +125,6 @@ def plan_retention(
         record for record, _ in newest_first if _owns_checkpoint(record, checkpoints_root)
     ][:RETAINED_CHECKPOINTS]
     kept_ids = {record["operation_id"] for record in kept_operations} | set(protected_operation_ids)
-    recorded_ids = {record["operation_id"] for record, _ in records}
-    # Only a build some completed deployment names is this store's to remove. A
-    # release being installed for a deployment that has not committed yet is
-    # unknown here, and pruning it from under the installer is not an option.
-    known_release_directories: set[str] = set()
-    for record, _ in records:
-        for side in ("previous", "target"):
-            release = record.get(side)
-            directory = release.get("release_directory") if isinstance(release, dict) else None
-            if isinstance(directory, str):
-                known_release_directories.add(directory)
     # A kept checkpoint is only usable if the release it would roll back to,
     # and the one it was taken for, are both still installed.
     kept_release_directories = {selected["release_directory"], current_release_directory}
@@ -148,13 +143,9 @@ def plan_retention(
             left_alone.append(f"{path}: not an operation workspace")
         elif entry.name in kept_ids:
             kept_checkpoints.append(entry.name)
-        elif entry.name in recorded_ids:
-            remove_checkpoints.append(path)
-        elif now - entry.stat(follow_symlinks=False).st_mtime < RETENTION_ORPHAN_MIN_AGE_SECONDS:
-            # An operation that has not published its journal yet owns this;
-            # one that died before publishing is reclaimed on a later prune.
-            left_alone.append(f"{path}: unrecorded workspace younger than the age floor")
         else:
+            # Preparation and retention share a lock, so even a workspace whose
+            # first journal never published is no longer in use.
             remove_checkpoints.append(path)
 
     builds: list[tuple[int, Path]] = []
@@ -165,14 +156,13 @@ def plan_retention(
             continue
         builds.append((int(entry.name), path))
     builds.sort(reverse=True)
-    newest_builds = {path for _, path in builds[:RETAINED_RELEASES]}
+    installed = [(build, path) for build, path in builds if (path / "installed.json").is_file()]
+    newest_builds = {path for _, path in installed[:RETAINED_RELEASES]}
     remove_releases: list[Path] = []
     kept_releases: list[str] = []
     for build, path in builds:
         if str(path) in kept_release_directories or path in newest_builds:
             kept_releases.append(str(build))
-        elif str(path) not in known_release_directories:
-            left_alone.append(f"{path}: named by no completed deployment")
         else:
             remove_releases.append(path)
     return RetentionPlan(
@@ -213,12 +203,14 @@ def prune_retained(runtime: SystemRuntime, store: OperationStore) -> RetentionPl
             current_release_directory=runtime.current_release_directory(),
             selected=runtime.selected_release(),
             protected_operation_ids=adoption_operation_ids(runtime.paths),
-            now=time.time(),
         )
         for directory in plan.remove_checkpoints:
             runtime.remove_retained(directory, runtime.paths.checkpoints_root)
         for directory in plan.remove_releases:
             runtime.remove_retained(directory, runtime.paths.releases_root)
+        runtime.prune_backup_captures()
+        prune_supervisor_metadata(runtime.paths, store)
+
     return plan
 
 
@@ -276,3 +268,193 @@ def _remove_tree(directory: Path) -> None:
                 os.chmod(child, 0o700)
     shutil.rmtree(directory)
     _fsync_directory(directory.parent)
+
+
+def prune_logs(directory: Path, *, keep: int = RETAINED_SUPERVISOR_LOGS) -> None:
+    """Bound diagnostic files, including repeated failed attempts."""
+    if not directory.exists():
+        return
+    from rcp_supervisor.install import _require_directory
+
+    _require_directory(directory)
+    logs = [
+        path
+        for path in directory.iterdir()
+        if path.name.startswith(("output-", "error-", "probe-"))
+        and path.suffix == ".log"
+        and stat.S_ISREG(path.lstat().st_mode)
+    ]
+    for path in sorted(logs, key=lambda path: path.stat().st_mtime_ns, reverse=True)[keep:]:
+        path.unlink()
+
+
+def prune_supervisor_metadata(paths: Paths, store: OperationStore) -> None:
+    """Reclaim only supervisor-owned derived artifacts after a successful run.
+
+    Call with both preparation and operation locks, and no unfinished operation.
+    Release trees/checkpoint catalogs must be removed before their journals.
+    """
+    from rcp_supervisor.install import _require_directory
+
+    records = sorted(store.records(), key=lambda item: item[1], reverse=True)
+    for record, _ in records[RETAINED_OPERATION_JOURNALS:]:
+        (store.directory / f"{record['operation_id']}.json").unlink()
+    for path in store.directory.glob("*.tmp"):
+        path.unlink()  # records() already validated every interrupted journal write.
+    _fsync_directory(store.directory)
+    prune_logs(paths.supervisor / "logs", keep=0)
+    _prune_atomic_staging(paths.supervisor)
+    _prune_pointer_staging(paths.current.parent, "current")
+    _prune_pointer_staging(paths.supervisor, "supervisor")
+
+    receipts = paths.supervisor / "release-receipts"
+    if receipts.exists():
+        _require_directory(receipts)
+        _prune_atomic_staging(receipts, receipt=True)
+        for path in receipts.iterdir():
+            if (
+                path.suffix == ".json"
+                and path.stem.isdigit()
+                and stat.S_ISREG(path.lstat().st_mode)
+                and not (paths.releases_root / path.stem).is_dir()
+            ):
+                path.unlink()
+    bundles = paths.supervisor / "bundles"
+    if bundles.exists():
+        _require_directory(bundles)
+        for path in bundles.iterdir():
+            if (
+                path.is_dir()
+                and not path.is_symlink()
+                and (
+                    _is_operation_id(path.name)
+                    or (
+                        path.name.startswith(".")
+                        and ".fetch-" in path.name
+                        and _is_operation_id(path.name[1:].split(".fetch-", 1)[0])
+                    )
+                )
+            ):
+                remove_retained_tree(path, bundles)
+            elif (
+                path.name.startswith(".")
+                and path.name.endswith(".fetch.lock")
+                and _is_operation_id(path.name[1 : -len(".fetch.lock")])
+                and stat.S_ISREG(path.lstat().st_mode)
+            ):
+                path.unlink()
+
+    protected = {
+        Path(sys.executable).absolute(),
+        Path(sys.executable).resolve(),
+        _RUNNING_MODULE,
+    }
+    pointer = paths.supervisor / "current"
+    if pointer.is_symlink():
+        protected.add(pointer.resolve())
+    # The public operator console follows the selected application's build.
+    current = paths.current
+    if current.is_symlink():
+        protected.add(paths.supervisor / "operator" / current.resolve().name)
+    for storage in ("operator", "versions"):
+        root = paths.supervisor / storage
+        if not root.exists():
+            continue
+        _require_directory(root)
+        children = [
+            p
+            for p in root.iterdir()
+            if p.is_dir()
+            and not p.is_symlink()
+            and (
+                p.name.isdigit()
+                if storage == "operator"
+                else len(p.name.split(".")) == 3 and all(n.isdigit() for n in p.name.split("."))
+            )
+        ]
+        complete = sorted(
+            (p for p in children if (p / "installed.json").is_file()),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+        kept = set(complete[:RETAINED_ROOT_ENVIRONMENTS])
+        for child in children:
+            if child not in kept and not any(p == child or child in p.parents for p in protected):
+                remove_retained_tree(child, root)
+    # Old root uv caches are reproducible, never a Python runtime or a receipt.
+    cache = paths.supervisor / "cache"
+    if cache.exists():
+        _require_directory(cache)
+        for path in cache.iterdir():
+            if path.is_dir() and not path.is_symlink():
+                remove_retained_tree(path, cache)
+            else:
+                path.unlink()
+    python = paths.supervisor / "python"
+    if python.exists():
+        _require_directory(python)
+        staging = python / ".temp"
+        if staging.exists():
+            _require_directory(staging)
+            remove_retained_tree(staging, python)
+        referenced = set(protected)
+        for storage in ("operator", "versions"):
+            for executable in (paths.supervisor / storage).glob("*/.venv/bin/python"):
+                referenced.add(executable.resolve())
+        for path in python.iterdir():
+            if (
+                path.name.startswith("cpython-")
+                and path.is_dir()
+                and not path.is_symlink()
+                and not any(p == path or path in p.parents for p in referenced)
+            ):
+                remove_retained_tree(path, python)
+
+
+def prune_backup_captures(data_dir: Path) -> None:
+    """Clear backup-only stages as their service-account owner after an update."""
+    if os.geteuid() == 0:
+        raise SupervisorError("Backup captures must be pruned as the service account.")
+    stages = data_dir.resolve() / "run-stage"
+    if not stages.exists():
+        return
+    info = stages.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise SupervisorError("Backup staging root is unsafe.")
+    for path in stages.iterdir():
+        if not path.name.startswith("backup-") or not _is_operation_id(path.name[7:]):
+            continue
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise SupervisorError("Backup capture stage is unsafe.")
+        _remove_tree(path)
+
+
+def _prune_atomic_staging(directory: Path, *, receipt: bool = False) -> None:
+    # mkstemp uses an eight-character random suffix. Only our specific atomic
+    # metadata publications are candidates; ordinary operator files are not.
+    pattern = (
+        r"\.(?:[0-9]+)\.json\.[a-z0-9_]{8}"
+        if receipt
+        else r"\.(?:selected|status|adoption)\.json\.[a-z0-9_]{8}"
+    )
+    for path in directory.iterdir():
+        if not re.fullmatch(pattern, path.name):
+            continue
+        info = path.lstat()
+        if (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and info.st_nlink == 1
+            and not info.st_mode & 0o022
+        ):
+            path.unlink()
+
+
+def _prune_pointer_staging(directory: Path, label: str) -> None:
+    for path in directory.iterdir():
+        if not re.fullmatch(rf"\.{label}-(?:adoption-)?[0-9a-f]{{32}}", path.name):
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) and info.st_uid == os.geteuid():
+            path.unlink()

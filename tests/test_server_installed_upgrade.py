@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -66,3 +68,55 @@ def test_installed_fault_observes_real_snapshot_and_exact_restore(tmp_path, monk
     (research / "patches").rmdir()
     with pytest.raises(AssertionError, match="rollback changed"):
         coordinator.boundary("rollback_roots_complete")
+
+
+@pytest.mark.parametrize("unsafe", ["executable_owner", "ancestor_owner", "ancestor_mode"])
+def test_installed_toolchain_refuses_runner_writable_uv(monkeypatch, unsafe):
+    executable = Path("/usr/local/bin/uv")
+    monkeypatch.setattr(Path, "resolve", lambda self, *, strict: self)
+
+    def metadata(path):
+        regular = path == executable
+        mode = (stat.S_IFREG if regular else stat.S_IFDIR) | 0o755
+        uid = 0
+        if unsafe == "executable_owner" and regular:
+            uid = 1000
+        if path == executable.parent:
+            if unsafe == "ancestor_owner":
+                uid = 1000
+            if unsafe == "ancestor_mode":
+                mode |= 0o020
+        return SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    monkeypatch.setattr(Path, "stat", metadata)
+    with pytest.raises(RuntimeError, match="root-owned uv"):
+        installed.prepare_toolchain()
+
+
+def test_installed_toolchain_drops_runner_python_and_cache_settings(monkeypatch):
+    executable = Path("/usr/local/bin/uv")
+    monkeypatch.setattr(Path, "resolve", lambda self, *, strict: self)
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda path: SimpleNamespace(
+            st_uid=0, st_mode=(stat.S_IFREG if path == executable else stat.S_IFDIR) | 0o755
+        ),
+    )
+    environment = {
+        "PATH": "/runner/bin",
+        "UV_PYTHON_INSTALL_DIR": "/runner/python",
+        "UV_CACHE_DIR": "/runner/cache",
+        "PIP_TARGET": "/runner/packages",
+        "PYTHONPATH": "/runner/source",
+        "VIRTUAL_ENV": "/runner/venv",
+        "RCP_RUN_INSTALLED_UPGRADE": "1",
+        "GITHUB_ACTIONS": "true",
+    }
+    monkeypatch.setattr(os, "environ", environment)
+    installed.prepare_toolchain()
+    assert environment == {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "RCP_RUN_INSTALLED_UPGRADE": "1",
+        "GITHUB_ACTIONS": "true",
+    }

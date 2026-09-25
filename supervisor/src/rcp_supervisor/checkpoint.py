@@ -129,7 +129,10 @@ def _existing_parent(path: Path) -> Path:
 
 def _service_owned(path: Path) -> None:
     """Privileged copies and renames touch only trees the service account owns."""
-    if _existing_parent(path).lstat().st_uid == 0:
+    existing = _existing_parent(path)
+    if existing.resolve() != existing:
+        raise SupervisorError(f"Checkpoint root path passes through a symlink: {path}")
+    if existing.lstat().st_uid == 0:
         raise SupervisorError(f"Checkpoint root is owned by root, not the service: {path}")
 
 
@@ -236,10 +239,12 @@ def create_checkpoint(
             parent = parent.parent
         if parent.stat().st_dev != _existing_parent(group[0].live.parent).stat().st_dev:
             raise SupervisorError("No staging parent outside the roots shares their filesystem.")
-        workspace = Path(tempfile.mkdtemp(prefix=f".rcp-checkpoint-{identity[:16]}-", dir=parent))
+        workspace = parent / f".rcp-checkpoint-{identity[:16]}-{uuid.uuid4().hex}"
         document["workspaces"].append(str(workspace))
-        # Publish references before copying so abandoned partial copies can be pruned.
+        # Publish the exact path before creating it, so even a crash before the
+        # first copied byte cannot strand an unrecorded filesystem workspace.
         _write_json(destination / "checkpoint.json", document)
+        workspace.mkdir(mode=0o700)
         sources = tuple(
             dict.fromkeys(root.payload for root in group if os.path.lexists(root.payload))
         )

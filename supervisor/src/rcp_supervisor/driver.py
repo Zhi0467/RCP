@@ -7,6 +7,7 @@ import os
 import stat
 import uuid
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 
 from rcp_supervisor import __version__
@@ -28,6 +29,16 @@ from rcp_supervisor.runtime import (
     selected_release,
     write_root_json,
 )
+
+
+def _serialized_preparation(command):
+    @wraps(command)
+    def run(arguments, emitter, *, paths: Paths = DEFAULT_PATHS):
+        _root_directory(paths.operations, mode=0o700)
+        with store_for(paths).preparing():
+            return command(arguments, emitter, paths=paths)
+
+    return run
 
 
 def store_for(paths: Paths) -> OperationStore:
@@ -165,8 +176,8 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
         # A failed earlier preparation left this build unsealed; install it afresh.
         runtime.remove_retained(target, runtime.paths.releases_root)
     if not os.path.lexists(target):
-        # A sealed receipt outlives a pruned release tree; the verified bundle
-        # installs again under the same identity.
+        # Older retention kept seals after removing trees. If one remains, the
+        # verified bundle must reinstall under that already checked identity.
         installed = runtime.filesystem(
             "install",
             {"bundle": str(release.directory), "releases_root": str(runtime.paths.releases_root)},
@@ -197,6 +208,7 @@ def _require_supervisor(release: VerifiedRelease) -> None:
         )
 
 
+@_serialized_preparation
 def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     recover(paths=paths)
     runtime = SystemRuntime(paths)
@@ -206,7 +218,9 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
     target = release_receipt(release, paths)
     if target == previous:
         emitter.emit(
-            "succeeded", "The selected application already matches the followed promoted release."
+            "succeeded",
+            "The selected application already matches the followed promoted release.",
+            fields=_retention_after_commit(runtime, store_for(paths)),
         )
         return 0
     confirmation = f"{target['release_tag']}:{target['manifest_sha256']}"
@@ -257,6 +271,7 @@ def _retention_after_commit(runtime: SystemRuntime, store: OperationStore) -> li
         return [{"name": "retention", "value": f"not pruned: {str(exc)[:512]}"}]
 
 
+@_serialized_preparation
 def prune(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     del arguments
     recover(paths=paths)
@@ -289,6 +304,7 @@ def _emit_adoption(adoption: dict, emitter: EventEmitter) -> int:
     return 0 if committed else 1
 
 
+@_serialized_preparation
 def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     runtime = SystemRuntime(paths, allow_legacy_config=True)
     _root_directory(paths.operations, mode=0o700)
@@ -370,6 +386,7 @@ def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
     return 0
 
 
+@_serialized_preparation
 def restore(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     recover(paths=paths)
     from rcp_supervisor.restore import RestoreOperatorAction
@@ -435,11 +452,15 @@ def restore(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
     emitter.emit(
         "succeeded",
         "The restored application passed fenced verification and is serving.",
-        fields=[{"name": "phase", "value": result["phase"]}],
+        fields=[
+            {"name": "phase", "value": result["phase"]},
+            *_retention_after_commit(runtime, store_for(paths)),
+        ],
     )
     return 0
 
 
+@_serialized_preparation
 def supervisor_update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     del arguments
     recover(paths=paths)
@@ -473,6 +494,7 @@ def supervisor_update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAUL
     emitter.emit(
         "succeeded",
         f"Supervisor {release.supervisor_version} is selected independently of the application.",
+        fields=_retention_after_commit(runtime, store_for(paths)),
     )
     return 0
 

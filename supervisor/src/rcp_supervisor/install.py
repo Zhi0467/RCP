@@ -8,12 +8,15 @@ import os
 import shutil
 import stat
 import subprocess
+import time
+from contextlib import suppress
 from pathlib import Path
 
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     IDENTITY_TIMEOUT_SECONDS,
     INSTALL_TIMEOUT_SECONDS,
+    MAX_APP_OUTPUT_BYTES,
     MAX_INSTALLED_RUNTIME_BYTES,
     MAX_INSTALLED_RUNTIME_ENTRIES,
     MAX_SELECTED_RECEIPT_BYTES,
@@ -56,21 +59,40 @@ def _require_directory(path: Path) -> None:
 def _run(
     argv: list[str], *, cwd: Path, log, timeout: int, environment: dict[str, str] | None = None
 ) -> None:
+    temporary = cwd / ".tmp"
+    temporary.mkdir(mode=0o700, exist_ok=True)
+    child_environment = environment or _environment()
+    child_environment = {**child_environment, "UV_NO_CACHE": "true", "TMPDIR": str(temporary)}
     try:
-        result = subprocess.run(
+        with subprocess.Popen(
             argv,
             cwd=cwd,
-            env=environment or _environment(),
+            env=child_environment,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        ) as process:
+            deadline = time.monotonic() + timeout
+            try:
+                while process.poll() is None:
+                    if os.fstat(log.fileno()).st_size > MAX_APP_OUTPUT_BYTES:
+                        raise SupervisorError("Release preparation output exceeded its bound.")
+                    if time.monotonic() >= deadline:
+                        raise SupervisorError("Release preparation exceeded its time bound.")
+                    with suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
+                if os.fstat(log.fileno()).st_size > MAX_APP_OUTPUT_BYTES:
+                    raise SupervisorError("Release preparation output exceeded its bound.")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                if os.fstat(log.fileno()).st_size > MAX_APP_OUTPUT_BYTES:
+                    log.truncate(MAX_APP_OUTPUT_BYTES)
+            if process.returncode:
+                raise SupervisorError("Release preparation subprocess failed.")
+    except OSError as exc:
         raise SupervisorError("Release preparation could not finish its subprocess.") from exc
-    if result.returncode:
-        raise SupervisorError("Release preparation subprocess failed.")
 
 
 def _verify_installed_identity(
@@ -90,7 +112,7 @@ def _verify_installed_identity(
         raise SupervisorError("The installed RCP identity could not be read.") from exc
     if log is not None and result.stderr:
         # An import failure is the retained diagnostic, not the version-mismatch message.
-        log.write(result.stderr)
+        log.write(result.stderr[: max(0, MAX_APP_OUTPUT_BYTES - log.tell())])
         log.flush()
     if (
         result.returncode
@@ -186,6 +208,8 @@ def install_release(bundle: Path, releases_root: Path) -> Path:
                 timeout=IDENTITY_TIMEOUT_SECONDS,
             )
             _verify_installed_identity(installed_assets, python, cwd=target, log=log)
+        if (target / ".tmp").exists():
+            shutil.rmtree(target / ".tmp")
         resolved_python = python.resolve(strict=True)
         if (
             resolved_python.parent.name != "bin"
@@ -418,6 +442,8 @@ def _prepare_root_environment(
             _run(
                 argv, cwd=target, log=log, timeout=INSTALL_TIMEOUT_SECONDS, environment=environment
             )
+    if (target / ".tmp").exists():
+        shutil.rmtree(target / ".tmp")
     _require_root_python(python, supervisor_root)
     _verify_root_identity(python, package, version, cwd=target)
     _protect_uv_lock(venv)

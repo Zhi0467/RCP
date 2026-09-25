@@ -196,7 +196,7 @@ def test_update_displays_bound_target_before_any_install_or_admission(monkeypatc
     )
     emitter = EventEmitter("server update", machine_readable=True)
     emitter.emit("running", "Verify")
-    assert driver.update(SimpleNamespace(confirm_target=None), emitter) == 3
+    assert driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter) == 3
     events = capsys.readouterr().out.splitlines()
     step = ServerStepEvent.model_validate_json(events[-1]).step
     assert step.state == "operator_action_needed"
@@ -220,6 +220,7 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch.setattr(
         driver, "prepare_release", lambda *args: pytest.fail("application preparation started")
     )
+    monkeypatch.setattr(driver, "update", driver.update.__wrapped__)
     code = cli.main(["--machine-readable", "server", "update"])
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
     if installed == "0.1.0":
@@ -302,7 +303,9 @@ def test_self_update_cannot_downgrade_recovery_below_running_or_selected_app(
     monkeypatch.setattr(driver, "selected_pointer", lambda _: {"supervisor_version": required})
     monkeypatch.setattr(driver, "install_supervisor", lambda *_: pytest.fail("downgrade installed"))
     with pytest.raises(SupervisorError, match="downgrade"):
-        driver.supervisor_update(None, EventEmitter("server supervisor update", stream=StringIO()))
+        driver.supervisor_update.__wrapped__(
+            None, EventEmitter("server supervisor update", stream=StringIO())
+        )
 
 
 def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsys):
@@ -338,7 +341,7 @@ def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(migration, "recover", recover)
     monkeypatch.setattr(driver, "followed_release", lambda _: pytest.fail("release fetched"))
     emitter = EventEmitter("server install", machine_readable=True)
-    assert driver.install(SimpleNamespace(team_name="Team"), emitter, paths=paths) == 1
+    assert driver.install.__wrapped__(SimpleNamespace(team_name="Team"), emitter, paths=paths) == 1
     assert calls == ["runtime", "lock", "recover", "runtime"]
     assert not paths.selected.exists()
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
@@ -379,6 +382,7 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
         def recover(self, **kwargs):
             return {"phase": "rolled_back"}
 
+    monkeypatch.setattr(driver, "_retention_after_commit", lambda *args: [])
     startup_recover = driver.recover
     monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
@@ -396,19 +400,18 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
     emitter = EventEmitter("server restore", stream=StringIO())
     emitter.emit("running", "Restore")
     if succeeds:
-        assert driver.restore(arguments, emitter, paths=paths) == 0
+        assert driver.restore.__wrapped__(arguments, emitter, paths=paths) == 0
         assert calls == ["enable", "committed"]
     else:
         with pytest.raises(SupervisorError, match="activation failed"):
-            driver.restore(arguments, emitter, paths=paths)
+            driver.restore.__wrapped__(arguments, emitter, paths=paths)
         assert calls == ["enable"]
         with pytest.raises(SupervisorError, match="completed team initialization or restore"):
             startup_recover(paths=paths, startup=True)
 
 
 def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(monkeypatch, tmp_path):
-    """Retention removes a release tree but keeps the root-owned receipt that
-    says the build is installed; selecting that version again must install."""
+    """A seal retained by an older supervisor does not replace the missing tree."""
 
     releases = tmp_path / "releases"
     target = releases / "7"

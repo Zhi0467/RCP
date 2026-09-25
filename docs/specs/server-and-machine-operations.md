@@ -490,7 +490,12 @@ and installed checks; catalog or asset failures fail that aggregate gate. This c
 GitHub download inside the privileged process, external provider authentication,
 remote canonical roots, arbitrary historical data, or actual machine reboots;
 the separate reboot qualification remains. Local macOS checks cannot qualify
-this root/systemd journey. The old source/cache tests retain current and stale
+this root/systemd journey. The installed jobs pin Ubuntu 24.04 and install the
+operator guide's checksum-pinned uv into `/usr/local/bin` with root ownership.
+The harness validates the executable and its ancestors, drops runner Python and
+uv environment settings, and keeps both ordinary and probation HTTP on the
+disposable port. Repeated post-update backups check archive/receipt retention
+and capture-stage cleanup. The old source/cache tests retain current and stale
 projection cases; their duplicate standalone snapshot round-trip is removed.
 
 The checkpoint is an update-local artifact, distinct from the encrypted backup.
@@ -514,17 +519,40 @@ operations finish with the old supervisor before its update. Historical complete
 journals remain readable for retention, but legacy subset checkpoints cannot
 serve as whole-root rollback sources.
 
-Retention runs under the same operation lock after a commit. It removes every
-finished operation workspace (a committed update never restores old data, so no
-snapshot or failed attempt's quarantine serves recovery) and keeps the two newest
-release trees plus the live release (`limits.py`). The privileged worker follows
-each catalog to its per-filesystem payloads and quarantines when removing an
-operation workspace. A central workspace no journal names is reclaimed only past an age floor;
-the adoption workspace stays protected. Pruning refuses when selected/current
-identity disagrees or an operation is unfinished. Unknown artifacts and releases
-not named by completed deployments remain untouched. A pruned build retains its
-sealed receipt; selecting it again installs the verified bundle under the same
-identity. `server prune` runs the same decision on demand.
+Installed mutation commands serialize preparation and pruning with a separate
+preparation lock; startup recovery retains the existing operation lock and can
+run while systemd starts during an update. Retention runs under the operation
+and backup/deployment locks after successful update, including an already-current
+update, supervisor update, or restore; `server prune` invokes it on demand.
+
+`limits.py` keeps zero finished checkpoints, the two newest completed application
+release trees plus the live release, 20 operation journals, and two completed
+root environments per supervisor/operator storage plus selected or executing
+environments. Cleanup removes checkpoint catalogs and their per-filesystem
+payloads/quarantines before forgetting journals, including UUID workspaces left
+before journal publication. Failed numeric build directories are reclaimed.
+Release receipts live only as long as the retained release trees; selecting a
+pruned build fetches and verifies its promoted bundle anew. Root managed Python
+runtimes remain only when retained environments reference them; their interrupted
+download staging is reclaimed. The one-time adoption workspace remains protected.
+
+Subprocess diagnostics keep at most 20 output/error/probe logs after failure,
+with the existing 8 MiB output bound enforced on retained files; successful
+cleanup removes them. Downloads, fetch staging and locks, interrupted atomic
+metadata writes, the root uv cache, and application maintenance backup captures
+are reclaimed after success. New application installation uses a per-release
+temporary directory with persistent uv caching disabled, so release retention
+owns temporary files.
+It reuses the service account's managed Python 3.12; shared runtimes and provider
+caches are not deleted because retained agent environments may reference them.
+Installation logs are bounded by the same output limit and remain inside retained
+environments. Journald owns service
+and nightly backup logs under the host's configured journal retention.
+
+Pruning refuses when selected/current identity disagrees or an operation is
+unfinished. Unknown artifacts remain untouched and are reported; retention
+never follows a symlink into unrelated data. These are artifact-count bounds,
+not a byte quota on scientific history or an instruction to delete agent scratch.
 
 ### Selection and startup guard
 
@@ -1279,7 +1307,16 @@ rotation is not implicit. Private `AGE-SECRET-KEY-...` text is never accepted by
 the CLI or emitted in progress.
 The same resolved schedule renders the systemd timer; there is no second
 editable timer value. Retention also preserves the newest complete archive if
-it has fallen outside the configured count.
+it has fallen outside the configured count. This bounds archive/receipt pairs at
+`retention + 1`; nightly, manual, and pre-update protected captures use the same
+owner and destination. Status and optional diagnostic sidecars overwrite fixed
+paths and retain their existing byte/count limits. Backup capture stages retain
+only the newest failed capture (`BACKUP_RETAINED_FAILED_CAPTURES` in `limits.py`);
+the next completed protected or partial archive removes all prior backup stages.
+Task scratch is not eligible. Under the backup lock, retry reconciles exact
+publication intents before reclaiming recognized interrupted archive, receipt,
+and status temporary files and orphan receipts from interrupted retention.
+Research history is never truncated to fit a byte quota.
 
 Keeping the default recovery identity on the same server makes routine backup
 setup and same-machine restore simple, but does not by itself survive total

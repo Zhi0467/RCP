@@ -81,7 +81,10 @@ def install_hooks() -> None:
                 (data / "run-stage/real-tools/repo/result.txt").write_text("candidate mutation\n")
                 (data / "run-stage/real-tools/empty").rmdir()
                 (data / "providers/claude/qualification/setup-token").unlink()
-                (data / "candidate-only").write_text("must disappear\n")
+                added = data / "candidate-only"
+                added.write_text("must disappear\n")
+                owner = data.stat()
+                os.chown(added, owner.st_uid, owner.st_gid)
                 raise RuntimeError("installed-upgrade intentional candidate failure")
 
         self.boundary = boundary

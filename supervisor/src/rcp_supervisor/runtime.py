@@ -278,7 +278,12 @@ class SystemRuntime:
                 yield output, name
             finally:
                 output.flush()
+                if os.fstat(output.fileno()).st_size > MAX_APP_OUTPUT_BYTES:
+                    output.truncate(MAX_APP_OUTPUT_BYTES)
                 os.fsync(output.fileno())
+                from rcp_supervisor.retention import prune_logs
+
+                prune_logs(directory)
 
     def owned_argv(self, argv: list[str]) -> list[str]:
         """Arm Linux parent-death ownership after the subprocess drops credentials."""
@@ -424,6 +429,10 @@ class SystemRuntime:
     def remove_retained(self, directory: Path, root: Path) -> None:
         """Delete retained trees with the privilege needed for preserved modes."""
         self.filesystem("remove", {"directory": str(directory), "root": str(root)})
+
+    def prune_backup_captures(self) -> None:
+        # Includes maintenance captures when protected backups were unconfigured.
+        self.filesystem("prune-backup-captures", {"data_dir": str(self.paths.data_dir)})
 
     def current_release_directory(self) -> str:
         info = self.paths.current.lstat()

@@ -442,7 +442,9 @@ def test_install_retries_terminal_rolled_back_adoption(runtime, monkeypatch):
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(driver, "_root_directory", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        driver, "store_for", lambda _: SimpleNamespace(locked=nullcontext, active=lambda: None)
+        driver,
+        "store_for",
+        lambda _: SimpleNamespace(locked=nullcontext, preparing=nullcontext, active=lambda: None),
     )
     monkeypatch.setattr(
         driver, "followed_release", lambda _: SimpleNamespace(directory=runtime.paths.releases_root)

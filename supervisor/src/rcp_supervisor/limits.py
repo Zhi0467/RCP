@@ -22,12 +22,13 @@ MAX_INSTALLED_RUNTIME_ENTRIES = 100_000
 # Retained artifacts a committed update leaves behind. No checkpoint: a committed
 # update never restores old data, so every snapshot and failed attempt's
 # quarantine is removed. Two release trees cover the live release and the
-# previous one. An unrecorded checkpoint workspace is reclaimed only once it
-# is older than the age floor, so one an operation is still writing is never a
-# candidate.
+# previous one. Preparation and pruning are serialized, so unrecorded failed
+# workspaces can be removed at the next successful operation.
 RETAINED_CHECKPOINTS = 0
 RETAINED_RELEASES = 2
-RETENTION_ORPHAN_MIN_AGE_SECONDS = 24 * 60 * 60
+RETAINED_OPERATION_JOURNALS = 20
+RETAINED_SUPERVISOR_LOGS = 20
+RETAINED_ROOT_ENVIRONMENTS = 2
 MAX_OPERATION_BYTES = 1024 * 1024
 APP_COMMAND_TIMEOUT_SECONDS = 300
 MAINTENANCE_TIMEOUT_SECONDS = 1800

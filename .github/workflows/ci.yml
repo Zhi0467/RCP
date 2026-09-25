@@ -146,7 +146,7 @@ jobs:
   installed-upgrade-release:
     name: installed upgrade (${{ matrix.tag }})
     needs: installed-upgrade-candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -176,6 +176,20 @@ jobs:
           sudo apt-get install -y age
           uv sync --frozen --no-install-project
           uv pip install --no-deps "$RUNNER_TEMP"/installed-upgrade/candidate/rcp-*.whl
+      - name: Install the documented root-owned uv toolchain
+        run: |
+          RCP_UV_VERSION="0.12.7"
+          RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
+          RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+          RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
+          trap 'rm -rf "$RCP_UV_DOWNLOAD_DIR"' EXIT
+          cd "$RCP_UV_DOWNLOAD_DIR"
+          curl --fail --show-error --location --remote-name "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
+          printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | sha256sum --check --strict
+          tar --extract --gzip --file "$RCP_UV_ARCHIVE"
+          sudo install --directory --owner=root --group=root --mode=0755 /usr/local /usr/local/bin
+          sudo install --owner=root --group=root --mode=0755 "uv-x86_64-unknown-linux-gnu/uv" /usr/local/bin/uv
+          /usr/local/bin/uv --version
       - name: Exercise installed systemd update, rollback, backup, and retry
         env:
           RELEASE_TAG: ${{ matrix.tag }}
@@ -184,8 +198,7 @@ jobs:
             "$PWD/.venv/bin/python" -m tests.server_installed_upgrade \
             --base "$RUNNER_TEMP/installed-upgrade/base" \
             --candidate "$RUNNER_TEMP/installed-upgrade/candidate" \
-            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/evidence" \
-            --uv "$(command -v uv)"
+            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/evidence"
       - name: Collect service logs
         if: always()
         run: |

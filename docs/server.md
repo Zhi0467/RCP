@@ -76,6 +76,7 @@ upstream 0.12.7 release rather than trusting a downloaded installer script:
   RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
   RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
   RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
+  trap 'rm -rf "$RCP_UV_DOWNLOAD_DIR"' EXIT
   cd "$RCP_UV_DOWNLOAD_DIR"
   curl --fail --show-error --location --remote-name "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
   printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | sha256sum --check --strict
@@ -573,20 +574,33 @@ renames resume from the journal; completed rollback never overwrites later work.
 After the release decision, recovery completes the selected release. Reboot follows the same
 root-owned journal without fetching a release or consulting `main`.
 
-Retention is bounded. After an update commits, the supervisor removes every
-finished operation workspace under `update-checkpoints/`, with its snapshot
-payloads and any quarantine a failed attempt left, because a committed update
-never restores old data. It keeps the two newest release trees under
-`releases/` and the live release. A failed update's quarantine therefore stays
-for inspection only until the next successful update. A checkpoint workspace that no
-journal names is removed once it is a day old; the source-adoption workspace is
-never touched. The prune refuses as a whole when the release pointer and the
-selected receipt disagree or an operation is unfinished, and it leaves alone,
-by name, any entry it does not recognize or that no completed update names, so
-a release still being installed is never removed. The update's final event lists what
-was removed and kept. A pruned build keeps its sealed receipt, so pinning that
-version again installs its verified bundle. To prune on demand, for an
-installation that already carries a backlog:
+After an update commits, retention removes every finished operation workspace
+under `update-checkpoints/`, including snapshots, catalogs, rehearsal copies and
+failed-attempt quarantines. It also removes abandoned UUID workspaces and failed
+build installations. The two newest completed application release trees and the
+live release remain; their sealed receipts remain only while their trees do.
+Selecting a pruned release downloads and verifies its promoted bundle again.
+
+The supervisor keeps the newest 20 operation journals. It keeps at most 20
+subprocess diagnostic logs after failure, each capped at 8 MiB, and clears those
+logs after successful cleanup. Downloads, fetch staging/locks, interrupted
+metadata writes, the root uv cache, and maintenance backup captures are reclaimed
+at the next successful operation. Root supervisor/operator environments keep the
+two newest completed versions plus the selected and executing environments;
+root Python installations remain only while one of those environments uses them.
+New application installations keep temporary files inside their release tree
+and disable persistent uv caching. They reuse the service account's managed
+Python 3.12; that shared runtime remains available to retained agent environments.
+Cleanup does not delete shared provider caches.
+
+Preparation and pruning are serialized, so cleanup cannot race another update's
+installer. Startup recovery keeps its separate operation lock. Pruning refuses
+when the release pointer and selected receipt disagree or an operation is
+unfinished. The one-time adoption workspace and unrecognized entries are left
+alone; the final event reports any cleanup refusal. No research history or
+ordinary agent scratch is pruned. Nightly and service logs go to journald and
+follow the host's journal retention policy. To apply cleanup to an existing
+backlog:
 
 ```bash
 sudo /usr/local/bin/rcp server prune
@@ -653,6 +667,16 @@ copy. Check the result at any time with:
 sudo -u rcp -H /usr/local/bin/rcp server backup run
 sudo -u rcp -H /usr/local/bin/rcp server doctor
 ```
+
+Nightly, manual, and pre-update backups share the configured archive retention.
+Each archive's receipt is removed with it. The newest complete archive is also
+kept if later partial archives pushed it outside the count, so at most
+`retention + 1` archives remain. Status and diagnostic sidecars replace fixed
+files. Only the newest failed plaintext capture is retained for inspection;
+the next completed backup, including a partial archive, removes all old backup
+captures. Retry also reclaims interrupted archive, receipt, and status writes
+after reconciling any pending publication. Ordinary agent scratch is unaffected.
+These are count bounds: archive size still follows the team's research data.
 
 This simple default does not survive loss of the whole machine unless the
 backup destination and recovery identity are also retained elsewhere. Labs

@@ -222,3 +222,12 @@ def test_privileged_copy_refuses_root_owned_paths(tmp_path: Path) -> None:
         checkpoint.create_stopped_snapshot(
             tmp_path / "checkpoint", (system,), boundary_sha256="b" * 64
         )
+
+
+def test_privileged_copy_refuses_roots_below_a_symlink(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    with pytest.raises(SupervisorError, match="symlink"):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (tmp_path / "link" / "new",), boundary_sha256="b" * 64
+        )

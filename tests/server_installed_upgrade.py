@@ -16,6 +16,7 @@ import shlex
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import urllib.request
@@ -234,8 +235,24 @@ def setup() -> None:
     run(["systemctl", "daemon-reload"])
 
 
-def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None:
+def prepare_toolchain() -> None:
+    # Do not copy setup-uv's runner-owned binary, inherit its Python/cache, or
+    # trust a runner-writable ancestor. CI installs the documented pinned uv.
+    uv = Path("/usr/local/bin/uv").resolve(strict=True)
+    for path in (uv, *uv.parents):
+        info = path.stat()
+        kind = stat.S_ISREG if path == uv else stat.S_ISDIR
+        if not kind(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError("Install the documented root-owned uv before the journey.")
+    for name in tuple(os.environ):
+        if name.startswith(("UV_", "PYTHON", "PIP_")) or name in {"VIRTUAL_ENV", "CONDA_PREFIX"}:
+            del os.environ[name]
+    os.environ["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     preflight()
+    prepare_toolchain()
     ROOT.mkdir(mode=0o755)
     (ROOT / "tests").mkdir(mode=0o755)
     workspace = Path(__file__).resolve().parents[1]
@@ -256,11 +273,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None
             ROOT / "bundles" / f"{name}.receipt.json",
         )
     base, candidate = ROOT / "bundles/base", ROOT / "bundles/target"
-    # setup-uv's binary belongs to the runner; privileged installation requires a
-    # root-owned executable and ancestors, just as on the documented server.
-    if uv.resolve() != Path("/usr/local/bin/uv"):
-        run(["install", "-m", "0755", str(uv), "/usr/local/bin/uv"])
-    os.environ["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     python = ROOT / "bootstrap/bin/python"
     run(["uv", "venv", "--managed-python", "--python", "3.12", str(python.parent.parent)])
     run(
@@ -331,7 +343,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None
         "--schedule",
         "02:00",
         "--retention",
-        "30",
+        "2",
         "--confirm",
     )
     backup()
@@ -383,6 +395,8 @@ def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None
         *(path for path in Path("/home/rcp").rglob(".rcp-checkpoint-*")),
     ]
     assert leftovers == [], leftovers
+    assert not list((DATA / "run-stage").glob("backup-*"))
+    assert not list(Path("/etc/rcp/supervisor/logs").glob("*.log"))
     from zipfile import ZipFile
 
     (wheel,) = candidate.glob("rcp-*.whl")
@@ -406,7 +420,14 @@ def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None
             "scratch-check",
         ]
     )
-    backup()
+    for _ in range(3):
+        backup()
+    archives = list(destination.glob("*.tar.age"))
+    receipts = list(destination.glob("*.tar.age.receipt.json"))
+    assert len(archives) == 2, archives
+    assert len(receipts) == 2, receipts
+    assert not list((DATA / "run-stage").glob("backup-*"))
+    assert not list(destination.glob("*.partial"))
     write_json(
         output / "result.json",
         {
@@ -440,14 +461,14 @@ def main() -> None:
             assert_scratch_usable(DATA / "run-stage/real-tools")
         return
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("base", "candidate", "output", "uv"):
+    for name in ("base", "candidate", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     arguments = parser.parse_args()
     arguments.output.mkdir(parents=True, exist_ok=True)
     preflight()  # Refusal must never reach cleanup of a pre-existing installation.
     try:
-        drive(arguments.base, arguments.candidate, arguments.output, arguments.tag, arguments.uv)
+        drive(arguments.base, arguments.candidate, arguments.output, arguments.tag)
     finally:
         # Diagnostics remain on the disposable runner; tokens and raw fixture
         # files are deliberately excluded from uploaded artifacts.

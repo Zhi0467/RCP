@@ -126,6 +126,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
         elif (
+            arguments == ["prune-backup-captures"]
+            and isinstance(request, dict)
+            and request.keys() == {"data_dir"}
+        ):
+            from rcp_supervisor.retention import prune_backup_captures
+
+            prune_backup_captures(Path(request["data_dir"]))
+            result = {"version": 1, "status": "removed"}
+        elif (
             arguments == ["remove"]
             and isinstance(request, dict)
             and request.keys() == {"directory", "root"}

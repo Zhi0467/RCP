@@ -46,6 +46,7 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     assert result.stdout.strip() == receipt["version"]
     assert target.name == str(receipt["build"])
     assert current.resolve() == previous
+    assert not (target / ".tmp").exists()
     assert sentinel.read_text() == "old release"
     with pytest.raises(SupervisorError, match="already exists"):
         install.install_release(bundle, root)
@@ -347,3 +348,37 @@ def test_uv_lock_protection_refuses_unsafe_entries_without_modifying_them(tmp_pa
     if unsafe == "nonempty":
         assert lock.read_bytes() == b"not a uv lock"
         assert stat.S_IMODE(lock.stat().st_mode) == 0o666
+
+
+def test_installation_uses_owned_temporary_files_and_no_shared_uv_cache(tmp_path):
+    import sys
+
+    with (tmp_path / "install.log").open("w+b") as log:
+        install._run(
+            [
+                sys.executable,
+                "-c",
+                "import os,json; print(json.dumps({k:os.environ[k] for k in ('UV_NO_CACHE','TMPDIR')}))",
+            ],
+            cwd=tmp_path,
+            log=log,
+            timeout=5,
+        )
+        log.seek(0)
+        environment = json.loads(log.read())
+    assert environment == {
+        "UV_NO_CACHE": "true",
+        "TMPDIR": str(tmp_path / ".tmp"),
+    }
+
+
+def test_installation_log_is_bounded_even_when_child_exits_before_poll(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setattr(install, "MAX_APP_OUTPUT_BYTES", 1024)
+    with (tmp_path / "install.log").open("w+b") as log:
+        with pytest.raises(SupervisorError, match="output exceeded"):
+            install._run(
+                [sys.executable, "-c", "print('x'*10000)"], cwd=tmp_path, log=log, timeout=5
+            )
+        assert os.fstat(log.fileno()).st_size == install.MAX_APP_OUTPUT_BYTES
