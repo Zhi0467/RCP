@@ -252,6 +252,9 @@ def prepare_toolchain() -> None:
 
 def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     preflight()
+    # An operator runs `sudo rcp ...` from a root shell with umask 022; the CI
+    # runner hands us 002, which makes release trees group-writable.
+    os.umask(0o022)
     prepare_toolchain()
     ROOT.mkdir(mode=0o755)
     (ROOT / "tests").mkdir(mode=0o755)
