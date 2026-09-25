@@ -377,6 +377,12 @@ def drive(base: Path, candidate: Path, output: Path, tag: str, uv: Path) -> None
         and record["target"]["manifest_sha256"] == target["manifest_sha256"]
         for record in records
     )
+    # The committed update removes every snapshot and the failed attempt's quarantine.
+    leftovers = [
+        *Path("/home/rcp/rcp-server/update-checkpoints").iterdir(),
+        *(path for path in Path("/home/rcp").rglob(".rcp-checkpoint-*")),
+    ]
+    assert leftovers == [], leftovers
     from zipfile import ZipFile
 
     (wheel,) = candidate.glob("rcp-*.whl")

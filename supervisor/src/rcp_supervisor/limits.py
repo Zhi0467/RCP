@@ -19,12 +19,13 @@ IDENTITY_TIMEOUT_SECONDS = 30
 CHECKPOINT_SPACE_MARGIN = 1.1
 MAX_INSTALLED_RUNTIME_BYTES = 1024**4
 MAX_INSTALLED_RUNTIME_ENTRIES = 100_000
-# Retained artifacts a committed update leaves behind: the newest checkpoints
-# and installed release trees kept on disk. Two covers the live release and its
-# rollback target. An unrecorded checkpoint workspace is reclaimed only once it
+# Retained artifacts a committed update leaves behind. No checkpoint: a committed
+# update never restores old data, so every snapshot and failed attempt's
+# quarantine is removed. Two release trees cover the live release and the
+# previous one. An unrecorded checkpoint workspace is reclaimed only once it
 # is older than the age floor, so one an operation is still writing is never a
 # candidate.
-RETAINED_CHECKPOINTS = 2
+RETAINED_CHECKPOINTS = 0
 RETAINED_RELEASES = 2
 RETENTION_ORPHAN_MIN_AGE_SECONDS = 24 * 60 * 60
 MAX_OPERATION_BYTES = 1024 * 1024

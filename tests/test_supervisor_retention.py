@@ -81,7 +81,7 @@ def _workspace(checkpoints: Path, operation_id: str, *, age: float = 0.0) -> Pat
     return workspace
 
 
-def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_path):
+def test_plan_removes_every_finished_checkpoint_and_keeps_the_newest_releases(tmp_path):
     checkpoints, releases = _roots(tmp_path, range(100, 105))
     chain = [
         _record(checkpoints, _release(releases, build), _release(releases, build + 1))
@@ -91,8 +91,7 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
         _workspace(checkpoints, record["operation_id"])
     records = [(record, float(index)) for index, record in enumerate(chain)]
     # Two newer journals aborted after preparing a candidate but before any
-    # checkpoint was recorded: their workspaces hold no rollback artifact and
-    # must not take the retained slots; terminal and recorded, they are reclaimed.
+    # checkpoint was recorded; terminal and recorded, they are reclaimed too.
     aborted_ids = set()
     for offset in (1, 2):
         aborted = _record(
@@ -113,16 +112,15 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
         now=NOW,
     )
 
-    assert RETAINED_CHECKPOINTS == 2 and RETAINED_RELEASES == 2
-    newest = [record["operation_id"] for record in chain[-2:]]
-    assert sorted(plan.kept_checkpoints) == sorted(newest)
+    # A committed update never restores old data, so no finished checkpoint
+    # serves recovery: every one, and every failed attempt's quarantine, goes.
+    assert RETAINED_CHECKPOINTS == 0 and RETAINED_RELEASES == 2
+    assert plan.kept_checkpoints == ()
     assert {path.name for path in plan.remove_checkpoints} == {
-        record["operation_id"] for record in chain[:2]
+        record["operation_id"] for record in chain
     } | aborted_ids
-    # 104 is live, 103 is its rollback target, 102 is where the older kept
-    # checkpoint would roll back to. 100 and 101 are unreachable.
-    assert plan.kept_releases == ("104", "103", "102")
-    assert {path.name for path in plan.remove_releases} == {"100", "101"}
+    assert plan.kept_releases == ("104", "103")
+    assert {path.name for path in plan.remove_releases} == {"100", "101", "102"}
     assert plan.left_alone == ()
 
 
@@ -174,8 +172,8 @@ def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp
         now=NOW,
     )
 
-    assert plan.remove_checkpoints == (old_orphan,)
-    assert sorted(plan.kept_checkpoints) == sorted([committed["operation_id"], adoption.name])
+    assert set(plan.remove_checkpoints) == {old_orphan, checkpoints / committed["operation_id"]}
+    assert plan.kept_checkpoints == (adoption.name,)
     assert plan.remove_releases == ()
     reasons = "\n".join(plan.left_alone)
     assert str(young_orphan) in reasons and "age floor" in reasons
@@ -293,13 +291,12 @@ def test_prune_retained_removes_through_the_runtime_from_the_journal(tmp_path):
 
     plan = prune_retained(runtime, store)
 
-    assert not (checkpoints / chain[0]["operation_id"]).exists()
-    assert all((checkpoints / record["operation_id"]).is_dir() for record in chain[1:])
-    assert not (releases / "100").exists()
-    assert all((releases / str(build)).is_dir() for build in (101, 102, 103))
+    assert not any((checkpoints / record["operation_id"]).exists() for record in chain)
+    assert not (releases / "100").exists() and not (releases / "101").exists()
+    assert all((releases / str(build)).is_dir() for build in (102, 103))
     names = {field["name"]: field["value"] for field in plan.fields()}
-    assert names["removed_checkpoints"] == 1 and names["removed_releases"] == 1
-    assert names["kept_releases"] == "103, 102, 101"
+    assert names["removed_checkpoints"] == 3 and names["removed_releases"] == 2
+    assert names["kept_releases"] == "103, 102"
     assert store.active() is None and len(store.records()) == 3
 
 

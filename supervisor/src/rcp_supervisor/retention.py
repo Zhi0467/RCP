@@ -2,8 +2,8 @@
 
 Every update leaves a rollback checkpoint under the checkpoints root and an
 installed tree under the releases root, and until now nothing removed either.
-Only the newest checkpoints can serve a rollback, and only the live release and
-its rollback target are reachable, so everything older is dead weight. The
+A committed update never restores old data, so no finished checkpoint serves a
+rollback; only the live release and the newest trees are kept. The
 decision is made here from the journal, the release pointer, and the selected
 receipt; the privileged filesystem worker also removes referenced per-filesystem
 workspaces, including consumed snapshots and candidate quarantines.

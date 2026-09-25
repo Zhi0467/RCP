@@ -514,12 +514,12 @@ operations finish with the old supervisor before its update. Historical complete
 journals remain readable for retention, but legacy subset checkpoints cannot
 serve as whole-root rollback sources.
 
-Retention runs under the same operation lock. It keeps the newest unconsumed
-checkpoints and release trees (two of each, in `limits.py`), the live release,
-the rollback target, and releases named by kept checkpoints. The privileged
-worker follows each catalog to its per-filesystem payloads and quarantines when
-removing an operation workspace. Consumed snapshots do not reserve a checkpoint
-slot. A central workspace no journal names is reclaimed only past an age floor;
+Retention runs under the same operation lock after a commit. It removes every
+finished operation workspace (a committed update never restores old data, so no
+snapshot or failed attempt's quarantine serves recovery) and keeps the two newest
+release trees plus the live release (`limits.py`). The privileged worker follows
+each catalog to its per-filesystem payloads and quarantines when removing an
+operation workspace. A central workspace no journal names is reclaimed only past an age floor;
 the adoption workspace stays protected. Pruning refuses when selected/current
 identity disagrees or an operation is unfinished. Unknown artifacts and releases
 not named by completed deployments remain untouched. A pruned build retains its
