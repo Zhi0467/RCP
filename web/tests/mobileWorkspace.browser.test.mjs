@@ -36,7 +36,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const composer = page.getByRole("textbox", { name: "Message", exact: true });
       await composer.waitFor();
       const list = page.locator(".conversation-list");
-      const chatToggle = page.getByRole("button", { name: "Chats", exact: true });
+      const chatToggle = page.getByRole("button", { name: "Agents", exact: true });
       assert.equal(await list.isVisible(), false, "Mobile conversation list starts closed");
       assert.equal(await page.getByRole("separator").count(), 0, "No narrow resize strip");
       const composerWidth = (await composer.boundingBox()).width;
@@ -48,6 +48,18 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await list.waitFor();
       assert.equal(await composer.inputValue(), "A draft survives opening the conversation list.");
       assert.equal((await composer.boundingBox()).width, composerWidth);
+      assert.ok(
+        (await composer.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))) >=
+          16,
+        "A focused field is at least 16px, so iOS does not zoom the page",
+      );
+      for (const height of await list
+        .locator('[role="option"], input[type="search"], .agent-list-filters button')
+        .evaluateAll((controls) =>
+          controls.map((control) => control.getBoundingClientRect().height),
+        )) {
+        assert.ok(height >= 44, `Panel controls are at least 44px tall, got ${height}`);
+      }
       await page.getByRole("option", { name: "Second chat, project conversation" }).click();
       await list.waitFor({ state: "hidden" });
       await chatToggle.click();

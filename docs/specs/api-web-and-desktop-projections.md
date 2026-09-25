@@ -708,7 +708,7 @@ The node detail is a persistent, resizable, viewport-clamped inspection window.
 Its stable vertical one-hop relation map shows incoming neighbors, focus, and
 outgoing neighbors without a nested scroll area. At most two comparison windows
 remain open. Full-screen relation inspection does not navigate or add authoring
-authority. Entering Chats closes node detail.
+authority. Entering Agents closes node detail.
 
 ### Runs
 
@@ -932,9 +932,9 @@ fields. Its seven-day completed window is presentation-only; active and
 actionable parents remain visible regardless of age, and project-scoped Runs and
 History retain their existing complete records.
 
-### Chats
+### Agents
 
-Chats groups project and node conversations. Every human and assistant turn
+Agents (route view `chats`) groups project and node conversations. Every human and assistant turn
 keeps its immutable Discuss/Work label; progress stays inline under the triggering
 message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run.
@@ -948,6 +948,15 @@ controls dispatch the ordinary task API with a worktree choice or integration
 choice; RCP supplies the integration instruction and target. Unsent drafts remain
 intact when an integration turn is dispatched. A removed binding remains visible
 and cannot silently become a shared-checkout chat.
+
+`GET /api/projects/{project_id}/tasks` returns the newest tasks up to the list
+limit, plus the latest turn of every chat whose latest turn is still running or
+waiting on a person (queued, running, pausing, paused, failed, or interrupted),
+up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
+stays visible however many newer tasks exist; a failure followed by a later turn
+in the same chat does not count. Such a latest turn also stays listed for
+`AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client that saw
+it running sees the terminal record and marks the result unread.
 
 ### Paper, Settings, and History
 

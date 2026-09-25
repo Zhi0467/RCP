@@ -1,0 +1,996 @@
+@media (max-width: 680px) {
+  .landing-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .landing-header .project-dock {
+    flex-basis: 100%;
+    margin-left: 0;
+    max-width: none;
+    order: 3;
+  }
+  .landing-identity-trigger-copy {
+    max-width: 118px;
+  }
+  .landing-identity-panel {
+    max-height: calc(100vh - 92px);
+    overflow-y: auto;
+    position: fixed;
+    right: 16px;
+    top: 72px;
+  }
+  .team-login-boundary {
+    align-items: flex-start;
+    padding: 18px 14px;
+  }
+  .team-login-card-body {
+    padding: 27px 22px 29px 40px;
+  }
+  .landing-main {
+    padding-top: 34px;
+  }
+}
+
+/* S122 — a pending project invitation, shelved beside the projects you have. */
+.project-invitation-shell {
+  --project-cover: var(--paper-2, var(--paper-deep));
+  --project-cover-ink: var(--walnut);
+}
+.project-invitation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--project-cover);
+  color: var(--project-cover-ink);
+  border: 1px dashed color-mix(in srgb, var(--walnut) 35%, transparent);
+  cursor: default;
+}
+.project-invitation-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+.project-invitation-actions button {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--project-cover-ink);
+  background: color-mix(in srgb, var(--walnut) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--walnut) 30%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.project-invitation-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--walnut) 16%, transparent);
+}
+.project-invitation-actions button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.project-invitation-error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--oxblood);
+}
+
+/* S122 — project members, with no rank and no owner. */
+.project-member-list {
+  list-style: none;
+  margin: 0;
+  padding: 18px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.project-member-name {
+  font-size: 0.9rem;
+}
+.project-member-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 12px 20px 18px;
+  flex-wrap: wrap;
+}
+.project-member-actions select {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+}
+.project-member-leave {
+  margin-left: auto;
+}
+.project-member-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--oxblood);
+}
+.project-member-invited {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+.project-member-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0.6rem 0 0;
+  padding: 0 20px;
+}
+
+/* O6 — one read-only operational ledger for the shared team server. */
+.server-settings > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr) auto 34px;
+  padding: 18px 20px;
+}
+.server-settings > header > span:first-child {
+  align-items: center;
+  background: color-mix(in srgb, var(--forest) 14%, var(--sheet));
+  color: var(--forest);
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.server-settings h2,
+.server-settings h3 {
+  font-family: var(--editorial);
+  font-weight: 550;
+  margin: 0;
+}
+.server-settings h2 {
+  font-size: var(--type-2xl);
+}
+.server-settings h3 {
+  font-size: var(--type-lg);
+}
+.server-settings-loading,
+.server-settings-error {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding: 18px 20px;
+}
+.server-settings-error {
+  color: var(--coral);
+}
+.server-settings-body {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+}
+.server-status-mark {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: var(--type-3xs);
+  font-weight: 750;
+  letter-spacing: 0.045em;
+  line-height: 1;
+  padding: 6px 8px;
+  text-transform: uppercase;
+  width: fit-content;
+}
+.server-status-mark.good {
+  background: var(--forest-soft);
+  color: var(--forest);
+}
+.server-status-mark.attention {
+  background: var(--amber-soft);
+  color: color-mix(in srgb, var(--walnut) 70%, var(--mustard));
+}
+.server-status-mark.bad {
+  background: var(--red-soft);
+  color: var(--coral);
+}
+.server-status-mark.neutral {
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+}
+.server-release-ledger,
+.server-problem-ledger,
+.server-status-card {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  padding: 14px;
+}
+.server-settings-section-title,
+.server-status-card > header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.server-settings-section-title > .server-status-mark {
+  margin-left: auto;
+}
+.server-commit-rail {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+}
+.server-commit-row {
+  border-left: 3px solid var(--teal);
+  min-width: 0;
+  padding: 3px 10px;
+}
+.server-commit-row dt,
+.server-status-card dt {
+  color: var(--muted);
+  font-size: var(--type-4xs);
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.server-commit-row dd {
+  font: var(--type-xs)/1.5 var(--mono);
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.server-release-ledger > code,
+.server-status-card > code,
+.server-status-commands code {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--oxblood-dark);
+  font: var(--type-3xs)/1.4 var(--mono);
+  padding: 5px 7px;
+}
+.server-status-card-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr));
+}
+.server-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.server-status-card dl {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+.server-status-card dl .wide {
+  grid-column: 1 / -1;
+}
+.server-status-card dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.server-status-card > code,
+.server-status-commands {
+  margin-top: auto;
+}
+.server-status-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.server-readiness-list {
+  display: grid;
+  gap: 7px;
+}
+.server-dependency-versions {
+  color: var(--ink-soft);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.server-status-problem {
+  color: var(--coral);
+  margin: 0;
+}
+.server-problem-ledger {
+  border-left: 4px solid var(--coral);
+}
+.server-problem-ledger ul {
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+@media (max-width: 920px) {
+  .server-status-card-grid {
+    grid-template-columns: 1fr;
+  }
+  .server-commit-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .server-settings > header {
+    grid-template-columns: 28px minmax(0, 1fr) 34px;
+  }
+  .server-settings > header > .server-status-mark {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .server-commit-rail,
+  .server-status-card dl {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .node-chat-lines {
+    padding: 18px 14px;
+  }
+  .chat-composer {
+    margin: 0 10px 10px;
+    width: calc(100% - 20px);
+  }
+}
+
+.branch-graph-banner,
+.branch-graph-banner > span,
+.branch-graph-banner > div,
+.branch-graph-controls,
+.branch-change-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.branch-graph-banner {
+  justify-content: space-between;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.branch-graph-controls {
+  margin: 12px 0;
+}
+.branch-graph-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.branch-change-legend {
+  margin-left: auto;
+}
+.branch-change-badge {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: var(--type-2xs);
+  line-height: 1.2;
+  text-transform: capitalize;
+}
+.branch-change-badge.created {
+  color: var(--moss);
+}
+.branch-change-badge.updated {
+  color: var(--mustard);
+}
+.branch-change-badge.removed {
+  color: var(--coral);
+}
+.dag-node .eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.dag-node.branch-created {
+  outline: 2px solid var(--moss);
+}
+.dag-node.branch-updated {
+  outline: 2px solid var(--mustard);
+}
+.dag-node.branch-removed {
+  outline: 2px dashed var(--coral);
+}
+.dag-node.branch-removed strong {
+  text-decoration: line-through;
+}
+.dag-edge-group.branch-created .dag-edge {
+  stroke: var(--moss);
+  stroke-width: 3;
+}
+.dag-edge-group.branch-updated .dag-edge {
+  stroke: var(--mustard);
+  stroke-width: 3;
+}
+.dag-edge-group.branch-removed .dag-edge {
+  stroke: var(--coral);
+  stroke-dasharray: 6 4;
+  stroke-width: 3;
+}
+.branch-change-detail {
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+.branch-change-detail h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.branch-change-fields {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin-top: 12px;
+  font-size: var(--type-sm);
+}
+.branch-change-fields th,
+.branch-change-fields td {
+  border: 1px solid var(--line);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.branch-change-fields th:first-child {
+  width: 22%;
+}
+.branch-change-history {
+  padding-left: 22px;
+  margin: 14px 0 0;
+}
+.branch-change-history li {
+  margin: 10px 0;
+}
+.branch-change-history p {
+  margin: 4px 0 8px;
+  overflow-wrap: anywhere;
+}
+.branch-edge-changes {
+  margin: 12px 0;
+}
+.branch-edge-changes article {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.artifacts-view {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 27px clamp(18px, 4vw, 30px) 60px;
+}
+
+.artifacts-heading,
+.artifact-entry {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.artifacts-heading {
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.artifact-entry h3 {
+  margin: 0;
+}
+
+.artifact-entry-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.artifact-episode-tag {
+  background: var(--surface-cool);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-size: var(--type-2xs);
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.artifacts-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.artifact-entry {
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--rule);
+  position: relative;
+}
+
+/* One preview link owns the whole row, including its name and whitespace. */
+.artifact-entry-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.artifact-entry .artifact-entry-open:active {
+  transform: none;
+}
+
+.artifact-entry:has(.artifact-entry-open:focus-visible) {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
+}
+
+.artifact-entry > div {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.artifact-entry .button {
+  flex-shrink: 0;
+}
+
+.artifact-entry-chat {
+  align-items: center;
+  color: var(--cobalt);
+  display: inline-flex;
+  gap: 6px;
+  justify-self: start;
+  position: relative;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  z-index: 1;
+}
+
+/* Actor roster: colors inherit both theme and display mode. */
+.episode-roster {
+  min-width: 0;
+  margin-top: 18px;
+  color: var(--ink);
+}
+.roster-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 26px;
+  padding: 16px 0;
+  border-block: 1px solid var(--line);
+}
+.roster-summary > div {
+  flex: 1 1 140px;
+  background: var(--surface-cool);
+  border-radius: 6px;
+  padding: 12px;
+  display: grid;
+  gap: 4px;
+  max-width: 340px;
+}
+.roster-summary span {
+  font-size: var(--type-sm);
+}
+.roster-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-block: 14px;
+}
+
+.episode-roster button {
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.episode-roster button:hover,
+.episode-roster button[aria-pressed="true"] {
+  background: var(--surface-cool);
+}
+.roster-chart-host {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding-block: 12px;
+  position: relative;
+  min-width: 0;
+}
+.roster-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.roster-scroll svg {
+  display: block;
+  touch-action: pan-y;
+  user-select: none;
+  font-family: var(--ui);
+  font-size: var(--type-sm);
+  fill: var(--ink);
+}
+.roster-tick {
+  fill: var(--muted);
+  font-size: var(--type-2xs);
+}
+.roster-number {
+  font-size: var(--type-2xs);
+}
+.roster-group {
+  font-size: var(--type-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.roster-rule {
+  stroke: var(--line);
+}
+.roster-hit {
+  cursor: pointer;
+  transition: opacity 120ms;
+}
+.roster-hit[aria-pressed="true"] > .roster-block {
+  stroke: var(--ink);
+  stroke-width: 1.5px;
+}
+.roster-dim {
+  opacity: 0.18;
+}
+.roster-label-surface {
+  fill: var(--surface);
+}
+.roster-label-bg {
+  fill: transparent;
+}
+.roster-hit:hover .roster-label-bg,
+.roster-hit[aria-pressed="true"] .roster-label-bg {
+  fill: var(--surface-cool);
+}
+.roster-start,
+.roster-now {
+  stroke: var(--cobalt);
+  stroke-width: 1.3px;
+}
+.roster-neutral {
+  color: var(--muted);
+}
+.roster-active {
+  color: var(--cobalt);
+}
+.roster-success {
+  color: var(--green);
+}
+.roster-warning {
+  color: var(--amber);
+}
+.roster-badge {
+  fill: currentColor;
+  font-size: var(--type-2xs);
+}
+.roster-danger {
+  color: var(--red);
+}
+.roster-block {
+  fill: currentColor;
+}
+.roster-rail {
+  fill: color-mix(in srgb, currentColor 16%, var(--surface));
+  stroke: currentColor;
+  stroke-width: 0.6px;
+}
+.roster-mark {
+  fill: var(--ink);
+}
+.roster-message {
+  fill: none;
+  stroke: var(--plum);
+  stroke-width: 1.6px;
+}
+.roster-message.roster-danger {
+  stroke: var(--red);
+}
+.roster-envelope {
+  fill: var(--plum);
+}
+.roster-envelope.roster-danger {
+  fill: var(--red);
+}
+.roster-envelope-fold {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1px;
+}
+.roster-failure-ring {
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 1.6px;
+}
+.roster-cross {
+  stroke: var(--red);
+  stroke-width: 2px;
+  fill: none;
+}
+.roster-undelivered {
+  fill: var(--red);
+  font-size: var(--type-xs);
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+}
+.roster-signal {
+  stroke: currentColor;
+  stroke-width: 1.4px;
+  fill: none;
+}
+.roster-signal-icon {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 1.5px;
+}
+.roster-document {
+  fill: var(--surface);
+  stroke: var(--cobalt);
+  stroke-width: 1.4px;
+}
+.roster-popover {
+  position: absolute;
+  z-index: 10;
+  width: min(420px, calc(100% - 16px));
+  overflow-wrap: anywhere;
+  max-height: 440px;
+  overflow: auto;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.roster-popover header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.roster-popover pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: var(--type-sm);
+}
+.episode-roster .roster-item-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--cobalt);
+}
+.roster-item-icon svg {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 1.2px;
+}
+.episode-roster .roster-ref {
+  border: 0;
+  background: transparent;
+  color: var(--cobalt);
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--cobalt) 40%, transparent);
+  text-underline-offset: 2px;
+  text-align: left;
+}
+.roster-popover dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+}
+.roster-popover dd {
+  margin: 0;
+}
+.roster-popover h4 {
+  font-size: var(--type-sm);
+  margin: 14px 0 6px;
+}
+.roster-popover blockquote {
+  margin: 16px 0;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 12px;
+}
+.roster-error {
+  color: var(--red);
+}
+.roster-related {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+.episode-roster :is(button, a, [role="button"], [role="dialog"]):focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .roster-hit {
+    transition: none;
+  }
+}
+
+.provider-login-notice-since {
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+
+.terminals-layout {
+  display: grid;
+  gap: 18px;
+  min-height: 420px;
+}
+.terminals-layout.has-sessions {
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+}
+.terminal-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.terminal-repository {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 12px 24px;
+  padding: 16px;
+  text-align: left;
+}
+.terminal-repository-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.terminal-repository code,
+.terminal-active-heading code {
+  overflow-wrap: anywhere;
+  font-size: var(--type-md);
+}
+.terminal-unavailable {
+  color: var(--coral);
+}
+.terminal-repository:disabled {
+  opacity: 1;
+}
+.terminal-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: var(--sheet);
+}
+.terminal-session-row.selected {
+  border-color: var(--cobalt);
+  background: var(--cobalt-soft);
+}
+.terminal-session-select {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  border: 0;
+  padding: 4px;
+  background: none;
+  color: var(--walnut);
+  text-align: left;
+  cursor: pointer;
+}
+.terminal-session-state {
+  color: var(--teal);
+}
+.terminal-work-mark {
+  color: var(--forest);
+  font-weight: 600;
+}
+.terminal-active {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--sheet);
+}
+.terminal-active-heading,
+.terminal-work-strip,
+.terminal-connection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.terminal-protection-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--mustard);
+  background: var(--amber-soft);
+  color: var(--walnut);
+  font-size: var(--type-base);
+}
+.terminal-protection-warning svg {
+  flex: none;
+}
+.terminal-work-strip {
+  background: var(--forest-soft);
+  color: var(--forest);
+}
+.terminal-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.terminal-emulator {
+  /* The fit addon sizes the grid from this element's computed width and height
+     and subtracts no padding of its own, so the box has to be measured in
+     content terms. Under the inherited border-box the grid overran the padding
+     and the enclosing overflow clip cut the last row through the cursor. */
+  box-sizing: content-box;
+  height: clamp(360px, 62vh, 850px);
+  min-width: 0;
+  padding: 12px;
+}
+/* xterm.css hardcodes an opaque black viewport and, since 6.0, no longer
+   overrides it from the theme. RCP owns this surface in both themes. */
+.terminal-emulator .xterm .xterm-viewport {
+  background-color: var(--sheet);
+}
+:root[data-theme="aqua"] .terminal-session-row {
+  background: var(--aqua-surface);
+  box-shadow: var(--aqua-raised);
+}
+:root[data-theme="aqua"] .terminal-session-row.selected {
+  background: var(--aqua-selected);
+  box-shadow: var(--aqua-inset);
+}
+@media (max-width: 700px) {
+  .terminals-layout.has-sessions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .terminal-rail {
+    max-height: 240px;
+    overflow-y: auto;
+  }
+}
+.node-edit-field > .proxy-rows {
+  color: inherit;
+  display: grid;
+  font-size: inherit;
+  font-weight: inherit;
+  gap: 7px;
+  justify-items: start;
+  letter-spacing: normal;
+  margin-bottom: 0;
+  text-transform: none;
+}
+.proxy-row {
+  align-items: center;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  width: 100%;
+}
+.node-edit-field .proxy-row input {
+  font-size: var(--type-md);
+  font-weight: 450;
+  height: 34px;
+}

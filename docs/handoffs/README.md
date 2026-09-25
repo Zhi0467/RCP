@@ -10,6 +10,13 @@ Active:
   10 s old. Remaining: the team-server measurement after release, and first
   open still at 3.5 s against a 2 s target.
 
+- [The phone works, and Chats shows every agent at a glance](handoff-2026-09-25-phone-ui-and-agents-panel.md)
+  — design confirmed 2026-09-25 and revised after an xhigh review;
+  implemented, with the real-iPhone journey and a screenshot review remaining. One pull request: a mechanical stylesheet split, size tokens
+  with named phone and tablet widths, a phone pass on Inbox, Runs, Chat, and
+  Settings, and an agent-hub Chats panel whose task list keeps every chat
+  that still needs a human. Runs and the composer are unchanged.
+
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
   real remote-machine SSH remain. The deploy key is the default push

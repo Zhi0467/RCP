@@ -276,6 +276,30 @@ export function useChatState({
     [selectChat],
   );
 
+  // A chat that still needs a human can be listed from its open task before its
+  // summary page is loaded. Selecting it loads its transcript through the same
+  // canonical selection an explicit chat link uses, so it shows its history and
+  // title. A 404 means no turn has been captured yet; the task alone is the chat.
+  const selectListedConversation = useCallback(
+    (chatId: string) => {
+      selectChat(chatId);
+      if (!apiBase || chatSummariesRef.current.some((summary) => summary.chat_id === chatId)) {
+        return;
+      }
+      void loadChatTranscript(apiBase, chatId, api, graphTarget)
+        .then((transcript) => {
+          if (selectedChatIdRef.current === chatId) selectCanonicalChat(transcript);
+        })
+        .catch((error) => {
+          if (error instanceof ApiError && error.status === 404) return;
+          reportError(
+            `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+    },
+    [apiBase, graphTarget, reportError, selectCanonicalChat, selectChat],
+  );
+
   const reconcileFloatingChat = useCallback(
     (nodes: Record<string, GraphNode>, retainMissing: boolean) => {
       setFloatingChatState((current) =>
@@ -543,6 +567,7 @@ export function useChatState({
     visibleChatSummaries,
     selectChat,
     selectCanonicalChat,
+    selectListedConversation,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,

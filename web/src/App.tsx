@@ -442,7 +442,7 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <TerminalSquare size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
-  { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
+  { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
 ];
 
 export async function loadGraphRevision(
@@ -1115,6 +1115,7 @@ export default function App() {
     visibleChatSummaries,
     selectChat,
     selectCanonicalChat,
+    selectListedConversation,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
@@ -4709,7 +4710,7 @@ export default function App() {
               chatTranscripts={chatTranscripts}
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}
-              onSelect={selectChat}
+              onSelect={selectListedConversation}
               onOpenNode={openNodeById}
               onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
