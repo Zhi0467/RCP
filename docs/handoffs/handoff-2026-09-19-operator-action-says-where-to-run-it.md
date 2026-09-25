@@ -5,7 +5,7 @@ Status: design confirmed by the human on 2026-09-19 against a rendered mockup of
 the redesigned panel, revised the same day after an xhigh design review whose
 findings were verified against the code, then implemented. All four slices have
 landed: the execution context and its call sites, the operator stop's own title
-with both event validators relaxed, the rebuilt desktop panel reused by the
+with the server's event validator relaxed, the rebuilt desktop panel reused by the
 transfer view, and the CLI wizard's matching label. Focused Python, web, and
 browser checks pass, and the rebuilt panel was driven and inspected against a
 stop produced by the real builder.
@@ -178,7 +178,7 @@ Four slices. The first is the shared contract and lands alone.
    moves the transition digest, keep the historical serialization rather than
    weakening the comparison. The separately versioned supervisor is not changed:
    its steps simply carry no context.
-2. **Operator stop titles.** Relax both event validators to allow `title` and
+2. **Operator stop titles.** Relax the server's event validator to allow `title` and
    `purpose` to change on a human `operator_action_needed` event, take both from
    the operator step in `_copy_operator_contract`, and title the deploy-key grant
    step and its restore twin for the human's task. The restore twin's new title
