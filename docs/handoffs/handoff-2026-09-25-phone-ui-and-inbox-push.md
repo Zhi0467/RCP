@@ -174,10 +174,13 @@ so the control is hidden there.
    per current size, keeps pixels identical but leaves the scale as messy as
    today.
 2. **Push library.** Web Push needs P-256 key exchange and AES-GCM, which RCP
-   does not have today. Recommendation: add `pywebpush`, the standard library
-   (it brings `cryptography`, `requests`, `http-ece`, `py-vapid`). The
-   alternative is about 100 lines of our own on `cryptography` alone, using the
-   existing `httpx`. Either way the wheel and the desktop PyInstaller build grow.
+   does not have today. Measured installed sizes on Python 3.12, macOS arm64:
+   `pywebpush` adds about 19 MB and brings `requests` and `aiohttp`, two more
+   HTTP stacks beside `httpx`; `cryptography` alone adds about 13 MB.
+   Recommendation: `cryptography` only, with about 100 lines of our own for
+   RFC 8291 encryption and the VAPID token, sent through the existing `httpx`.
+   Current sizes for scale: the server wheel is 3.1 MB and the development venv
+   is 107 MB.
 
 ## Checks
 
