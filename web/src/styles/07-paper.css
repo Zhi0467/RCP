@@ -1,0 +1,203 @@
+.paper-editor-column {
+  background: var(--paper-deep);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 17px 22px 11px;
+}
+.paper-toolbar {
+  align-items: center;
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  padding: 0 2px 11px;
+}
+.paper-view-controls {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+.paper-view-toggle {
+  background: color-mix(in srgb, var(--sheet) 55%, var(--paper-deep));
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  display: inline-flex;
+  padding: 2px;
+}
+.paper-view-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  font: 700 9px var(--ui);
+  min-height: 25px;
+  padding: 0 9px;
+}
+.paper-view-toggle button[aria-pressed="true"] {
+  background: var(--sheet);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--walnut) 14%, transparent);
+  color: var(--teal);
+}
+.paper-apply-incoming {
+  min-height: 31px;
+}
+.paper-toolbar .eyebrow,
+.paper-toolbar strong {
+  display: block;
+}
+.paper-toolbar strong {
+  font-size: 11px;
+  margin-top: 2px;
+}
+.paper-status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 10px;
+  gap: 9px;
+}
+.sync-state.synced {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.sync-state.unsynced {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.sync-state.behind {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.sync-state.save-error {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.markdown-editor {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: var(--shadow);
+  flex: 1;
+  font-family: var(--display);
+  font-size: 17px;
+  line-height: 1.7;
+  margin: 0 auto;
+  max-width: 820px;
+  min-height: 0;
+  padding: 50px 62px;
+  resize: none;
+  width: 100%;
+}
+.paper-markdown-preview {
+  overflow: auto;
+  white-space: normal;
+}
+.paper-save-error {
+  align-items: center;
+  background: var(--rose-paper);
+  border: 1px solid color-mix(in srgb, var(--coral) 42%, var(--rule));
+  border-radius: 7px;
+  color: var(--oxblood-dark);
+  display: flex;
+  flex: none;
+  font-size: 10px;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 9px;
+}
+.paper-save-error span {
+  flex: 1;
+}
+.paper-inline-error {
+  background: var(--red-soft);
+  border-left: 2px solid var(--red);
+  color: var(--red);
+  font-size: 10px;
+  margin: 0 0 14px;
+  padding: 7px 9px;
+}
+.paper-empty {
+  align-items: center;
+  display: flex;
+  gap: 50px;
+  height: 100%;
+  justify-content: center;
+  padding: 55px;
+}
+.paper-empty-action {
+  min-width: 190px;
+}
+.paper-sheet-preview {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  height: 300px;
+  padding: 40px 30px;
+  transform: rotate(-2deg);
+  width: 220px;
+}
+.paper-sheet-preview span {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.paper-sheet-preview i {
+  background: var(--line);
+  display: block;
+  height: 2px;
+  margin-top: 35px;
+  width: 100%;
+}
+.paper-sheet-preview i:nth-child(3) {
+  width: 75%;
+}
+.paper-sheet-preview i:nth-child(4) {
+  width: 88%;
+}
+.paper-divider {
+  background: var(--line);
+  cursor: col-resize;
+  outline: 0;
+  position: relative;
+  touch-action: none;
+}
+.paper-divider::after {
+  background: transparent;
+  content: "";
+  inset: 0 -4px;
+  position: absolute;
+  transition: background-color 0.14s ease;
+}
+.paper-divider:hover::after,
+.paper-divider:focus-visible::after {
+  background: color-mix(in srgb, var(--teal) 18%, transparent);
+}
+.paper-divider:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: -2px;
+}
+
+.coach-column {
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.coach-header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  min-height: 61px;
+  padding: 10px 14px;
+}
+.coach-header h2 {
+  font-family: var(--editorial);
+  font-size: 19px;
+  font-weight: 550;
+  margin: 1px 0;
+}
+.session-history {
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}

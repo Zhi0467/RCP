@@ -38,10 +38,11 @@ Two reports from the human, 2026-09-25:
 
 ### What the code does today
 
-- `web/src/styles.css` is 13,818 lines. `AppearancePicker.css`,
-  `WorktreeControls.css`, and `themes/aqua.css` sit beside it. Aqua changes
-  geometry and shadows as well as colors, so its import order and specificity
-  matter.
+- `web/src/styles.css` is 13,818 lines. It imports Tailwind, then
+  `themes/aqua.css`. `AppearancePicker.css` and `WorktreeControls.css` are
+  imported by their components. Aqua changes geometry and shadows as well as
+  colors, and wins by selector specificity, so its import position and
+  specificity must stay.
 - Colors are already tokens on `:root`. Themes swap them.
 - Sizes are not tokens. `styles.css` has 493 `font-size` declarations: 474 in
   literal pixels across 25 distinct sizes, the rest in `em`, `rem`, `clamp()`,
@@ -59,12 +60,12 @@ Two reports from the human, 2026-09-25:
 
 ### The change
 
-1. **Mechanical split first, as its own commit.** `styles.css` becomes a base
-   file (tokens, reset, shared controls) plus one file per destination. Rules
-   move unedited, and imports keep today's cascade order, including aqua last.
-   Where a later rule overrides an earlier one across destinations (for example
-   `.project-shelf` gets two columns in one phone block and one in a later
-   block), the pair moves together or the override is resolved and noted.
+1. **Mechanical split first, as its own commit.** Rules for one destination
+   are interleaved across the whole file (chat rules alone span about 6,000
+   lines), so regrouping them would reorder the cascade. The split instead cuts
+   `styles.css` into twelve contiguous files under `web/src/styles/`, named for
+   what each mostly holds, and imports them in the original order after
+   Tailwind and aqua. Done when the built CSS is byte-identical to `main`'s.
 2. **Size tokens, as a second commit.** A type scale and a spacing scale on
    `:root`. The 25 pixel sizes map to about eight tokens through an explicit
    old-to-new table in the pull request. Shorthands and fluid `clamp()` values
@@ -171,8 +172,8 @@ resizable list and its saved width and collapse preference.
   1440px, and on both sides of each kept threshold (1180, 920, 700, 640px), in
   all four theme and color-mode combinations. Differences are only the accepted
   1px shifts and the new Chats panel.
-- **Split is mechanical.** The first commit's diff shows only moved rules and
-  imports.
+- **Split is mechanical.** After the first commit, `npm --prefix web run build`
+  emits CSS byte-identical to `main`'s.
 - **Phone.** A browser test at 375px on Inbox, Runs, Chat, and Settings asserts
   no horizontal page scroll, focused-field font size of at least 16px, and 44px
   tap targets on primary actions. Assertions use geometry, ids, and roles,
