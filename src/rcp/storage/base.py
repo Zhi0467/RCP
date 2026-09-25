@@ -1915,6 +1915,19 @@ class AppStoreBase:
             "CREATE INDEX IF NOT EXISTS graph_runs_episode "
             "ON graph_runs(episode_id, created_at, operation_id)"
         )
+        # The agent task list finds open and just-finished chat turns, and each
+        # chat's later turns, without scanning project history.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_status ON graph_runs(project_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_finished ON graph_runs(project_id, finished_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_chat_turn "
+            "ON graph_runs(project_id, json_extract(request_json, '$.chat_id'), "
+            "created_at, operation_id)"
+        )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS graph_run_events_command "
             "ON graph_run_events(command_id, command_phase, event_id)"

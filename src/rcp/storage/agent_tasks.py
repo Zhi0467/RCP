@@ -1418,61 +1418,73 @@ class AgentTaskStoreMixin:
             datetime.fromisoformat(self.now())
             - timedelta(seconds=AGENT_TASK_LIST_FINISHED_CHAT_SECONDS)
         ).isoformat()
+        # Each branch is index-backed (graph_runs_project, graph_runs_status,
+        # graph_runs_finished, graph_runs_chat_turn), so the list never ranks a
+        # project's whole chat history; the active-task poll calls it every second.
+        scope = (
+            "{run}.project_id = :project AND (:hidden OR {run}.visible = 1)"
+            " AND (:target IS NULL OR {run}.graph_target_json = :target)"
+        )
+        own_scope, later_scope = scope.format(run="graph_runs"), scope.format(run="later")
+        statuses = ",".join(f":status{index}" for index in range(len(open_statuses)))
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
-                WITH scoped AS (
-                    SELECT * FROM graph_runs
-                    WHERE project_id = ? AND (? OR visible = 1)
-                      AND (? IS NULL OR graph_target_json = ?)
-                ),
-                recent AS (
-                    SELECT operation_id FROM scoped
+                WITH recent AS (
+                    SELECT operation_id FROM graph_runs
+                    WHERE {own_scope}
                     ORDER BY created_at DESC
-                    LIMIT ?
+                    LIMIT :limit
                 ),
-                chat_latest AS (
-                    SELECT operation_id, status, history_only, created_at, finished_at,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY json_extract(request_json, '$.chat_id')
-                               ORDER BY created_at DESC, operation_id DESC
-                           ) AS position
-                    FROM scoped
-                    WHERE kind IN ('node_chat', 'project_chat')
-                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                candidates AS (
+                    SELECT operation_id, created_at,
+                           json_extract(request_json, '$.chat_id') AS chat_id
+                    FROM graph_runs
+                    WHERE {own_scope} AND status IN ({statuses})
+                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                    UNION
+                    SELECT operation_id, created_at,
+                           json_extract(request_json, '$.chat_id') AS chat_id
+                    FROM graph_runs
+                    WHERE {own_scope} AND finished_at >= :finished_since
+                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
                 ),
                 open_chats AS (
-                    SELECT operation_id FROM chat_latest
-                    WHERE position = 1 AND history_only = 0
-                      AND (status IN ({",".join("?" for _ in open_statuses)})
-                           OR finished_at >= ?)
+                    SELECT operation_id FROM candidates
+                    WHERE chat_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM graph_runs AS later
+                        WHERE {later_scope}
+                          AND json_extract(later.request_json, '$.chat_id') = candidates.chat_id
+                          AND later.kind IN ('node_chat', 'project_chat')
+                          AND (later.created_at, later.operation_id)
+                              > (candidates.created_at, candidates.operation_id)
+                    )
                     ORDER BY created_at DESC, operation_id DESC
-                    LIMIT ?
+                    LIMIT :open_limit
                 )
-                SELECT scoped.*,
+                SELECT graph_runs.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
-                           WHERE receipt.operation_id = scoped.operation_id
+                           WHERE receipt.operation_id = graph_runs.operation_id
                              AND receipt.category IN (
                                  'experiment_recovery_abandoned',
                                  'auto_research_recovery_abandoned'
                              )
                        ) AS recovery_abandoned
-                FROM scoped
+                FROM graph_runs
                 WHERE operation_id IN (SELECT operation_id FROM recent)
                    OR operation_id IN (SELECT operation_id FROM open_chats)
                 ORDER BY created_at DESC
                 """,
-                (
-                    project_id,
-                    int(include_hidden),
-                    target_json,
-                    target_json,
-                    max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
-                    *open_statuses,
-                    finished_since,
-                    AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
-                ),
+                {
+                    "project": project_id,
+                    "hidden": int(include_hidden),
+                    "target": target_json,
+                    "limit": max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
+                    **{f"status{index}": status for index, status in enumerate(open_statuses)},
+                    "finished_since": finished_since,
+                    "open_limit": AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
+                },
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
