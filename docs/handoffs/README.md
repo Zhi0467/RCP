@@ -3,7 +3,8 @@
 Active:
 
 - [The phone works, and it tells you when you are needed](handoff-2026-09-25-phone-ui-and-inbox-push.md)
-  — design draft 2026-09-25, awaiting human confirmation; nothing implemented.
+  — design draft 2026-09-25, decisions confirmed, design review pending;
+  nothing implemented.
   One pull request: size tokens and one breakpoint set with desktop unchanged,
   a phone pass on Inbox, Runs, and Chat, then Web Push for new attention items
   from one reconciler.

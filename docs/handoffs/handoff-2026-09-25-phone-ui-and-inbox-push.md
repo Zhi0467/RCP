@@ -1,7 +1,9 @@
 # The phone works, and it tells you when you are needed
 
 Date: 2026-09-25
-Status: design draft, not yet confirmed by the human. Nothing is implemented.
+Status: design draft; the two open decisions were confirmed by the human on
+2026-09-25. A pre-implementation design review is pending. Nothing is
+implemented.
 
 The plan is three parts on one pull request, in this order:
 
@@ -166,22 +168,17 @@ Push is for team spaces, reached from a phone through the tailnet's HTTPS front.
 A personal space on loopback over plain HTTP cannot register a service worker,
 so the control is hidden there.
 
-## Open questions for the human
+## Decisions confirmed 2026-09-25
 
 1. **Font scale snapping.** Folding 26 sizes into about 8 tokens moves some
-   desktop text by 1px (for example 9.5px becomes 10px). Recommendation: accept
-   these 1px shifts and review them by screenshot. The alternative, one token
-   per current size, keeps pixels identical but leaves the scale as messy as
-   today.
-2. **Push library.** Web Push needs P-256 key exchange and AES-GCM, which RCP
-   does not have today. Measured installed sizes on Python 3.12, macOS arm64:
-   `pywebpush` adds about 19 MB and brings `requests` and `aiohttp`, two more
-   HTTP stacks beside `httpx`; `cryptography` alone adds about 13 MB.
-   Recommendation: `cryptography` only, with about 100 lines of our own for
-   RFC 8291 encryption and the VAPID token, sent through the existing `httpx`.
-   On the team server's Linux host, a venv rebuilt from the v0.4.1 wheel and its
-   lock file is 46 MB and grows to 62 MB with `cryptography`. The desktop app
-   runs from the checkout's development venv, which is 107 MB.
+   desktop text by 1px (for example 9.5px becomes 10px). Accepted; the shifts
+   are reviewed by screenshot.
+2. **Push dependency.** `cryptography` only, with about 100 lines of our own
+   for RFC 8291 encryption and the VAPID token, sent through the existing
+   `httpx`. Not `pywebpush`, which adds about 19 MB and brings `requests` and
+   `aiohttp` beside `httpx`. On the team server's Linux host, a venv rebuilt
+   from the v0.4.1 wheel and its lock file is 46 MB and grows to 62 MB with
+   `cryptography`.
 
 ## Checks
 
