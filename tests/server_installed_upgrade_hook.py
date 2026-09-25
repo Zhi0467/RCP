@@ -9,11 +9,48 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path("/opt/rcp-installed-upgrade")
+
+
+def permission_state() -> dict:
+    """Read the kernel mask without temporarily changing process-wide state."""
+    mask = next(
+        line.split()[1]
+        for line in Path("/proc/self/status").read_text().splitlines()
+        if line.startswith("Umask:")
+    )
+    return {"pid": os.getpid(), "uid": os.geteuid(), "gid": os.getegid(), "umask": mask}
+
+
+def service_permissions(releases: Path = Path("/home/rcp/rcp-server/releases")) -> dict:
+    result = permission_state()
+    # Default ACLs can override umask even below a chmod-0700 directory. Use
+    # the same mkdir modes as release preparation, without touching a build.
+    with tempfile.TemporaryDirectory(prefix=".permission-probe-", dir=releases) as name:
+        private = Path(name)
+        directory = private / "directory"
+        directory.mkdir()
+        file = directory / "file"
+        file.touch()
+        result["directory_mode"] = oct(stat.S_IMODE(directory.stat().st_mode))
+        result["file_mode"] = oct(stat.S_IMODE(file.stat().st_mode))
+        result["default_acls"] = {
+            str(path): os.getxattr(path, "system.posix_acl_default").hex()
+            for path in (releases, private, directory)
+            if "system.posix_acl_default" in os.listxattr(path)
+        }
+    return result
+
+
+def observe_uv_launch(event: str, arguments: tuple) -> None:
+    if event == "subprocess.Popen" and Path(os.fsdecode(arguments[0])).name == "uv":
+        print("Installed upgrade uv parent: " + json.dumps(permission_state()), file=sys.stderr)
 
 
 def install_hooks() -> None:
@@ -25,7 +62,16 @@ def install_hooks() -> None:
     sys.path.insert(0, str(ROOT))
     from tests.server_upgrade_scratch import tree_state
 
-    def followed_release(_runtime):
+    def followed_release(runtime):
+        permissions = {
+            "coordinator": permission_state(),
+            "service_child": runtime.service_json(
+                [sys.executable, "-I", str(ROOT / "tests/server_installed_upgrade_hook.py")]
+            ),
+        }
+        with (ROOT / "permission-state.jsonl").open("a") as output:
+            output.write(json.dumps(permissions) + "\n")
+        print("Installed upgrade permissions: " + json.dumps(permissions), file=sys.stderr)
         selection = json.loads((ROOT / "selection.json").read_text())
         bundle = Path(selection["bundle"])
         provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
@@ -95,9 +141,14 @@ def install_hooks() -> None:
 
 # Python normally prints and ignores sitecustomize errors. A missing test hook
 # must instead fail closed before the CLI can choose a public release.
-if __name__ == "sitecustomize" and os.geteuid() == 0:
+if __name__ == "sitecustomize":
     try:
-        install_hooks()
+        sys.addaudithook(observe_uv_launch)
+        if os.geteuid() == 0:
+            install_hooks()
     except Exception as exc:
         print(f"Installed upgrade instrumentation failed: {exc}", file=sys.stderr)
         os._exit(97)
+
+if __name__ == "__main__":
+    print(json.dumps(service_permissions()))

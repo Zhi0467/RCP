@@ -128,6 +128,14 @@ def install_release(bundle: Path, releases_root: Path) -> Path:
     An interrupted or failed preparation remains at its exact build directory
     with a log and no installation receipt. It is never reused or overwritten.
     """
+    previous_umask = os.umask(0o077)
+    try:
+        return _prepare_release(bundle, releases_root)
+    finally:
+        os.umask(previous_umask)
+
+
+def _prepare_release(bundle: Path, releases_root: Path) -> Path:
     if os.geteuid() == 0:
         raise SupervisorError("Install release artifacts as the service account, not root.")
     _require_directory(releases_root)

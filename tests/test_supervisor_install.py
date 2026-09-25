@@ -15,8 +15,9 @@ from rcp_supervisor.errors import SupervisorError
 from tests.supervisor_helpers import make_bundle, refresh_manifest
 
 
+@pytest.mark.parametrize("mask", [0o002, 0o022, 0o077])
 def test_install_real_wheel_in_isolated_environment_preserves_current_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mask: int
 ) -> None:
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
@@ -33,7 +34,19 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(previous))
     monkeypatch.setenv("PYTHONPATH", str(previous))
 
-    target = install.install_release(bundle, root)
+    previous_mask = os.umask(mask)
+    try:
+        target = install.install_release(bundle, root)
+        assert os.umask(mask) == mask
+    finally:
+        os.umask(previous_mask)
+
+    for directory, _, files in os.walk(target):
+        assert stat.S_IMODE(Path(directory).stat().st_mode) == 0o700
+        for name in files:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                assert not path.stat().st_mode & 0o077, path
 
     receipt = json.loads((target / "installed.json").read_text())
     result = subprocess.run(
@@ -68,8 +81,13 @@ def test_install_preserves_partial_failure_without_publishing_success(
 
     with monkeypatch.context() as failure:
         failure.setattr(install, "_run", fail)
-        with pytest.raises(SupervisorError, match="retained"):
-            install.install_release(bundle, root)
+        previous_mask = os.umask(0o002)
+        try:
+            with pytest.raises(SupervisorError, match="retained"):
+                install.install_release(bundle, root)
+            assert os.umask(0o002) == 0o002
+        finally:
+            os.umask(previous_mask)
     (target,) = root.iterdir()
     assert not (target / "installed.json").exists()
     assert (target / ".venv/bin/python").exists()

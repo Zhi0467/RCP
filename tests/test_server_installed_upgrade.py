@@ -17,6 +17,62 @@ from tests import server_installed_upgrade as installed
 from tests import server_installed_upgrade_hook as hook
 
 
+@pytest.mark.parametrize("mask", [0o002, 0o077])
+def test_permission_probe_observes_creation_modes_without_changing_policy(
+    tmp_path, monkeypatch, mask
+):
+    monkeypatch.setattr(hook, "permission_state", lambda: {"umask": f"{mask:04o}"})
+    if sys.platform != "linux":
+        # The runner is Linux-only; still exercise real mkdir/umask locally.
+        monkeypatch.setattr(os, "listxattr", lambda _path: [], raising=False)
+    previous = os.umask(mask)
+    try:
+        result = hook.service_permissions(tmp_path)
+        assert os.umask(mask) == mask
+    finally:
+        os.umask(previous)
+    assert result["umask"] == f"{mask:04o}"
+    assert result["directory_mode"] == oct(0o777 & ~mask)
+    assert result["file_mode"] == oct(0o666 & ~mask)
+    assert result["default_acls"] == {}
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux default ACL inheritance")
+def test_permission_probe_distinguishes_default_acl_from_process_mask(tmp_path, monkeypatch):
+    import struct
+
+    # Linux POSIX ACL xattr: version 2, user::rwx, group::rwx, other::r-x.
+    acl = struct.pack("<I", 2) + b"".join(
+        struct.pack("<HHI", tag, mode, 0xFFFFFFFF) for tag, mode in ((1, 7), (4, 7), (32, 5))
+    )
+    os.setxattr(tmp_path, "system.posix_acl_default", acl)
+    monkeypatch.setattr(hook, "permission_state", lambda: {"umask": "0077"})
+    previous = os.umask(0o077)
+    try:
+        result = hook.service_permissions(tmp_path)
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(previous)
+    assert result["directory_mode"] == "0o775"
+    assert result["file_mode"] == "0o664"
+    assert result["default_acls"][str(tmp_path)] == acl.hex()
+    assert not list(tmp_path.iterdir())
+
+
+def test_permission_state_reads_kernel_without_mutating_mask(monkeypatch):
+    monkeypatch.setattr(Path, "read_text", lambda _path: "Name:\tpython\nUmask:\t0077\n")
+    monkeypatch.setattr(os, "umask", lambda _: pytest.fail("observation changed umask"))
+    assert hook.permission_state()["umask"] == "0077"
+
+
+def test_uv_observation_does_not_disclose_arguments_or_environment(monkeypatch, capsys):
+    monkeypatch.setattr(hook, "permission_state", lambda: {"umask": "0077"})
+    hook.observe_uv_launch("subprocess.Popen", ("/usr/local/bin/uv", ["secret"], None, {}))
+    hook.observe_uv_launch("subprocess.Popen", ("/usr/bin/other", [], None, {}))
+    assert capsys.readouterr().err == 'Installed upgrade uv parent: {"umask": "0077"}\n'
+
+
 def test_installed_drive_refuses_without_disposable_root_opt_in(monkeypatch):
     monkeypatch.setenv("RCP_RUN_INSTALLED_UPGRADE", "1")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")

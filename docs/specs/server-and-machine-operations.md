@@ -287,6 +287,9 @@ backup identity, and root-owned supervisor integration before delegation. It
 never builds or fetches an RCP source checkout. The supervisor fetches only the
 followed stable release or configured explicit stable tag, verifies the complete
 five-asset bundle, and installs the application as `rcp` using its hashed lock.
+Application release preparation sets umask `077` itself and restores the caller's
+mask on success or failure; it does not depend on entry through the installed
+shell wrapper. Prepared-runtime ownership and mode checks still fail closed.
 Interrupted preparations retain their exact directories and diagnostics. A
 sealed installed build may be reused only with the same origin-bound identity.
 The supervisor and privileged operator console use separate root-owned runtimes

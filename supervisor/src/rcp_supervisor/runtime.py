@@ -610,6 +610,9 @@ class SystemRuntime:
             )
         except ApplicationCommandError as exc:
             output, failure = exc.output, exc
+        except (SupervisorError, OSError) as exc:
+            # A timeout, launch or output-bound failure is an incomplete backup too.
+            return f"The protected backup did not finish: {safe_diagnostic(str(exc))}"
         try:
             events = [json.loads(line) for line in output.splitlines() if line.strip()]
             fields = {

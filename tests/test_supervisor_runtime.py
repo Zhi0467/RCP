@@ -135,6 +135,12 @@ def test_incomplete_backup_warns_instead_of_refusing(runtime, monkeypatch):
     assert "private-error.log" in warning
     assert "secret-value" not in warning
 
+    def timed_out(*_args, **_kwargs):
+        raise SupervisorError("Application subprocess exceeded its time limit.")
+
+    monkeypatch.setattr(runtime, "_service_output", timed_out)
+    assert runtime.protected_backup(legacy)
+
 
 def test_probe_arms_parent_ownership_in_supervisor_code_after_service_uid_drop(
     runtime, monkeypatch

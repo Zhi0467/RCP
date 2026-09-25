@@ -226,6 +226,15 @@ def setup() -> None:
     guest.ROOT = ROOT
     guest.STATE = ROOT / "state"
     guest.setup()
+    # Prove the historical installer supplied both entry points. Do not replace
+    # them with test launchers or silently repair a different wrapper.
+    from rcp.server_ops.install import _wrapper_text
+    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+
+    assert Path("/usr/local/bin/rcp").read_text() == _wrapper_text(DEFAULT_SERVER_LAYOUT)
+    assert Path("/usr/local/bin/rcp-supervisor").read_text() == (
+        '#!/bin/sh\nset -eu\numask 077\nexec /etc/rcp/supervisor/current/bin/rcp-supervisor "$@"\n'
+    )
     dropin = Path("/etc/systemd/system/rcp.service.d")
     dropin.mkdir()
     (dropin / "installed-upgrade.conf").write_text(
@@ -252,8 +261,8 @@ def prepare_toolchain() -> None:
 
 def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     preflight()
-    # An operator runs `sudo rcp ...` from a root shell with umask 022; the CI
-    # runner hands us 002, which makes release trees group-writable.
+    # Root-owned fixture/bootstrap paths need service-account traversal. The
+    # historical installed wrappers independently set 077 for operator calls.
     os.umask(0o022)
     prepare_toolchain()
     ROOT.mkdir(mode=0o755)
@@ -481,6 +490,10 @@ def main() -> None:
             if (ROOT / "operator-events.jsonl").exists():
                 shutil.copyfile(
                     ROOT / "operator-events.jsonl", arguments.output / "operator-events.jsonl"
+                )
+            if (ROOT / "permission-state.jsonl").exists():
+                shutil.copyfile(
+                    ROOT / "permission-state.jsonl", arguments.output / "permission-state.jsonl"
                 )
             if Path("/etc/systemd/system/rcp.service").exists():
                 run(["systemctl", "stop", "rcp.service"])
