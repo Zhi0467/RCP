@@ -2,6 +2,12 @@
 
 Active:
 
+- [The phone works, and it tells you when you are needed](handoff-2026-09-25-phone-ui-and-inbox-push.md)
+  — design draft 2026-09-25, awaiting human confirmation; nothing implemented.
+  One pull request: size tokens and one breakpoint set with desktop unchanged,
+  a phone pass on Inbox, Runs, and Chat, then Web Push for new attention items
+  from one reconciler.
+
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
   real remote-machine SSH remain. The deploy key is the default push
