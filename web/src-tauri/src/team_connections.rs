@@ -18,10 +18,7 @@ const REGISTRY_VERSION: u32 = 3;
 const REGISTRY_FILENAME: &str = "team-connections.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
-const MAX_CACHED_CARDS: usize = 256;
-const MAX_DISPLAY_NAME_BYTES: usize = 120;
-const MAX_PROJECT_NAME_BYTES: usize = 120;
-const MAX_PRIMARY_QUESTION_BYTES: usize = 2_000;
+pub(crate) const MAX_CACHED_CARDS: usize = 256;
 const MAX_SSH_TARGET_BYTES: usize = 255;
 const MAX_VERSION_BYTES: usize = 64;
 const MEMBER_TOKEN_PREFIX: &[u8] = b"rcp_";
@@ -36,11 +33,9 @@ const INVITATION_CODE_PREFIX: &[u8] = b"rcp_invite_";
 const KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.team-member-token.source-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct CachedTeamProjectCard {
     pub id: String,
     pub name: String,
-    pub primary_question: Option<String>,
     pub attention_count: u64,
 }
 
@@ -187,8 +182,38 @@ impl TeamConnectionState {
         }
 
         registry.validate()?;
+        // Cards are disposable display data; they must not exhaust the registry budget.
+        // A card's compact JSON is no longer than its pretty-printed share, so dropping
+        // cards until their compact sizes cover the excess always fits in one pass.
+        let size = serde_json::to_vec_pretty(&registry)
+            .map_err(|error| format!("cannot serialize saved team connections: {error}"))?
+            .len() as u64
+            + 1;
+        let mut excess = size.saturating_sub(MAX_REGISTRY_BYTES);
+        while excess > 0 {
+            let Some(cached) = registry
+                .connections
+                .iter_mut()
+                .rev()
+                .find(|saved| !saved.last_known_cards.is_empty())
+            else {
+                break;
+            };
+            let card = cached
+                .last_known_cards
+                .pop()
+                .expect("a nonempty card cache");
+            let freed = serde_json::to_vec(&card)
+                .map_err(|error| format!("cannot serialize a cached team project: {error}"))?
+                .len() as u64;
+            excess = excess.saturating_sub(freed);
+        }
         self.write_registry(&registry)?;
-        Ok(connection)
+        Ok(registry
+            .connections
+            .into_iter()
+            .find(|saved| saved.connection_id == connection.connection_id)
+            .expect("saved connection must be present"))
     }
 
     pub fn remove_metadata(&self, connection_id: &str) -> Result<RemovalResult, String> {
@@ -517,12 +542,12 @@ impl TeamConnectionMetadataV2 {
 impl TeamConnectionMetadata {
     fn validate(&self) -> Result<(), String> {
         validate_uuid4(&self.connection_id, "team connection identity")?;
-        validate_text(
-            &self.display_name,
-            "team connection display name",
-            MAX_DISPLAY_NAME_BYTES,
-            false,
-        )?;
+        if self.display_name.is_empty() || contains_rcp_credential(self.display_name.as_bytes()) {
+            return Err(
+                "team connection display name must be nonempty and contain no RCP credential"
+                    .into(),
+            );
+        }
         validate_ssh_target(&self.ssh_target)?;
         if self.remote_loopback_port == 0 {
             return Err("remote team server port must be a positive integer".into());
@@ -561,19 +586,8 @@ impl ServerOperatorRoute {
 impl CachedTeamProjectCard {
     fn validate(&self) -> Result<(), String> {
         validate_uuid4(&self.id, "cached team project identity")?;
-        validate_text(
-            &self.name,
-            "cached team project name",
-            MAX_PROJECT_NAME_BYTES,
-            false,
-        )?;
-        if let Some(question) = &self.primary_question {
-            validate_text(
-                question,
-                "cached primary question",
-                MAX_PRIMARY_QUESTION_BYTES,
-                false,
-            )?;
+        if contains_rcp_credential(self.name.as_bytes()) {
+            return Err("cached team project name cannot contain an RCP credential".into());
         }
         Ok(())
     }
@@ -860,7 +874,6 @@ mod tests {
             last_known_cards: vec![CachedTeamProjectCard {
                 id: PROJECT_ID.into(),
                 name: "Abu Dhabi".into(),
-                primary_question: Some("Which intervention works?".into()),
                 attention_count: 2,
             }],
             operator_route: None,
@@ -884,6 +897,62 @@ mod tests {
 
     fn state(directory: &Path) -> TeamConnectionState {
         TeamConnectionState::new(directory.join(REGISTRY_FILENAME))
+    }
+
+    #[test]
+    fn cached_server_text_round_trips_without_questions() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let mut connection = sample_connection();
+        connection.display_name = "界".repeat(120);
+        connection.last_known_cards =
+            ["first\nsecond".into(), "  padded  ".into(), "界".repeat(50)]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": format!("55555555-5555-4555-8555-{index:012}"),
+                        "name": name,
+                        "primary_question": "first question\nsecond question",
+                        "attention_count": 2
+                    }))
+                    .unwrap()
+                })
+                .collect();
+        assert_eq!(state.save_metadata(connection.clone()).unwrap(), connection);
+        assert_eq!(state.list().unwrap(), vec![connection]);
+        assert!(!fs::read_to_string(&state.registry_path)
+            .unwrap()
+            .contains("primary_question"));
+    }
+
+    #[test]
+    fn registry_loads_legacy_cached_questions() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let connection = sample_connection();
+        let mut registry = serde_json::to_value(TeamConnectionRegistry {
+            version: REGISTRY_VERSION,
+            connections: vec![connection.clone()],
+        })
+        .unwrap();
+        registry["connections"][0]["last_known_cards"][0]["primary_question"] =
+            serde_json::json!("first question\nsecond question");
+        fs::write(&state.registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        assert_eq!(state.list().unwrap(), vec![connection]);
+    }
+
+    #[test]
+    fn oversized_card_cache_does_not_prevent_saving() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let mut connection = sample_connection();
+        state.save_metadata(connection.clone()).unwrap();
+        connection.last_known_cards[0].name = "界".repeat(MAX_REGISTRY_BYTES as usize);
+        let saved = state.save_metadata(connection).unwrap();
+        assert!(saved.last_known_cards.is_empty());
+        assert_eq!(state.list().unwrap(), vec![saved]);
+        assert!(fs::metadata(&state.registry_path).unwrap().len() <= MAX_REGISTRY_BYTES);
     }
 
     #[test]
@@ -1150,7 +1219,6 @@ mod tests {
             .map(|index| CachedTeamProjectCard {
                 id: format!("55555555-5555-4555-8555-{index:012}"),
                 name: "project".into(),
-                primary_question: None,
                 attention_count: 0,
             })
             .collect();

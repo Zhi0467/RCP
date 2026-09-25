@@ -35,7 +35,6 @@ export interface DesktopStatus {
 export interface CachedTeamProjectCard {
   id: string;
   name: string;
-  primary_question: string | null;
   attention_count: number;
 }
 
