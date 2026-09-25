@@ -179,8 +179,9 @@ so the control is hidden there.
    HTTP stacks beside `httpx`; `cryptography` alone adds about 13 MB.
    Recommendation: `cryptography` only, with about 100 lines of our own for
    RFC 8291 encryption and the VAPID token, sent through the existing `httpx`.
-   Current sizes for scale: the server wheel is 3.1 MB and the development venv
-   is 107 MB.
+   On the team server's Linux host, a venv rebuilt from the v0.4.1 wheel and its
+   lock file is 46 MB and grows to 62 MB with `cryptography`. The desktop app
+   runs from the checkout's development venv, which is 107 MB.
 
 ## Checks
 
